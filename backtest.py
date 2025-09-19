@@ -70,6 +70,8 @@ def compute_stats(initial_balance, final_balance, trades, balance_history):
         
         stats["Win Rate %"] = len(wins) / n_trades * 100
         stats["Average PnL"] = trades["pnl"].mean()
+        stats["Average Profit"] = wins["pnl"].mean()
+        stats["Average Loss"] = losses["pnl"].mean()
         stats["Best Trade"] = trades["pnl"].max()
         stats["Worst Trade"] = trades["pnl"].min()
 
@@ -89,12 +91,9 @@ def compute_stats(initial_balance, final_balance, trades, balance_history):
     drawdowns = (equity - rolling_max) / rolling_max
     stats["Max Drawdown %"] = drawdowns.min() * 100
 
-
-    stats["Trades exit_reason"] = trades["exit_reason"]
-
     return stats
 
-def backtest_bollinger(df, initial_balance=10000, position_size=0.25, sl_pct=0.02, tp_pct=0.04):
+def backtest_bollinger(df, initial_balance=10000, position_size=1, sl_pct=0.005, tp_pct=0.01):
     """
     Backtest Bollinger Bands strategy with SL/TP:
     - Entry long if price touches lower band
@@ -114,24 +113,32 @@ def backtest_bollinger(df, initial_balance=10000, position_size=0.25, sl_pct=0.0
         upper = df.iloc[i]["BBU"]
         mid   = df.iloc[i]["BBM"]
         rsi   = df.iloc[i]["RSI"]
+        
+        size = position_size
 
         if position is None:
             # Open position
             if price <= lower:
+                if rsi >= 60:
+                    size = 0.5 * size
                 position = "long"
                 entry_price = price
                 trades.append({
                     "side": "long",
+                    "size": size,
                     "entry": price,
                     "exit": None,
                     "pnl": None,
                     "time": df.iloc[i]["open_time"]
                 })
             elif price >= upper:
+                if rsi <= 40:
+                    size = 0.5 * size
                 position = "short"
                 entry_price = price
                 trades.append({
                     "side": "short",
+                    "size": size,
                     "entry": price,
                     "exit": None,
                     "pnl": None,
@@ -139,13 +146,14 @@ def backtest_bollinger(df, initial_balance=10000, position_size=0.25, sl_pct=0.0
                 })
 
         else:
+            size = trades[-1]["size"]
             # Long position management
             if position == "long":
                 sl_level = entry_price * (1 - sl_pct)
                 tp_level = entry_price * (1 + tp_pct)
 
                 if price <= sl_level:  # Stop-loss
-                    loss = (price - entry_price) / entry_price * balance * position_size
+                    loss = (price - entry_price) / entry_price * balance * size
                     balance += loss
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = loss
@@ -153,7 +161,7 @@ def backtest_bollinger(df, initial_balance=10000, position_size=0.25, sl_pct=0.0
                     position = None
 
                 elif price >= tp_level and rsi >= 60:  # Take-profit
-                    profit = (price - entry_price) / entry_price * balance * position_size
+                    profit = (price - entry_price) / entry_price * balance * size
                     balance += profit
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = profit
@@ -161,7 +169,7 @@ def backtest_bollinger(df, initial_balance=10000, position_size=0.25, sl_pct=0.0
                     position = None
 
                 elif price >= mid:  # Exit by mid band
-                    profit = (price - entry_price) / entry_price * balance * position_size
+                    profit = (price - entry_price) / entry_price * balance * size
                     balance += profit
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = profit
@@ -174,7 +182,7 @@ def backtest_bollinger(df, initial_balance=10000, position_size=0.25, sl_pct=0.0
                 tp_level = entry_price * (1 - tp_pct)
 
                 if price >= sl_level:  # Stop-loss
-                    loss = (entry_price - price) / entry_price * balance * position_size
+                    loss = (entry_price - price) / entry_price * balance * size
                     balance += loss
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = loss
@@ -182,7 +190,7 @@ def backtest_bollinger(df, initial_balance=10000, position_size=0.25, sl_pct=0.0
                     position = None
 
                 elif price <= tp_level and rsi <= 40:  # Take-profit
-                    profit = (entry_price - price) / entry_price * balance * position_size
+                    profit = (entry_price - price) / entry_price * balance * size
                     balance += profit
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = profit
@@ -190,7 +198,7 @@ def backtest_bollinger(df, initial_balance=10000, position_size=0.25, sl_pct=0.0
                     position = None
 
                 elif price <= mid:  # Exit by mid band
-                    profit = (entry_price - price) / entry_price * balance * position_size
+                    profit = (entry_price - price) / entry_price * balance * size
                     balance += profit
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = profit
@@ -248,7 +256,7 @@ def plot_results(df, trades, balance_history):
         webbrowser.get("firefox").open(tmpfile.name)
 
 if __name__ == "__main__":
-    df_small = fetch_historical("BTCUSDT", interval="15m", limit=1500)
+    df_small = fetch_historical("BTCUSDT", interval="5m", limit=1500)
     df_big = fetch_historical("BTCUSDT", interval="1h", limit=375)
     df = prepare_multi_tf(df_small, df_big)
     final_balance, trades, balance_history = backtest_bollinger(df)
