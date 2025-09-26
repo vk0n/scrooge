@@ -7,66 +7,59 @@ import os
 import pandas as pd
 import pandas_ta as ta
 from binance.client import Client
-from binance.enums import *
+import time
+from datetime import datetime
+from strategy import *
+from trade import check_balance, get_open_position
 
-# --- 1. Connect ---
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-
-client = Client(API_KEY, API_SECRET)
-client.FUTURES_URL = "https://testnet.binancefuture.com"   # Testnet endpoint
-
-# --- 2. Fetch data ---
-def fetch_klines(symbol="BTCUSDT", interval="1m", limit=100):
-    raw = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-    df = pd.DataFrame(raw, columns=[
-        "open_time","open","high","low","close","volume","close_time","qav",
-        "num_trades","taker_base_vol","taker_quote_vol","ignore"
-    ])
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["close"] = pd.to_numeric(df["close"])
-    return df[["open_time","close"]]
-
-# --- 3. Bollinger Bands ---
-def compute_bbands(df, length=20, std=2):
-    df = df.copy()
-    bb = ta.bbands(df["close"], length=length, std=std)
-    df["BBL"] = bb[f"BBL_{length}_{std}.0_2.0"]
-    df["BBM"] = bb[f"BBM_{length}_{std}.0_2.0"]
-    df["BBU"] = bb[f"BBU_{length}_{std}.0_2.0"]
-    return df
-
-# --- 4. Signal ---
-def bollinger_signal(df):
-    last = df.iloc[-1]
-    if last["close"] <= last["BBL"]:
-        return "long"
-    elif last["close"] >= last["BBU"]:
-        return "short"
-    else:
-        return None
-
-# --- 5. Orders ---
-def place_order(symbol, side, quantity=0.001):
-    try:
-        order = client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_BUY if side == "long" else SIDE_SELL,
-            type=FUTURE_ORDER_TYPE_MARKET,
-            quantity=quantity
-        )
-        print(f"Order executed: {order['orderId']} | Side: {side} | Qty: {quantity}")
-    except Exception as e:
-        print("Order failed:", e)
-
-# --- 6. Main loop ---
 if __name__ == "__main__":
     symbol = "BTCUSDT"
-    df = fetch_klines(symbol, interval="1m", limit=100)
-    df = compute_bbands(df)
-    signal = bollinger_signal(df)
-    print(df.tail(3)[["open_time","close","BBL","BBM","BBU"]])
-    print("Signal:", signal)
+    qty = 0.001  # position size
+    interval_small = "5m"
+    interval_big = "1h"
 
-    if signal:
-        place_order(symbol, signal, quantity=0.001)   # minimum volume
+    MODE = "backtest"  # "backtest" or "live"
+
+    if MODE == "backtest":
+        print("Running BACKTEST...")
+        df_small = fetch_historical(symbol, interval=interval_small, limit=1500)
+        df_big = fetch_historical(symbol, interval=interval_big, limit=375)
+        df = prepare_multi_tf(df_small, df_big)
+
+        initial_balance = 1000
+        final_balance, trades, balance_history = run_strategy(df, initial_balance, qty, live=False)
+        stats = compute_stats(initial_balance, final_balance, trades, balance_history)
+
+        for k, v in stats.items():
+            print(f"{k}: {v}")
+        
+        plot_results(df, trades, balance_history)
+
+    elif MODE == "live":
+        print("Running LIVE on Binance Testnet...")
+
+        while True:
+            try:
+                # Log account balance and current position
+                check_balance()
+                pos = get_open_position(symbol)
+                if pos:
+                    print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Open position: {pos['positionAmt']} {pos['symbol']}")
+                else:
+                    print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] No open positions")
+
+                # Fetch recent historical data
+                df_small = fetch_historical(symbol, interval=interval_small, limit=1500)
+                df_big = fetch_historical(symbol, interval=interval_big, limit=375)
+                df = prepare_multi_tf(df_small, df_big)
+
+                # Run strategy on the latest data
+                run_strategy(df, live=True, symbol=symbol, qty=qty)
+
+                # Wait until next candle
+                print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Waiting for next check...")
+                time.sleep(300)  # wait 5 minutes (interval_small)
+
+            except Exception as e:
+                print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Error in live loop:", e)
+                time.sleep(10)

@@ -9,11 +9,23 @@ import matplotlib.pyplot as plt
 from binance.client import Client
 import tempfile
 import webbrowser
+from datetime import datetime
+from trade import *
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 
 client = Client(API_KEY, API_SECRET)
+
+LOG_FILE = "trading_log.txt"
+
+def log_event(message):
+    """Log message to file with timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{timestamp}] {message}\n")
+    print(f"[{timestamp}] {message}")
+
 
 def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
     """Fetch historical klines from Binance Futures"""
@@ -93,9 +105,9 @@ def compute_stats(initial_balance, final_balance, trades, balance_history):
 
     return stats
 
-def backtest_bollinger(df, initial_balance=10000, position_size=1, sl_pct=0.005, tp_pct=0.01):
+def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01, live=False, symbol="BTCUSDT", leverage=10, use_full_balance=True):
     """
-    Backtest Bollinger Bands strategy with SL/TP:
+    Run Bollinger Bands strategy with SL/TP:
     - Entry long if price touches lower band
     - Entry short if price touches upper band
     - Exit long when price reaches middle band, SL or TP
@@ -107,73 +119,108 @@ def backtest_bollinger(df, initial_balance=10000, position_size=1, sl_pct=0.005,
     trades = []
     balance_history = []
 
-    for i in range(1, len(df)):
-        price = df.iloc[i]["close"]
-        lower = df.iloc[i]["BBL"]
-        upper = df.iloc[i]["BBU"]
-        mid   = df.iloc[i]["BBM"]
-        rsi   = df.iloc[i]["RSI"]
+    if live:
+        df_iter = [df.iloc[-1]]
+    else:
+        df_iter = [df.iloc[i] for i in range(1, len(df))]
+
+    for row in df_iter:
+        price = row["close"]
+        lower = row["BBL"]
+        upper = row["BBU"]
+        mid   = row["BBM"]
+        rsi   = row["RSI"]
         
-        size = position_size
+        # calculate position size from balance if requested
+        if use_full_balance:
+            if live:
+                balances = client.futures_account_balance()
+                usdt_balance = float(next(b["balance"] for b in balances if b["asset"]=="USDT"))
+                qty = (usdt_balance * leverage) / price
+                qty, _ = round_qty_price(symbol, qty, price)
+            else:
+                qty = (balance * leverage) / price
 
         if position is None:
             # Open position
             if price <= lower:
                 if rsi >= 60:
-                    size = 0.5 * size
+                    qty *= 0.5
                 position = "long"
                 entry_price = price
+                sl = round(price * (1 - sl_pct), 2)
+                # tp = round(price * (1 + tp_pct), 2)
                 trades.append({
                     "side": "long",
-                    "size": size,
+                    "size": qty,
                     "entry": price,
                     "exit": None,
                     "pnl": None,
-                    "time": df.iloc[i]["open_time"]
+                    "time": row["open_time"]
                 })
+
+                if live:
+                    open_position(symbol, "BUY", qty, sl, tp=None)
+                log_event(f"Opened LONG {qty} {symbol} at {price}, SL={sl}")
+
             elif price >= upper:
                 if rsi <= 40:
-                    size = 0.5 * size
+                    qty *= 0.5
                 position = "short"
                 entry_price = price
+                sl = round(price * (1 + sl_pct), 2)
+                # tp = round(price * (1 - tp_pct), 2)
                 trades.append({
                     "side": "short",
-                    "size": size,
+                    "size": qty,
                     "entry": price,
                     "exit": None,
                     "pnl": None,
-                    "time": df.iloc[i]["open_time"]
+                    "time": row["open_time"]
                 })
+
+                if live:
+                    open_position(symbol, "SELL", qty, sl, tp=None)
+                log_event(f"Opened SHORT {qty} {symbol} at {price}, SL={sl}")
 
         else:
             size = trades[-1]["size"]
+            entry_price = trades[-1]["entry"]
+            position_value = size * entry_price 
             # Long position management
             if position == "long":
                 sl_level = entry_price * (1 - sl_pct)
                 tp_level = entry_price * (1 + tp_pct)
 
                 if price <= sl_level:  # Stop-loss
-                    loss = (price - entry_price) / entry_price * balance * size
+                    loss = (price - entry_price) / entry_price * position_value
                     balance += loss
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = loss
                     trades[-1]["exit_reason"] = "stop_loss"
+                    log_event(f"Closed LONG {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
                     position = None
 
                 elif price >= tp_level and rsi >= 60:  # Take-profit
-                    profit = (price - entry_price) / entry_price * balance * size
+                    profit = (price - entry_price) / entry_price * position_value
                     balance += profit
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = profit
                     trades[-1]["exit_reason"] = "take_profit"
+                    if live:
+                        close_position(symbol)
+                    log_event(f"Closed LONG {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
                     position = None
 
                 elif price >= mid:  # Exit by mid band
-                    profit = (price - entry_price) / entry_price * balance * size
+                    profit = (price - entry_price) / entry_price * position_value
                     balance += profit
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = profit
                     trades[-1]["exit_reason"] = "mid_band"
+                    if live:
+                        close_position(symbol)
+                    log_event(f"Closed LONG {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
                     position = None
 
             # Short position management
@@ -182,27 +229,34 @@ def backtest_bollinger(df, initial_balance=10000, position_size=1, sl_pct=0.005,
                 tp_level = entry_price * (1 - tp_pct)
 
                 if price >= sl_level:  # Stop-loss
-                    loss = (entry_price - price) / entry_price * balance * size
+                    loss = (entry_price - price) / entry_price * position_value
                     balance += loss
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = loss
                     trades[-1]["exit_reason"] = "stop_loss"
+                    log_event(f"Closed SHORT {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
                     position = None
 
                 elif price <= tp_level and rsi <= 40:  # Take-profit
-                    profit = (entry_price - price) / entry_price * balance * size
+                    profit = (entry_price - price) / entry_price * position_value
                     balance += profit
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = profit
                     trades[-1]["exit_reason"] = "take_profit"
+                    if live:
+                        close_position(symbol)
+                    log_event(f"Closed SHORT {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
                     position = None
 
                 elif price <= mid:  # Exit by mid band
-                    profit = (entry_price - price) / entry_price * balance * size
+                    profit = (entry_price - price) / entry_price * position_value
                     balance += profit
                     trades[-1]["exit"] = price
                     trades[-1]["pnl"] = profit
                     trades[-1]["exit_reason"] = "mid_band"
+                    if live:
+                        close_position(symbol)
+                    log_event(f"Closed SHORT {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
                     position = None
 
         balance_history.append(balance)
@@ -255,14 +309,3 @@ def plot_results(df, trades, balance_history):
         plt.savefig(tmpfile.name, dpi=150)
         webbrowser.get("firefox").open(tmpfile.name)
 
-if __name__ == "__main__":
-    df_small = fetch_historical("BTCUSDT", interval="5m", limit=1500)
-    df_big = fetch_historical("BTCUSDT", interval="1h", limit=375)
-    df = prepare_multi_tf(df_small, df_big)
-    final_balance, trades, balance_history = backtest_bollinger(df)
-    stats = compute_stats(10000, final_balance, trades, balance_history)
-
-    for k, v in stats.items():
-        print(f"{k}: {v}")
-    
-    plot_results(df, trades, balance_history)
