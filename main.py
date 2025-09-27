@@ -14,29 +14,22 @@ from trade import check_balance, get_open_position
 
 if __name__ == "__main__":
     symbol = "BTCUSDT"
-    qty = 0.001  # position size
+    initial_balance = 1000
+    use_full_balance = True
+    qty = None  # position size
     interval_small = "5m"
     interval_big = "1h"
+    limit_small = 1500
+    limit_big = 375
+    lvrg = 10
+    sl_pct = 0.005
+    tp_pct = 0.01
 
-    MODE = "backtest"  # "backtest" or "live"
+    live = False  # "backtest" or "live"
 
-    if MODE == "backtest":
-        print("Running BACKTEST...")
-        df_small = fetch_historical(symbol, interval=interval_small, limit=1500)
-        df_big = fetch_historical(symbol, interval=interval_big, limit=375)
-        df = prepare_multi_tf(df_small, df_big)
-
-        initial_balance = 1000
-        final_balance, trades, balance_history = run_strategy(df, initial_balance, qty, live=False)
-        stats = compute_stats(initial_balance, final_balance, trades, balance_history)
-
-        for k, v in stats.items():
-            print(f"{k}: {v}")
-        
-        plot_results(df, trades, balance_history)
-
-    elif MODE == "live":
+    if live:
         print("Running LIVE on Binance Testnet...")
+        set_leverage(symbol, lvrg)
 
         while True:
             try:
@@ -49,12 +42,12 @@ if __name__ == "__main__":
                     print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] No open positions")
 
                 # Fetch recent historical data
-                df_small = fetch_historical(symbol, interval=interval_small, limit=1500)
-                df_big = fetch_historical(symbol, interval=interval_big, limit=375)
+                df_small = fetch_historical(symbol, interval_small, limit_small)
+                df_big = fetch_historical(symbol, interval_big, limit_big)
                 df = prepare_multi_tf(df_small, df_big)
 
                 # Run strategy on the latest data
-                run_strategy(df, live=True, symbol=symbol, qty=qty)
+                run_strategy(df, initial_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
 
                 # Wait until next candle
                 print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Waiting for next check...")
@@ -63,3 +56,17 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Error in live loop:", e)
                 time.sleep(10)
+
+    else:
+        print("Running BACKTEST...")
+        df_small = fetch_historical(symbol, interval_small, limit_small)
+        df_big = fetch_historical(symbol, interval_big, limit_big)
+        df = prepare_multi_tf(df_small, df_big)
+
+        final_balance, trades, balance_history = run_strategy(df, initial_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
+        stats = compute_stats(initial_balance, final_balance, trades, balance_history)
+
+        for k, v in stats.items():
+            print(f"{k}: {v}")
+        
+        plot_results(df, trades, balance_history)

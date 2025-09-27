@@ -12,6 +12,18 @@ client = Client(API_KEY, API_SECRET, testnet=True)
 client.FUTURES_URL = 'https://testnet.binancefuture.com/fapi'
 
 # --- Utility functions --- #
+def set_leverage(symbol, leverage):
+    """Set leverage for a given symbol"""
+    try:
+        resp = client.futures_change_leverage(
+            symbol=symbol,
+            leverage=leverage
+        )
+        print(f"Leverage set: {resp}")
+    except Exception as e:
+        print("Error setting leverage:", e)
+
+
 def get_symbol_info(symbol):
     """Get precision and stepSize for symbol"""
     info = client.futures_exchange_info()

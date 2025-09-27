@@ -24,7 +24,6 @@ def log_event(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(LOG_FILE, "a") as f:
         f.write(f"[{timestamp}] {message}\n")
-    print(f"[{timestamp}] {message}")
 
 
 def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
