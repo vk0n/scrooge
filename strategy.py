@@ -76,18 +76,18 @@ def compute_stats(initial_balance, final_balance, trades, balance_history):
     stats["Number of Trades"] = n_trades
 
     if n_trades > 0:
-        wins = trades[trades["pnl"] > 0]
-        losses = trades[trades["pnl"] < 0]
+        wins = trades[trades["net_pnl"] > 0]
+        losses = trades[trades["net_pnl"] < 0]
         
         stats["Win Rate %"] = len(wins) / n_trades * 100
-        stats["Average PnL"] = trades["pnl"].mean()
-        stats["Average Profit"] = wins["pnl"].mean()
-        stats["Average Loss"] = losses["pnl"].mean()
-        stats["Best Trade"] = trades["pnl"].max()
-        stats["Worst Trade"] = trades["pnl"].min()
+        stats["Average PnL"] = trades["net_pnl"].mean()
+        stats["Average Profit"] = wins["net_pnl"].mean() if len(wins) > 0 else 0
+        stats["Average Loss"] = losses["net_pnl"].mean() if len(losses) > 0 else 0
+        stats["Best Trade"] = trades["net_pnl"].max()
+        stats["Worst Trade"] = trades["net_pnl"].min()
 
-        total_profit = wins["pnl"].sum()
-        total_loss = abs(losses["pnl"].sum())
+        total_profit = wins["net_pnl"].sum()
+        total_loss = abs(losses["net_pnl"].sum())
         stats["Profit Factor"] = round(total_profit / total_loss, 2) if total_loss > 0 else np.inf
     else:
         stats["Win Rate %"] = 0
@@ -104,13 +104,16 @@ def compute_stats(initial_balance, final_balance, trades, balance_history):
 
     return stats
 
-def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01, live=False, symbol="BTCUSDT", leverage=10, use_full_balance=True):
+def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
+                 live=False, symbol="BTCUSDT", leverage=10, use_full_balance=True,
+                 fee_rate=0.0004):
     """
     Run Bollinger Bands strategy with SL/TP:
     - Entry long if price touches lower band
     - Entry short if price touches upper band
     - Exit long when price reaches middle band, SL or TP
     - Exit short when price reaches middle band, SL or TP
+    Includes commission (fee_rate per side).
     """
     balance = initial_balance
     position = None
@@ -147,40 +150,54 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01, 
                     qty *= 0.5
                 position = "long"
                 entry_price = price
-                sl = round(price * (1 - sl_pct), 2)
-                # tp = round(price * (1 + tp_pct), 2)
+                position_value = qty * entry_price
+
+                # fee on entry
+                fee_open = position_value * fee_rate
+                balance -= fee_open
+
                 trades.append({
                     "side": "long",
                     "size": qty,
                     "entry": price,
                     "exit": None,
-                    "pnl": None,
+                    "gross_pnl": None,
+                    "fee": fee_open,
+                    "net_pnl": None,
                     "time": row["open_time"]
                 })
 
                 if live:
+                    sl = round(price * (1 - sl_pct), 2)
                     open_position(symbol, "BUY", qty, sl, tp=None)
-                log_event(f"Opened LONG {qty} {symbol} at {price}, SL={sl}")
+                log_event(f"Opened LONG {qty} {symbol} at {price}, fee={fee_open}")
 
             elif price >= upper:
                 if rsi <= 40:
                     qty *= 0.5
                 position = "short"
                 entry_price = price
-                sl = round(price * (1 + sl_pct), 2)
-                # tp = round(price * (1 - tp_pct), 2)
+                position_value = qty * entry_price
+
+                # fee on entry
+                fee_open = position_value * fee_rate
+                balance -= fee_open
+
                 trades.append({
                     "side": "short",
                     "size": qty,
                     "entry": price,
                     "exit": None,
-                    "pnl": None,
+                    "gross_pnl": None,
+                    "fee": fee_open,
+                    "net_pnl": None,
                     "time": row["open_time"]
                 })
 
                 if live:
+                    sl = round(price * (1 + sl_pct), 2)
                     open_position(symbol, "SELL", qty, sl, tp=None)
-                log_event(f"Opened SHORT {qty} {symbol} at {price}, SL={sl}")
+                log_event(f"Opened SHORT {qty} {symbol} at {price}, fee={fee_open}")
 
         else:
             size = trades[-1]["size"]
@@ -192,34 +209,50 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01, 
                 tp_level = entry_price * (1 + tp_pct)
 
                 if price <= sl_level:  # Stop-loss
-                    loss = (price - entry_price) / entry_price * position_value
-                    balance += loss
+                    gross_pnl = (price - entry_price) / entry_price * position_value
+                    fee_close = position_value * fee_rate
+                    net_pnl = gross_pnl - fee_close
+                    balance += net_pnl
+
                     trades[-1]["exit"] = price
-                    trades[-1]["pnl"] = loss
+                    trades[-1]["gross_pnl"] = gross_pnl
+                    trades[-1]["fee"] += fee_close
+                    trades[-1]["net_pnl"] = net_pnl
                     trades[-1]["exit_reason"] = "stop_loss"
-                    log_event(f"Closed LONG {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
+
+                    log_event(f"Closed LONG {size} {symbol} at {price}, stop_loss, gross={gross_pnl}, fee={fee_close}, net={net_pnl}")
                     position = None
 
                 elif price >= tp_level and rsi >= 60:  # Take-profit
-                    profit = (price - entry_price) / entry_price * position_value
-                    balance += profit
+                    gross_pnl = (price - entry_price) / entry_price * position_value
+                    fee_close = position_value * fee_rate
+                    net_pnl = gross_pnl - fee_close
+                    balance += net_pnl
+
                     trades[-1]["exit"] = price
-                    trades[-1]["pnl"] = profit
+                    trades[-1]["gross_pnl"] = gross_pnl
+                    trades[-1]["fee"] += fee_close
+                    trades[-1]["net_pnl"] = net_pnl
                     trades[-1]["exit_reason"] = "take_profit"
                     if live:
                         close_position(symbol)
-                    log_event(f"Closed LONG {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
+                    log_event(f"Closed LONG {size} {symbol} at {price}, take_profit, gross={gross_pnl}, fee={fee_close}, net={net_pnl}")
                     position = None
 
-                elif price >= mid:  # Exit by mid band
-                    profit = (price - entry_price) / entry_price * position_value
-                    balance += profit
+                elif price >= mid*1.01:  # Exit by mid band
+                    gross_pnl = (price - entry_price) / entry_price * position_value
+                    fee_close = position_value * fee_rate
+                    net_pnl = gross_pnl - fee_close
+                    balance += net_pnl
+
                     trades[-1]["exit"] = price
-                    trades[-1]["pnl"] = profit
+                    trades[-1]["gross_pnl"] = gross_pnl
+                    trades[-1]["fee"] += fee_close
+                    trades[-1]["net_pnl"] = net_pnl
                     trades[-1]["exit_reason"] = "mid_band"
                     if live:
                         close_position(symbol)
-                    log_event(f"Closed LONG {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
+                    log_event(f"Closed LONG {size} {symbol} at {price}, mid_band, gross={gross_pnl}, fee={fee_close}, net={net_pnl}")
                     position = None
 
             # Short position management
@@ -228,34 +261,49 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01, 
                 tp_level = entry_price * (1 - tp_pct)
 
                 if price >= sl_level:  # Stop-loss
-                    loss = (entry_price - price) / entry_price * position_value
-                    balance += loss
+                    gross_pnl = (entry_price - price) / entry_price * position_value
+                    fee_close = position_value * fee_rate
+                    net_pnl = gross_pnl - fee_close
+                    balance += net_pnl
+
                     trades[-1]["exit"] = price
-                    trades[-1]["pnl"] = loss
+                    trades[-1]["gross_pnl"] = gross_pnl
+                    trades[-1]["fee"] += fee_close
+                    trades[-1]["net_pnl"] = net_pnl
                     trades[-1]["exit_reason"] = "stop_loss"
-                    log_event(f"Closed SHORT {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
+                    log_event(f"Closed SHORT {size} {symbol} at {price}, stop_loss, gross={gross_pnl}, fee={fee_close}, net={net_pnl}")
                     position = None
 
                 elif price <= tp_level and rsi <= 40:  # Take-profit
-                    profit = (entry_price - price) / entry_price * position_value
-                    balance += profit
+                    gross_pnl = (entry_price - price) / entry_price * position_value
+                    fee_close = position_value * fee_rate
+                    net_pnl = gross_pnl - fee_close
+                    balance += net_pnl
+
                     trades[-1]["exit"] = price
-                    trades[-1]["pnl"] = profit
+                    trades[-1]["gross_pnl"] = gross_pnl
+                    trades[-1]["fee"] += fee_close
+                    trades[-1]["net_pnl"] = net_pnl
                     trades[-1]["exit_reason"] = "take_profit"
                     if live:
                         close_position(symbol)
-                    log_event(f"Closed SHORT {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
+                    log_event(f"Closed SHORT {size} {symbol} at {price}, take_profit, gross={gross_pnl}, fee={fee_close}, net={net_pnl}")
                     position = None
 
-                elif price <= mid:  # Exit by mid band
-                    profit = (entry_price - price) / entry_price * position_value
-                    balance += profit
+                elif price <= mid*0.99:  # Exit by mid band
+                    gross_pnl = (entry_price - price) / entry_price * position_value
+                    fee_close = position_value * fee_rate
+                    net_pnl = gross_pnl - fee_close
+                    balance += net_pnl
+
                     trades[-1]["exit"] = price
-                    trades[-1]["pnl"] = profit
+                    trades[-1]["gross_pnl"] = gross_pnl
+                    trades[-1]["fee"] += fee_close
+                    trades[-1]["net_pnl"] = net_pnl
                     trades[-1]["exit_reason"] = "mid_band"
                     if live:
                         close_position(symbol)
-                    log_event(f"Closed SHORT {size} {symbol} at {price}, reason: {trades[-1]['exit_reason']}, PNL: {trades[-1]['pnl']}")
+                    log_event(f"Closed SHORT {size} {symbol} at {price}, mid_band, gross={gross_pnl}, fee={fee_close}, net={net_pnl}")
                     position = None
 
         balance_history.append(balance)
@@ -288,7 +336,7 @@ def plot_results(df, trades, balance_history):
                         color="blue", s=100)
             ax1.scatter(trade["time"], trade["exit"], marker="x", color=color, s=100)
 
-    ax1.set_title("Bollinger Bands Strategy Backtest")
+    ax1.set_title("Bollinger Bands Strategy Backtest (with Fees)")
     ax1.legend()
 
     # --- RSI subplot ---
@@ -307,4 +355,3 @@ def plot_results(df, trades, balance_history):
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
         plt.savefig(tmpfile.name, dpi=150)
         webbrowser.get("firefox").open(tmpfile.name)
-
