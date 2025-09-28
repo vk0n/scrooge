@@ -17,10 +17,12 @@ if __name__ == "__main__":
     initial_balance = 1000
     use_full_balance = True
     qty = None  # position size
-    interval_small = "5m"
+    interval_small = "1m"
+    interval_medium = "5m"
     interval_big = "1h"
     limit_small = 1500
-    limit_big = 375
+    limit_medium = 300
+    limit_big = 25
     lvrg = 10
     sl_pct = 0.005
     tp_pct = 0.01
@@ -43,8 +45,9 @@ if __name__ == "__main__":
 
                 # Fetch recent historical data
                 df_small = fetch_historical(symbol, interval_small, limit_small)
+                df_medium = fetch_historical(symbol, interval_medium, limit_medium)
                 df_big = fetch_historical(symbol, interval_big, limit_big)
-                df = prepare_multi_tf(df_small, df_big)
+                df = prepare_multi_tf(df_small, df_medium, df_big)
 
                 # Run strategy on the latest data
                 run_strategy(df, initial_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
@@ -60,8 +63,9 @@ if __name__ == "__main__":
     else:
         print("Running BACKTEST...")
         df_small = fetch_historical(symbol, interval_small, limit_small)
+        df_medium = fetch_historical(symbol, interval_medium, limit_medium)
         df_big = fetch_historical(symbol, interval_big, limit_big)
-        df = prepare_multi_tf(df_small, df_big)
+        df = prepare_multi_tf(df_small, df_medium, df_big)
 
         final_balance, trades, balance_history = run_strategy(df, initial_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
         stats = compute_stats(initial_balance, final_balance, trades, balance_history)
