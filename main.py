@@ -21,8 +21,8 @@ if __name__ == "__main__":
     interval_medium = "5m"
     interval_big = "1h"
     limit_small = 1500
-    limit_medium = 300
-    limit_big = 25
+    limit_medium = 500
+    limit_big = 100
     lvrg = 10
     sl_pct = 0.005
     tp_pct = 0.01
@@ -54,7 +54,7 @@ if __name__ == "__main__":
 
                 # Wait until next candle
                 print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Waiting for next check...")
-                time.sleep(300)  # wait 5 minutes (interval_small)
+                time.sleep(60)  # wait 1 minute (interval_small)
 
             except Exception as e:
                 print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Error in live loop:", e)
