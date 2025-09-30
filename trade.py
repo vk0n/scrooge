@@ -51,6 +51,18 @@ def check_balance():
     return balances
 
 
+def get_balance():
+    """
+    Fetch USDT balance from Binance Futures account.
+    Returns float balance in USDT.
+    """
+    balances = client.futures_account_balance()
+    for b in balances:
+        if b["asset"] == "USDT":
+            return float(b["balance"])
+    raise ValueError("USDT balance not found")
+
+
 def can_open_trade(symbol, qty, leverage=10):
     """Check if there is enough balance to open a trade"""
     balances = client.futures_account_balance()

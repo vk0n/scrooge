@@ -53,6 +53,7 @@ if __name__ == "__main__":
     if live:
         print("Running LIVE on Binance Futures...")
         set_leverage(symbol, lvrg)
+        initial_balance = get_balance()
 
         while True:
             try:
