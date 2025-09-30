@@ -3,13 +3,12 @@ from binance.client import Client
 from binance.enums import *
 import numpy as np
 
-# === Load API keys from environment (Testnet) ===
-API_KEY = os.getenv("BINANCE_TESTNET_API_KEY")
-API_SECRET = os.getenv("BINANCE_TESTNET_API_SECRET")
+# === Load API keys from environment ===
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-# Connect to Binance Futures Testnet
-client = Client(API_KEY, API_SECRET, testnet=True)
-client.FUTURES_URL = 'https://testnet.binancefuture.com/fapi'
+# Connect to Binance Futures
+client = Client(API_KEY, API_SECRET)
 
 # --- Utility functions --- #
 def set_leverage(symbol, leverage):
@@ -58,7 +57,6 @@ def can_open_trade(symbol, qty, leverage=10):
     usdt_balance = next(float(b["balance"]) for b in balances if b["asset"]=="USDT")
     price = float(client.futures_symbol_ticker(symbol=symbol)["price"])
     required_margin = (price * qty) / leverage
-    print(f"[CHECK] Balance: {usdt_balance:.2f} USDT | Required: {required_margin:.2f} USDT")
     return usdt_balance >= required_margin
 
 

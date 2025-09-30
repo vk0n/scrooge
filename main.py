@@ -2,7 +2,8 @@ print("Hello!\nI am Scrooge...")
 
 # requirements:
 # pip install python-binance pandas pandas_ta
-
+import signal
+import sys
 import os
 import pandas as pd
 import pandas_ta as ta
@@ -10,7 +11,24 @@ from binance.client import Client
 import time
 from datetime import datetime
 from strategy import *
-from trade import check_balance, get_open_position
+from trade import *
+
+state = None
+
+
+def handle_exit(sig, frame):
+    """Handler for Ctrl+C (SIGINT) to gracefully save state and exit."""
+    global state
+    if state:
+        print("\n[EXIT] Saving state before quitting...")
+        save_state(state)
+        print("[EXIT] State saved.")
+    sys.exit(0)
+
+
+# Register SIGINT handler
+signal.signal(signal.SIGINT, handle_exit)
+
 
 if __name__ == "__main__":
     symbol = "BTCUSDT"
@@ -18,19 +36,22 @@ if __name__ == "__main__":
     use_full_balance = True
     qty = None  # position size
     interval_small = "1m"
-    interval_medium = "5m"
+    interval_medium = "15m"
     interval_big = "1h"
     limit_small = 1500
     limit_medium = 500
     limit_big = 100
-    lvrg = 10
+    lvrg = 1
     sl_pct = 0.005
     tp_pct = 0.01
 
-    live = False  # "backtest" or "live"
+    live = True  # "backtest" or "live"
+    
+    # Load or create state
+    state = load_state()
 
     if live:
-        print("Running LIVE on Binance Testnet...")
+        print("Running LIVE on Binance Futures...")
         set_leverage(symbol, lvrg)
 
         while True:
