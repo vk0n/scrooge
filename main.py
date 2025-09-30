@@ -53,10 +53,11 @@ if __name__ == "__main__":
     if live:
         print("Running LIVE on Binance Futures...")
         set_leverage(symbol, lvrg)
-        initial_balance = get_balance()
+        
 
         while True:
             try:
+                current_balance = get_balance()
                 # Log account balance and current position
                 check_balance()
                 pos = get_open_position(symbol)
@@ -72,7 +73,7 @@ if __name__ == "__main__":
                 df = prepare_multi_tf(df_small, df_medium, df_big)
 
                 # Run strategy on the latest data
-                run_strategy(df, initial_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
+                run_strategy(df, current_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
 
                 # Wait until next candle
                 print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Waiting for next check...")
