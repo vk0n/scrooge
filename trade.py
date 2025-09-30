@@ -1,6 +1,7 @@
 import os
 from binance.client import Client
 from binance.enums import *
+from binance.helpers import round_step_size
 import numpy as np
 
 # === Load API keys from environment ===
@@ -41,6 +42,37 @@ def round_qty_price(symbol, qty, price):
     qty = round(qty, qty_precision)
     price = round(price, price_precision)
     return qty, price
+
+
+def adjust_qty_to_margin(client, symbol, qty, price, leverage, buffer=0.98):
+    """
+    Adjusts position size to fit available margin with a safety buffer.
+    """
+    # Get futures account info
+    account_info = client.futures_account()
+    available_balance = float(account_info["availableBalance"])  
+
+    # Maximum notional value allowed with available balance
+    max_notional = available_balance * leverage * buffer  
+
+    # Max quantity we can afford
+    max_qty = max_notional / price  
+
+    # Final adjusted quantity
+    final_qty = min(qty, max_qty)
+
+    # Binance requires step size rounding
+    exchange_info = client.futures_exchange_info()
+    symbol_info = next(s for s in exchange_info["symbols"] if s["symbol"] == symbol)
+    step_size = None
+    for f in symbol_info["filters"]:
+        if f["filterType"] == "LOT_SIZE":
+            step_size = float(f["stepSize"])
+            break
+    if step_size:
+        final_qty = round_step_size(final_qty, step_size)
+
+    return final_qty
 
 
 def check_balance():
@@ -120,8 +152,11 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
 
     elif side and qty > 0:
         # --- Open new position ---
-        if not can_open_trade(symbol, qty, leverage):
-            print("❌ Not enough balance to open trade")
+
+        # Auto-adjust qty to avoid insufficient margin error (-2019)
+        qty = adjust_qty_to_margin(symbol, qty, leverage)
+        if qty <= 0:
+            print("❌ Not enough margin to open any position")
             return
 
         qty, sl = round_qty_price(symbol, qty, sl) if sl else (qty, None)
