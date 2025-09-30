@@ -44,7 +44,7 @@ def round_qty_price(symbol, qty, price):
     return qty, price
 
 
-def adjust_qty_to_margin(client, symbol, qty, price, leverage, buffer=0.98):
+def adjust_qty_to_margin(client, symbol, qty, price, leverage, buffer=0.8):
     """
     Adjusts position size to fit available margin with a safety buffer.
     """
