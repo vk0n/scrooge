@@ -1,4 +1,3 @@
-# state.py
 import json
 import os
 from datetime import datetime
@@ -53,4 +52,5 @@ def update_balance(state, balance):
     Update the current balance in state.
     """
     state["balance"] = balance
+    state.setdefault("balance_history", []).append(balance)
     save_state(state)

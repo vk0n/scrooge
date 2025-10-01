@@ -124,15 +124,16 @@ def compute_stats(initial_balance, final_balance, trades, balance_history):
 
 def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                  live=False, symbol="BTCUSDT", leverage=10, use_full_balance=True,
-                 fee_rate=0.0004, dyn_sl_buffer=0.002):
+                 fee_rate=0.0004, dyn_sl_buffer=0.002, state=None):
     """
     Bollinger Bands strategy with SL/TP, dynamic stop, state persistence, and logging.
     """
-    state = load_state()
+    if state is None:
+        state = load_state()
     balance = state["balance"] if state["balance"] is not None else initial_balance
     position = state["position"]
     trade_history = state.get("trade_history", [])
-    balance_history = []
+    balance_history = state.get("balance_history", [])
 
     if live:
         df_iter = [df.iloc[-1]]
@@ -166,11 +167,11 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         "dyn_sl": None,
                         "time": row["open_time"]
                     }
+                    if live:
+                        open_position(symbol, "BUY", qty_open, sl, tp=None, leverage=leverage)
                     balance -= qty_open * entry_price * fee_rate
                     update_position(state, position)
                     update_balance(state, balance)
-                    if live:
-                        open_position(symbol, "BUY", qty_open, sl, tp=None, leverage=leverage)
                     log_event(f"Opened LONG {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
 
             elif price >= upper:
@@ -189,11 +190,11 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         "dyn_sl": None,
                         "time": row["open_time"]
                     }
+                    if live:
+                        open_position(symbol, "SELL", qty_open, sl, tp=None, leverage=leverage)
                     balance -= qty_open * entry_price * fee_rate
                     update_position(state, position)
                     update_balance(state, balance)
-                    if live:
-                        open_position(symbol, "SELL", qty_open, sl, tp=None, leverage=leverage)
                     log_event(f"Opened SHORT {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
 
         else:
@@ -234,12 +235,12 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         "net_pnl": net_pnl,
                         "exit_reason": "take_profit" if price >= base_tp else "stop_loss"
                     }
+                    if live:
+                        close_position(symbol)
                     add_closed_trade(state, trade)
                     position = None
                     update_position(state, None)
                     update_balance(state, balance)
-                    if live:
-                        close_position(symbol)
                     log_event(f"Closed LONG {size} {symbol} at {price}, reason={trade['exit_reason']}, net={net_pnl}")
 
             elif side == "short":
@@ -272,17 +273,18 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         "net_pnl": net_pnl,
                         "exit_reason": "take_profit" if price <= base_tp else "stop_loss"
                     }
+                    if live:
+                        close_position(symbol)
                     add_closed_trade(state, trade)
                     position = None
                     update_position(state, None)
                     update_balance(state, balance)
-                    if live:
-                        close_position(symbol)
                     log_event(f"Closed SHORT {size} {symbol} at {price}, reason={trade['exit_reason']}, net={net_pnl}")
 
-        balance_history.append(balance)
+    if live:
+        save_state(state)
 
-    return balance, pd.DataFrame(state.get("trade_history", [])), balance_history
+    return balance, pd.DataFrame(state.get("trade_history", [])), state.get("balance_history", []), state
 
 
 def plot_results(df, trades, balance_history):

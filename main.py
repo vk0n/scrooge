@@ -72,7 +72,9 @@ if __name__ == "__main__":
                 df = prepare_multi_tf(df_small, df_medium, df_big)
 
                 # Run strategy on the latest data
-                run_strategy(df, current_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
+                balance, trades, balance_history, state = run_strategy(
+                    df, current_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance, state=state
+                )
 
                 # Wait until next candle
                 print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Waiting for next check...")
