@@ -146,22 +146,15 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
         mid   = row["BBM"]
         rsi   = row["RSI"]
 
-        # determine position size
-        if qty is None and use_full_balance:
-            if live:
-                q = (balance * leverage) / price
-                q, _ = round_qty_price(symbol, q, price)
-                qty_local = q
-            else:
-                qty_local = (balance * leverage) / price
-        else:
-            qty_local = qty if qty is not None else 0
-
         if position is None:
+            # determine position size
+            qty_local = compute_qty(symbol, balance, leverage, price, qty, use_full_balance, live)
             # OPEN LOGIC
             if price <= lower:
                 qty_open = qty_local * 0.5 if rsi >= 60 else qty_local
-                if qty_open > 0 and can_open_trade(symbol, qty_open, leverage):
+                print(f"[DEBUG] Attempting LONG {qty_open} {symbol} at price {price}")
+                print(f"[DEBUG] can_open_trade: {can_open_trade(symbol, qty_open, leverage)}")
+                if can_open_trade(symbol, qty_open, leverage):
                     entry_price = price
                     sl = round(entry_price * (1 - sl_pct), 8)
                     position = {
@@ -182,7 +175,9 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
 
             elif price >= upper:
                 qty_open = qty_local * 0.5 if rsi <= 40 else qty_local
-                if qty_open > 0 and can_open_trade(symbol, qty_open, leverage):
+                print(f"[DEBUG] Attempting SHORT {qty_open} {symbol} at price {price}")
+                print(f"[DEBUG] can_open_trade: {can_open_trade(symbol, qty_open, leverage)}")
+                if can_open_trade(symbol, qty_open, leverage):
                     entry_price = price
                     sl = round(entry_price * (1 + sl_pct), 8)
                     position = {

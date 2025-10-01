@@ -44,7 +44,7 @@ def round_qty_price(symbol, qty, price):
     return qty, price
 
 
-def adjust_qty_to_margin(client, symbol, qty, price, leverage, buffer=0.8):
+def adjust_qty_to_margin(client, symbol, qty, price, leverage, buffer=0.95):
     """
     Adjusts position size to fit available margin with a safety buffer.
     """
@@ -75,6 +75,30 @@ def adjust_qty_to_margin(client, symbol, qty, price, leverage, buffer=0.8):
     return final_qty
 
 
+def compute_qty(symbol, balance, leverage, price, qty=None, use_full_balance=True, live=False):
+    """
+    Compute the actual position size (qty) for opening a trade.
+    - If qty is given explicitly, use it.
+    - Otherwise, if use_full_balance, compute maximum qty based on balance, leverage, and price.
+    - Round qty and adjust to margin.
+    """
+    if qty is not None:
+        qty_local = qty
+    elif use_full_balance:
+        qty_local = (balance * leverage) / price
+    else:
+        qty_local = 0
+
+    # Round to allowed precision for symbol
+    qty_local, _ = round_qty_price(symbol, qty_local, price)
+
+    # Adjust to available margin in live mode
+    if live:
+        qty_local = adjust_qty_to_margin(client, symbol, qty_local, price, leverage)
+
+    return qty_local
+
+
 def check_balance():
     balances = client.futures_account_balance()
     for b in balances:
@@ -101,7 +125,7 @@ def can_open_trade(symbol, qty, leverage=10):
     usdt_balance = next(float(b["balance"]) for b in balances if b["asset"]=="USDT")
     price = float(client.futures_symbol_ticker(symbol=symbol)["price"])
     required_margin = (price * qty) / leverage
-    return usdt_balance >= required_margin
+    return usdt_balance >= required_margin and qty > 0
 
 
 def get_open_position(symbol):
@@ -152,9 +176,6 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
 
     elif side and qty > 0:
         # --- Open new position ---
-
-        # Auto-adjust qty to avoid insufficient margin error (-2019)
-        qty = adjust_qty_to_margin(symbol, qty, leverage)
         if qty <= 0:
             print("❌ Not enough margin to open any position")
             return
