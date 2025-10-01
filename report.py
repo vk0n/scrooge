@@ -7,9 +7,11 @@ from binance.client import Client
 from datetime import datetime
 import tempfile
 import os
+from dotenv import load_dotenv
 import numpy as np
 
 STATE_FILE = "state.json"
+load_dotenv()
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 client = Client(API_KEY, API_SECRET)

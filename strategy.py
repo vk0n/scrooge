@@ -2,6 +2,7 @@
 # pip install python-binance pandas pandas_ta matplotlib
 
 import os
+from dotenv import load_dotenv
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
@@ -13,6 +14,8 @@ from datetime import datetime
 from trade import *
 from state import *
 
+
+load_dotenv()
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 

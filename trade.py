@@ -1,10 +1,12 @@
 import os
+from dotenv import load_dotenv
 from binance.client import Client
 from binance.enums import *
 from binance.helpers import round_step_size
 import numpy as np
 
 # === Load API keys from environment ===
+load_dotenv()
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 
