@@ -32,7 +32,7 @@ signal.signal(signal.SIGINT, handle_exit)
 
 if __name__ == "__main__":
     symbol = "BTCUSDT"
-    initial_balance = 1000
+    initial_balance = 5000
     use_full_balance = True
     qty = None  # position size
     interval_small = "1m"
@@ -45,7 +45,7 @@ if __name__ == "__main__":
     sl_pct = 0.005
     tp_pct = 0.01
 
-    live = True  # "backtest" or "live"
+    live = False  # "backtest" or "live"
     
     # Load or create state
     state = load_state()
@@ -91,7 +91,7 @@ if __name__ == "__main__":
         df_big = fetch_historical(symbol, interval_big, limit_big)
         df = prepare_multi_tf(df_small, df_medium, df_big)
 
-        final_balance, trades, balance_history = run_strategy(df, initial_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
+        final_balance, trades, balance_history, state = run_strategy(df, initial_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
         stats = compute_stats(initial_balance, final_balance, trades, balance_history)
 
         for k, v in stats.items():

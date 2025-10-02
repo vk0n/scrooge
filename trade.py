@@ -97,6 +97,8 @@ def compute_qty(symbol, balance, leverage, price, qty=None, use_full_balance=Tru
     # Adjust to available margin in live mode
     if live:
         qty_local = adjust_qty_to_margin(client, symbol, qty_local, price, leverage)
+    else:
+        qty_local *= 0.95
 
     return qty_local
 
