@@ -45,7 +45,7 @@ if __name__ == "__main__":
     sl_pct = 0.005
     tp_pct = 0.01
 
-    live = False  # "backtest" or "live"
+    live = True  # "backtest" or "live"
     
     # Load or create state
     state = load_state()

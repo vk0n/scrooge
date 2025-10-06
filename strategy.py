@@ -133,7 +133,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
     """
     if state is None:
         state = load_state()
-    balance = state["balance"] if state["balance"] is not None else initial_balance
+    balance = initial_balance
     position = state["position"]
     trade_history = state.get("trade_history", [])
     balance_history = state.get("balance_history", [])
@@ -156,49 +156,53 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
             # OPEN LOGIC
             if price <= lower:
                 qty_open = qty_local * 0.5 if rsi >= 60 else qty_local
-                print(f"[DEBUG] Attempting LONG {qty_open} {symbol} at price {price}")
-                print(f"[DEBUG] can_open_trade: {can_open_trade(symbol, qty_open, leverage)}")
-                if can_open_trade(symbol, qty_open, leverage):
-                    entry_price = price
-                    sl = round(entry_price * (1 - sl_pct), 8)
-                    position = {
-                        "side": "long",
-                        "size": qty_open,
-                        "entry": entry_price,
-                        "sl": sl,
-                        "tp": None,
-                        "dyn_sl": None,
-                        "time": row["open_time"]
-                    }
-                    if live:
-                        open_position(symbol, "BUY", qty_open, sl, tp=None, leverage=leverage)
-                    balance -= qty_open * entry_price * fee_rate
-                    update_position(state, position)
-                    update_balance(state, balance)
-                    log_event(f"Opened LONG {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
+                entry_price = price
+                sl = entry_price * (1 - sl_pct + fee_rate)
+                tp = entry_price * (1 + tp_pct + fee_rate)
+                position = {
+                    "side": "long",
+                    "size": qty_open,
+                    "entry": entry_price,
+                    "sl": sl,
+                    "tp": tp,
+                    "dyn_sl": None,
+                    "time": row["open_time"]
+                }
+
+                if live:
+                    if can_open_trade(symbol, qty_open, leverage):
+                        open_position(symbol, "BUY", qty_open, sl, tp, leverage)
+                        balance = get_balance()
+                        update_position(state, position)
+                        update_balance(state, balance)
+                    else:
+                        balance -= qty_open * entry_price * fee_rate
+                log_event(f"Opened LONG {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
 
             elif price >= upper:
                 qty_open = qty_local * 0.5 if rsi <= 40 else qty_local
-                print(f"[DEBUG] Attempting SHORT {qty_open} {symbol} at price {price}")
-                print(f"[DEBUG] can_open_trade: {can_open_trade(symbol, qty_open, leverage)}")
-                if can_open_trade(symbol, qty_open, leverage):
-                    entry_price = price
-                    sl = round(entry_price * (1 + sl_pct), 8)
-                    position = {
-                        "side": "short",
-                        "size": qty_open,
-                        "entry": entry_price,
-                        "sl": sl,
-                        "tp": None,
-                        "dyn_sl": None,
-                        "time": row["open_time"]
-                    }
-                    if live:
-                        open_position(symbol, "SELL", qty_open, sl, tp=None, leverage=leverage)
-                    balance -= qty_open * entry_price * fee_rate
-                    update_position(state, position)
-                    update_balance(state, balance)
-                    log_event(f"Opened SHORT {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
+                entry_price = price
+                sl = entry_price * (1 + sl_pct - fee_rate)
+                tp = entry_price * (1 - tp_pct - fee_rate)
+                position = {
+                    "side": "short",
+                    "size": qty_open,
+                    "entry": entry_price,
+                    "sl": sl,
+                    "tp": tp,
+                    "dyn_sl": None,
+                    "time": row["open_time"]
+                }
+                
+                if live:
+                    if can_open_trade(symbol, qty_open, leverage):
+                        open_position(symbol, "SELL", qty_open, sl, tp, leverage)
+                        balance = get_balance()
+                        update_position(state, position)
+                        update_balance(state, balance)
+                    else:
+                        balance -= qty_open * entry_price * fee_rate
+                log_event(f"Opened SHORT {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
 
         else:
             # MANAGEMENT for open position
@@ -207,13 +211,13 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
             position_value = size * entry_price
             fee_close = position_value * fee_rate
             side = position["side"]
+            base_sl = position["sl"]
+            base_tp = position["tp"]
 
             if side == "long":
-                base_sl = entry_price * (1 - sl_pct + fee_rate)
-                base_tp = entry_price * (1 + tp_pct + fee_rate)
                 if mid is not None and price >= mid:
                     candidate_dyn_sl = mid * (1 - dyn_sl_buffer)
-                    break_even_min = entry_price * (1 + 0.0005)
+                    break_even_min = entry_price * (1 + 0.001)
                     new_dyn = max(candidate_dyn_sl, break_even_min)
                     current_dyn = position.get("dyn_sl")
                     if current_dyn is None or new_dyn > current_dyn:
@@ -228,8 +232,18 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
 
                 if price <= effective_sl or (price >= base_tp and rsi >= 60):
                     gross_pnl = (price - entry_price) / entry_price * position_value
-                    net_pnl = gross_pnl - fee_close
-                    balance += net_pnl
+                    if live:
+                        close_position(symbol)
+                        current_balance = get_balance()
+                        net_pnl = current_balance - balance
+                        balance = current_balance
+                        update_position(state, None)
+                        update_balance(state, balance)
+                        add_closed_trade(state, trade)
+                    else:
+                        net_pnl = gross_pnl - fee_close
+                        balance += net_pnl
+                    
                     trade = {
                         **position,
                         "exit": price,
@@ -238,20 +252,14 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         "net_pnl": net_pnl,
                         "exit_reason": "take_profit" if price >= base_tp else "stop_loss"
                     }
-                    if live:
-                        close_position(symbol)
-                    add_closed_trade(state, trade)
+                    trade_history.append(trade)
                     position = None
-                    update_position(state, None)
-                    update_balance(state, balance)
                     log_event(f"Closed LONG {size} {symbol} at {price}, reason={trade['exit_reason']}, net={net_pnl}")
 
             elif side == "short":
-                base_sl = entry_price * (1 + sl_pct - fee_rate)
-                base_tp = entry_price * (1 - tp_pct - fee_rate)
                 if mid is not None and price <= mid:
                     candidate_dyn_sl = mid * (1 + dyn_sl_buffer)
-                    break_even_max = entry_price * (1 - 0.0005)
+                    break_even_max = entry_price * (1 - 0.001)
                     new_dyn = min(candidate_dyn_sl, break_even_max)
                     current_dyn = position.get("dyn_sl")
                     if current_dyn is None or new_dyn < current_dyn:
@@ -266,8 +274,18 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
 
                 if price >= effective_sl or (price <= base_tp and rsi <= 40):
                     gross_pnl = (entry_price - price) / entry_price * position_value
-                    net_pnl = gross_pnl - fee_close
-                    balance += net_pnl
+                    if live:
+                        close_position(symbol)
+                        current_balance = get_balance()
+                        net_pnl = current_balance - balance
+                        balance = current_balance
+                        update_position(state, None)
+                        update_balance(state, balance)
+                        add_closed_trade(state, trade)
+                    else:
+                        net_pnl = gross_pnl - fee_close
+                        balance += net_pnl
+                    
                     trade = {
                         **position,
                         "exit": price,
@@ -276,15 +294,19 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         "net_pnl": net_pnl,
                         "exit_reason": "take_profit" if price <= base_tp else "stop_loss"
                     }
-                    if live:
-                        close_position(symbol)
-                    add_closed_trade(state, trade)
+                    trade_history.append(trade)
                     position = None
-                    update_position(state, None)
-                    update_balance(state, balance)
                     log_event(f"Closed SHORT {size} {symbol} at {price}, reason={trade['exit_reason']}, net={net_pnl}")
 
+        balance_history.append(balance)
+    
     if live:
+        save_state(state)
+    else:
+        state["position"] = position
+        state["balance"] = balance
+        state["trade_history"] = trade_history
+        state["balance_history"] = balance_history
         save_state(state)
 
     return balance, pd.DataFrame(state.get("trade_history", [])), state.get("balance_history", []), state

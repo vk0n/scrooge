@@ -15,7 +15,6 @@ def load_state():
     # default state if file does not exist
     return {
         "position": None,
-        "balance": None,
         "trade_history": [],
         "balance_history": [],
         "session_start": int(datetime.now().timestamp() * 1000),  # milliseconds
@@ -51,6 +50,5 @@ def update_balance(state, balance):
     """
     Update the current balance in state.
     """
-    state["balance"] = balance
     state.setdefault("balance_history", []).append(balance)
     save_state(state)

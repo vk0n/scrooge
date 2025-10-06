@@ -73,8 +73,8 @@ def compute_session_stats(trades, balance_history):
 
     return stats
 
-def plot_session(state, symbol="BTCUSDT", interval="1m"):
-    """Build price chart with trades and equity curve."""
+def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
+    """Visualize session trades, price movement, and equity curve."""
     session_start = state.get("session_start")
     session_end = state.get("session_end")
     trades = state.get("trade_history", [])
@@ -84,61 +84,111 @@ def plot_session(state, symbol="BTCUSDT", interval="1m"):
         print("Session timestamps missing in state.json")
         return
 
+    # --- Fetch session price data ---
     df = fetch_session_klines(symbol, interval, session_start, session_end)
+    if df.empty:
+        print("No klines fetched for the session.")
+        return
 
-    # Optional: Bollinger Bands for context
-    bb = ta.bbands(df["close"], length=20, std=2)
-    df["BBL"] = bb["BBL_20_2.0_2.0"]
-    df["BBM"] = bb["BBM_20_2.0_2.0"]
-    df["BBU"] = bb["BBU_20_2.0_2.0"]
+    # --- Optional: Calculate Bollinger Bands for market context ---
+    if show_bbands:
+        bb = ta.bbands(df["close"], length=20, std=2)
+        df["BBL"] = bb["BBL_20_2.0"]
+        df["BBM"] = bb["BBM_20_2.0"]
+        df["BBU"] = bb["BBU_20_2.0"]
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14,8), sharex=True, 
-                                   gridspec_kw={'height_ratios':[3,1]})
+    # --- Downsample if dataset is too large (for faster, clearer plotting) ---
+    if len(df) > 5000:
+        df = df.iloc[::len(df)//3000]
 
-    # --- Price + BB + trades ---
-    ax1.plot(df["open_time"], df["close"], label="Price", color="blue")
-    ax1.plot(df["open_time"], df["BBL"], linestyle="--", color="red", alpha=0.5)
-    ax1.plot(df["open_time"], df["BBM"], linestyle="--", color="black", alpha=0.5)
-    ax1.plot(df["open_time"], df["BBU"], linestyle="--", color="green", alpha=0.5)
+    # --- Create subplots: price & equity ---
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(14, 8),
+        sharex=True, gridspec_kw={'height_ratios': [3, 1]}
+    )
 
+    # ========== PRICE CHART ==========
+    ax1.plot(df["open_time"], df["close"], label="Price", color="blue", linewidth=1)
+
+    # --- Bollinger Bands (if enabled) ---
+    if show_bbands:
+        ax1.plot(df["open_time"], df["BBL"], linestyle="--", color="red", alpha=0.5, label="BB Lower")
+        ax1.plot(df["open_time"], df["BBM"], linestyle="--", color="black", alpha=0.5, label="BB Mid")
+        ax1.plot(df["open_time"], df["BBU"], linestyle="--", color="green", alpha=0.5, label="BB Upper")
+
+    # --- Plot trade entries and exits ---
     for trade in trades:
-        entry_time = pd.to_datetime(trade["time"])
-        entry_price = trade["entry"]
+        # Parse trade time safely (handle both string and timestamp formats)
+        entry_time = None
+        if isinstance(trade.get("time"), (int, float)):
+            entry_time = pd.to_datetime(trade["time"], unit="ms", errors="coerce")
+        else:
+            entry_time = pd.to_datetime(trade["time"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+
+        entry_price = trade.get("entry")
         exit_price = trade.get("exit")
-        side = trade["side"]
+        side = trade.get("side", "unknown")
 
         # Entry marker
-        ax1.scatter(entry_time, entry_price, 
-                    marker="^" if side=="long" else "v", 
-                    color="blue", s=80)
+        ax1.scatter(
+            entry_time, entry_price,
+            marker="^" if side == "long" else "v",
+            color="lime" if side == "long" else "red",
+            s=80, zorder=5, label="Entry" if side == "long" else None
+        )
+
         # Exit marker
         if exit_price:
-            ax1.scatter(entry_time, exit_price, marker="x", 
-                        color="green" if trade.get("exit_reason")=="take_profit" else "red", s=80)
+            exit_reason = trade.get("exit_reason", "")
+            color = "green" if exit_reason == "take_profit" else "orange"
+            ax1.scatter(
+                entry_time, exit_price,
+                marker="x", color=color, s=60, zorder=5, label="Exit"
+            )
 
-    ax1.set_title(f"{symbol} Session Trades")
-    ax1.legend()
+    ax1.set_title(f"{symbol} Price and Trades")
+    ax1.legend(loc="upper left", fontsize=8)
+    ax1.grid(True, alpha=0.3)
 
     # --- Equity curve ---
-    ax2.plot(range(len(balance_history)), balance_history, color="purple", label="Equity Curve")
+    if balance_history:
+        # Try to align balances with candle times
+        if len(balance_history) == len(df):
+            time_index = df["open_time"]
+        else:
+            # fallback: linearly spread across session
+            time_index = pd.date_range(
+                start=df["open_time"].iloc[0],
+                end=df["open_time"].iloc[-1],
+                periods=len(balance_history)
+            )
+
+        ax2.plot(time_index, balance_history,
+                 color="purple", label="Equity Curve")
+        ax2.legend()
     ax2.set_title("Equity Curve")
-    ax2.legend()
+
+    # --- Format x-axis timestamps ---
+    fig.autofmt_xdate()
 
     plt.tight_layout()
+
+    # --- Save plot to temp file and open in browser ---
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
         plt.savefig(tmpfile.name, dpi=150)
         webbrowser.get("firefox").open(tmpfile.name)
     print("Session report plotted.")
 
-    # --- Print session statistics ---
+    # --- Compute and print session stats ---
     stats = compute_session_stats(trades, balance_history)
     print("\n=== SESSION STATISTICS ===")
     for k, v in stats.items():
         print(f"{k}: {v}")
 
+
 if __name__ == "__main__":
     state = load_state()
     if state:
-        plot_session(state)
+        plot_session(state, show_bbands=False)
     else:
         print("No state found. Run a trading session first.")

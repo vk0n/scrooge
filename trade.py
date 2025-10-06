@@ -123,10 +123,9 @@ def get_balance():
     raise ValueError("USDT balance not found")
 
 
-def can_open_trade(symbol, qty, leverage=10):
+def can_open_trade(symbol, qty, leverage=10, live=False):
     """Check if there is enough balance to open a trade"""
-    balances = client.futures_account_balance()
-    usdt_balance = next(float(b["balance"]) for b in balances if b["asset"]=="USDT")
+    usdt_balance = get_balance()
     price = float(client.futures_symbol_ticker(symbol=symbol)["price"])
     required_margin = (price * qty) / leverage
     return usdt_balance >= required_margin and qty > 0
@@ -208,13 +207,13 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
                 print(f"[SL] Stop-loss set at {sl}")
 
             if tp:
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="SELL" if side=="BUY" else "BUY",
-                    type="TAKE_PROFIT_MARKET",
-                    stopPrice=tp,
-                    quantity=qty
-                )
+                # client.futures_create_order(
+                #     symbol=symbol,
+                #     side="SELL" if side=="BUY" else "BUY",
+                #     type="TAKE_PROFIT_MARKET",
+                #     stopPrice=tp,
+                #     quantity=qty
+                # )
                 print(f"[TP] Take-profit set at {tp}")
 
             return order
