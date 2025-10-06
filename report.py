@@ -147,7 +147,6 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
             )
 
     ax1.set_title(f"{symbol} Price and Trades")
-    ax1.legend(loc="upper left", fontsize=8)
     ax1.grid(True, alpha=0.3)
 
     # --- Equity curve ---
@@ -165,7 +164,6 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
 
         ax2.plot(time_index, balance_history,
                  color="purple", label="Equity Curve")
-        ax2.legend()
     ax2.set_title("Equity Curve")
 
     # --- Format x-axis timestamps ---
