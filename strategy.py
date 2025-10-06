@@ -175,8 +175,8 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         balance = get_balance()
                         update_position(state, position)
                         update_balance(state, balance)
-                    else:
-                        balance -= qty_open * entry_price * fee_rate
+                else:
+                    balance -= qty_open * entry_price * fee_rate
                 log_event(f"Opened LONG {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
 
             elif price >= upper:
@@ -200,8 +200,8 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         balance = get_balance()
                         update_position(state, position)
                         update_balance(state, balance)
-                    else:
-                        balance -= qty_open * entry_price * fee_rate
+                else:
+                    balance -= qty_open * entry_price * fee_rate
                 log_event(f"Opened SHORT {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
 
         else:
