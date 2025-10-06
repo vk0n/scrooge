@@ -7,10 +7,11 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 from binance.client import Client
 import tempfile
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from trade import *
 from state import *
 
@@ -40,6 +41,53 @@ def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
     df["close"] = pd.to_numeric(df["close"])
     return df[["open_time","close"]]
+
+
+def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None, end_time=None):
+    """
+    Fetch historical klines from Binance Futures with pagination.
+    Returns full DataFrame from start_time to end_time (or last available candle if end_time=None).
+    """
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime
+
+    dfs = []
+    limit = 1500  # max allowed by Binance
+    start_ts = int(start_time.timestamp() * 1000) if start_time else None
+    end_ts = int(end_time.timestamp() * 1000) if end_time else None
+
+    while True:
+        klines = client.futures_klines(
+            symbol=symbol,
+            interval=interval,
+            startTime=start_ts,
+            endTime=end_ts,
+            limit=limit
+        )
+        if not klines:
+            break
+
+        df = pd.DataFrame(klines, columns=[
+            "open_time","open","high","low","close","volume","close_time","qav",
+            "num_trades","taker_base_vol","taker_quote_vol","ignore"
+        ])
+        df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+        df["close"] = pd.to_numeric(df["close"])
+        dfs.append(df[["open_time", "close"]])
+
+        last_ts = int(klines[-1][0]) + 1  # next millisecond after last candle
+        if end_ts and last_ts >= end_ts:
+            break
+        if len(klines) < limit:
+            break
+        start_ts = last_ts
+
+    if dfs:
+        full_df = pd.concat(dfs, ignore_index=True)
+        return full_df
+    else:
+        return pd.DataFrame(columns=["open_time", "close"])
 
 
 def prepare_multi_tf(df_small, df_medium, df_big):
@@ -140,10 +188,12 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
 
     if live:
         df_iter = [df.iloc[-1]]
+        iterator = df_iter
     else:
         df_iter = [df.iloc[i] for i in range(1, len(df))]
+        iterator = tqdm(df_iter, desc="Backtest Progress")
 
-    for row in df_iter:
+    for row in iterator:
         price = row["close"]
         lower = row["BBL"]
         upper = row["BBU"]

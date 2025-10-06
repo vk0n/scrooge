@@ -9,7 +9,7 @@ import pandas as pd
 import pandas_ta as ta
 from binance.client import Client
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from strategy import *
 from trade import *
 
@@ -86,9 +86,12 @@ if __name__ == "__main__":
 
     else:
         print("Running BACKTEST...")
-        df_small = fetch_historical(symbol, interval_small, limit_small)
-        df_medium = fetch_historical(symbol, interval_medium, limit_medium)
-        df_big = fetch_historical(symbol, interval_big, limit_big)
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=7)
+
+        df_small = fetch_historical_paginated(symbol, interval_small, start_time=start_time, end_time=end_time)
+        df_medium = fetch_historical_paginated(symbol, interval_medium, start_time=start_time, end_time=end_time)
+        df_big = fetch_historical_paginated(symbol, interval_big, start_time=start_time, end_time=end_time)
         df = prepare_multi_tf(df_small, df_medium, df_big)
 
         final_balance, trades, balance_history, state = run_strategy(df, initial_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
