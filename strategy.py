@@ -285,18 +285,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
 
                 if price <= effective_sl or (price >= base_tp and rsi >= 60):
                     gross_pnl = (price - entry_price) / entry_price * position_value
-                    if live:
-                        close_position(symbol)
-                        current_balance = get_balance()
-                        net_pnl = current_balance - balance
-                        balance = current_balance
-                        update_position(state, None)
-                        update_balance(state, balance)
-                        add_closed_trade(state, trade)
-                    else:
-                        net_pnl = gross_pnl - fee_close
-                        balance += net_pnl
-                    
+                    net_pnl = gross_pnl - fee_close
                     trade = {
                         **position,
                         "exit": price,
@@ -305,6 +294,18 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         "net_pnl": net_pnl,
                         "exit_reason": "take_profit" if price >= base_tp else "stop_loss"
                     }
+
+                    if live:
+                        close_position(symbol)
+                        current_balance = get_balance()
+                        trade["net_pnl"] = current_balance - balance
+                        balance = current_balance
+                        update_position(state, None)
+                        update_balance(state, balance)
+                        add_closed_trade(state, trade)
+                    else:
+                        balance += net_pnl
+                    
                     trade_history.append(trade)
                     position = None
                     log_event(f"Closed LONG {size} {symbol} at {price}, reason={trade['exit_reason']}, net={net_pnl}")
@@ -327,18 +328,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
 
                 if price >= effective_sl or (price <= base_tp and rsi <= 40):
                     gross_pnl = (entry_price - price) / entry_price * position_value
-                    if live:
-                        close_position(symbol)
-                        current_balance = get_balance()
-                        net_pnl = current_balance - balance
-                        balance = current_balance
-                        update_position(state, None)
-                        update_balance(state, balance)
-                        add_closed_trade(state, trade)
-                    else:
-                        net_pnl = gross_pnl - fee_close
-                        balance += net_pnl
-                    
+                    net_pnl = gross_pnl - fee_close
                     trade = {
                         **position,
                         "exit": price,
@@ -347,6 +337,18 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         "net_pnl": net_pnl,
                         "exit_reason": "take_profit" if price <= base_tp else "stop_loss"
                     }
+
+                    if live:
+                        close_position(symbol)
+                        current_balance = get_balance()
+                        trade["net_pnl"] = current_balance - balance
+                        balance = current_balance
+                        update_position(state, None)
+                        update_balance(state, balance)
+                        add_closed_trade(state, trade)
+                    else:
+                        balance += net_pnl
+                    
                     trade_history.append(trade)
                     position = None
                     log_event(f"Closed SHORT {size} {symbol} at {price}, reason={trade['exit_reason']}, net={net_pnl}")
