@@ -201,7 +201,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
         rsi   = row["RSI"]
 
         if live:
-            print(f"[{datetime.now().strftime(%Y-%m-%d %H:%M:%S)}] Price: {price} | BBL: {lower} | BBM: {mid} | BBU: {upper} | RSI: {rsi}")
+            print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Price: {price} | BBL: {lower} | BBM: {mid} | BBU: {upper} | RSI: {rsi}")
         
         if position is None:
             # determine position size
