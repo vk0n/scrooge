@@ -103,8 +103,7 @@ def prepare_multi_tf(df_small, df_medium, df_big):
 
     # --- RSI on 1h (big) ---
     df_big = df_big.set_index("open_time")
-    df_big["RSI"] = ta.momentum.rsi(close=df_big["close"], window=6)
-    print("RSI sample (window=6):", df_big["RSI"].dropna().head(10).tolist())
+    df_big["RSI"] = ta.rsi(df_big["close"], length=6)
     df_big = df_big[["RSI"]]
 
     # --- Bollinger Bands on 5m (medium) ---
