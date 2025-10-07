@@ -200,6 +200,9 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
         mid   = row["BBM"]
         rsi   = row["RSI"]
 
+        if live:
+            print(f"[{datetime.now().strftime(%Y-%m-%d %H:%M:%S)}] Price: {price} | BBL: {lower} | BBM: {mid} | BBU: {upper} | RSI: {rsi}")
+        
         if position is None:
             # determine position size
             qty_local = compute_qty(symbol, balance, leverage, price, qty, use_full_balance, live)
