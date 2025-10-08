@@ -42,8 +42,8 @@ if __name__ == "__main__":
     limit_medium = 500
     limit_big = 100
     lvrg = 1
-    sl_pct = 0.005
-    tp_pct = 0.01
+    sl_pct = 0.003
+    tp_pct = 0.012
 
     live = True  # "backtest" or "live"
     
