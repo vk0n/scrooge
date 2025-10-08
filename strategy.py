@@ -501,7 +501,8 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
 
         balance_history.append(balance)
     
-    save_log(log_buffer)
+    if log_buffer:
+        save_log(log_buffer)
     
     if live:
         save_state(state)

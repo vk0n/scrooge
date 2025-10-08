@@ -197,13 +197,13 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
 
             # place SL/TP
             if sl:
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="SELL" if side=="BUY" else "BUY",
-                    type="STOP_MARKET",
-                    stopPrice=sl,
-                    quantity=qty
-                )
+                #client.futures_create_order(
+                #    symbol=symbol,
+                #    side="SELL" if side=="BUY" else "BUY",
+                #    type="STOP_MARKET",
+                #    stopPrice=sl,
+                #    quantity=qty
+                #)
                 print(f"[SL] Stop-loss set at {sl}")
 
             if tp:
