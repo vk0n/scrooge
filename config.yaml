@@ -1,0 +1,29 @@
+live: False  
+symbol: BTCUSDT
+leverage: 1
+initial_balance: 5000
+use_full_balance: true
+qty: null
+
+intervals:
+  small: 1m
+  medium: 15m
+  big: 1h
+limits:
+  small: 1500
+  medium: 500
+  big: 100
+backtest_period_days: 90
+
+# Strategy parameters
+params:
+  sl_mult: 2.0
+  tp_mult: 4.0
+  dyn_sl_buffer: 0.001
+  rsi_extreme_long: 80.0
+  rsi_extreme_short: 25.0
+  rsi_long_open_threshold: 60.0
+  rsi_long_qty_threshold: 40.0
+  rsi_short_open_threshold: 40.0
+  rsi_short_qty_threshold: 70.0
+  trail_tp: 0.002

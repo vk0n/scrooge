@@ -40,7 +40,7 @@ def get_symbol_info(symbol):
 
 
 def round_qty_price(symbol, qty, price):
-    qty_precision, price_precision = get_symbol_info(symbol)
+    qty_precision, price_precision = 3, 2 #get_symbol_info(symbol)
     qty = round(qty, qty_precision)
     price = round(price, price_precision)
     return qty, price

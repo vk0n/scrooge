@@ -3,6 +3,7 @@ print("Hello!\nI am Scrooge...")
 # requirements:
 # pip install python-binance pandas pandas_ta
 import signal
+import yaml
 import sys
 import os
 import pandas as pd
@@ -29,25 +30,27 @@ def handle_exit(sig, frame):
 # Register SIGINT handler
 signal.signal(signal.SIGINT, handle_exit)
 
+def load_config():
+    with open("config.yaml", "r") as f:
+        return yaml.safe_load(f)
 
 if __name__ == "__main__":
-    symbol = "BTCUSDT"
-    initial_balance = 5000
-    use_full_balance = True
-    qty = None  # position size
-    interval_small = "1m"
-    interval_medium = "15m"
-    interval_big = "1h"
-    limit_small = 1500
-    limit_medium = 500
-    limit_big = 100
-    lvrg = 1
-    sl_mult = 1.5
-    tp_mult = 3.0
-    backtest_period_days = 7
+    cfg = load_config()
 
-    live = True  # "backtest" or "live"
-    
+    live = cfg["live"] # "backtest" or "live"
+
+    symbol = cfg["symbol"]
+    lvrg = cfg["leverage"]
+    initial_balance = cfg["initial_balance"]
+    qty = cfg["qty"]
+    use_full_balance = cfg["use_full_balance"]
+
+    intervals = cfg["intervals"]
+    limits = cfg["limits"]
+    backtest_period_days = cfg["backtest_period_days"]
+
+    params = cfg["params"]
+
     # Load or create state
     state = load_state()
 
@@ -67,14 +70,16 @@ if __name__ == "__main__":
                     print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] No open positions")
 
                 # Fetch recent historical data
-                df_small = fetch_historical(symbol, interval_small, limit_small)
-                df_medium = fetch_historical(symbol, interval_medium, limit_medium)
-                df_big = fetch_historical(symbol, interval_big, limit_big)
+                df_small = fetch_historical(symbol, intervals["small"], limits["small"])
+                df_medium = fetch_historical(symbol, intervals["medium"], limits["medium"])
+                df_big = fetch_historical(symbol, intervals["big"], limits["big"])
                 df = prepare_multi_tf(df_small, df_medium, df_big)
 
                 # Run strategy on the latest data
                 balance, trades, balance_history, state = run_strategy(
-                    df, current_balance, qty, sl_mult, tp_mult, live, symbol, lvrg, use_full_balance, state=state
+                    df, live, current_balance, qty,
+                    symbol=symbol, leverage=lvrg,
+                    use_full_balance=use_full_balance, state=state, **params
                 )
 
                 # Wait until next candle
@@ -90,12 +95,16 @@ if __name__ == "__main__":
         end_time = datetime.now()
         start_time = end_time - timedelta(days=backtest_period_days)
 
-        df_small = fetch_historical_paginated(symbol, interval_small, start_time=start_time, end_time=end_time)
-        df_medium = fetch_historical_paginated(symbol, interval_medium, start_time=start_time, end_time=end_time)
-        df_big = fetch_historical_paginated(symbol, interval_big, start_time=start_time, end_time=end_time)
+        df_small = fetch_historical_paginated(symbol, intervals["small"], start_time=start_time, end_time=end_time)
+        df_medium = fetch_historical_paginated(symbol, intervals["medium"], start_time=start_time, end_time=end_time)
+        df_big = fetch_historical_paginated(symbol, intervals["big"], start_time=start_time, end_time=end_time)
         df = prepare_multi_tf(df_small, df_medium, df_big)
 
-        final_balance, trades, balance_history, state = run_strategy(df, initial_balance, qty, sl_mult, tp_mult, live, symbol, lvrg, use_full_balance)
+        final_balance, trades, balance_history, state = run_strategy(
+            df, live, initial_balance, qty,
+            symbol=symbol, leverage=lvrg,
+            use_full_balance=use_full_balance, **params
+        )
         stats = compute_stats(initial_balance, final_balance, trades, balance_history)
 
         for k, v in stats.items():

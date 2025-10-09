@@ -178,14 +178,28 @@ def compute_stats(initial_balance, final_balance, trades, balance_history):
     return stats
 
 
-def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.0,
-                 live=False, symbol="BTCUSDT", leverage=10, use_full_balance=True,
-                 fee_rate=0.0004, dyn_sl_buffer=0.002, state=None):
+def run_strategy(df, live=False, initial_balance=1000,
+                 qty=None, sl_mult = 1.5, tp_mult = 3.0,
+                 symbol="BTCUSDT", leverage=1, use_full_balance=True,
+                 fee_rate=0.0004, dyn_sl_buffer=0.002,
+                 state=None, use_state=True, enable_logs=True,
+                 rsi_extreme_long=75, rsi_extreme_short=25,
+                 rsi_long_open_threshold=50, rsi_long_qty_threshold=30,
+                 rsi_short_open_threshold=50, rsi_short_qty_threshold=70,
+                 trail_tp=0.002):
     """
     Bollinger Bands strategy with SL/TP, dynamic stop, state persistence, and logging.
     """
-    if state is None:
+    if state is None and use_state:
         state = load_state()
+    else:
+        state = {
+            "position": None,
+            "trade_history": [],
+            "balance_history": [],
+            "session_start": None,
+            "session_end": None
+        }
     balance = initial_balance
     position = state["position"]
     trade_history = state.get("trade_history", [])
@@ -215,8 +229,8 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.
             # determine position size
             qty_local = compute_qty(symbol, balance, leverage, price, qty, use_full_balance, live)
             # OPEN LOGIC
-            if price <= lower and rsi < 50 and price > ema:
-                qty_open = qty_local * 0.5 if rsi > 30 else qty_local
+            if price <= lower and rsi < rsi_long_open_threshold and price > ema:
+                qty_open = qty_local * 0.5 if rsi > rsi_long_qty_threshold else qty_local
                 sl = price - atr * sl_mult
                 tp = price + atr * tp_mult
                 position = {
@@ -241,8 +255,8 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.
                     balance -= qty_open * price * fee_rate
                     log_buffer.append(f"[timestamp] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
 
-            elif price >= upper and rsi > 50 and price < ema:
-                qty_open = qty_local * 0.5 if rsi < 70 else qty_local
+            elif price >= upper and rsi > rsi_short_open_threshold and price < ema:
+                qty_open = qty_local * 0.5 if rsi < rsi_short_qty_threshold else qty_local
                 sl = price + atr * sl_mult
                 tp = price - atr * tp_mult
                 position = {
@@ -281,7 +295,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.
             if side == "long":
                 # Emergency RSI exit (extreme overbought)
                 gross_pnl = (price - entry_price) / entry_price * position_value
-                if rsi > 75:
+                if rsi > rsi_extreme_long:
                     net_pnl = gross_pnl - fee_close
                     fee_total = fee_close * 2
                     trade = {
@@ -338,7 +352,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.
                         # Update or close trailing TP
                         if price > position["trail_max"]:
                             position["trail_max"] = price
-                        elif price <= position["trail_max"] * 0.998 or rsi >= 70:
+                        elif price <= position["trail_max"] * (1 - trail_tp) or rsi >= 70:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
@@ -401,7 +415,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.
             elif side == "short":
                 # Emergency RSI exit (extreme oversold)
                 gross_pnl = (entry_price - price) / entry_price * position_value
-                if rsi < 25:
+                if rsi < rsi_extreme_short:
                     net_pnl = gross_pnl - fee_close
                     fee_total = fee_close * 2
                     trade = {
@@ -458,7 +472,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.
                         # Update or close trailing TP
                         if price < position["trail_min"]:
                             position["trail_min"] = price
-                        elif price >= position["trail_min"] * 1.002 or rsi <= 30:
+                        elif price >= position["trail_min"] * (1 + trail_tp) or rsi <= 30:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
@@ -522,12 +536,12 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.
 
         balance_history.append(balance)
     
-    if log_buffer:
+    if log_buffer and enable_logs:
         save_log(log_buffer)
     
     if live:
         save_state(state)
-    else:
+    elif use_state:
         state["position"] = position
         state["balance"] = balance
         state["trade_history"] = trade_history

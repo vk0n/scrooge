@@ -102,6 +102,8 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+best_params*
+optimization_results.csv
 state.json
 trading_log.txt
 scrooge-env
