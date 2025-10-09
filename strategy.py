@@ -215,7 +215,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.
             # determine position size
             qty_local = compute_qty(symbol, balance, leverage, price, qty, use_full_balance, live)
             # OPEN LOGIC
-            if price <= lower and rsi < 40 and price > ema:
+            if price <= lower and rsi < 50 and price > ema:
                 qty_open = qty_local * 0.5 if rsi > 30 else qty_local
                 sl = price - atr * sl_mult
                 tp = price + atr * tp_mult
@@ -241,7 +241,7 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.
                     balance -= qty_open * price * fee_rate
                     log_buffer.append(f"[timestamp] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
 
-            elif price >= upper and rsi > 60 and price < ema:
+            elif price >= upper and rsi > 50 and price < ema:
                 qty_open = qty_local * 0.5 if rsi < 70 else qty_local
                 sl = price + atr * sl_mult
                 tp = price - atr * tp_mult
