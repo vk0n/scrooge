@@ -1,70 +1,114 @@
 # Scrooge Trading Bot
 
-Simple Binance Futures trading bot using Bollinger Bands strategy with SL/TP, dynamic stop, and session logging.
+Scrooge is a trading bot for Binance Futures with **backtest** and **live trading** support. It uses a strategy based on **Bollinger Bands**, **RSI**, dynamic **Stop Loss** and **Take Profit**, and keeps a history of trades and balances.
+
+---
 
 ## Features
 
-- Multi-timeframe analysis (1m, 15m, 1h)
-- Bollinger Bands and RSI-based entries
-- Stop-loss, take-profit, and dynamic stop management
-- Live trading on Binance Futures
-- State persistence (`state.json`) to recover after restarts
-- Logging of trades and events
-- Session report with price chart, trades, and equity curve
+* Backtest on historical Binance data
+* Live trading via Binance Futures API
+* Dynamic SL/TP and trailing
+* Multi-timeframe analysis (1m, 15m, 1h)
+* Trade logs in `trading_log.txt`
+* Visualization of results: price chart, Bollinger Bands, RSI, equity curve
+* Session state saved in `state.json`
 
-## Requirements
+---
 
-```bash
-pip install python-binance pandas pandas_ta matplotlib numpy
-```
+## Installation
 
-Set your Binance API keys in environment variables:
+1. Clone the repository:
 
 ```bash
-export BINANCE_API_KEY="your_api_key"
-export BINANCE_API_SECRET="your_api_secret"
+git clone <your_repo_url>
+cd scrooge-bot
 ```
+
+2. Create a virtual environment:
+
+```bash
+python -m venv venv
+source venv/bin/activate   # Linux/macOS
+venv\Scripts\activate      # Windows
+```
+
+3. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+4. Create a `.env` file with your Binance keys:
+
+```
+BINANCE_API_KEY=your_api_key
+BINANCE_API_SECRET=your_api_secret
+```
+
+---
 
 ## Usage
 
-### Live Trading
+### Backtest
 
 ```bash
 python main.py
 ```
 
-The bot will run indefinitely, checking every 1 minute. Press `Ctrl+C` to stop; session data will be saved automatically.
+* By default, the bot runs a backtest for the last day (`backtest_period_days = 1`).
 
-### Backtesting
+### Live Trading
 
-Set `live = False` in `main.py`. The bot will simulate trading on historical data and plot results with charts.
+* In `main.py`, set:
+
+```python
+live = True
+```
+
+* Configure parameters: symbol, balance, leverage, timeframes.
+* Run:
+
+```bash
+python main.py
+```
 
 ### Session Report
 
-After a live session, you can generate a session report:
+* After the session, generate charts and statistics:
 
 ```bash
 python report.py
 ```
 
-It will plot:
+---
 
-- Price chart with Bollinger Bands
-- Entry/exit markers for trades
-- Equity curve
-- Basic session statistics
+## Project Structure
 
-## State File
+```
+.
+├── main.py           # Main bot runner
+├── strategy.py       # Trading strategy and backtest logic
+├── trade.py          # Binance functions (open/close positions, SL/TP)
+├── state.py          # Session state and trade history
+├── report.py         # Generate charts and statistics
+├── requirements.txt  # Dependencies
+└── README.md         # This file
+```
 
-`state.json` contains:
+---
 
-- `balance` – current balance  
-- `position` – current open position  
-- `trade_history` – list of closed trades  
-- `balance_history` – equity over time  
-- `session_start` / `session_end` – timestamps of the session  
+## Configuration Parameters
 
-## Logging
+* `symbol` — trading symbol, e.g., "BTCUSDT"
+* `initial_balance` — starting balance for backtest
+* `interval_small`, `interval_medium`, `interval_big` — timeframes for analysis
+* `sl_mult`, `tp_mult` — multipliers for Stop Loss and Take Profit
+* `leverage` — leverage for live trading
+* `use_full_balance` — whether to use full balance for positions
 
-Events are logged to `trading_log.txt` with timestamps.
+---
 
+## License
+
+MIT License

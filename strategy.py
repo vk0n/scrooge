@@ -31,15 +31,16 @@ def save_log(log_buffer):
 
 
 def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
-    """Fetch historical klines from Binance Futures."""
+    """Fetch historical klines from Binance Futures (include high/low)."""
     raw = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
     df = pd.DataFrame(raw, columns=[
         "open_time","open","high","low","close","volume","close_time","qav",
         "num_trades","taker_base_vol","taker_quote_vol","ignore"
     ])
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["close"] = pd.to_numeric(df["close"])
-    return df[["open_time","close"]]
+    # numeric conversion for price columns
+    df[["open","high","low","close"]] = df[["open","high","low","close"]].apply(pd.to_numeric)
+    return df[["open_time","open","high","low","close","volume"]]
 
 
 def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None, end_time=None):
@@ -72,8 +73,8 @@ def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None,
             "num_trades","taker_base_vol","taker_quote_vol","ignore"
         ])
         df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-        df["close"] = pd.to_numeric(df["close"])
-        dfs.append(df[["open_time", "close"]])
+        df[["open","high","low","close"]] = df[["open","high","low","close"]].apply(pd.to_numeric)
+        dfs.append(df[["open_time", "open","high","low","close","volume"]])
 
         last_ts = int(klines[-1][0]) + 1  # next millisecond after last candle
         if end_ts and last_ts >= end_ts:
@@ -100,29 +101,33 @@ def prepare_multi_tf(df_small, df_medium, df_big):
     df_medium["open_time"] = pd.to_datetime(df_medium["open_time"], unit="ms")
     df_big["open_time"] = pd.to_datetime(df_big["open_time"], unit="ms")
 
-    # --- RSI on 1h (big) ---
+    # --- RSI adn EMA on 1h (big) ---
     df_big = df_big.set_index("open_time")
     df_big["RSI"] = ta.rsi(df_big["close"], length=6)
-    df_big = df_big[["RSI"]]
+    df_big["EMA"] = ta.ema(df_big["close"], length=50)
+    df_big = df_big[["RSI", "EMA"]]
 
-    # --- Bollinger Bands on 5m (medium) ---
+    # --- Bollinger Bands and ATR on 15m (medium) ---
     df_medium = df_medium.set_index("open_time")
     bb = ta.bbands(df_medium["close"], length=20, std=2)
+    atr = ta.atr(df_medium["high"], df_medium["low"], df_medium["close"], length=14)
     df_medium["BBL"] = bb[f"BBL_20_2.0_2.0"]
     df_medium["BBM"] = bb[f"BBM_20_2.0_2.0"]
     df_medium["BBU"] = bb[f"BBU_20_2.0_2.0"]
-    df_medium = df_medium[["BBL", "BBM", "BBU"]]
+    df_medium["ATR"] = atr
+    df_medium = df_medium[["BBL", "BBM", "BBU", "ATR"]]
 
     # --- Merge into 1m (small) ---
     df_merged = df_small.set_index("open_time")
 
     # Merge medium -> small and forward-fill bands
     df_merged = df_merged.merge(df_medium, left_index=True, right_index=True, how="left")
-    df_merged[["BBL", "BBM", "BBU"]] = df_merged[["BBL", "BBM", "BBU"]].ffill()
+    df_merged[["BBL", "BBM", "BBU", "ATR"]] = df_merged[["BBL", "BBM", "BBU", "ATR"]].ffill()
 
-    # Merge big -> small and forward-fill RSI
+    # Merge big -> small and forward-fill RSI, EMA
     df_merged = df_merged.merge(df_big, left_index=True, right_index=True, how="left")
-    df_merged["RSI"] = df_merged["RSI"].ffill()
+    df_merged["RSI"] = df_merged["RSI"].astype(float).ffill()
+    df_merged["EMA"] = df_merged["EMA"].astype(float).ffill()
 
     df_merged = df_merged.reset_index()
 
@@ -173,7 +178,7 @@ def compute_stats(initial_balance, final_balance, trades, balance_history):
     return stats
 
 
-def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
+def run_strategy(df, initial_balance=1000, qty=None, sl_mult = 1.5, tp_mult = 3.0,
                  live=False, symbol="BTCUSDT", leverage=10, use_full_balance=True,
                  fee_rate=0.0004, dyn_sl_buffer=0.002, state=None):
     """
@@ -199,24 +204,25 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
         lower = row["BBL"]
         upper = row["BBU"]
         mid   = row["BBM"]
+        atr   = row["ATR"]
         rsi   = row["RSI"]
+        ema   = row["EMA"]
 
         if live:
-            print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Price: {price} | BBL: {lower} | BBM: {mid} | BBU: {upper} | RSI: {rsi}")
+            print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Price: {price} | BBL: {lower} | BBM: {mid} | BBU: {upper} | RSI: {rsi} | EMA: {ema}")
         
         if position is None:
             # determine position size
             qty_local = compute_qty(symbol, balance, leverage, price, qty, use_full_balance, live)
             # OPEN LOGIC
-            if price <= lower and rsi <= 50:
-                qty_open = qty_local * 0.5 if rsi >= 40 else qty_local
-                entry_price = price
-                sl = entry_price * (1 - sl_pct + fee_rate)
-                tp = entry_price * (1 + tp_pct + fee_rate)
+            if price <= lower and rsi < 40 and price > ema:
+                qty_open = qty_local * 0.5 if rsi > 30 else qty_local
+                sl = price - atr * sl_mult
+                tp = price + atr * tp_mult
                 position = {
                     "side": "long",
                     "size": qty_open,
-                    "entry": entry_price,
+                    "entry": price,
                     "sl": sl,
                     "tp": tp,
                     "dyn_sl": None,
@@ -230,19 +236,19 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         balance = get_balance()
                         update_position(state, position)
                         update_balance(state, balance)
+                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
                 else:
-                    balance -= qty_open * entry_price * fee_rate
-                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened LONG {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
+                    balance -= qty_open * price * fee_rate
+                    log_buffer.append(f"[timestamp] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
 
-            elif price >= upper and rsi > 50:
-                qty_open = qty_local * 0.5 if rsi <= 60 else qty_local
-                entry_price = price
-                sl = entry_price * (1 + sl_pct - fee_rate)
-                tp = entry_price * (1 - tp_pct - fee_rate)
+            elif price >= upper and rsi > 60 and price < ema:
+                qty_open = qty_local * 0.5 if rsi < 70 else qty_local
+                sl = price + atr * sl_mult
+                tp = price - atr * tp_mult
                 position = {
                     "side": "short",
                     "size": qty_open,
-                    "entry": entry_price,
+                    "entry": price,
                     "sl": sl,
                     "tp": tp,
                     "dyn_sl": None,
@@ -256,9 +262,10 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         balance = get_balance()
                         update_position(state, position)
                         update_balance(state, balance)
+                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
                 else:
-                    balance -= qty_open * entry_price * fee_rate
-                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened SHORT {qty_open} {symbol} at {entry_price}, fee={qty_open * entry_price * fee_rate}")
+                    balance -= qty_open * price * fee_rate
+                    log_buffer.append(f"[timestamp] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
 
         else:
             # MANAGEMENT for open position
@@ -294,12 +301,13 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         update_position(state, None)
                         update_balance(state, balance)
                         add_closed_trade(state, trade)
+                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} due to RSI>75 (extreme overbought), net={net_pnl}")
                     else:
                         balance += net_pnl
+                        log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} due to RSI>75 (extreme overbought), net={net_pnl}")
                     
                     trade_history.append(trade)
                     position = None
-                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} due to RSI>75 (extreme overbought), net={net_pnl}")
 
                 elif position is not None:
                     # Dynamic SL (as before)
@@ -312,21 +320,25 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                             position["dyn_sl"] = new_dyn
                             if live:
                                 update_position(state, position)
-                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Updated LONG dynamic SL to {new_dyn} for trade at {entry_price}")
+                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Updated LONG dynamic SL to {new_dyn} for trade at {entry_price}")
+                            else:
+                                log_buffer.append(f"[timestamp] Updated LONG dynamic SL to {new_dyn} for trade at {entry_price}")
 
                     # Activate trailing TP once base TP reached (but RSI not overbought yet)
                     if not position["trail_active"]:
-                        if price >= base_tp and rsi < 70:
+                        if price >= base_tp * 1.001 and rsi < 70:
                             position["trail_active"] = True
                             position["trail_max"] = price
                             if live:
                                 update_position(state, position)
-                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for LONG {symbol} at {price}")
+                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for LONG {symbol} at {price}")
+                            else:
+                                log_buffer.append(f"[timestamp] Activated trailing TP for LONG {symbol} at {price}")
                     else:
                         # Update or close trailing TP
                         if price > position["trail_max"]:
                             position["trail_max"] = price
-                        elif price <= position["trail_max"] * 0.997 or rsi >= 70:
+                        elif price <= position["trail_max"] * 0.998 or rsi >= 70:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
@@ -346,12 +358,13 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                                 update_position(state, None)
                                 update_balance(state, balance)
                                 add_closed_trade(state, trade)
+                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by trailing TP, net={net_pnl}")
                             else:
                                 balance += net_pnl
+                                log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} by trailing TP, net={net_pnl}")
                             
                             trade_history.append(trade)
                             position = None
-                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by trailing TP, net={net_pnl}")
 
                     # Fallback to normal SL/TP logic if no trail active
                     if position is not None:
@@ -376,12 +389,13 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                                 update_position(state, None)
                                 update_balance(state, balance)
                                 add_closed_trade(state, trade)
+                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by SL, net={net_pnl}")
                             else:
                                 balance += net_pnl
+                                log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} by SL, net={net_pnl}")
                             
                             trade_history.append(trade)
                             position = None
-                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by SL, net={net_pnl}")
 
             # --- SHORT SIDE LOGIC ---
             elif side == "short":
@@ -407,12 +421,13 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                         update_position(state, None)
                         update_balance(state, balance)
                         add_closed_trade(state, trade)
+                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} due to RSI<25 (extreme oversold), net={net_pnl}")
                     else:
                         balance += net_pnl
+                        log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} due to RSI<25 (extreme oversold), net={net_pnl}")
                     
                     trade_history.append(trade)
                     position = None
-                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} due to RSI<25 (extreme oversold), net={net_pnl}")
 
                 elif position is not None:
                     # Dynamic SL (as before)
@@ -425,21 +440,25 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                             position["dyn_sl"] = new_dyn
                             if live:
                                 update_position(state, position)
-                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Updated SHORT dynamic SL to {new_dyn} for trade at {entry_price}")
+                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Updated SHORT dynamic SL to {new_dyn} for trade at {entry_price}")
+                            else:
+                                log_buffer.append(f"[timestamp] Updated SHORT dynamic SL to {new_dyn} for trade at {entry_price}")
 
                     # Activate trailing TP once base TP reached (but RSI not oversold yet)
                     if not position["trail_active"]:
-                        if price <= base_tp and rsi > 30:
+                        if price <= base_tp * 0.999 and rsi > 30:
                             position["trail_active"] = True
                             position["trail_min"] = price
                             if live:
                                 update_position(state, position)
-                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for SHORT {symbol} at {price}")
+                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for SHORT {symbol} at {price}")
+                            else:
+                                log_buffer.append(f"[timestamp] Activated trailing TP for SHORT {symbol} at {price}")
                     else:
                         # Update or close trailing TP
                         if price < position["trail_min"]:
                             position["trail_min"] = price
-                        elif price >= position["trail_min"] * 1.003 or rsi <= 30:
+                        elif price >= position["trail_min"] * 1.002 or rsi <= 30:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
@@ -459,12 +478,13 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                                 update_position(state, None)
                                 update_balance(state, balance)
                                 add_closed_trade(state, trade)
+                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl}")
                             else:
                                 balance += net_pnl
+                                log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl}")
                             
                             trade_history.append(trade)
                             position = None
-                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl}")
 
                     # Fallback to normal SL/TP logic if no trail active
                     if position is not None:
@@ -489,12 +509,13 @@ def run_strategy(df, initial_balance=1000, qty=None, sl_pct=0.005, tp_pct=0.01,
                                 update_position(state, None)
                                 update_balance(state, balance)
                                 add_closed_trade(state, trade)
+                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by SL, net={net_pnl}")
                             else:
                                 balance += net_pnl
+                                log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} by SL, net={net_pnl}")
                             
                             trade_history.append(trade)
                             position = None
-                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by SL, net={net_pnl}")
 
             if live and position is not None:
                 print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Unrealized PnL: {gross_pnl}")

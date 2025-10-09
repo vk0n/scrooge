@@ -42,8 +42,9 @@ if __name__ == "__main__":
     limit_medium = 500
     limit_big = 100
     lvrg = 1
-    sl_pct = 0.005
-    tp_pct = 0.015
+    sl_mult = 1.5
+    tp_mult = 3.0
+    backtest_period_days = 7
 
     live = True  # "backtest" or "live"
     
@@ -73,7 +74,7 @@ if __name__ == "__main__":
 
                 # Run strategy on the latest data
                 balance, trades, balance_history, state = run_strategy(
-                    df, current_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance, state=state
+                    df, current_balance, qty, sl_mult, tp_mult, live, symbol, lvrg, use_full_balance, state=state
                 )
 
                 # Wait until next candle
@@ -87,14 +88,14 @@ if __name__ == "__main__":
     else:
         print("Running BACKTEST...")
         end_time = datetime.now()
-        start_time = end_time - timedelta(days=7)
+        start_time = end_time - timedelta(days=backtest_period_days)
 
         df_small = fetch_historical_paginated(symbol, interval_small, start_time=start_time, end_time=end_time)
         df_medium = fetch_historical_paginated(symbol, interval_medium, start_time=start_time, end_time=end_time)
         df_big = fetch_historical_paginated(symbol, interval_big, start_time=start_time, end_time=end_time)
         df = prepare_multi_tf(df_small, df_medium, df_big)
 
-        final_balance, trades, balance_history, state = run_strategy(df, initial_balance, qty, sl_pct, tp_pct, live, symbol, lvrg, use_full_balance)
+        final_balance, trades, balance_history, state = run_strategy(df, initial_balance, qty, sl_mult, tp_mult, live, symbol, lvrg, use_full_balance)
         stats = compute_stats(initial_balance, final_balance, trades, balance_history)
 
         for k, v in stats.items():
