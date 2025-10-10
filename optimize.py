@@ -30,14 +30,14 @@ df = prepare_multi_tf(df_small, df_medium, df_big)
 param_grid = {
     "sl_mult": [2.4],
     "tp_mult": [3.6],
-    "rsi_extreme_long": [70, 75],
-    "rsi_extreme_short": [25, 30],
-    "rsi_long_open_threshold": [30, 40, 50],
+    "rsi_extreme_long": [75],
+    "rsi_extreme_short": [25],
+    "rsi_long_open_threshold": [50],
     "rsi_long_qty_threshold": [30],
-    "rsi_long_close_threshold": [60, 65, 70, 75],
-    "rsi_short_open_threshold": [50, 60, 70],
+    "rsi_long_close_threshold": [70],
+    "rsi_short_open_threshold": [60],
     "rsi_short_qty_threshold": [70],
-    "rsi_short_close_threshold": [25, 30, 35, 40],
+    "rsi_short_close_threshold": [35],
     "trail_atr_mult": [0.3],
 }
 
