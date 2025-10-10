@@ -190,7 +190,7 @@ def run_strategy(df, live=False, initial_balance=1000,
     """
     Bollinger Bands strategy with SL/TP, dynamic stop, state persistence, and logging.
     """
-    if state is None and use_state:
+    if use_state:
         state = load_state()
     else:
         state = {
