@@ -12,7 +12,7 @@ initial_balance = 5000
 interval_small = "1m"
 interval_medium = "15m"
 interval_big = "1h"
-backtest_period_days = 30
+backtest_period_days = 365
 end_time = datetime.now()
 start_time = end_time - timedelta(days=backtest_period_days)
 
@@ -28,16 +28,17 @@ df = prepare_multi_tf(df_small, df_medium, df_big)
 # Define parameter grid
 # -----------------------------
 param_grid = {
-    "sl_mult": [2.0],
-    "tp_mult": [4.0],
-    "dyn_sl_buffer": [0.001],
-    "rsi_extreme_long": [70, 75, 80],
-    "rsi_extreme_short": [20, 25, 30],
-    "rsi_long_open_threshold": [40, 50, 60],
-    "rsi_long_qty_threshold": [30, 35, 40],
-    "rsi_short_open_threshold": [40, 50, 60],
-    "rsi_short_qty_threshold": [60, 65, 70],
-    "trail_tp": [0.002],
+    "sl_mult": [2.4],
+    "tp_mult": [3.6],
+    "rsi_extreme_long": [70, 75],
+    "rsi_extreme_short": [25, 30],
+    "rsi_long_open_threshold": [30, 40, 50],
+    "rsi_long_qty_threshold": [30],
+    "rsi_long_close_threshold": [60, 65, 70, 75],
+    "rsi_short_open_threshold": [50, 60, 70],
+    "rsi_short_qty_threshold": [70],
+    "rsi_short_close_threshold": [25, 30, 35, 40],
+    "trail_atr_mult": [0.3],
 }
 
 keys = list(param_grid.keys())
@@ -54,9 +55,9 @@ for combo in tqdm(combinations, desc="Optimizing", ncols=100):
     params = dict(zip(keys, combo))
     final_balance, trades, balance_history, state = run_strategy(
         df,
+        False,
         initial_balance,
         leverage=lvrg,
-        live=False,
         enable_logs=False,
         use_state=False,
         **params
@@ -64,8 +65,7 @@ for combo in tqdm(combinations, desc="Optimizing", ncols=100):
 
     metrics = compute_stats(initial_balance, final_balance, trades, balance_history)
     profit_factor = metrics.get("Profit Factor", 0)
-    win_rate = metrics.get("Win Rate %", 0)
-    score = profit_factor * (win_rate / 100)
+    score = profit_factor * (final_balance / initial_balance)
 
     results.append({
         **params,

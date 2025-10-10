@@ -2,6 +2,7 @@
 # pip install python-binance pandas pandas_ta matplotlib
 
 import os
+import time
 from dotenv import load_dotenv
 import numpy as np
 import pandas as pd
@@ -180,13 +181,12 @@ def compute_stats(initial_balance, final_balance, trades, balance_history):
 
 def run_strategy(df, live=False, initial_balance=1000,
                  qty=None, sl_mult = 1.5, tp_mult = 3.0,
-                 symbol="BTCUSDT", leverage=1, use_full_balance=True,
-                 fee_rate=0.0004, dyn_sl_buffer=0.002,
+                 symbol="BTCUSDT", leverage=1, use_full_balance=True, fee_rate=0.0004,
                  state=None, use_state=True, enable_logs=True,
                  rsi_extreme_long=75, rsi_extreme_short=25,
-                 rsi_long_open_threshold=50, rsi_long_qty_threshold=30,
-                 rsi_short_open_threshold=50, rsi_short_qty_threshold=70,
-                 trail_tp=0.002):
+                 rsi_long_open_threshold=50, rsi_long_qty_threshold=30, rsi_long_close_threshold=70,
+                 rsi_short_open_threshold=50, rsi_short_qty_threshold=70, rsi_short_close_threshold=30,
+                 trail_atr_mult=0.5):
     """
     Bollinger Bands strategy with SL/TP, dynamic stop, state persistence, and logging.
     """
@@ -315,32 +315,18 @@ def run_strategy(df, live=False, initial_balance=1000,
                         update_position(state, None)
                         update_balance(state, balance)
                         add_closed_trade(state, trade)
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} due to RSI>75 (extreme overbought), net={net_pnl}")
+                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl}")
                     else:
                         balance += net_pnl
-                        log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} due to RSI>75 (extreme overbought), net={net_pnl}")
+                        log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl}")
                     
                     trade_history.append(trade)
                     position = None
 
                 elif position is not None:
-                    # Dynamic SL (as before)
-                    if mid is not None and price >= mid:
-                        candidate_dyn_sl = mid * (1 - dyn_sl_buffer)
-                        break_even_min = entry_price * (1 + 0.001)
-                        new_dyn = max(candidate_dyn_sl, break_even_min)
-                        current_dyn = position["dyn_sl"]
-                        if current_dyn is None or new_dyn > current_dyn:
-                            position["dyn_sl"] = new_dyn
-                            if live:
-                                update_position(state, position)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Updated LONG dynamic SL to {new_dyn} for trade at {entry_price}")
-                            else:
-                                log_buffer.append(f"[timestamp] Updated LONG dynamic SL to {new_dyn} for trade at {entry_price}")
-
                     # Activate trailing TP once base TP reached (but RSI not overbought yet)
                     if not position["trail_active"]:
-                        if price >= base_tp * 1.001 and rsi < 70:
+                        if price >= base_tp and rsi < rsi_long_close_threshold:
                             position["trail_active"] = True
                             position["trail_max"] = price
                             if live:
@@ -352,7 +338,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                         # Update or close trailing TP
                         if price > position["trail_max"]:
                             position["trail_max"] = price
-                        elif price <= position["trail_max"] * (1 - trail_tp) or rsi >= 70:
+                        elif price <= position["trail_max"] - atr * trail_atr_mult or rsi >= rsi_long_close_threshold:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
@@ -435,32 +421,18 @@ def run_strategy(df, live=False, initial_balance=1000,
                         update_position(state, None)
                         update_balance(state, balance)
                         add_closed_trade(state, trade)
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} due to RSI<25 (extreme oversold), net={net_pnl}")
+                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl}")
                     else:
                         balance += net_pnl
-                        log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} due to RSI<25 (extreme oversold), net={net_pnl}")
+                        log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl}")
                     
                     trade_history.append(trade)
                     position = None
 
                 elif position is not None:
-                    # Dynamic SL (as before)
-                    if mid is not None and price <= mid:
-                        candidate_dyn_sl = mid * (1 + dyn_sl_buffer)
-                        break_even_max = entry_price * (1 - 0.001)
-                        new_dyn = min(candidate_dyn_sl, break_even_max)
-                        current_dyn = position["dyn_sl"]
-                        if current_dyn is None or new_dyn < current_dyn:
-                            position["dyn_sl"] = new_dyn
-                            if live:
-                                update_position(state, position)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Updated SHORT dynamic SL to {new_dyn} for trade at {entry_price}")
-                            else:
-                                log_buffer.append(f"[timestamp] Updated SHORT dynamic SL to {new_dyn} for trade at {entry_price}")
-
                     # Activate trailing TP once base TP reached (but RSI not oversold yet)
                     if not position["trail_active"]:
-                        if price <= base_tp * 0.999 and rsi > 30:
+                        if price <= base_tp and rsi > rsi_short_close_threshold:
                             position["trail_active"] = True
                             position["trail_min"] = price
                             if live:
@@ -472,7 +444,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                         # Update or close trailing TP
                         if price < position["trail_min"]:
                             position["trail_min"] = price
-                        elif price >= position["trail_min"] * (1 + trail_tp) or rsi <= 30:
+                        elif price >= position["trail_min"] + atr * trail_atr_mult or rsi <= rsi_short_close_threshold:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
