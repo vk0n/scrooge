@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 symbol = "BTCUSDT"
 lvrg = 1
 initial_balance = 5000
-interval_small = "1m"
-interval_medium = "15m"
-interval_big = "1h"
+interval_small = "15m"
+interval_medium = "1h"
+interval_big = "4h"
 backtest_period_days = 365
 end_time = datetime.now()
 start_time = end_time - timedelta(days=backtest_period_days)
@@ -28,17 +28,17 @@ df = prepare_multi_tf(df_small, df_medium, df_big)
 # Define parameter grid
 # -----------------------------
 param_grid = {
-    "sl_mult": [2.4],
-    "tp_mult": [3.6],
-    "rsi_extreme_long": [75],
-    "rsi_extreme_short": [25],
-    "rsi_long_open_threshold": [50],
-    "rsi_long_qty_threshold": [30],
+    "sl_mult": [3.1],
+    "tp_mult": [1.4],
+    "rsi_extreme_long": [90],
+    "rsi_extreme_short": [10],
+    "rsi_long_open_threshold": [75],
+    "rsi_long_qty_threshold": [35],
     "rsi_long_close_threshold": [70],
-    "rsi_short_open_threshold": [60],
-    "rsi_short_qty_threshold": [70],
-    "rsi_short_close_threshold": [35],
-    "trail_atr_mult": [0.3],
+    "rsi_short_open_threshold": [25],
+    "rsi_short_qty_threshold": [65],
+    "rsi_short_close_threshold": [30],
+    "trail_atr_mult": [0.055],
 }
 
 keys = list(param_grid.keys())
