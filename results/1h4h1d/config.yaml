@@ -11,8 +11,8 @@ intervals:
   big: 1d
 limits:
   small: 1500
-  medium: 400
-  big: 70
+  medium: 500
+  big: 100
 backtest_period_days: 1825
 
 # Strategy parameters

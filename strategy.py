@@ -539,7 +539,7 @@ def plot_results(df, trades, balance_history):
         if pd.notna(trade["exit"]):
             if trade["exit_reason"] == "stop_loss":
                 color = "red"
-            elif trade["exit_reason"] == "take_profit":
+            elif trade["exit_reason"] == "trailing_tp":
                 color = "green"
             else:
                 color = "orange"
