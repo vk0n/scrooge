@@ -31,6 +31,19 @@ output_path = os.path.join(output_dir, output_filename)
 client = Client(API_KEY, API_SECRET)
 
 
+def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
+    """Fetch historical klines from Binance Futures (include high/low)."""
+    raw = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+    df = pd.DataFrame(raw, columns=[
+        "open_time","open","high","low","close","volume","close_time","qav",
+        "num_trades","taker_base_vol","taker_quote_vol","ignore"
+    ])
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    # numeric conversion for price columns
+    df[["open","high","low","close"]] = df[["open","high","low","close"]].apply(pd.to_numeric)
+    return df[["open_time","open","high","low","close","volume"]]
+
+
 def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None, end_time=None, sleep=0):
     """Fetch long historical klines from Binance Futures with pagination."""
     dfs = []
@@ -108,7 +121,7 @@ def build_dataset():
         print(f"[CACHE] Found existing dataset: {output_path}")
         return pd.read_pickle(output_path)
 
-    print(f"[FETCH] Fetching data for lst {backtest_period_days} days on {symbol}: {interval_small}, {interval_medium}, {interval_big}")
+    print(f"[FETCH] Fetching data for last {backtest_period_days} days on {symbol}: {interval_small}, {interval_medium}, {interval_big}")
     df_small = fetch_historical_paginated(symbol, interval_small, start_time, end_time)
     df_medium = fetch_historical_paginated(symbol, interval_medium, start_time, end_time)
     df_big = fetch_historical_paginated(symbol, interval_big, start_time, end_time)
