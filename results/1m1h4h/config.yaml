@@ -1,6 +1,6 @@
 live: False  
 symbol: BTCUSDT
-leverage: 3
+leverage: 1
 initial_balance: 10000
 use_full_balance: True
 qty: null

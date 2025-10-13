@@ -2,8 +2,9 @@ live: False
 symbol: BTCUSDT
 leverage: 1
 initial_balance: 10000
-use_full_balance: true
+use_full_balance: True
 qty: null
+enable_plot: True
 
 intervals:
   small: 15m

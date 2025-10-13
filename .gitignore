@@ -101,7 +101,8 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
+# Environment
+data/
 best_params*
 optimization_results.csv
 state.json

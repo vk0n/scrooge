@@ -39,6 +39,96 @@ def fetch_session_klines(symbol, interval, start_ts, end_ts):
     df["close"] = pd.to_numeric(df["close"])
     return df[["open_time","close"]]
 
+def compute_stats(initial_balance, final_balance, trades, balance_history):
+    """Compute basic performance metrics."""
+    stats = {}
+
+    # Basic
+    stats["Initial Balance"] = initial_balance
+    stats["Final Balance"] = final_balance
+    stats["Total Return %"] = (final_balance - initial_balance) / initial_balance * 100
+
+    # Trades
+    n_trades = len(trades)
+    stats["Number of Trades"] = n_trades
+
+    if n_trades > 0:
+        wins = trades[trades["net_pnl"] > 0]
+        losses = trades[trades["net_pnl"] < 0]
+
+        stats["Win Rate %"] = len(wins) / n_trades * 100
+        stats["Average PnL"] = trades["net_pnl"].mean()
+        stats["Average Profit"] = wins["net_pnl"].mean() if len(wins) > 0 else 0
+        stats["Average Loss"] = losses["net_pnl"].mean() if len(losses) > 0 else 0
+        stats["Best Trade"] = trades["net_pnl"].max()
+        stats["Worst Trade"] = trades["net_pnl"].min()
+        stats["Total Fee"] = trades["fee"].sum()
+
+        total_profit = wins["net_pnl"].sum()
+        total_loss = abs(losses["net_pnl"].sum())
+        stats["Profit Factor"] = round(total_profit / total_loss, 2) if total_loss > 0 else np.inf
+    else:
+        stats["Win Rate %"] = 0
+        stats["Average PnL"] = 0
+        stats["Best Trade"] = 0
+        stats["Worst Trade"] = 0
+        stats["Profit Factor"] = 0
+
+    # Max drawdown
+    equity = np.array(balance_history)
+    rolling_max = np.maximum.accumulate(equity)
+    drawdowns = (equity - rolling_max) / rolling_max
+    stats["Max Drawdown %"] = drawdowns.min() * 100
+
+    return stats
+
+
+def plot_results(df, trades, balance_history):
+    """Plot price with Bollinger Bands, RSI and Equity Curve."""
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 10), sharex=True,
+                                       gridspec_kw={'height_ratios':[3,1,1]})
+
+    # Price + Bollinger Bands
+    ax1.plot(df["open_time"], df["close"], label="Price", color="blue")
+    ax1.plot(df["open_time"], df["BBL"], label="Lower BB", color="red", linestyle="--")
+    ax1.plot(df["open_time"], df["BBM"], label="Middle BB", color="black", linestyle="--")
+    ax1.plot(df["open_time"], df["BBU"], label="Upper BB", color="green", linestyle="--")
+
+    # Plot trades
+    for _, trade in trades.iterrows():
+        if pd.notna(trade["exit"]):
+            if trade["exit_reason"] == "stop_loss":
+                color = "red"
+            elif trade["exit_reason"] == "trailing_tp":
+                color = "green"
+            else:
+                color = "orange"
+
+            ax1.scatter(trade["time"], trade["entry"], marker="^" if trade["side"]=="long" else "v",
+                        color="blue", s=80)
+            ax1.scatter(trade["time"], trade["exit"], marker="x", color=color, s=80)
+
+    ax1.set_title("Bollinger Bands Strategy Backtest (with Dynamic SL and Fees)")
+    ax1.legend()
+
+    # RSI subplot
+    ax2.plot(df["open_time"], df["RSI"], label="RSI", color="purple")
+    ax2.axhline(70, color="red", linestyle="--", alpha=0.5)
+    ax2.axhline(30, color="green", linestyle="--", alpha=0.5)
+    ax2.set_title("RSI")
+    ax2.legend()
+
+    # Equity Curve
+    ax3.plot(df["open_time"][:len(balance_history)], balance_history, color="purple", label="Equity Curve")
+    ax3.set_title("Equity Curve")
+    ax3.legend()
+
+    plt.tight_layout()
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
+        plt.savefig(tmpfile.name, dpi=150)
+        webbrowser.get("firefox").open(tmpfile.name)
+
+
 def compute_session_stats(trades, balance_history):
     """Compute basic session performance metrics."""
     stats = {}

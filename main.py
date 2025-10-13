@@ -13,6 +13,8 @@ import time
 from datetime import datetime, timedelta
 from strategy import *
 from trade import *
+from data import *
+from report import *
 
 state = None
 
@@ -48,6 +50,7 @@ if __name__ == "__main__":
     intervals = cfg["intervals"]
     limits = cfg["limits"]
     backtest_period_days = cfg["backtest_period_days"]
+    enable_plot = cfg["enable_plot"]
 
     params = cfg["params"]
 
@@ -92,13 +95,7 @@ if __name__ == "__main__":
 
     else:
         print("Running BACKTEST...")
-        end_time = datetime.now()
-        start_time = end_time - timedelta(days=backtest_period_days)
-
-        df_small = fetch_historical_paginated(symbol, intervals["small"], start_time=start_time, end_time=end_time)
-        df_medium = fetch_historical_paginated(symbol, intervals["medium"], start_time=start_time, end_time=end_time)
-        df_big = fetch_historical_paginated(symbol, intervals["big"], start_time=start_time, end_time=end_time)
-        df = prepare_multi_tf(df_small, df_medium, df_big)
+        df = build_dataset()
 
         final_balance, trades, balance_history, state = run_strategy(
             df, live, initial_balance, qty,
@@ -110,4 +107,5 @@ if __name__ == "__main__":
         for k, v in stats.items():
             print(f"{k}: {v}")
         
-        plot_results(df, trades, balance_history)
+        if enable_plot:
+            plot_results(df, trades, balance_history)

@@ -3,43 +3,32 @@ import pandas as pd
 import yaml
 from tqdm import tqdm
 from strategy import *
+from report import *
+from data import *
 from datetime import datetime, timedelta
 
+CONFIG_PATH = "config.yaml"
 
-symbol = "BTCUSDT"
-lvrg = 1
-initial_balance = 5000
-interval_small = "1h"
-interval_medium = "4h"
-interval_big = "1d"
-backtest_period_days = 1825
-end_time = datetime.now()
-start_time = end_time - timedelta(days=backtest_period_days)
+with open(CONFIG_PATH, "r") as f:
+    cfg = yaml.safe_load(f)
+
+symbol = cfg["symbol"]
+lvrg = cfg["leverage"]
+initial_balance = cfg["initial_balance"]
+
+def load_params():
+    with open("param_grid.yaml", "r") as f:
+        return yaml.safe_load(f)
 
 # -----------------------------
 # Fetch your dataset
 # -----------------------------
-df_small = fetch_historical_paginated(symbol, interval_small, start_time=start_time, end_time=end_time)
-df_medium = fetch_historical_paginated(symbol, interval_medium, start_time=start_time, end_time=end_time)
-df_big = fetch_historical_paginated(symbol, interval_big, start_time=start_time, end_time=end_time)
-df = prepare_multi_tf(df_small, df_medium, df_big)
+df = build_dataset()
 
 # -----------------------------
 # Define parameter grid
 # -----------------------------
-param_grid = {
-    "sl_mult": [3.4],
-    "tp_mult": [5.3],
-    "rsi_extreme_long": [90],
-    "rsi_extreme_short": [10],
-    "rsi_long_open_threshold": [30],
-    "rsi_long_qty_threshold": [25],
-    "rsi_long_close_threshold": [65],
-    "rsi_short_open_threshold": [45],
-    "rsi_short_qty_threshold": [70],
-    "rsi_short_close_threshold": [35],
-    "trail_atr_mult": [0.05],
-}
+param_grid = load_params()
 
 keys = list(param_grid.keys())
 combinations = list(itertools.product(*param_grid.values()))
