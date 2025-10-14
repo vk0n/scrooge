@@ -90,7 +90,7 @@ def prepare_multi_tf(df_small, df_medium, df_big):
 
     # --- RSI and EMA on big timeframe ---
     df_big = df_big.set_index("open_time")
-    df_big["RSI"] = ta.rsi(df_big["close"], length=6)
+    df_big["RSI"] = ta.rsi(df_big["close"], length=11)
     df_big["EMA"] = ta.ema(df_big["close"], length=50)
     df_big = df_big[["RSI", "EMA"]]
 

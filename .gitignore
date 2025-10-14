@@ -103,6 +103,7 @@ celerybeat.pid
 
 # Environment
 data/
+data_*
 best_params*
 optimization_results.csv
 state.json

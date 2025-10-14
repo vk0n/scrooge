@@ -1,0 +1,13 @@
+Initial Balance: 10000
+Final Balance: 263197.31218306784
+Total Return %: 2531.9731218306783
+Number of Trades: 794
+Win Rate %: 72.544080604534
+Average PnL: 364.63025087630217
+Average Profit: 1802.5552566518572
+Average Loss: -3434.657837778375
+Best Trade: 16548.056444610018
+Worst Trade: -22281.188321039997
+Total Fee: 72638.2140254326
+Profit Factor: 1.39
+Max Drawdown %: -42.99618524753387
