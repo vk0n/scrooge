@@ -148,10 +148,10 @@ Results are automatically stored in YAML format (e.g., `best_metrics.yaml`), wit
 ### 4. Live Trading (Experimental)
 
 Ensure you have a Futures account and sufficient balance.  
-Then simply set `live: true` in `config.yaml` or launch manually:
+Then simply set `live: true` in `config.yaml` and launch manually:
 
 ```bash
-python main.py --live
+python main.py
 ```
 
 Logs and states are persistently stored under:
