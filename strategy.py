@@ -170,216 +170,248 @@ def run_strategy(df, live=False, initial_balance=1000,
             side = position["side"]
             base_sl = position["sl"]
             base_tp = position["tp"]
+            liquidation_price = position["liq_price"]
 
-            # --- LONG SIDE LOGIC ---
-            if side == "long":
-                # Emergency RSI exit (extreme overbought)
-                gross_pnl = (price - entry_price) / entry_price * position_value
-                if rsi > rsi_extreme_long:
-                    net_pnl = gross_pnl - fee_close
-                    fee_total = fee_close * 2
-                    trade = {
-                        **position,
-                        "exit": price,
-                        "gross_pnl": gross_pnl,
-                        "fee": fee_total,
-                        "net_pnl": net_pnl,
-                        "exit_reason": "rsi_extreme"
-                    }
+            # --- Liquidation Check ---
+            if side == "long" and price <= liquidation_price:
+                # Margin used for this trade (portion of balance at risk)
+                margin_used = position_value / leverage
 
-                    if live:
-                        close_position(symbol)
-                        current_balance = get_balance()
-                        trade["net_pnl"] = current_balance - balance
-                        balance = current_balance
-                        update_position(state, None)
-                        update_balance(state, balance)
-                        add_closed_trade(state, trade)
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl}")
-                    else:
-                        balance += net_pnl
-                        log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl}")
-                    
-                    trade_history.append(trade)
-                    position = None
+                # Deduct the loss from account balance
+                balance -= margin_used
 
-                elif position is not None:
-                    # Activate trailing TP once base TP reached (but RSI not overbought yet)
-                    if not position["trail_active"]:
-                        if price >= base_tp and rsi < rsi_long_close_threshold:
-                            position["trail_active"] = True
-                            position["trail_max"] = price
-                            if live:
-                                update_position(state, position)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for LONG {symbol} at {price}")
-                            else:
-                                log_buffer.append(f"[timestamp] Activated trailing TP for LONG {symbol} at {price}")
-                    else:
-                        # Update or close trailing TP
-                        if price > position["trail_max"]:
-                            position["trail_max"] = price
-                        elif price <= position["trail_max"] - atr * trail_atr_mult or rsi >= rsi_long_close_threshold:
-                            net_pnl = gross_pnl - fee_close
-                            fee_total = fee_close * 2
-                            trade = {
-                                **position,
-                                "exit": price,
-                                "gross_pnl": gross_pnl,
-                                "fee": fee_total,
-                                "net_pnl": net_pnl,
-                                "exit_reason": "trailing_tp"
-                            }
+                log_buffer.append(
+                    f"[timestamp] LONG LIQUIDATED at {price}, liq={liquidation_price}, loss={margin_used}"
+                )
 
-                            if live:
-                                close_position(symbol)
-                                current_balance = get_balance()
-                                trade["net_pnl"] = current_balance - balance
-                                balance = current_balance
-                                update_position(state, None)
-                                update_balance(state, balance)
-                                add_closed_trade(state, trade)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by trailing TP, net={net_pnl}")
-                            else:
-                                balance += net_pnl
-                                log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} by trailing TP, net={net_pnl}")
-                            
-                            trade_history.append(trade)
-                            position = None
+                # Close position and continue
+                position = None
+                continue
 
-                    # Fallback to normal SL/TP logic if no trail active
-                    if position is not None:
-                        if price <= base_sl:
-                            net_pnl = gross_pnl - fee_close
-                            fee_total = fee_close * 2
-                            trade = {
-                                **position,
-                                "exit": price,
-                                "gross_pnl": gross_pnl,
-                                "fee": fee_total,
-                                "net_pnl": net_pnl,
-                                "exit_reason": "stop_loss"
-                            }
+            if side == "short" and price >= liquidation_price:
+                # Margin used for this trade
+                margin_used = position_value / leverage
 
-                            if live:
-                                close_position(symbol)
-                                current_balance = get_balance()
-                                trade["net_pnl"] = current_balance - balance
-                                balance = current_balance
-                                update_position(state, None)
-                                update_balance(state, balance)
-                                add_closed_trade(state, trade)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by SL, net={net_pnl}")
-                            else:
-                                balance += net_pnl
-                                log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} by SL, net={net_pnl}")
-                            
-                            trade_history.append(trade)
-                            position = None
+                # Deduct the loss from account balance
+                balance -= margin_used
 
-            # --- SHORT SIDE LOGIC ---
-            elif side == "short":
-                # Emergency RSI exit (extreme oversold)
-                gross_pnl = (entry_price - price) / entry_price * position_value
-                if rsi < rsi_extreme_short:
-                    net_pnl = gross_pnl - fee_close
-                    fee_total = fee_close * 2
-                    trade = {
-                        **position,
-                        "exit": price,
-                        "gross_pnl": gross_pnl,
-                        "fee": fee_total,
-                        "net_pnl": net_pnl,
-                        "exit_reason": "rsi_extreme"
-                    }
+                log_buffer.append(
+                    f"[timestamp] SHORT LIQUIDATED at {price}, liq={liquidation_price}, loss={margin_used}"
+                )
 
-                    if live:
-                        close_position(symbol)
-                        current_balance = get_balance()
-                        trade["net_pnl"] = current_balance - balance
-                        balance = current_balance
-                        update_position(state, None)
-                        update_balance(state, balance)
-                        add_closed_trade(state, trade)
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl}")
-                    else:
-                        balance += net_pnl
-                        log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl}")
-                    
-                    trade_history.append(trade)
-                    position = None
+                # Close position and continue
+                position = None
+                continue
+            else:
+                # --- LONG SIDE LOGIC ---
+                if side == "long":
+                    # Emergency RSI exit (extreme overbought)
+                    gross_pnl = (price - entry_price) / entry_price * position_value
+                    if rsi > rsi_extreme_long:
+                        net_pnl = gross_pnl - fee_close
+                        fee_total = fee_close * 2
+                        trade = {
+                            **position,
+                            "exit": price,
+                            "gross_pnl": gross_pnl,
+                            "fee": fee_total,
+                            "net_pnl": net_pnl,
+                            "exit_reason": "rsi_extreme"
+                        }
 
-                elif position is not None:
-                    # Activate trailing TP once base TP reached (but RSI not oversold yet)
-                    if not position["trail_active"]:
-                        if price <= base_tp and rsi > rsi_short_close_threshold:
-                            position["trail_active"] = True
-                            position["trail_min"] = price
-                            if live:
-                                update_position(state, position)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for SHORT {symbol} at {price}")
-                            else:
-                                log_buffer.append(f"[timestamp] Activated trailing TP for SHORT {symbol} at {price}")
-                    else:
-                        # Update or close trailing TP
-                        if price < position["trail_min"]:
-                            position["trail_min"] = price
-                        elif price >= position["trail_min"] + atr * trail_atr_mult or rsi <= rsi_short_close_threshold:
-                            net_pnl = gross_pnl - fee_close
-                            fee_total = fee_close * 2
-                            trade = {
-                                **position,
-                                "exit": price,
-                                "gross_pnl": gross_pnl,
-                                "fee": fee_total,
-                                "net_pnl": net_pnl,
-                                "exit_reason": "trailing_tp"
-                            }
+                        if live:
+                            close_position(symbol)
+                            current_balance = get_balance()
+                            trade["net_pnl"] = current_balance - balance
+                            balance = current_balance
+                            update_position(state, None)
+                            update_balance(state, balance)
+                            add_closed_trade(state, trade)
+                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl}")
+                        else:
+                            balance += net_pnl
+                            log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl}")
+                        
+                        trade_history.append(trade)
+                        position = None
 
-                            if live:
-                                close_position(symbol)
-                                current_balance = get_balance()
-                                trade["net_pnl"] = current_balance - balance
-                                balance = current_balance
-                                update_position(state, None)
-                                update_balance(state, balance)
-                                add_closed_trade(state, trade)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl}")
-                            else:
-                                balance += net_pnl
-                                log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl}")
-                            
-                            trade_history.append(trade)
-                            position = None
+                    elif position is not None:
+                        # Activate trailing TP once base TP reached (but RSI not overbought yet)
+                        if not position["trail_active"]:
+                            if price >= base_tp and rsi < rsi_long_close_threshold:
+                                position["trail_active"] = True
+                                position["trail_max"] = price
+                                if live:
+                                    update_position(state, position)
+                                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for LONG {symbol} at {price}")
+                                else:
+                                    log_buffer.append(f"[timestamp] Activated trailing TP for LONG {symbol} at {price}")
+                        else:
+                            # Update or close trailing TP
+                            if price > position["trail_max"]:
+                                position["trail_max"] = price
+                            elif price <= position["trail_max"] - atr * trail_atr_mult or rsi >= rsi_long_close_threshold:
+                                net_pnl = gross_pnl - fee_close
+                                fee_total = fee_close * 2
+                                trade = {
+                                    **position,
+                                    "exit": price,
+                                    "gross_pnl": gross_pnl,
+                                    "fee": fee_total,
+                                    "net_pnl": net_pnl,
+                                    "exit_reason": "trailing_tp"
+                                }
 
-                    # Fallback to normal SL/TP logic if no trail active
-                    if position is not None:
-                        if price >= base_sl:
-                            net_pnl = gross_pnl - fee_close
-                            fee_total = fee_close * 2
-                            trade = {
-                                **position,
-                                "exit": price,
-                                "gross_pnl": gross_pnl,
-                                "fee": fee_total,
-                                "net_pnl": net_pnl,
-                                "exit_reason": "stop_loss"
-                            }
+                                if live:
+                                    close_position(symbol)
+                                    current_balance = get_balance()
+                                    trade["net_pnl"] = current_balance - balance
+                                    balance = current_balance
+                                    update_position(state, None)
+                                    update_balance(state, balance)
+                                    add_closed_trade(state, trade)
+                                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by trailing TP, net={net_pnl}")
+                                else:
+                                    balance += net_pnl
+                                    log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} by trailing TP, net={net_pnl}")
+                                
+                                trade_history.append(trade)
+                                position = None
 
-                            if live:
-                                close_position(symbol)
-                                current_balance = get_balance()
-                                trade["net_pnl"] = current_balance - balance
-                                balance = current_balance
-                                update_position(state, None)
-                                update_balance(state, balance)
-                                add_closed_trade(state, trade)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by SL, net={net_pnl}")
-                            else:
-                                balance += net_pnl
-                                log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} by SL, net={net_pnl}")
-                            
-                            trade_history.append(trade)
-                            position = None
+                        # Fallback to normal SL/TP logic if no trail active
+                        if position is not None:
+                            if price <= base_sl:
+                                net_pnl = gross_pnl - fee_close
+                                fee_total = fee_close * 2
+                                trade = {
+                                    **position,
+                                    "exit": price,
+                                    "gross_pnl": gross_pnl,
+                                    "fee": fee_total,
+                                    "net_pnl": net_pnl,
+                                    "exit_reason": "stop_loss"
+                                }
+
+                                if live:
+                                    close_position(symbol)
+                                    current_balance = get_balance()
+                                    trade["net_pnl"] = current_balance - balance
+                                    balance = current_balance
+                                    update_position(state, None)
+                                    update_balance(state, balance)
+                                    add_closed_trade(state, trade)
+                                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by SL, net={net_pnl}")
+                                else:
+                                    balance += net_pnl
+                                    log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} by SL, net={net_pnl}")
+                                
+                                trade_history.append(trade)
+                                position = None
+
+                # --- SHORT SIDE LOGIC ---
+                elif side == "short":
+                    # Emergency RSI exit (extreme oversold)
+                    gross_pnl = (entry_price - price) / entry_price * position_value
+                    if rsi < rsi_extreme_short:
+                        net_pnl = gross_pnl - fee_close
+                        fee_total = fee_close * 2
+                        trade = {
+                            **position,
+                            "exit": price,
+                            "gross_pnl": gross_pnl,
+                            "fee": fee_total,
+                            "net_pnl": net_pnl,
+                            "exit_reason": "rsi_extreme"
+                        }
+
+                        if live:
+                            close_position(symbol)
+                            current_balance = get_balance()
+                            trade["net_pnl"] = current_balance - balance
+                            balance = current_balance
+                            update_position(state, None)
+                            update_balance(state, balance)
+                            add_closed_trade(state, trade)
+                            log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl}")
+                        else:
+                            balance += net_pnl
+                            log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl}")
+                        
+                        trade_history.append(trade)
+                        position = None
+
+                    elif position is not None:
+                        # Activate trailing TP once base TP reached (but RSI not oversold yet)
+                        if not position["trail_active"]:
+                            if price <= base_tp and rsi > rsi_short_close_threshold:
+                                position["trail_active"] = True
+                                position["trail_min"] = price
+                                if live:
+                                    update_position(state, position)
+                                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for SHORT {symbol} at {price}")
+                                else:
+                                    log_buffer.append(f"[timestamp] Activated trailing TP for SHORT {symbol} at {price}")
+                        else:
+                            # Update or close trailing TP
+                            if price < position["trail_min"]:
+                                position["trail_min"] = price
+                            elif price >= position["trail_min"] + atr * trail_atr_mult or rsi <= rsi_short_close_threshold:
+                                net_pnl = gross_pnl - fee_close
+                                fee_total = fee_close * 2
+                                trade = {
+                                    **position,
+                                    "exit": price,
+                                    "gross_pnl": gross_pnl,
+                                    "fee": fee_total,
+                                    "net_pnl": net_pnl,
+                                    "exit_reason": "trailing_tp"
+                                }
+
+                                if live:
+                                    close_position(symbol)
+                                    current_balance = get_balance()
+                                    trade["net_pnl"] = current_balance - balance
+                                    balance = current_balance
+                                    update_position(state, None)
+                                    update_balance(state, balance)
+                                    add_closed_trade(state, trade)
+                                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl}")
+                                else:
+                                    balance += net_pnl
+                                    log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl}")
+                                
+                                trade_history.append(trade)
+                                position = None
+
+                        # Fallback to normal SL/TP logic if no trail active
+                        if position is not None:
+                            if price >= base_sl:
+                                net_pnl = gross_pnl - fee_close
+                                fee_total = fee_close * 2
+                                trade = {
+                                    **position,
+                                    "exit": price,
+                                    "gross_pnl": gross_pnl,
+                                    "fee": fee_total,
+                                    "net_pnl": net_pnl,
+                                    "exit_reason": "stop_loss"
+                                }
+
+                                if live:
+                                    close_position(symbol)
+                                    current_balance = get_balance()
+                                    trade["net_pnl"] = current_balance - balance
+                                    balance = current_balance
+                                    update_position(state, None)
+                                    update_balance(state, balance)
+                                    add_closed_trade(state, trade)
+                                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by SL, net={net_pnl}")
+                                else:
+                                    balance += net_pnl
+                                    log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} by SL, net={net_pnl}")
+                                
+                                trade_history.append(trade)
+                                position = None
 
             if live and position is not None:
                 print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Unrealized PnL: {gross_pnl}")
