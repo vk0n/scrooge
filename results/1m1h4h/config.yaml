@@ -1,6 +1,6 @@
 live: False  
 symbol: BTCUSDT
-leverage: 1
+leverage: 3
 initial_balance: 10000
 use_full_balance: True
 qty: null
@@ -18,8 +18,8 @@ backtest_period_days: 1825
 
 # Strategy parameters
 params:
-  sl_mult: 3.6
-  tp_mult: 1.8
+  sl_mult: 3.7
+  tp_mult: 1.9
   rsi_extreme_long: 90
   rsi_extreme_short: 10
   rsi_long_open_threshold: 75
@@ -28,4 +28,4 @@ params:
   rsi_short_open_threshold: 25
   rsi_short_qty_threshold: 65
   rsi_short_close_threshold: 30
-  trail_atr_mult: 0.045
+  trail_atr_mult: 0.04

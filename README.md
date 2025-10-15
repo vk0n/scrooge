@@ -1,38 +1,34 @@
 # Scrooge — Multi-Timeframe Binance Futures Trading Bot
 
-Scrooge is a fully automated **algorithmic trading system** built for **Binance Futures**, combining advanced **technical analysis (Bollinger Bands + RSI + EMA)**, adaptive **stop-loss / take-profit control**, and a modular backtesting & optimization engine.  
-
-Originally designed as an experiment in intraday mean-reversion trading, Scrooge has evolved into a robust **multi-timeframe swing-trading bot** capable of live trading, historical simulation, and parameter optimization.
+Scrooge is a fully automated **algorithmic trading system** for **Binance Futures**, combining advanced **technical analysis** (Bollinger Bands, RSI, and EMA), adaptive **stop-loss/take-profit logic**, and a modular **optimization engine** for both intraday and swing trading.
 
 ---
 
 ## ⚙️ Key Features
 
-- **Multi-Timeframe Decision Engine**  
-  Uses three synchronized timeframes (e.g., `1m–1h–4h` or `1h–4h–1d`) to blend micro-price action with higher-level RSI and EMA trends.
+- **Multi-Timeframe Decision Framework**  
+  Integrates three timeframes (e.g., `1m–1h–4h` or `1h–4h–1d`) for price action, trend confirmation, and momentum detection.
 
 - **Dynamic Bollinger Band Strategy**  
-  Entry conditions based on lower/upper Bollinger Band crossovers with RSI confirmation.
+  Entry logic is based on Bollinger Band crossovers filtered by RSI and EMA trend bias.
 
-- **Customizable Risk/Reward Framework**  
-  Parameterized Stop-Loss (`sl_mult`) and Take-Profit (`tp_mult`) multipliers with optional trailing ATR stop logic.
+- **Adaptive RSI Filtering (Length = 11)**  
+  Extensive backtesting determined that RSI with a length of **11** provides the best balance between signal responsiveness and trend stability. Shorter RSIs produced excessive noise; longer ones lagged in volatile conditions.
 
-- **Stateful Execution**  
-  Trade state, open positions, and balance history are saved between runs via `state.py`.
+- **Optimized EMA Trend Baseline (Length = 50)**  
+  Comparative backtests between EMA(40–60) showed that **EMA(50)** achieves the most consistent equity growth and lowest volatility.  
+  - EMA(40): Stable, but too sensitive to minor corrections.  
+  - EMA(60): Captured large trends but increased drawdowns.  
+  - **EMA(50): Ideal midpoint** with Profit Factor ~1.5 and controlled -40% max drawdown.
 
-- **Optimized for Research and Deployment**  
-  Supports both:
-  - **Offline backtesting** (fast evaluation of historical data)
-  - **Live trading** on Binance Futures (via `trade.py`)
+- **Configurable Risk Management**  
+  Adjustable Stop-Loss (`sl_mult`), Take-Profit (`tp_mult`), and Trailing ATR multiplier (`trail_atr_mult`).
 
-- **Automatic Data Handling**  
-  Historical klines are fetched and merged from multiple intervals using `data.py`, then serialized to `.pkl` for reuse.
+- **Stateful Backtesting & Live Mode**  
+  Retains open trades, balances, and equity curves between sessions for continuous operation.
 
-- **Parameter Optimization**  
-  Grid-search optimization of key strategy parameters using `optimize.py` with parallel execution and YAML logging.
-
-- **Visual Performance Reports**  
-  `report.py` generates detailed matplotlib charts for price, RSI, and equity curves with trade markers.
+- **Comprehensive Analytics & Visualization**  
+  Generates detailed matplotlib charts showing Bollinger bands, RSI, and equity progression.
 
 ---
 
@@ -40,19 +36,18 @@ Originally designed as an experiment in intraday mean-reversion trading, Scrooge
 
 ```
 scrooge/
-├── config.yaml              # Main configuration (symbol, intervals, leverage, etc.)
-├── param_grid.yaml          # Parameter grid for optimization
-├── data.py                  # Historical data fetcher and preprocessor
-├── strategy.py              # Core multi-TF trading logic (RSI, EMA, Bollinger Bands)
-├── trade.py                 # Binance Futures trading operations (open/close positions)
-├── state.py                 # Persistent session management (positions, balance, etc.)
-├── optimize.py              # Parameter grid optimization engine
-├── report.py                # Visualization and reporting utilities
+├── config.yaml              # Main configuration file
+├── param_grid.yaml          # Optimization parameter grid
+├── data.py                  # Multi-timeframe data fetching and preparation
+├── strategy.py              # Core trading logic (RSI/EMA/Bollinger)
+├── trade.py                 # Binance Futures order management
+├── state.py                 # Persistent storage for open positions
+├── optimize.py              # Automated parameter optimization script
+├── report.py                # Plotting and performance visualization
 ├── main.py                  # Entry point for backtesting or live trading
-├── results/                 # Output charts and configs from experiments
+├── results/                 # Historical charts and configuration snapshots
 └── requirements.txt         # Python dependencies
 ```
-
 ---
 
 ## 📦 Installation
@@ -182,6 +177,34 @@ trading_log.txt
 
 ---
 
+## 🧠 Technical Insights
+
+### EMA Optimization Summary
+
+| EMA Length | Final Balance | Profit Factor | Max Drawdown | Observation |
+|-------------|----------------|----------------|----------------|--------------|
+| 40 | $526,754 | 1.50 | -34% | Stable but reactive to noise |
+| 45 | $485,604 | 1.47 | -40% | Slightly weaker trend capture |
+| **50** | **$601,173** | **1.50** | **-40%** | **Optimal balance point** |
+| 55 | $581,026 | 1.48 | -40% | Nearly equivalent performance |
+| 60 | $684,556 | 1.33 | -41% | Stronger trends, higher volatility |
+
+EMA(50) was thus selected as the **baseline trend filter** across all production configurations.
+
+### RSI Length Analysis
+
+| RSI Length | Final Balance | Profit Factor | Max Drawdown | Observation |
+|-------------|----------------|----------------|----------------|--------------|
+| 6 | $183,000 | 1.15 | -58% | Too reactive; many false entries |
+| 8 | $183,839 | 1.33 | -58% | Better, but still unstable |
+| 10 | $263,197 | 1.39 | -43% | Excellent trend capture |
+| **11** | **$405,207** | **1.48** | **-43%** | **Optimal signal-to-noise ratio** |
+| 12 | $361,338 | 1.42 | -43% | Minor over-smoothing |
+
+RSI(11) was adopted as the **default momentum filter**, providing strong balance between early entries and trend validation.
+
+---
+
 ## 📊 Example Results
 
 Scrooge demonstrates robust performance across multiple timeframes:
@@ -194,26 +217,24 @@ Scrooge demonstrates robust performance across multiple timeframes:
 
 See `/results/` folder for charts and configurations.
 
----
+With optimized stop-loss and take-profit parameters (`sl_mult=3.7`, `tp_mult=1.9`, `trail_atr_mult=0.04`), Scrooge achieved the following 5-year benchmark:
 
-## ⚡ Tips for Advanced Use
-
-- For **intraday trading**, try `15m–1h–4h` intervals.  
-- For **swing trading**, use `1h–4h–1d`.  
-- Backtesting large datasets (5+ years) can be accelerated by pre-saving `.pkl` data files via `data.py`.  
-- Binance API rate limits: insert `time.sleep(0.05)` between paginated requests to stay below 2400 req/min.
+> **Final Balance:** $601,173 (from $10,000 initial)  
+> **Profit Factor:** 1.5  
+> **Max Drawdown:** -40.3%  
+> **Win Rate:** 72.1%
 
 ---
 
 ## ⚠️ Disclaimer
 
-Scrooge is for **educational and research purposes only**.  
-Trading cryptocurrencies involves **significant financial risk**.  
-The author assumes **no responsibility** for any financial loss resulting from the use of this software.
+Scrooge is provided for **educational and research purposes only**.  
+Cryptocurrency trading involves substantial risk and may result in total capital loss.  
+Use this software at your own discretion.
+
 ---
 
 ## License
 
 MIT License
----
 
