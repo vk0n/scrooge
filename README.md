@@ -238,3 +238,20 @@ Use this software at your own discretion.
 
 MIT License
 
+
+## 🧘 Philosophy of Scrooge
+
+Scrooge is not human — and that’s his greatest strength.
+He does not hope, fear, hesitate, or overthink.
+Where humans trade with emotion, Scrooge trades with mathematics.
+
+He sees the market as a field of probabilities, not possibilities.
+He doesn’t chase euphoria or revenge after loss.
+Every position is just data, every outcome a statistical event.
+
+While traders battle psychology, Scrooge operates in logic.
+He never over-leverages from greed, never panics on a red candle.
+He acts only when signals align, exits only when math demands it.
+
+Scrooge represents the elimination of emotion and the automation of discipline.
+His only loyalty is to the algorithm — consistent, adaptive, and entirely emotionless.
