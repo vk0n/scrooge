@@ -274,6 +274,64 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
         print(f"{k}: {v}")
 
 
+def run_monte_carlo(trades_df, n_sims=10000, show_plot=False):
+    """
+    Monte Carlo stress-test for Scrooge trading strategy.
+    Simulates thousands of random trade sequences to assess robustness.
+
+    Parameters:
+        trades_df : pd.DataFrame  # must contain 'net_pnl' column
+        n_sims : int              # number of simulations (default 10k)
+        show_plot : bool          # whether to display distribution plot
+
+    Returns:
+        dict with percentiles and summary stats
+    """
+    if "net_pnl" not in trades_df.columns or trades_df.empty:
+        print("No valid trades found for Monte Carlo simulation.")
+        return {}
+
+    trade_pnls = trades_df["net_pnl"].to_numpy()
+    n_trades = len(trade_pnls)
+    results = np.zeros(n_sims)
+
+    for i in range(n_sims):
+        # random reorder of trades
+        shuffled = np.random.permutation(trade_pnls)
+        results[i] = np.sum(shuffled)
+
+    # compute percentiles
+    p5, p50, p95 = np.percentile(results, [5, 50, 95])
+
+    summary = {
+        "Simulations": n_sims,
+        "Trades per run": n_trades,
+        "5th Percentile (Pessimistic)": round(p5, 2),
+        "50th Percentile (Median)": round(p50, 2),
+        "95th Percentile (Optimistic)": round(p95, 2),
+        "Expected Range": f"{round(p5,2)} → {round(p95,2)}"
+    }
+
+    if show_plot:
+        plt.figure(figsize=(10, 5))
+        plt.hist(results, bins=80, color="purple", alpha=0.7)
+        plt.axvline(p5, color="red", linestyle="--", label="5th Percentile")
+        plt.axvline(p50, color="black", linestyle="-", label="Median")
+        plt.axvline(p95, color="green", linestyle="--", label="95th Percentile")
+        plt.title("Monte Carlo Distribution of Scrooge Strategy Results")
+        plt.xlabel("Final Net Profit per Simulation ($)")
+        plt.ylabel("Frequency")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+    print("\nMonte Carlo Stress-Test Summary:")
+    for k, v in summary.items():
+        print(f"{k}: {v}")
+
+    return summary
+
+
 if __name__ == "__main__":
     state = load_state()
     if state:

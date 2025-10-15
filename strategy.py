@@ -81,58 +81,85 @@ def run_strategy(df, live=False, initial_balance=1000,
         if position is None:
             # determine position size
             qty_local = compute_qty(symbol, balance, leverage, price, qty, use_full_balance, live)
+            
+            # --- Helper: liquidation price estimation (isolated margin logic) ---
+            def calc_liquidation_price(entry, leverage, side):
+                # Binance Futures isolated margin formula approximation
+                if side == "long":
+                    return entry * (1 - 1 / leverage)
+                else:
+                    return entry * (1 + 1 / leverage)
+
             # OPEN LOGIC
             if price <= lower and rsi < rsi_long_open_threshold and price > ema:
                 qty_open = qty_local * 0.5 if rsi > rsi_long_qty_threshold else qty_local
                 sl = price - atr * sl_mult
                 tp = price + atr * tp_mult
-                position = {
-                    "side": "long",
-                    "size": qty_open,
-                    "entry": price,
-                    "sl": sl,
-                    "tp": tp,
-                    "dyn_sl": None,
-                    "trail_active": False,
-                    "time": row["open_time"]
-                }
+                liquidation_price = calc_liquidation_price(price, leverage, "long")
 
-                if live:
-                    if can_open_trade(symbol, qty_open, leverage):
-                        open_position(symbol, "BUY", qty_open, sl, tp, leverage)
-                        balance = get_balance()
-                        update_position(state, position)
-                        update_balance(state, balance)
-                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
+                # skip if SL is beyond liquidation
+                if sl <= liquidation_price:
+                    if live:
+                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] ⚠️ Skipped LONG entry at {price}: SL ({sl}) below liquidation ({liquidation_price})")
+                    else:
+                        log_buffer.append(f"[timestamp] ⚠️ Skipped LONG entry at {price}: SL ({sl}) below liquidation ({liquidation_price})")
                 else:
-                    balance -= qty_open * price * fee_rate
-                    log_buffer.append(f"[timestamp] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
+                    position = {
+                        "side": "long",
+                        "size": qty_open,
+                        "entry": price,
+                        "sl": sl,
+                        "tp": tp,
+                        "liq_price": liquidation_price,
+                        "trail_active": False,
+                        "time": row["open_time"]
+                    }
+
+                    if live:
+                        if can_open_trade(symbol, qty_open, leverage):
+                            open_position(symbol, "BUY", qty_open, sl, tp, leverage)
+                            balance = get_balance()
+                            update_position(state, position)
+                            update_balance(state, balance)
+                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
+                    else:
+                        balance -= qty_open * price * fee_rate
+                        log_buffer.append(f"[timestamp] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
 
             elif price >= upper and rsi > rsi_short_open_threshold and price < ema:
                 qty_open = qty_local * 0.5 if rsi < rsi_short_qty_threshold else qty_local
                 sl = price + atr * sl_mult
                 tp = price - atr * tp_mult
-                position = {
-                    "side": "short",
-                    "size": qty_open,
-                    "entry": price,
-                    "sl": sl,
-                    "tp": tp,
-                    "dyn_sl": None,
-                    "trail_active": False,
-                    "time": row["open_time"]
-                }
-                
-                if live:
-                    if can_open_trade(symbol, qty_open, leverage):
-                        open_position(symbol, "SELL", qty_open, sl, tp, leverage)
-                        balance = get_balance()
-                        update_position(state, position)
-                        update_balance(state, balance)
-                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
+                liquidation_price = calc_liquidation_price(price, leverage, "short")
+
+                # skip if SL is beyond liquidation
+                if sl >= liquidation_price:
+                    if live:
+                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] ⚠️ Skipped SHORT entry at {price}: SL ({sl}) above liquidation ({liquidation_price})")
+                    else:
+                        log_buffer.append(f"[timestamp] ⚠️ Skipped SHORT entry at {price}: SL ({sl}) above liquidation ({liquidation_price})")
                 else:
-                    balance -= qty_open * price * fee_rate
-                    log_buffer.append(f"[timestamp] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
+                    position = {
+                        "side": "short",
+                        "size": qty_open,
+                        "entry": price,
+                        "sl": sl,
+                        "tp": tp,
+                        "liq_price": liquidation_price,
+                        "trail_active": False,
+                        "time": row["open_time"]
+                    }
+                    
+                    if live:
+                        if can_open_trade(symbol, qty_open, leverage):
+                            open_position(symbol, "SELL", qty_open, sl, tp, leverage)
+                            balance = get_balance()
+                            update_position(state, position)
+                            update_balance(state, balance)
+                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
+                    else:
+                        balance -= qty_open * price * fee_rate
+                        log_buffer.append(f"[timestamp] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
 
         else:
             # MANAGEMENT for open position
@@ -221,8 +248,7 @@ def run_strategy(df, live=False, initial_balance=1000,
 
                     # Fallback to normal SL/TP logic if no trail active
                     if position is not None:
-                        effective_sl = position["dyn_sl"] if position["dyn_sl"] is not None else base_sl
-                        if price <= effective_sl:
+                        if price <= base_sl:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
@@ -327,8 +353,7 @@ def run_strategy(df, live=False, initial_balance=1000,
 
                     # Fallback to normal SL/TP logic if no trail active
                     if position is not None:
-                        effective_sl = position["dyn_sl"] if position["dyn_sl"] is not None else base_sl
-                        if price >= effective_sl:
+                        if price >= base_sl:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {

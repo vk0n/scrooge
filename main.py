@@ -51,6 +51,7 @@ if __name__ == "__main__":
     limits = cfg["limits"]
     backtest_period_days = cfg["backtest_period_days"]
     enable_plot = cfg["enable_plot"]
+    run_mc = cfg["run_monte_carlo"]
 
     params = cfg["params"]
 
@@ -109,3 +110,6 @@ if __name__ == "__main__":
         
         if enable_plot:
             plot_results(df, trades, balance_history)
+
+        if run_mc:
+            run_monte_carlo(trades, n_sims=5000)
