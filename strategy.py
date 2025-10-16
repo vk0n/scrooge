@@ -34,7 +34,7 @@ def save_log(log_buffer):
 
 def run_strategy(df, live=False, initial_balance=1000,
                  qty=None, sl_mult = 1.5, tp_mult = 3.0,
-                 symbol="BTCUSDT", leverage=1, use_full_balance=True, fee_rate=0.0004,
+                 symbol="BTCUSDT", leverage=1, use_full_balance=True, fee_rate=0.0005,
                  state=None, use_state=True, enable_logs=True,
                  rsi_extreme_long=75, rsi_extreme_short=25,
                  rsi_long_open_threshold=50, rsi_long_qty_threshold=30, rsi_long_close_threshold=70,

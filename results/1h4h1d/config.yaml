@@ -1,3 +1,4 @@
+#use with RSI(6)
 live: False  
 symbol: BTCUSDT
 leverage: 1
