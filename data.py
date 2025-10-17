@@ -20,11 +20,12 @@ symbol = config.get("symbol", "BTCUSDT")
 interval_small = config["intervals"]["small"]
 interval_medium = config["intervals"]["medium"]
 interval_big = config["intervals"]["big"]
+backtest_period_end_time = config["backtest_period_end_time"]
 backtest_period_days = config["backtest_period_days"]
 output_dir = "data"
 os.makedirs(output_dir, exist_ok=True)
 
-output_filename = f"{symbol}_{interval_small}_{interval_medium}_{interval_big}_{backtest_period_days}.pkl"
+output_filename = f"{symbol}_{interval_small}_{interval_medium}_{interval_big}_{backtest_period_days}_{backtest_period_end_time}.pkl"
 output_path = os.path.join(output_dir, output_filename)
 
 # --- Binance Client ---
@@ -114,7 +115,11 @@ def prepare_multi_tf(df_small, df_medium, df_big):
 
 def build_dataset():
     """Fetch and build dataset from Binance, or load if already cached."""
-    end_time = datetime.now()
+    if backtest_period_end_time == "":
+        end_time = datetime.now()
+        print(end_time)
+    else:
+        end_time = datetime.fromisoformat(backtest_period_end_time)
     start_time = end_time - timedelta(days=backtest_period_days)
 
     if os.path.exists(output_path):

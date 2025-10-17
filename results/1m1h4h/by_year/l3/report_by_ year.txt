@@ -1,0 +1,89 @@
+2025-10-17
+Initial Balance: 10000
+Final Balance: 21956.040299432505
+Total Return %: 119.56040299432505
+Number of Trades: 147
+Win Rate %: 77.55102040816327
+Average PnL: 91.45755413922616
+Average Profit: 271.2635706566666
+Average Loss: -529.6905029210228
+Best Trade: 1388.7243224375013
+Worst Trade: -1098.872339984999
+Total Fee: 2976.4403180675
+Profit Factor: 1.77
+Max Drawdown %: -22.952648279406198
+
+2024-10-17
+Initial Balance: 10000
+Final Balance: 19842.036813355015
+Total Return %: 98.42036813355016
+Number of Trades: 167
+Win Rate %: 70.65868263473054
+Average PnL: 70.6336055863923
+Average Profit: 410.44566206378175
+Average Loss: -747.6893059305866
+Best Trade: 2355.790510274999
+Worst Trade: -2155.7342087999964
+Total Fee: 3907.550639145
+Profit Factor: 1.32
+Max Drawdown %: -29.925266161146645
+
+2023-10-17
+Initial Balance: 10000
+Final Balance: 14985.343573957536
+Total Return %: 49.85343573957536
+Number of Trades: 145
+Win Rate %: 71.03448275862068
+Average PnL: 43.78385446192257
+Average Profit: 247.64037886959966
+Average Loss: -456.1500030140475
+Best Trade: 1794.3382554975003
+Worst Trade: -899.2614496200017
+Total Fee: 2726.6306460425
+Profit Factor: 1.33
+Max Drawdown %: -19.617211675526043
+
+2022-10-17
+Initial Balance: 10000
+Final Balance: 16468.91113961677
+Total Return %: 64.68911139616769
+Number of Trades: 129
+Win Rate %: 71.31782945736434
+Average PnL: 59.911172321440986
+Average Profit: 427.2965032816155
+Average Loss: -853.5874884443983
+Best Trade: 2078.2848394237503
+Worst Trade: -1972.7902729999983
+Total Fee: 2495.77502506825
+Profit Factor: 1.24
+Max Drawdown %: -28.216810778857393
+
+2021-10-17
+Initial Balance: 10000
+Final Balance: 42843.88410404003
+Total Return %: 328.4388410404003
+Number of Trades: 166
+Win Rate %: 71.6867469879518
+Average PnL: 214.65219868455128
+Average Profit: 1052.29888876479
+Average Loss: -1906.1979315186068
+Best Trade: 4874.585474690623
+Worst Trade: -7000.851982257002
+Total Fee: 5515.655123729
+Profit Factor: 1.4
+Max Drawdown %: -40.41355362914088
+
+2020-10-17
+Initial Balance: 10000
+Final Balance: 16531.385580029008
+Total Return %: 65.31385580029007
+Number of Trades: 138
+Win Rate %: 71.01449275362319
+Average PnL: 57.53339940068381
+Average Profit: 414.20047708442587
+Average Loss: -816.3009409244843
+Best Trade: 1337.6661604177505
+Worst Trade: -4291.994771872499
+Total Fee: 2792.87473991125
+Profit Factor: 1.24
+Max Drawdown %: -27.57245970978175

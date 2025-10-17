@@ -15,6 +15,7 @@ limits:
   small: 1500
   medium: 500
   big: 100
+backtest_period_end_time: "2025-10-17"
 backtest_period_days: 1825
 
 # Strategy parameters
