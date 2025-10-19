@@ -45,7 +45,7 @@ def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
     return df[["open_time","open","high","low","close","volume"]]
 
 
-def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None, end_time=None, sleep=0):
+def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None, end_time=None, sleep=0.03):
     """Fetch long historical klines from Binance Futures with pagination."""
     dfs = []
     limit = 1500
@@ -117,7 +117,6 @@ def build_dataset():
     """Fetch and build dataset from Binance, or load if already cached."""
     if backtest_period_end_time == "":
         end_time = datetime.now()
-        print(end_time)
     else:
         end_time = datetime.fromisoformat(backtest_period_end_time)
     start_time = end_time - timedelta(days=backtest_period_days)

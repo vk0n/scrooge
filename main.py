@@ -112,4 +112,5 @@ if __name__ == "__main__":
             plot_results(df, trades, balance_history)
 
         if run_mc:
-            run_monte_carlo(trades, n_sims=5000)
+            monte_carlo_from_equity(df, balance_history, start_balance=initial_balance)
+

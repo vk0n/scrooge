@@ -274,58 +274,90 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
         print(f"{k}: {v}")
 
 
-def run_monte_carlo(trades_df, n_sims=10000, show_plot=False):
+def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=5000, horizon_months=None, block_len=3, show_plot=True):
     """
-    Monte Carlo stress-test for Scrooge trading strategy.
-    Simulates thousands of random trade sequences to assess robustness.
-
-    Parameters:
-        trades_df : pd.DataFrame  # must contain 'net_pnl' column
-        n_sims : int              # number of simulations (default 10k)
-        show_plot : bool          # whether to display distribution plot
-
-    Returns:
-        dict with percentiles and summary stats
+    Advanced Monte Carlo stress test based on monthly equity returns.
+    Includes CAGR, Volatility and Sharpe Ratio metrics.
     """
-    if "net_pnl" not in trades_df.columns or trades_df.empty:
-        print("No valid trades found for Monte Carlo simulation.")
+
+    # --- 1. Generate synthetic datetime index for the equity curve ---
+    if len(balance_history) == 0:
+        print("No equity data found for Monte Carlo test.")
         return {}
 
-    trade_pnls = trades_df["net_pnl"].to_numpy()
-    n_trades = len(trade_pnls)
-    results = np.zeros(n_sims)
+    start_time = pd.to_datetime(df["open_time"].iloc[0])
+    end_time = pd.to_datetime(df["open_time"].iloc[-1])
+    synthetic_index = pd.date_range(start=start_time, end=end_time, periods=len(balance_history))
 
-    for i in range(n_sims):
-        # random reorder of trades
-        shuffled = np.random.permutation(trade_pnls)
-        results[i] = np.sum(shuffled)
+    equity = pd.Series(balance_history, index=synthetic_index)
 
-    # compute percentiles
+    # --- 2. Resample monthly and compute returns ---
+    eq_monthly = equity.resample("ME").last().dropna()
+    monthly_returns = eq_monthly.pct_change().dropna()
+
+    if len(monthly_returns) < 3:
+        print("Not enough data for monthly Monte Carlo test.")
+        return {}
+
+    # --- 3. Convert to log returns for numerical stability ---
+    log_returns = np.log1p(monthly_returns.values)
+
+    # --- 4. Simulation setup ---
+    if horizon_months is None:
+        horizon_months = len(log_returns)
+
+    results = np.empty(sims)
+    rng = np.random.default_rng(42)
+    n_blocks = int(np.ceil(horizon_months / block_len))
+
+    # --- 5. Monte Carlo block bootstrap ---
+    for i in range(sims):
+        seq = []
+        for _ in range(n_blocks):
+            start_idx = rng.integers(0, len(log_returns) - block_len + 1)
+            seq.append(log_returns[start_idx:start_idx + block_len])
+        sampled = np.concatenate(seq)[:horizon_months]
+        results[i] = start_balance * np.exp(sampled.sum())
+
+    # --- 6. Compute percentiles ---
     p5, p50, p95 = np.percentile(results, [5, 50, 95])
 
+    # --- 7. Risk metrics (CAGR, Volatility, Sharpe) ---
+    years = horizon_months / 12
+    cagr = ((p50 / start_balance) ** (1 / years) - 1) * 100
+    volatility = np.std(monthly_returns) * np.sqrt(12) * 100
+    risk_free_rate = 0.03  # 3% baseline annual risk-free rate
+    sharpe = (cagr / 100 - risk_free_rate) / (volatility / 100) if volatility > 0 else np.nan
+
+    # --- 8. Prepare summary dictionary ---
     summary = {
-        "Simulations": n_sims,
-        "Trades per run": n_trades,
+        "Simulations": sims,
+        "Months per Run": horizon_months,
         "5th Percentile (Pessimistic)": round(p5, 2),
         "50th Percentile (Median)": round(p50, 2),
         "95th Percentile (Optimistic)": round(p95, 2),
-        "Expected Range": f"{round(p5,2)} → {round(p95,2)}"
+        "Expected Range": f"{round(p5,2)} → {round(p95,2)}",
+        "CAGR %": round(cagr, 2),
+        "Volatility %": round(volatility, 2),
+        "Sharpe Ratio": round(sharpe, 2)
     }
 
+    # --- 9. Optional visualization ---
     if show_plot:
         plt.figure(figsize=(10, 5))
         plt.hist(results, bins=80, color="purple", alpha=0.7)
         plt.axvline(p5, color="red", linestyle="--", label="5th Percentile")
         plt.axvline(p50, color="black", linestyle="-", label="Median")
         plt.axvline(p95, color="green", linestyle="--", label="95th Percentile")
-        plt.title("Monte Carlo Distribution of Scrooge Strategy Results")
-        plt.xlabel("Final Net Profit per Simulation ($)")
+        plt.title("Monte Carlo Distribution Based on Monthly Equity Returns")
+        plt.xlabel("Final Balance ($)")
         plt.ylabel("Frequency")
         plt.legend()
         plt.tight_layout()
         plt.show()
 
-    print("\nMonte Carlo Stress-Test Summary:")
+    # --- 10. Print formatted summary ---
+    print("\nMonte Carlo Stress-Test Summary (Monthly):")
     for k, v in summary.items():
         print(f"{k}: {v}")
 
