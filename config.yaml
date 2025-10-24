@@ -5,7 +5,7 @@ initial_balance: 10000
 use_full_balance: True
 qty: null
 enable_plot: True
-run_monte_carlo: False
+run_monte_carlo: True
 
 intervals:
   small: 1m

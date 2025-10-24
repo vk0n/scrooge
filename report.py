@@ -274,7 +274,7 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
         print(f"{k}: {v}")
 
 
-def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=5000, horizon_months=None, block_len=3, show_plot=True):
+def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000, horizon_months=None, block_len=3, show_plot=True):
     """
     Advanced Monte Carlo stress test based on monthly equity returns.
     Includes CAGR, Volatility and Sharpe Ratio metrics.
@@ -354,7 +354,10 @@ def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=5000,
         plt.ylabel("Frequency")
         plt.legend()
         plt.tight_layout()
-        plt.show()
+        # --- Save plot to temp file and open in browser ---
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
+            plt.savefig(tmpfile.name, dpi=150)
+            webbrowser.get("firefox").open(tmpfile.name)
 
     # --- 10. Print formatted summary ---
     print("\nMonte Carlo Stress-Test Summary (Monthly):")
