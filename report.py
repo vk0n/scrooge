@@ -94,6 +94,7 @@ def plot_results(df, trades, balance_history):
     ax1.plot(df["open_time"], df["BBL"], label="Lower BB", color="red", linestyle="--")
     ax1.plot(df["open_time"], df["BBM"], label="Middle BB", color="black", linestyle="--")
     ax1.plot(df["open_time"], df["BBU"], label="Upper BB", color="green", linestyle="--")
+    ax1.plot(df["open_time"], df["EMA"], label="EMA", color="purple", alpha=0.5)
 
     # Plot trades
     for _, trade in trades.iterrows():
