@@ -45,7 +45,7 @@ def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
     return df[["open_time","open","high","low","close","volume"]]
 
 
-def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None, end_time=None, sleep=0.03):
+def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None, end_time=None, sleep=0):
     """Fetch long historical klines from Binance Futures with pagination."""
     dfs = []
     limit = 1500

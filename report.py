@@ -9,6 +9,7 @@ import tempfile
 import os
 from dotenv import load_dotenv
 import numpy as np
+from data import *
 
 STATE_FILE = "state.json"
 load_dotenv()
@@ -163,10 +164,10 @@ def compute_session_stats(trades, balance_history):
 
     return stats
 
-def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
+def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=True):
     """Visualize session trades, price movement, and equity curve."""
-    session_start = state.get("session_start")
-    session_end = state.get("session_end")
+    session_start = pd.to_datetime(state.get("session_start"), unit="ms")
+    session_end = pd.to_datetime(state.get("session_end"), unit="ms")
     trades = state.get("trade_history", [])
     balance_history = state.get("balance_history", [])
 
@@ -175,17 +176,13 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
         return
 
     # --- Fetch session price data ---
-    df = fetch_session_klines(symbol, interval, session_start, session_end)
+    df_small = fetch_historical_paginated(symbol, "1m", session_start, session_end)
+    df_medium = fetch_historical_paginated(symbol, "1h", session_start, session_end)
+    df_big = fetch_historical_paginated(symbol, "4h", session_start, session_end)
+    df = prepare_multi_tf(df_small, df_medium, df_big)
     if df.empty:
         print("No klines fetched for the session.")
         return
-
-    # --- Optional: Calculate Bollinger Bands for market context ---
-    if show_bbands:
-        bb = ta.bbands(df["close"], length=20, std=2)
-        df["BBL"] = bb["BBL_20_2.0"]
-        df["BBM"] = bb["BBM_20_2.0"]
-        df["BBU"] = bb["BBU_20_2.0"]
 
     # --- Downsample if dataset is too large (for faster, clearer plotting) ---
     if len(df) > 5000:
@@ -199,6 +196,7 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
 
     # ========== PRICE CHART ==========
     ax1.plot(df["open_time"], df["close"], label="Price", color="blue", linewidth=1)
+    ax1.plot(df["open_time"], df["EMA"], color="purple", alpha=0.5, label="EMA")
 
     # --- Bollinger Bands (if enabled) ---
     if show_bbands:
@@ -230,7 +228,13 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=False):
         # Exit marker
         if exit_price:
             exit_reason = trade.get("exit_reason", "")
-            color = "green" if exit_reason == "take_profit" else "orange"
+            color = "green" if exit_reason == "trailing_tp" else "orange"
+            if exit_reason == "stop_loss":
+                color = "red"
+            elif exit_reason == "trailing_tp":
+                color = "green"
+            else:
+                color = "orange"
             ax1.scatter(
                 entry_time, exit_price,
                 marker="x", color=color, s=60, zorder=5, label="Exit"
@@ -370,6 +374,6 @@ def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000
 if __name__ == "__main__":
     state = load_state()
     if state:
-        plot_session(state, show_bbands=False)
+        plot_session(state)
     else:
         print("No state found. Run a trading session first.")
