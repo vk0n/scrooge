@@ -37,8 +37,8 @@ def run_strategy(df, live=False, initial_balance=1000,
                  symbol="BTCUSDT", leverage=1, use_full_balance=True, fee_rate=0.0005,
                  state=None, use_state=True, enable_logs=True,
                  rsi_extreme_long=75, rsi_extreme_short=25,
-                 rsi_long_open_threshold=50, rsi_long_qty_threshold=30, rsi_long_close_threshold=70,
-                 rsi_short_open_threshold=50, rsi_short_qty_threshold=70, rsi_short_close_threshold=30,
+                 rsi_long_open_threshold=50, rsi_long_qty_threshold=30, rsi_long_tp_threshold=58, rsi_long_close_threshold=70,
+                 rsi_short_open_threshold=50, rsi_short_qty_threshold=70, rsi_short_tp_threshold=42, rsi_short_close_threshold=30,
                  trail_atr_mult=0.5):
     """
     Bollinger Bands strategy with SL/TP, dynamic stop, state persistence, and logging.
@@ -91,14 +91,14 @@ def run_strategy(df, live=False, initial_balance=1000,
                     return entry * (1 + 1 / leverage)
 
             # OPEN LOGIC
-            if price <= lower and rsi < rsi_long_open_threshold and price > ema:
+            if price < lower and rsi < rsi_long_open_threshold and price > ema:
                 qty_open = qty_local * 0.5 if rsi > rsi_long_qty_threshold else qty_local
                 sl = price - atr * sl_mult
                 tp = price + atr * tp_mult
                 liquidation_price = calc_liquidation_price(price, leverage, "long")
 
                 # skip if SL is beyond liquidation
-                if sl <= liquidation_price:
+                if sl < liquidation_price:
                     if live:
                         log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] ⚠️ Skipped LONG entry at {price}: SL ({sl}) below liquidation ({liquidation_price})")
                     else:
@@ -126,14 +126,14 @@ def run_strategy(df, live=False, initial_balance=1000,
                         balance -= qty_open * price * fee_rate
                         log_buffer.append(f"[timestamp] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate}")
 
-            elif price >= upper and rsi > rsi_short_open_threshold and price < ema:
+            elif price > upper and rsi > rsi_short_open_threshold and price < ema:
                 qty_open = qty_local * 0.5 if rsi < rsi_short_qty_threshold else qty_local
                 sl = price + atr * sl_mult
                 tp = price - atr * tp_mult
                 liquidation_price = calc_liquidation_price(price, leverage, "short")
 
                 # skip if SL is beyond liquidation
-                if sl >= liquidation_price:
+                if sl > liquidation_price:
                     if live:
                         log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] ⚠️ Skipped SHORT entry at {price}: SL ({sl}) above liquidation ({liquidation_price})")
                     else:
@@ -173,7 +173,7 @@ def run_strategy(df, live=False, initial_balance=1000,
             liquidation_price = position["liq_price"]
 
             # --- Liquidation Check ---
-            if side == "long" and price <= liquidation_price:
+            if side == "long" and price < liquidation_price:
                 if live:
                     current_balance = get_balance()
                     loss = current_balance - balance
@@ -193,7 +193,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                 position = None
                 continue
 
-            if side == "short" and price >= liquidation_price:
+            if side == "short" and price > liquidation_price:
                 if live:
                     current_balance = get_balance()
                     trade["net_pnl"] = loss
@@ -247,7 +247,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                 elif position is not None:
                     # Activate trailing TP once base TP reached (but RSI not overbought yet)
                     if not position["trail_active"]:
-                        if price >= base_tp and rsi < rsi_long_close_threshold:
+                        if price > base_tp and rsi < rsi_long_tp_threshold:
                             position["trail_active"] = True
                             position["trail_max"] = price
                             if live:
@@ -259,7 +259,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                         # Update or close trailing TP
                         if price > position["trail_max"]:
                             position["trail_max"] = price
-                        elif price <= position["trail_max"] - atr * trail_atr_mult or rsi >= rsi_long_close_threshold:
+                        elif price < position["trail_max"] - atr * trail_atr_mult or rsi > rsi_long_close_threshold:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
@@ -268,7 +268,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 "gross_pnl": gross_pnl,
                                 "fee": fee_total,
                                 "net_pnl": net_pnl,
-                                "exit_reason": "trailing_tp"
+                                "exit_reason": "take_profit"
                             }
 
                             if live:
@@ -289,7 +289,7 @@ def run_strategy(df, live=False, initial_balance=1000,
 
                     # Fallback to normal SL/TP logic if no trail active
                     if position is not None:
-                        if price <= base_sl:
+                        if price < base_sl:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
@@ -352,7 +352,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                 elif position is not None:
                     # Activate trailing TP once base TP reached (but RSI not oversold yet)
                     if not position["trail_active"]:
-                        if price <= base_tp and rsi > rsi_short_close_threshold:
+                        if price < base_tp and rsi > rsi_short_tp_threshold:
                             position["trail_active"] = True
                             position["trail_min"] = price
                             if live:
@@ -364,7 +364,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                         # Update or close trailing TP
                         if price < position["trail_min"]:
                             position["trail_min"] = price
-                        elif price >= position["trail_min"] + atr * trail_atr_mult or rsi <= rsi_short_close_threshold:
+                        elif price > position["trail_min"] + atr * trail_atr_mult or rsi < rsi_short_close_threshold:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {
@@ -373,7 +373,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 "gross_pnl": gross_pnl,
                                 "fee": fee_total,
                                 "net_pnl": net_pnl,
-                                "exit_reason": "trailing_tp"
+                                "exit_reason": "take_profit"
                             }
 
                             if live:
@@ -394,7 +394,7 @@ def run_strategy(df, live=False, initial_balance=1000,
 
                     # Fallback to normal SL/TP logic if no trail active
                     if position is not None:
-                        if price >= base_sl:
+                        if price > base_sl:
                             net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
                             trade = {

@@ -101,7 +101,7 @@ def plot_results(df, trades, balance_history):
         if pd.notna(trade["exit"]):
             if trade["exit_reason"] == "stop_loss":
                 color = "red"
-            elif trade["exit_reason"] == "trailing_tp":
+            elif trade["exit_reason"] == "take_profit":
                 color = "green"
             else:
                 color = "orange"
@@ -229,10 +229,9 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=True):
         # Exit marker
         if exit_price:
             exit_reason = trade.get("exit_reason", "")
-            color = "green" if exit_reason == "trailing_tp" else "orange"
             if exit_reason == "stop_loss":
                 color = "red"
-            elif exit_reason == "trailing_tp":
+            elif exit_reason == "take_profit":
                 color = "green"
             else:
                 color = "orange"
