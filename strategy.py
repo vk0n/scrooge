@@ -217,8 +217,8 @@ def run_strategy(df, live=False, initial_balance=1000,
                 # Emergency RSI exit (extreme overbought)
                 gross_pnl = (price - entry_price) / entry_price * position_value
                 if rsi > rsi_extreme_long:
-                    net_pnl = gross_pnl - fee_close
                     fee_total = fee_close * 2
+                    net_pnl = gross_pnl - fee_total
                     trade = {
                         **position,
                         "exit": price,
@@ -260,8 +260,8 @@ def run_strategy(df, live=False, initial_balance=1000,
                         if price > position["trail_max"]:
                             position["trail_max"] = price
                         elif price < position["trail_max"] - atr * trail_atr_mult or rsi > rsi_long_close_threshold:
-                            net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
+                            net_pnl = gross_pnl - fee_total
                             trade = {
                                 **position,
                                 "exit": price,
@@ -290,8 +290,8 @@ def run_strategy(df, live=False, initial_balance=1000,
                     # Fallback to normal SL/TP logic if no trail active
                     if position is not None:
                         if price < base_sl:
-                            net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
+                            net_pnl = gross_pnl - fee_total
                             trade = {
                                 **position,
                                 "exit": price,
@@ -322,8 +322,8 @@ def run_strategy(df, live=False, initial_balance=1000,
                 # Emergency RSI exit (extreme oversold)
                 gross_pnl = (entry_price - price) / entry_price * position_value
                 if rsi < rsi_extreme_short:
-                    net_pnl = gross_pnl - fee_close
                     fee_total = fee_close * 2
+                    net_pnl = gross_pnl - fee_total
                     trade = {
                         **position,
                         "exit": price,
@@ -365,8 +365,8 @@ def run_strategy(df, live=False, initial_balance=1000,
                         if price < position["trail_min"]:
                             position["trail_min"] = price
                         elif price > position["trail_min"] + atr * trail_atr_mult or rsi < rsi_short_close_threshold:
-                            net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
+                            net_pnl = gross_pnl - fee_total
                             trade = {
                                 **position,
                                 "exit": price,
@@ -395,8 +395,8 @@ def run_strategy(df, live=False, initial_balance=1000,
                     # Fallback to normal SL/TP logic if no trail active
                     if position is not None:
                         if price > base_sl:
-                            net_pnl = gross_pnl - fee_close
                             fee_total = fee_close * 2
+                            net_pnl = gross_pnl - fee_total
                             trade = {
                                 **position,
                                 "exit": price,
