@@ -69,7 +69,8 @@ if __name__ == "__main__":
                 check_balance()
                 pos = get_open_position(symbol)
                 if pos:
-                    print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Open position: {pos['positionAmt']} {pos['symbol']} | TP: {pos['tp']:.1f} | SL: {pos['sl']:.1f}")
+                    position = state["position"]
+                    print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Open position: {pos['positionAmt']} {pos['symbol']} | TP: {position['tp']:.1f} | SL: {position['sl']:.1f}")
                 else:
                     print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] No open positions")
 
