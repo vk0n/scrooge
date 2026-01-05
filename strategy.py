@@ -90,6 +90,7 @@ def run_strategy(df, live=False, initial_balance=1000,
             # OPEN LOGIC
             if price < lower and rsi < rsi_long_open_threshold and price > ema:
                 qty_open = qty_local * 0.5 if rsi > rsi_long_qty_threshold else qty_local
+                fb = False if rsi > rsi_long_qty_threshold else True 
                 sl = price - atr * sl_mult
                 tp = price + atr * tp_mult
                 liquidation_price = calc_liquidation_price(price, leverage, "long")
@@ -121,10 +122,11 @@ def run_strategy(df, live=False, initial_balance=1000,
                         log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}")
                     else:
                         balance -= qty_open * price * fee_rate
-                        log_buffer.append(f"[timestamp] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}")
+                        log_buffer.append(f"[timestamp] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}, full_ballance: {fb}")
 
             elif price > upper and rsi > rsi_short_open_threshold and price < ema:
                 qty_open = qty_local * 0.5 if rsi < rsi_short_qty_threshold else qty_local
+                fb = False if rsi < rsi_short_qty_threshold else True 
                 sl = price + atr * sl_mult
                 tp = price - atr * tp_mult
                 liquidation_price = calc_liquidation_price(price, leverage, "short")
@@ -156,7 +158,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                         log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}")
                     else:
                         balance -= qty_open * price * fee_rate
-                        log_buffer.append(f"[timestamp] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}")
+                        log_buffer.append(f"[timestamp] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}, full_ballance: {fb}")
 
         else:
             # MANAGEMENT for open position
@@ -168,6 +170,10 @@ def run_strategy(df, live=False, initial_balance=1000,
             base_sl = position["sl"]
             base_tp = position["tp"]
             liquidation_price = position["liq_price"]
+            trade = {
+                **position,
+                "exit": price,
+            }
 
             # --- Liquidation Check ---
             if side == "long" and price < liquidation_price:
@@ -175,15 +181,18 @@ def run_strategy(df, live=False, initial_balance=1000,
                     current_balance = get_balance()
                     loss = current_balance - balance
                     trade["net_pnl"] = loss
+                    trade["exit_reason"] = "liquidation"
                     balance = current_balance
                     update_position(state, None)
                     update_balance(state, balance)
+                    add_closed_trade(state, trade)
                     log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] LONG LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss={loss:.2f}")
                 else:
                     # Margin used for this trade (portion of balance at risk)
                     margin_used = position_value / leverage
                     # Deduct the loss from account balance
                     balance -= margin_used
+                    trade_history.append(trade) # Long LIQUIDATED
                     log_buffer.append(f"[timestamp] LONG LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss={margin_used}")
                 
                 # Close position and continue
@@ -193,16 +202,20 @@ def run_strategy(df, live=False, initial_balance=1000,
             if side == "short" and price > liquidation_price:
                 if live:
                     current_balance = get_balance()
+                    loss = current_balance - balance
                     trade["net_pnl"] = loss
+                    trade["exit_reason"] = "liquidation"
                     balance = current_balance
                     update_position(state, None)
                     update_balance(state, balance)
+                    add_closed_trade(state, trade)
                     log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] SHORT LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss={loss:.2f}")
                 else:
                     # Margin used for this trade
                     margin_used = position_value / leverage
                     # Deduct the loss from account balance
                     balance -= margin_used
+                    trade_history.append(trade) # Short LIQUIDATED
                     log_buffer.append(f"[timestamp] SHORT LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss={margin_used}")
 
                 # Close position and continue
@@ -236,9 +249,9 @@ def run_strategy(df, live=False, initial_balance=1000,
                         log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl:.2f}")
                     else:
                         balance += net_pnl
+                        trade_history.append(trade) # Long RSI
                         log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl:.2f}")
                     
-                    trade_history.append(trade)
                     position = None
 
                 elif position is not None:
@@ -286,9 +299,9 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by trailing TP, net={net_pnl:.2f}")
                             else:
                                 balance += net_pnl
+                                trade_history.append(trade) # Long TP
                                 log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} by trailing TP, net={net_pnl:.2f}")
                             
-                            trade_history.append(trade)
                             position = None
 
                     # Fallback to normal SL/TP logic if no trail active
@@ -316,9 +329,9 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by SL, net={net_pnl:.2f}")
                             else:
                                 balance += net_pnl
+                                trade_history.append(trade) # Long SL
                                 log_buffer.append(f"[timestamp] Closed LONG {size} {symbol} by SL, net={net_pnl:.2f}")
                             
-                            trade_history.append(trade)
                             position = None
 
             # --- SHORT SIDE LOGIC ---
@@ -348,9 +361,9 @@ def run_strategy(df, live=False, initial_balance=1000,
                         log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl:.2f}")
                     else:
                         balance += net_pnl
+                        trade_history.append(trade) # Short RSI
                         log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl:.2f}")
                     
-                    trade_history.append(trade)
                     position = None
 
                 elif position is not None:
@@ -398,9 +411,9 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl:.2f}")
                             else:
                                 balance += net_pnl
+                                trade_history.append(trade) # Short TP
                                 log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl:.2f}")
                             
-                            trade_history.append(trade)
                             position = None
 
                     # Fallback to normal SL/TP logic if no trail active
@@ -428,9 +441,9 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by SL, net={net_pnl:.2f}")
                             else:
                                 balance += net_pnl
+                                trade_history.append(trade) # Short SL
                                 log_buffer.append(f"[timestamp] Closed SHORT {size} {symbol} by SL, net={net_pnl:.2f}")
                             
-                            trade_history.append(trade)
                             position = None
 
             if live and position is not None:
