@@ -192,8 +192,10 @@ def run_strategy(df, live=False, initial_balance=1000,
                     margin_used = position_value / leverage
                     # Deduct the loss from account balance
                     balance -= margin_used
+                    trade["net_pnl"] = -margin_used
+                    trade["exit_reason"] = "liquidation"
                     trade_history.append(trade) # Long LIQUIDATED
-                    log_buffer.append(f"[timestamp] LONG LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss={margin_used}")
+                    log_buffer.append(f"[timestamp] LONG LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss=-{margin_used}")
                 
                 # Close position and continue
                 position = None
@@ -215,8 +217,10 @@ def run_strategy(df, live=False, initial_balance=1000,
                     margin_used = position_value / leverage
                     # Deduct the loss from account balance
                     balance -= margin_used
+                    trade["net_pnl"] = -margin_used
+                    trade["exit_reason"] = "liquidation"
                     trade_history.append(trade) # Short LIQUIDATED
-                    log_buffer.append(f"[timestamp] SHORT LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss={margin_used}")
+                    log_buffer.append(f"[timestamp] SHORT LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss=-{margin_used}")
 
                 # Close position and continue
                 position = None
@@ -462,7 +466,6 @@ def run_strategy(df, live=False, initial_balance=1000,
     elif use_state:
         state["position"] = position
         state["balance"] = balance
-        state["trade_history"] = trade_history
         state["balance_history"] = balance_history
         save_state(state)
 
