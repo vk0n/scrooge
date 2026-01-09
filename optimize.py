@@ -1,13 +1,21 @@
 import itertools
+import os
 import pandas as pd
 import yaml
 from tqdm import tqdm
-from strategy import *
-from report import *
-from data import *
-from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from binance.client import Client
+from strategy import run_strategy
+from report import compute_stats
+from data import build_dataset
+import data as data_module
 
 CONFIG_PATH = "config.yaml"
+
+load_dotenv()
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_API_SECRET")
+data_module.set_client(Client(api_key, api_secret))
 
 with open(CONFIG_PATH, "r") as f:
     cfg = yaml.safe_load(f)
@@ -23,7 +31,12 @@ def load_params():
 # -----------------------------
 # Fetch your dataset
 # -----------------------------
-df = build_dataset()
+df = build_dataset(
+    symbol=symbol,
+    intervals=cfg["intervals"],
+    backtest_period_days=cfg["backtest_period_days"],
+    backtest_period_end_time=cfg["backtest_period_end_time"]
+)
 
 # -----------------------------
 # Define parameter grid
@@ -83,4 +96,4 @@ with open("best_params.yaml", "w") as f:
 
 print("\nOptimization completed!")
 print(f"Best Score: {best_metrics['Score']:.4f}")
-print(f"Best parameters and metrics saved to best_params.yaml")
+print("Best parameters and metrics saved to best_params.yaml")

@@ -1,39 +1,26 @@
 import os
 import time
-import yaml
 import pandas as pd
 import pandas_ta as ta
-from dotenv import load_dotenv
-from binance.client import Client
 from datetime import datetime, timedelta
 
-# --- Load configuration ---
-load_dotenv()
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-CONFIG_PATH = "config.yaml"
+_client = None
 
-with open(CONFIG_PATH, "r") as f:
-    config = yaml.safe_load(f)
 
-symbol = config.get("symbol", "BTCUSDT")
-interval_small = config["intervals"]["small"]
-interval_medium = config["intervals"]["medium"]
-interval_big = config["intervals"]["big"]
-backtest_period_end_time = config["backtest_period_end_time"]
-backtest_period_days = config["backtest_period_days"]
-output_dir = "data"
-os.makedirs(output_dir, exist_ok=True)
+def set_client(client):
+    global _client
+    _client = client
 
-output_filename = f"{symbol}_{interval_small}_{interval_medium}_{interval_big}_{backtest_period_days}_{backtest_period_end_time}.pkl"
-output_path = os.path.join(output_dir, output_filename)
 
-# --- Binance Client ---
-client = Client(API_KEY, API_SECRET)
+def _get_client():
+    if _client is None:
+        raise ValueError("Binance client not initialized. Call set_client().")
+    return _client
 
 
 def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
     """Fetch historical klines from Binance Futures (include high/low)."""
+    client = _get_client()
     raw = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
     df = pd.DataFrame(raw, columns=[
         "open_time","open","high","low","close","volume","close_time","qav",
@@ -47,6 +34,7 @@ def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
 
 def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None, end_time=None, sleep=0):
     """Fetch long historical klines from Binance Futures with pagination."""
+    client = _get_client()
     dfs = []
     limit = 1500
     start_ts = int(start_time.timestamp() * 1000) if start_time else None
@@ -99,9 +87,9 @@ def prepare_multi_tf(df_small, df_medium, df_big):
     df_medium = df_medium.set_index("open_time")
     bb = ta.bbands(df_medium["close"], length=20, std=2)
     atr = ta.atr(df_medium["high"], df_medium["low"], df_medium["close"], length=14)
-    df_medium["BBL"] = bb[f"BBL_20_2.0_2.0"]
-    df_medium["BBM"] = bb[f"BBM_20_2.0_2.0"]
-    df_medium["BBU"] = bb[f"BBU_20_2.0_2.0"]
+    df_medium["BBL"] = bb["BBL_20_2.0_2.0"]
+    df_medium["BBM"] = bb["BBM_20_2.0_2.0"]
+    df_medium["BBU"] = bb["BBU_20_2.0_2.0"]
     df_medium["ATR"] = atr
     df_medium = df_medium[["BBL", "BBM", "BBU", "ATR"]]
 
@@ -113,8 +101,28 @@ def prepare_multi_tf(df_small, df_medium, df_big):
     return df_merged
 
 
-def build_dataset():
+def build_dataset(
+    symbol="BTCUSDT",
+    intervals=None,
+    backtest_period_days=365,
+    backtest_period_end_time="",
+    output_dir="data"
+):
     """Fetch and build dataset from Binance, or load if already cached."""
+    if intervals is None:
+        intervals = {"small": "1m", "medium": "1h", "big": "4h"}
+
+    interval_small = intervals["small"]
+    interval_medium = intervals["medium"]
+    interval_big = intervals["big"]
+
+    os.makedirs(output_dir, exist_ok=True)
+    output_filename = (
+        f"{symbol}_{interval_small}_{interval_medium}_{interval_big}_"
+        f"{backtest_period_days}_{backtest_period_end_time}.pkl"
+    )
+    output_path = os.path.join(output_dir, output_filename)
+
     if backtest_period_end_time == "":
         end_time = datetime.now()
     else:

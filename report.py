@@ -1,21 +1,79 @@
 import json
 import pandas as pd
-import pandas_ta as ta
 import matplotlib.pyplot as plt
 import webbrowser
-from binance.client import Client
-from datetime import datetime
 import tempfile
 import os
-from dotenv import load_dotenv
 import numpy as np
-from data import *
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from data import fetch_historical_paginated, prepare_multi_tf
+from strategy import run_strategy
 
 STATE_FILE = "state.json"
-load_dotenv()
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-client = Client(API_KEY, API_SECRET)
+_client = None
+_rw_df = None
+_rw_start_time = None
+_rw_k_days = None
+_rw_start_balance = None
+_rw_strategy_kwargs = None
+
+
+def set_client(client):
+    global _client
+    _client = client
+
+
+def _get_client():
+    if _client is None:
+        raise ValueError("Binance client not initialized. Call set_client().")
+    return _client
+
+
+def _rw_init(df, start_time, k_days, start_balance, strategy_kwargs):
+    global _rw_df, _rw_start_time, _rw_k_days, _rw_start_balance, _rw_strategy_kwargs
+    _rw_df = df
+    _rw_start_time = start_time
+    _rw_k_days = k_days
+    _rw_start_balance = start_balance
+    _rw_strategy_kwargs = strategy_kwargs
+
+
+def _rw_worker(offset):
+    window_start = _rw_start_time + pd.Timedelta(days=offset)
+    window_end = window_start + pd.Timedelta(days=_rw_k_days)
+    df_window = _rw_df[(_rw_df["open_time"] >= window_start) & (_rw_df["open_time"] < window_end)]
+    if df_window.empty:
+        return None
+
+    final_balance, trades, balance_history, _ = run_strategy(
+        df_window,
+        live=False,
+        initial_balance=_rw_start_balance,
+        use_state=False,
+        enable_logs=False,
+        show_progress=False,
+        **_rw_strategy_kwargs
+    )
+    pnl_pct = (final_balance - _rw_start_balance) / _rw_start_balance * 100
+
+    if trades is not None and len(trades) > 0:
+        wins = trades[trades["net_pnl"] > 0]
+        win_rate = len(wins) / len(trades) * 100
+    else:
+        win_rate = 0
+
+    equity = np.array(balance_history)
+    if len(equity) > 0:
+        rolling_max = np.maximum.accumulate(equity)
+        drawdowns = (equity - rolling_max) / rolling_max
+        max_drawdown = drawdowns.min() * 100
+    else:
+        max_drawdown = 0
+
+    return final_balance, pnl_pct, win_rate, max_drawdown
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -25,6 +83,7 @@ def load_state():
 
 def fetch_session_klines(symbol, interval, start_ts, end_ts):
     """Fetch historical klines from Binance for session period."""
+    client = _get_client()
     klines = client.futures_klines(
         symbol=symbol,
         interval=interval,
@@ -278,6 +337,225 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=True):
         print(f"{k}: {v}")
 
 
+def _write_plotly_fullscreen_html(fig, title):
+    fig.update_layout(
+        title=title,
+        xaxis=dict(rangeslider=dict(visible=False)),
+        hovermode="x unified",
+        autosize=True,
+        template="plotly_dark"
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmpfile:
+        plot_html = fig.to_html(
+            include_plotlyjs="cdn",
+            full_html=False,
+            config={"responsive": True}
+        )
+        html = (
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<style>"
+            "html,body{margin:0;padding:0;width:100%;height:100%;background:#111;}"
+            "#plot{width:100vw;height:100vh;}"
+            "#plot .plotly-graph-div{width:100vw !important;height:100vh !important;}"
+            "</style></head><body><div id=\"plot\">"
+            f"{plot_html}</div></body></html>"
+        )
+        with open(tmpfile.name, "w") as f:
+            f.write(html)
+        webbrowser.get("firefox").open(tmpfile.name)
+
+
+def _build_interactive_figure(df, trades, equity_series):
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.6, 0.2, 0.2]
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df["open_time"],
+            y=df["close"],
+            mode="lines",
+            name="Price",
+            line=dict(color="blue")
+        ),
+        row=1,
+        col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["open_time"],
+            y=df["BBL"],
+            mode="lines",
+            name="Lower BB",
+            line=dict(color="red", dash="dash")
+        ),
+        row=1,
+        col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["open_time"],
+            y=df["BBM"],
+            mode="lines",
+            name="Middle BB",
+            line=dict(color="black", dash="dash")
+        ),
+        row=1,
+        col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["open_time"],
+            y=df["BBU"],
+            mode="lines",
+            name="Upper BB",
+            line=dict(color="green", dash="dash")
+        ),
+        row=1,
+        col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["open_time"],
+            y=df["EMA"],
+            mode="lines",
+            name="EMA",
+            line=dict(color="purple")
+        ),
+        row=1,
+        col=1
+    )
+
+    if trades is not None and not trades.empty:
+        entries = trades[pd.notna(trades["entry"])]
+        exits = trades[pd.notna(trades["exit"])]
+
+        fig.add_trace(
+            go.Scatter(
+                x=entries["time"],
+                y=entries["entry"],
+                mode="markers",
+                name="Entries",
+                marker=dict(
+                    symbol=entries["side"].map({"long": "triangle-up", "short": "triangle-down"}),
+                    color="blue",
+                    size=10
+                ),
+                hovertemplate="Entry: %{y}<br>Time: %{x}<extra></extra>"
+            ),
+            row=1,
+            col=1
+        )
+
+        exit_colors = exits["exit_reason"].map({
+            "stop_loss": "red",
+            "liquidation": "red",
+            "take_profit": "green",
+            "rsi": "green"
+        }).fillna("orange")
+
+        fig.add_trace(
+            go.Scatter(
+                x=exits["time"],
+                y=exits["exit"],
+                mode="markers",
+                name="Exits",
+                marker=dict(symbol="x", color=exit_colors, size=9),
+                hovertemplate="Exit: %{y}<br>Time: %{x}<extra></extra>"
+            ),
+            row=1,
+            col=1
+        )
+
+    if "RSI" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df["open_time"],
+                y=df["RSI"],
+                mode="lines",
+                name="RSI",
+                line=dict(color="purple")
+            ),
+            row=2,
+            col=1
+        )
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+
+    if equity_series is not None and not equity_series.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=equity_series.index,
+                y=equity_series.values,
+                mode="lines",
+                name="Equity Curve",
+                line=dict(color="purple")
+            ),
+            row=3,
+            col=1
+        )
+
+    return fig
+
+
+def plot_results_interactive(df, trades, balance_history, split_by_year=True):
+    """Interactive plot with price, trades, RSI, and equity curve (zoom/pan)."""
+    if df is None or df.empty:
+        print("No data to plot.")
+        return
+
+    if balance_history:
+        if len(balance_history) == len(df):
+            equity_index = df["open_time"]
+        else:
+            equity_index = pd.date_range(
+                start=df["open_time"].iloc[0],
+                end=df["open_time"].iloc[-1],
+                periods=len(balance_history)
+            )
+        equity_series = pd.Series(balance_history, index=equity_index)
+    else:
+        equity_series = None
+
+    trades_local = trades
+    if trades_local is not None and not trades_local.empty and "time" in trades_local.columns:
+        trades_local = trades_local.copy()
+        trades_local["time"] = pd.to_datetime(trades_local["time"], errors="coerce")
+
+    years = sorted(df["open_time"].dt.year.unique())
+    if not split_by_year or len(years) <= 1:
+        fig = _build_interactive_figure(df, trades_local, equity_series)
+        _write_plotly_fullscreen_html(fig, "Interactive Backtest (Zoom/Pan)")
+        return
+
+    for year in years:
+        df_year = df[df["open_time"].dt.year == year]
+        if df_year.empty:
+            continue
+
+        start_year = df_year["open_time"].iloc[0]
+        end_year = df_year["open_time"].iloc[-1]
+
+        trades_year = trades_local
+        if trades_local is not None and not trades_local.empty and "time" in trades_local.columns:
+            trades_year = trades_local[
+                (trades_local["time"] >= start_year) & (trades_local["time"] <= end_year)
+            ]
+
+        equity_year = None
+        if equity_series is not None and not equity_series.empty:
+            equity_year = equity_series[(equity_series.index >= start_year) & (equity_series.index <= end_year)]
+
+        fig = _build_interactive_figure(df_year, trades_year, equity_year)
+        _write_plotly_fullscreen_html(fig, f"Interactive Backtest (Zoom/Pan) - {year}")
+
+
 def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000, horizon_months=None, block_len=3, show_plot=True):
     """
     Advanced Monte Carlo stress test based on monthly equity returns.
@@ -371,7 +649,211 @@ def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000
     return summary
 
 
+def rolling_window_backtest_distribution(
+    df,
+    k_days,
+    n_days=None,
+    start_balance=10000,
+    show_plot=True,
+    max_workers=None,
+    **strategy_kwargs
+):
+    """
+    Run rolling k-day backtests over an n-day period and return a distribution
+    of final balances, similar to the Monte Carlo view.
+    """
+    if df is None or df.empty:
+        print("No data for rolling window backtest.")
+        return {}
+
+    if k_days <= 0:
+        print("k_days must be > 0.")
+        return {}
+
+    start_time = pd.to_datetime(df["open_time"].iloc[0])
+    end_time = pd.to_datetime(df["open_time"].iloc[-1])
+    total_days = int((end_time - start_time).total_seconds() // 86400)
+
+    if n_days is None:
+        n_days = total_days
+    n_days = min(n_days, total_days)
+
+    if n_days < k_days:
+        print("n_days must be >= k_days.")
+        return {}
+
+    final_balances = []
+    pnl_pcts = []
+    win_rates = []
+    max_drawdowns = []
+
+    total_windows = n_days - k_days + 1
+    if max_workers is None:
+        max_workers = os.cpu_count() or 1
+
+    if max_workers <= 1 or total_windows <= 1:
+        for offset in tqdm(range(total_windows), desc="Rolling Backtest", ncols=100):
+            window_start = start_time + pd.Timedelta(days=offset)
+            window_end = window_start + pd.Timedelta(days=k_days)
+            df_window = df[(df["open_time"] >= window_start) & (df["open_time"] < window_end)]
+
+            if df_window.empty:
+                continue
+
+            final_balance, trades, balance_history, _ = run_strategy(
+                df_window,
+                live=False,
+                initial_balance=start_balance,
+                use_state=False,
+                enable_logs=False,
+                show_progress=False,
+                **strategy_kwargs
+            )
+            final_balances.append(final_balance)
+            pnl_pcts.append((final_balance - start_balance) / start_balance * 100)
+
+            if trades is not None and len(trades) > 0:
+                wins = trades[trades["net_pnl"] > 0]
+                win_rates.append(len(wins) / len(trades) * 100)
+            else:
+                win_rates.append(0)
+
+            equity = np.array(balance_history)
+            if len(equity) > 0:
+                rolling_max = np.maximum.accumulate(equity)
+                drawdowns = (equity - rolling_max) / rolling_max
+                max_drawdowns.append(drawdowns.min() * 100)
+            else:
+                max_drawdowns.append(0)
+    else:
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_rw_init,
+            initargs=(df, start_time, k_days, start_balance, strategy_kwargs)
+        ) as executor:
+            futures = [executor.submit(_rw_worker, offset) for offset in range(total_windows)]
+            for fut in tqdm(as_completed(futures), total=total_windows, desc="Rolling Backtest", ncols=100):
+                result = fut.result()
+                if result is None:
+                    continue
+                final_balance, pnl_pct, win_rate, max_drawdown = result
+                final_balances.append(final_balance)
+                pnl_pcts.append(pnl_pct)
+                win_rates.append(win_rate)
+                max_drawdowns.append(max_drawdown)
+
+    if not final_balances:
+        print("No rolling windows produced results.")
+        return {}
+
+    results = np.array(final_balances)
+    p5, p50, p95 = np.percentile(results, [5, 50, 95])
+    pnl_p5, pnl_p50, pnl_p95 = np.percentile(pnl_pcts, [5, 50, 95])
+    wr_p5, wr_p50, wr_p95 = np.percentile(win_rates, [5, 50, 95])
+    dd_p5, dd_p50, dd_p95 = np.percentile(max_drawdowns, [5, 50, 95])
+
+    summary = {
+        "Windows": len(results),
+        "Days per Window": k_days,
+        "Total Days": n_days,
+        "5th Percentile (Pessimistic)": round(p5, 2),
+        "50th Percentile (Median)": round(p50, 2),
+        "95th Percentile (Optimistic)": round(p95, 2),
+        "Expected Range": f"{round(p5,2)} → {round(p95,2)}",
+        "PnL % (5/50/95)": f"{round(pnl_p5,2)} / {round(pnl_p50,2)} / {round(pnl_p95,2)}",
+        "Win Rate % (5/50/95)": f"{round(wr_p5,2)} / {round(wr_p50,2)} / {round(wr_p95,2)}",
+        "Max Drawdown % (5/50/95)": f"{round(dd_p5,2)} / {round(dd_p50,2)} / {round(dd_p95,2)}"
+    }
+
+    if show_plot:
+        fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=False)
+        ax_bal, ax_pnl, ax_wr, ax_dd = axes
+
+        ax_bal.hist(results, bins=60, color="teal", alpha=0.7)
+        ax_bal.axvline(p5, color="red", linestyle="--", label="5th Percentile")
+        ax_bal.axvline(p50, color="black", linestyle="-", label="Median")
+        ax_bal.axvline(p95, color="green", linestyle="--", label="95th Percentile")
+        ax_bal.set_title("Final Balance")
+        ax_bal.set_xlabel("Final Balance ($)")
+        ax_bal.set_ylabel("Frequency")
+        ax_bal.legend()
+        ax_bal.text(
+            0.02,
+            0.95,
+            f"P5: {p5:.2f}\nP50: {p50:.2f}\nP95: {p95:.2f}",
+            transform=ax_bal.transAxes,
+            va="top"
+        )
+
+        ax_pnl.hist(pnl_pcts, bins=60, color="steelblue", alpha=0.7)
+        ax_pnl.axvline(pnl_p5, color="red", linestyle="--", label="5th Percentile")
+        ax_pnl.axvline(pnl_p50, color="black", linestyle="-", label="Median")
+        ax_pnl.axvline(pnl_p95, color="green", linestyle="--", label="95th Percentile")
+        ax_pnl.set_title("PnL %")
+        ax_pnl.set_xlabel("PnL %")
+        ax_pnl.set_ylabel("Frequency")
+        ax_pnl.legend()
+        ax_pnl.text(
+            0.02,
+            0.95,
+            f"P5: {pnl_p5:.2f}\nP50: {pnl_p50:.2f}\nP95: {pnl_p95:.2f}",
+            transform=ax_pnl.transAxes,
+            va="top"
+        )
+
+        ax_wr.hist(win_rates, bins=60, color="purple", alpha=0.7)
+        ax_wr.axvline(wr_p5, color="red", linestyle="--", label="5th Percentile")
+        ax_wr.axvline(wr_p50, color="black", linestyle="-", label="Median")
+        ax_wr.axvline(wr_p95, color="green", linestyle="--", label="95th Percentile")
+        ax_wr.set_title("Win Rate %")
+        ax_wr.set_xlabel("Win Rate %")
+        ax_wr.set_ylabel("Frequency")
+        ax_wr.legend()
+        ax_wr.text(
+            0.02,
+            0.95,
+            f"P5: {wr_p5:.2f}\nP50: {wr_p50:.2f}\nP95: {wr_p95:.2f}",
+            transform=ax_wr.transAxes,
+            va="top"
+        )
+
+        ax_dd.hist(max_drawdowns, bins=60, color="darkorange", alpha=0.7)
+        ax_dd.axvline(dd_p5, color="red", linestyle="--", label="5th Percentile")
+        ax_dd.axvline(dd_p50, color="black", linestyle="-", label="Median")
+        ax_dd.axvline(dd_p95, color="green", linestyle="--", label="95th Percentile")
+        ax_dd.set_title("Max Drawdown %")
+        ax_dd.set_xlabel("Max Drawdown %")
+        ax_dd.set_ylabel("Frequency")
+        ax_dd.legend()
+        ax_dd.text(
+            0.02,
+            0.95,
+            f"P5: {dd_p5:.2f}\nP50: {dd_p50:.2f}\nP95: {dd_p95:.2f}",
+            transform=ax_dd.transAxes,
+            va="top"
+        )
+
+        fig.suptitle("Rolling Window Backtest Distributions")
+        fig.tight_layout()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
+            plt.savefig(tmpfile.name, dpi=150)
+            webbrowser.get("firefox").open(tmpfile.name)
+
+    print("\nRolling Window Backtest Summary:")
+    for k, v in summary.items():
+        print(f"{k}: {v}")
+
+    return summary
+
+
 if __name__ == "__main__":
+    if _client is None:
+        from dotenv import load_dotenv
+        from binance.client import Client
+        load_dotenv()
+        api_key = os.getenv("BINANCE_API_KEY")
+        api_secret = os.getenv("BINANCE_API_SECRET")
+        set_client(Client(api_key, api_secret))
     state = load_state()
     if state:
         plot_session(state)

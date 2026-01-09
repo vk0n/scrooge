@@ -1,28 +1,18 @@
 # requirements:
 # pip install python-binance pandas pandas_ta matplotlib
 
-import os
-import time
-from dotenv import load_dotenv
-import numpy as np
 import pandas as pd
-import pandas_ta as ta
-import matplotlib.pyplot as plt
 from tqdm import tqdm
-from binance.client import Client
-import tempfile
-import webbrowser
-from datetime import datetime, timedelta
-from trade import *
-from state import *
-from data import *
+from datetime import datetime
+from trade import compute_qty, can_open_trade, open_position, close_position, get_balance
+from state import (
+    load_state,
+    save_state,
+    update_position,
+    update_balance,
+    add_closed_trade,
+)
 
-
-load_dotenv()
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-
-client = Client(API_KEY, API_SECRET)
 
 LOG_FILE = "trading_log.txt"
 
@@ -35,7 +25,7 @@ def save_log(log_buffer):
 def run_strategy(df, live=False, initial_balance=1000,
                  qty=None, sl_mult = 1.5, tp_mult = 3.0,
                  symbol="BTCUSDT", leverage=1, use_full_balance=True, fee_rate=0.0005,
-                 state=None, use_state=True, enable_logs=True,
+                 state=None, use_state=True, enable_logs=True, show_progress=True,
                  rsi_extreme_long=75, rsi_extreme_short=25,
                  rsi_long_open_threshold=50, rsi_long_qty_threshold=30, rsi_long_tp_threshold=58, rsi_long_close_threshold=70,
                  rsi_short_open_threshold=50, rsi_short_qty_threshold=70, rsi_short_tp_threshold=42, rsi_short_close_threshold=30,
@@ -64,7 +54,7 @@ def run_strategy(df, live=False, initial_balance=1000,
         iterator = df_iter
     else:
         df_iter = [df.iloc[i] for i in range(1, len(df))]
-        iterator = tqdm(df_iter, desc="Backtest Progress")
+        iterator = tqdm(df_iter, desc="Backtest Progress", disable=not show_progress)
 
     for row in iterator:
         price = row["close"]

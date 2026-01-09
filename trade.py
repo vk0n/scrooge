@@ -1,22 +1,23 @@
-import os
-from dotenv import load_dotenv
-from binance.client import Client
-from binance.enums import *
 from binance.helpers import round_step_size
 import numpy as np
 
-# === Load API keys from environment ===
-load_dotenv()
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
+_client = None
 
-# Connect to Binance Futures
-client = Client(API_KEY, API_SECRET)
+def set_client(client):
+    global _client
+    _client = client
+
+
+def _get_client():
+    if _client is None:
+        raise ValueError("Binance client not initialized. Call set_client().")
+    return _client
 
 # --- Utility functions --- #
 def set_leverage(symbol, leverage):
     """Set leverage for a given symbol"""
     try:
+        client = _get_client()
         resp = client.futures_change_leverage(
             symbol=symbol,
             leverage=leverage
@@ -28,6 +29,7 @@ def set_leverage(symbol, leverage):
 
 def get_symbol_info(symbol):
     """Get precision and stepSize for symbol"""
+    client = _get_client()
     info = client.futures_exchange_info()
     for s in info["symbols"]:
         if s["symbol"] == symbol:
@@ -46,10 +48,12 @@ def round_qty_price(symbol, qty, price):
     return qty, price
 
 
-def adjust_qty_to_margin(client, symbol, qty, price, leverage, buffer=0.95):
+def adjust_qty_to_margin(symbol, qty, price, leverage, buffer=0.95, client=None):
     """
     Adjusts position size to fit available margin with a safety buffer.
     """
+    if client is None:
+        client = _get_client()
     # Get futures account info
     account_info = client.futures_account()
     available_balance = float(account_info["availableBalance"])  
@@ -96,7 +100,7 @@ def compute_qty(symbol, balance, leverage, price, qty=None, use_full_balance=Tru
 
     # Adjust to available margin in live mode
     if live:
-        qty_local = adjust_qty_to_margin(client, symbol, qty_local, price, leverage)
+        qty_local = adjust_qty_to_margin(symbol, qty_local, price, leverage)
     else:
         qty_local *= 0.95
 
@@ -104,6 +108,7 @@ def compute_qty(symbol, balance, leverage, price, qty=None, use_full_balance=Tru
 
 
 def check_balance():
+    client = _get_client()
     balances = client.futures_account_balance()
     for b in balances:
         if b["asset"] == "USDT":
@@ -116,6 +121,7 @@ def get_balance():
     Fetch USDT balance from Binance Futures account.
     Returns float balance in USDT.
     """
+    client = _get_client()
     balances = client.futures_account_balance()
     for b in balances:
         if b["asset"] == "USDT":
@@ -126,6 +132,7 @@ def get_balance():
 def can_open_trade(symbol, qty, leverage=10, live=False):
     """Check if there is enough balance to open a trade"""
     usdt_balance = get_balance()
+    client = _get_client()
     price = float(client.futures_symbol_ticker(symbol=symbol)["price"])
     required_margin = (price * qty) / leverage
     return usdt_balance >= required_margin and qty > 0
@@ -133,6 +140,7 @@ def can_open_trade(symbol, qty, leverage=10, live=False):
 
 def get_open_position(symbol):
     """Return open position info, or None if no position"""
+    client = _get_client()
     positions = client.futures_position_information(symbol=symbol)
     if len(positions) > 0:
         pos = positions[0]
@@ -143,6 +151,7 @@ def get_open_position(symbol):
 
 def cancel_sl_tp(symbol):
     """Cancel all SL/TP orders for this symbol"""
+    client = _get_client()
     open_orders = client.futures_get_open_orders(symbol=symbol)
     for o in open_orders:
         if o["type"] in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]:
@@ -165,6 +174,7 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
         close_qty, _ = round_qty_price(symbol, close_qty, 0)
 
         try:
+            client = _get_client()
             order = client.futures_create_order(
                 symbol=symbol,
                 side=close_side,
@@ -187,6 +197,7 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
         qty, tp = round_qty_price(symbol, qty, tp) if tp else (qty, None)
 
         try:
+            client = _get_client()
             order = client.futures_create_order(
                 symbol=symbol,
                 side=side,

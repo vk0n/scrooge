@@ -5,7 +5,11 @@ initial_balance: 10000
 use_full_balance: True
 qty: null
 enable_plot: True
+plot_split_by_year: True
 run_monte_carlo: True
+run_rolling_window_backtest_distribution: True
+rolling_window_days: 365
+rolling_window_workers: 8
 
 intervals:
   small: 1m
@@ -15,7 +19,7 @@ limits:
   small: 1500
   medium: 500
   big: 100
-backtest_period_end_time: "2025-10-17"
+backtest_period_end_time: "2025-01-01"
 backtest_period_days: 1825
 
 # Strategy parameters

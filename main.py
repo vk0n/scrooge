@@ -6,22 +6,30 @@ import signal
 import yaml
 import sys
 import os
-import pandas as pd
-import pandas_ta as ta
-from binance.client import Client
 import time
-from datetime import datetime, timedelta
-from strategy import *
-from trade import *
-from data import *
-from report import *
+from datetime import datetime
+from binance.client import Client
+from dotenv import load_dotenv
+from strategy import run_strategy
+from trade import set_leverage, get_balance, check_balance, get_open_position
+from data import build_dataset, fetch_historical, prepare_multi_tf
+from report import (
+    compute_stats,
+    plot_results,
+    plot_results_interactive,
+    monte_carlo_from_equity,
+    rolling_window_backtest_distribution,
+)
+from state import load_state, save_state
+import data as data_module
+import trade as trade_module
+import report as report_module
 
 state = None
 
 
 def handle_exit(sig, frame):
     """Handler for Ctrl+C (SIGINT) to gracefully save state and exit."""
-    global state
     if state:
         print("\n[EXIT] Saving state before quitting...")
         save_state(state)
@@ -50,10 +58,23 @@ if __name__ == "__main__":
     intervals = cfg["intervals"]
     limits = cfg["limits"]
     backtest_period_days = cfg["backtest_period_days"]
+    backtest_period_end_time=cfg["backtest_period_end_time"]
     enable_plot = cfg["enable_plot"]
+    plot_split_by_year = cfg.get("plot_split_by_year", True)
     run_mc = cfg["run_monte_carlo"]
+    run_rw = cfg["run_rolling_window_backtest_distribution"]
+    rolling_window_days = cfg["rolling_window_days"]
+    rolling_window_workers = cfg.get("rolling_window_workers")
 
     params = cfg["params"]
+
+    load_dotenv()
+    api_key = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_API_SECRET")
+    client = Client(api_key, api_secret)
+    data_module.set_client(client)
+    trade_module.set_client(client)
+    report_module.set_client(client)
 
     # Load or create state
     state = load_state()
@@ -97,7 +118,12 @@ if __name__ == "__main__":
 
     else:
         print("Running BACKTEST...")
-        df = build_dataset()
+        df = build_dataset(
+            symbol=symbol,
+            intervals=intervals,
+            backtest_period_days=backtest_period_days,
+            backtest_period_end_time=backtest_period_end_time
+        )
 
         final_balance, trades, balance_history, state = run_strategy(
             df, live, initial_balance, qty,
@@ -110,8 +136,18 @@ if __name__ == "__main__":
             print(f"{k}: {v}")
         
         if enable_plot:
-            plot_results(df, trades, balance_history)
+            plot_results_interactive(df, trades, balance_history, split_by_year=plot_split_by_year)
 
         if run_mc:
             monte_carlo_from_equity(df, balance_history, start_balance=initial_balance)
 
+        if run_rw:
+            rolling_window_backtest_distribution(
+                df,
+                k_days=rolling_window_days,
+                n_days=backtest_period_days,
+                start_balance=initial_balance,
+                max_workers=rolling_window_workers,
+                leverage=lvrg,
+                **params
+            )
