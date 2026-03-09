@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from routes.config import router as config_router
+from routes.control import router as control_router
 from routes.health import router as health_router
 from routes.logs import router as logs_router
 from routes.status import router as status_router
@@ -32,7 +33,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -40,6 +41,7 @@ app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(status_router, prefix="/api/status", tags=["status"])
 app.include_router(logs_router, prefix="/api/logs", tags=["logs"])
 app.include_router(config_router, prefix="/api/config", tags=["config"])
+app.include_router(control_router, prefix="/api/control", tags=["control"])
 app.include_router(ws_router, prefix="/ws", tags=["ws"])
 
 

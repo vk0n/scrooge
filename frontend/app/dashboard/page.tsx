@@ -6,6 +6,13 @@ import { fetchApi } from "../../lib/api";
 
 type StatusPayload = {
   bot_running_status: string;
+  service_status?: {
+    name: string;
+    running: boolean;
+    active_state: string;
+    sub_state: string;
+    unit_file_state: string;
+  } | null;
   balance: number | null;
   current_position: string | null;
   leverage: number | null;
@@ -113,6 +120,16 @@ export default function DashboardPage(): JSX.Element {
           <div className="kv-item">
             <span className="kv-label">Bot status</span>
             <span>{displayValue(data.bot_running_status)}</span>
+          </div>
+          <div className="kv-item">
+            <span className="kv-label">Service</span>
+            <span>{displayValue(data.service_status?.name)}</span>
+          </div>
+          <div className="kv-item">
+            <span className="kv-label">Service state</span>
+            <span>
+              {displayValue(data.service_status?.active_state)} / {displayValue(data.service_status?.sub_state)}
+            </span>
           </div>
           <div className="kv-item">
             <span className="kv-label">Balance</span>

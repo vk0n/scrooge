@@ -1,6 +1,6 @@
-# Scrooge Control API (Stage 2)
+# Scrooge Control API (Stage 4)
 
-This is a Stage 2 read-only backend for the Scrooge control plane.
+This is a Stage 4 backend for the Scrooge control plane.
 
 ## Run
 
@@ -23,11 +23,16 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
 
 ## Notes
 
-- Read-only endpoints:
+- Read endpoints:
   - `GET /health`
   - `GET /api/status`
   - `GET /api/config`
   - `GET /api/logs?lines=200`
+- Control endpoints (token required):
+  - `POST /api/control/start`
+  - `POST /api/control/stop`
+  - `POST /api/control/restart`
 - `config.yaml`, `state.json`, and `trading_log.txt` are read from the project root.
-- No write operations are exposed in this stage.
+- Systemd service is configurable via `SCROOGE_SYSTEMD_SERVICE` (default `scrooge.service`).
+- Control auth token must be set via `SCROOGE_CONTROL_TOKEN`.
 - WebSocket endpoint remains available at `ws://localhost:8000/ws` (mock).
