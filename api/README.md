@@ -1,6 +1,6 @@
-# Scrooge Control API (Stage 1)
+# Scrooge Control API (Stage 2)
 
-This is a Stage 1 scaffold for the Scrooge control plane.
+This is a Stage 2 read-only backend for the Scrooge control plane.
 
 ## Run
 
@@ -12,8 +12,22 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
+For browser access from frontend, default allowed origins are:
+- `http://localhost:3000`
+- `http://127.0.0.1:3000`
+
+To override:
+```bash
+export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://YOUR_HOST:3000
+```
+
 ## Notes
 
-- Endpoints return mock responses only.
-- No integration with `main.py`, `strategy.py`, or trade execution exists in this stage.
-- WebSocket endpoint is available at `ws://localhost:8000/ws`.
+- Read-only endpoints:
+  - `GET /health`
+  - `GET /api/status`
+  - `GET /api/config`
+  - `GET /api/logs?lines=200`
+- `config.yaml`, `state.json`, and `trading_log.txt` are read from the project root.
+- No write operations are exposed in this stage.
+- WebSocket endpoint remains available at `ws://localhost:8000/ws` (mock).
