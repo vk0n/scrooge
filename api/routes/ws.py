@@ -4,11 +4,17 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from services.auth_service import require_ws_auth
+
 router = APIRouter()
 
 
 @router.websocket("")
 async def websocket_status(websocket: WebSocket) -> None:
+    if not require_ws_auth(websocket):
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+
     await websocket.accept()
     try:
         await websocket.send_json(

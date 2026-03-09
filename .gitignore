@@ -139,3 +139,5 @@ dmypy.json
 api/.venv/
 frontend/node_modules/
 frontend/.next/
+!frontend/lib/
+!frontend/lib/**

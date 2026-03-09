@@ -1,23 +1,11 @@
 from __future__ import annotations
 
-import os
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
-from fastapi import APIRouter, Header, HTTPException, status
-
+from services.auth_service import require_control_or_basic_auth
 from services.system_service import restart_service, start_service, stop_service
 
 router = APIRouter()
-
-
-def _authorize(control_token: str | None) -> None:
-    expected = os.getenv("SCROOGE_CONTROL_TOKEN", "").strip()
-    if not expected:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Control token is not configured on server (SCROOGE_CONTROL_TOKEN)",
-        )
-    if not control_token or control_token != expected:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid control token")
 
 
 def _status_response(action: str, svc_status: object) -> dict[str, object]:
@@ -36,8 +24,8 @@ def _status_response(action: str, svc_status: object) -> dict[str, object]:
 
 
 @router.post("/start")
-def start(x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
-    _authorize(x_scrooge_control_token)
+def start(request: Request, x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
+    require_control_or_basic_auth(request=request, control_token=x_scrooge_control_token)
     try:
         svc_status = start_service()
     except RuntimeError as exc:
@@ -46,8 +34,8 @@ def start(x_scrooge_control_token: str | None = Header(default=None)) -> dict[st
 
 
 @router.post("/stop")
-def stop(x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
-    _authorize(x_scrooge_control_token)
+def stop(request: Request, x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
+    require_control_or_basic_auth(request=request, control_token=x_scrooge_control_token)
     try:
         svc_status = stop_service()
     except RuntimeError as exc:
@@ -56,11 +44,10 @@ def stop(x_scrooge_control_token: str | None = Header(default=None)) -> dict[str
 
 
 @router.post("/restart")
-def restart(x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
-    _authorize(x_scrooge_control_token)
+def restart(request: Request, x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
+    require_control_or_basic_auth(request=request, control_token=x_scrooge_control_token)
     try:
         svc_status = restart_service()
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
     return _status_response("restart", svc_status)
-
