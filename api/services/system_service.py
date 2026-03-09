@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -8,6 +9,9 @@ from dataclasses import dataclass
 
 SYSTEMCTL_BIN = os.getenv("SCROOGE_SYSTEMCTL_BIN", "systemctl")
 SERVICE_NAME = os.getenv("SCROOGE_SYSTEMD_SERVICE", "scrooge.service")
+SERVICE_BACKEND = os.getenv("SCROOGE_SERVICE_BACKEND", "systemd").strip().lower()
+DOCKER_BIN = os.getenv("SCROOGE_DOCKER_BIN", "docker")
+DOCKER_CONTAINER = os.getenv("SCROOGE_DOCKER_CONTAINER", "scrooge-bot")
 SYSTEMCTL_TIMEOUT_SECONDS = 15
 
 
@@ -20,16 +24,64 @@ class ServiceStatus:
     unit_file_state: str
 
 
+def _resolve_binary(primary: str, fallbacks: list[str]) -> str | None:
+    candidates = [primary, *fallbacks]
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        if "/" in candidate:
+            path = Path(candidate)
+            if path.exists() and os.access(path, os.X_OK):
+                return str(path)
+            continue
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
 def _get_systemctl_bin() -> str:
-    resolved = shutil.which(SYSTEMCTL_BIN)
+    resolved = _resolve_binary(
+        SYSTEMCTL_BIN,
+        [
+            "/usr/bin/systemctl",
+            "/bin/systemctl",
+        ],
+    )
     if resolved:
         return resolved
     raise RuntimeError(f"systemctl binary not found: {SYSTEMCTL_BIN}")
 
 
+def _get_docker_bin() -> str:
+    resolved = _resolve_binary(
+        DOCKER_BIN,
+        [
+            "docker.io",
+            "/usr/bin/docker",
+            "/usr/bin/docker.io",
+            "/usr/local/bin/docker",
+        ],
+    )
+    if resolved:
+        return resolved
+    raise RuntimeError(f"docker binary not found: {DOCKER_BIN}")
+
+
 def _run_systemctl(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [_get_systemctl_bin(), *args],
+        capture_output=True,
+        text=True,
+        timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+        check=False,
+    )
+
+
+def _run_docker(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [_get_docker_bin(), *args],
         capture_output=True,
         text=True,
         timeout=SYSTEMCTL_TIMEOUT_SECONDS,
@@ -48,6 +100,8 @@ def _parse_show_output(output: str) -> dict[str, str]:
 
 
 def get_service_status(service_name: str | None = None) -> ServiceStatus:
+    if SERVICE_BACKEND == "docker":
+        return _get_docker_container_status(service_name)
     effective_service_name = service_name or SERVICE_NAME
     result = _run_systemctl(
         [
@@ -78,7 +132,28 @@ def get_service_status(service_name: str | None = None) -> ServiceStatus:
     )
 
 
+def _get_docker_container_status(service_name: str | None = None) -> ServiceStatus:
+    container_name = service_name or DOCKER_CONTAINER
+    result = _run_docker(["inspect", "-f", "{{.State.Status}}", container_name])
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or "unknown docker inspect error"
+        raise RuntimeError(f"Failed to read container status for {container_name}: {detail}")
+
+    status_value = (result.stdout or "").strip() or "unknown"
+    return ServiceStatus(
+        service_name=container_name,
+        running=status_value == "running",
+        active_state=status_value,
+        sub_state=status_value,
+        unit_file_state="container",
+    )
+
+
 def _control_service(action: str, service_name: str | None = None) -> ServiceStatus:
+    if SERVICE_BACKEND == "docker":
+        return _control_docker_container(action, service_name)
     effective_service_name = service_name or SERVICE_NAME
     result = _run_systemctl([action, effective_service_name])
     if result.returncode != 0:
@@ -87,6 +162,17 @@ def _control_service(action: str, service_name: str | None = None) -> ServiceSta
         detail = stderr or stdout or "unknown systemctl error"
         raise RuntimeError(f"Failed to {action} {effective_service_name}: {detail}")
     return get_service_status(effective_service_name)
+
+
+def _control_docker_container(action: str, service_name: str | None = None) -> ServiceStatus:
+    container_name = service_name or DOCKER_CONTAINER
+    result = _run_docker([action, container_name])
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or "unknown docker command error"
+        raise RuntimeError(f"Failed to {action} {container_name}: {detail}")
+    return _get_docker_container_status(container_name)
 
 
 def start_service(service_name: str | None = None) -> ServiceStatus:
@@ -99,4 +185,3 @@ def stop_service(service_name: str | None = None) -> ServiceStatus:
 
 def restart_service(service_name: str | None = None) -> ServiceStatus:
     return _control_service("restart", service_name)
-

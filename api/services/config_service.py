@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-CONFIG_PATH = _project_root() / "config.yaml"
+CONFIG_PATH = Path(os.getenv("SCROOGE_CONFIG_PATH", str(_project_root() / "config.yaml"))).expanduser()
 
 
 def load_config() -> dict[str, Any]:
@@ -31,4 +32,3 @@ def load_config() -> dict[str, Any]:
         raise ValueError("Config must be a YAML mapping")
 
     return raw
-

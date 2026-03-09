@@ -11,14 +11,26 @@ def load_state():
     """
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
-            return json.load(f)
+            state = json.load(f)
+        if not isinstance(state, dict):
+            return {
+                "position": None,
+                "trade_history": [],
+                "balance_history": [],
+                "session_start": int(datetime.now().timestamp() * 1000),  # milliseconds
+                "session_end": None,
+                "trading_enabled": True,
+            }
+        state.setdefault("trading_enabled", True)
+        return state
     # default state if file does not exist
     return {
         "position": None,
         "trade_history": [],
         "balance_history": [],
         "session_start": int(datetime.now().timestamp() * 1000),  # milliseconds
-        "session_end": None
+        "session_end": None,
+        "trading_enabled": True,
     }
 
 def save_state(state):
@@ -51,4 +63,12 @@ def update_balance(state, balance):
     Update the current balance in state.
     """
     state.setdefault("balance_history", []).append(balance)
+    save_state(state)
+
+
+def set_trading_enabled(state, enabled):
+    """
+    Update trading enabled flag and persist state.
+    """
+    state["trading_enabled"] = bool(enabled)
     save_state(state)

@@ -8,9 +8,9 @@ from services.state_service import (
     resolve_balance,
     resolve_current_position,
     resolve_last_update_timestamp,
+    resolve_trading_enabled,
     resolve_trailing_state,
 )
-from services.system_service import get_service_status
 
 router = APIRouter()
 
@@ -33,25 +33,13 @@ def get_status() -> dict[str, object]:
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    service_status = None
-    try:
-        svc = get_service_status()
-        service_status = {
-            "name": svc.service_name,
-            "running": svc.running,
-            "active_state": svc.active_state,
-            "sub_state": svc.sub_state,
-            "unit_file_state": svc.unit_file_state,
-        }
-        bot_running_status = "running" if svc.running else "stopped"
-    except RuntimeError as exc:
-        warnings.append(str(exc))
-        bot_running_status = "unknown"
+    trading_enabled = resolve_trading_enabled(state)
+    bot_running_status = "running" if trading_enabled else "paused"
 
     position = state.get("position")
     return {
         "bot_running_status": bot_running_status,
-        "service_status": service_status,
+        "trading_enabled": trading_enabled,
         "balance": resolve_balance(state, default_balance=config.get("initial_balance")),
         "current_position": resolve_current_position(position),
         "leverage": config.get("leverage"),

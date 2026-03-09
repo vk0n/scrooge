@@ -29,6 +29,17 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - `SCROOGE_GUI_PASSWORD`
 - Optional control token for non-UI integrations:
   - `SCROOGE_CONTROL_TOKEN`
+- Command queue settings:
+  - `SCROOGE_REDIS_HOST`
+  - `SCROOGE_REDIS_PORT`
+  - `SCROOGE_REDIS_DB`
+  - `SCROOGE_CONTROL_QUEUE_KEY`
+  - `SCROOGE_COMMAND_STATUS_PREFIX`
+  - `SCROOGE_COMMAND_STATUS_TTL_SECONDS`
+- Optional runtime file path overrides:
+  - `SCROOGE_CONFIG_PATH`
+  - `SCROOGE_STATE_PATH`
+  - `SCROOGE_LOG_PATH`
 
 - Read endpoints:
   - `GET /health`
@@ -39,7 +50,9 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - `POST /api/control/start`
   - `POST /api/control/stop`
   - `POST /api/control/restart`
+  - `GET /api/control/commands/{command_id}`
   - Auth: either `Authorization: Basic ...` or header `X-Scrooge-Control-Token: ...`
+  - Mutating actions are queued via Redis and executed asynchronously by bot runtime loop.
+  - Semantics: `start` = resume trading, `stop` = pause trading, `restart` = resume + config reload.
 - `config.yaml`, `state.json`, and `trading_log.txt` are read from the project root.
-- Systemd service is configurable via `SCROOGE_SYSTEMD_SERVICE` (default `scrooge.service`).
 - WebSocket endpoint remains available at `ws://localhost:8000/ws` (mock).

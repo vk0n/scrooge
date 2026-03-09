@@ -29,7 +29,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                  rsi_extreme_long=75, rsi_extreme_short=25,
                  rsi_long_open_threshold=50, rsi_long_qty_threshold=30, rsi_long_tp_threshold=58, rsi_long_close_threshold=70,
                  rsi_short_open_threshold=50, rsi_short_qty_threshold=70, rsi_short_tp_threshold=42, rsi_short_close_threshold=30,
-                 trail_atr_mult=0.5):
+                 trail_atr_mult=0.5, allow_entries=True):
     """
     Bollinger Bands strategy with SL/TP, dynamic stop, state persistence, and logging.
     """
@@ -66,6 +66,9 @@ def run_strategy(df, live=False, initial_balance=1000,
         ema   = row["EMA"]
         
         if position is None:
+            if not allow_entries:
+                continue
+
             # determine position size
             qty_local = compute_qty(symbol, balance, leverage, price, qty, use_full_balance, live)
             

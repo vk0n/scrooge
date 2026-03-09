@@ -1,0 +1,15 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+scrooge-env/
+frontend/node_modules/
+frontend/.next/
+api/.venv/
+results/
+data/
+*.pem
+

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-STATE_PATH = _project_root() / "state.json"
+STATE_PATH = Path(os.getenv("SCROOGE_STATE_PATH", str(_project_root() / "state.json"))).expanduser()
 
 
 def load_state() -> tuple[dict[str, Any], list[str]]:
@@ -22,6 +23,7 @@ def load_state() -> tuple[dict[str, Any], list[str]]:
                 "balance_history": [],
                 "session_start": None,
                 "session_end": None,
+                "trading_enabled": True,
             },
             [f"State file not found: {STATE_PATH}"],
         )
@@ -37,6 +39,7 @@ def load_state() -> tuple[dict[str, Any], list[str]]:
     if not isinstance(raw, dict):
         raise ValueError("State must be a JSON object")
 
+    raw.setdefault("trading_enabled", True)
     return raw, []
 
 
@@ -94,3 +97,6 @@ def resolve_last_update_timestamp(state: dict[str, Any]) -> str | None:
             continue
     return None
 
+
+def resolve_trading_enabled(state: dict[str, Any]) -> bool:
+    return bool(state.get("trading_enabled", True))
