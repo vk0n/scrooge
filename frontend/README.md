@@ -14,6 +14,6 @@ npm run dev
 Open `http://localhost:3000`.
 
 Pages:
-- `/dashboard` reads `GET /api/status`
-- `/config` reads `GET /api/config`
-- `/logs` reads `GET /api/logs?lines=200`
+- `/dashboard` reads `GET /api/status`, auto-refreshes every 60s, and has manual refresh
+- `/logs` reads `GET /api/logs?lines=N`, supports manual refresh and optional auto-refresh every 60s
+- `/config` reads `GET /api/config`, supports JSON/YAML read-only view (default YAML) and auto-refresh every 60s

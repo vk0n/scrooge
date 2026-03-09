@@ -27,6 +27,10 @@ a {
   text-decoration: none;
 }
 
+a:hover {
+  text-decoration: underline;
+}
+
 main {
   max-width: 960px;
   margin: 0 auto;
@@ -48,6 +52,39 @@ h1 {
   color: var(--muted);
 }
 
+h2 {
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  border: 1px solid var(--border);
+  background: #152334;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.4rem 0.65rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+input[type="number"] {
+  border: 1px solid var(--border);
+  background: #0d141d;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+}
+
 pre {
   margin: 0;
   padding: 0.75rem;
@@ -55,4 +92,24 @@ pre {
   border: 1px solid var(--border);
   background: #0d141d;
   overflow: auto;
+}
+
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.65rem;
+}
+
+.kv-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  background: #0d141d;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.kv-label {
+  color: var(--muted);
+  font-size: 0.85rem;
 }
