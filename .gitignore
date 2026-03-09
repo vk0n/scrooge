@@ -134,3 +134,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Control plane (stage 1)
+api/.venv/
+frontend/node_modules/
+frontend/.next/
