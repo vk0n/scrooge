@@ -247,4 +247,4 @@ def close_position(symbol):
     Uses the universal open_or_close_trade function.
     """
     # side and qty are ignored when closing, universal function detects open position
-    open_or_close_trade(symbol)
+    return open_or_close_trade(symbol)

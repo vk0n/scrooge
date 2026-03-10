@@ -27,9 +27,9 @@ from report import (
     plot_results_interactive,
     rolling_window_backtest_distribution,
 )
-from state import load_state, save_state
+from state import add_closed_trade, load_state, save_state, update_balance, update_position
 from strategy import run_strategy
-from trade import check_balance, get_balance, get_open_position, set_leverage
+from trade import check_balance, close_position, get_balance, get_open_position, set_leverage
 
 state: dict[str, Any] | None = None
 
@@ -75,6 +75,7 @@ def _sleep_with_command_poll(
     control_client: Any,
     wait_seconds: int,
     poll_slice_seconds: int,
+    command_kwargs: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if wait_seconds <= 0:
         return current_state, False
@@ -92,7 +93,12 @@ def _sleep_with_command_poll(
             break
 
         time.sleep(min(poll_slice_seconds, max(0.1, deadline - now)))
-        current_state, restart_now = process_pending_commands(control_client, current_state, save_state)
+        current_state, restart_now = process_pending_commands(
+            control_client,
+            current_state,
+            save_state,
+            **(command_kwargs or {}),
+        )
         restart_requested = restart_requested or restart_now
 
     return current_state, restart_requested
@@ -345,6 +351,18 @@ def _compress_balance_history_for_state(balance_history: list[float] | None) -> 
     return compressed
 
 
+def _build_command_kwargs(symbol: str) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "close_position_fn": close_position,
+        "get_open_position_fn": get_open_position,
+        "get_balance_fn": get_balance,
+        "update_position_fn": update_position,
+        "update_balance_fn": update_balance,
+        "add_closed_trade_fn": add_closed_trade,
+    }
+
+
 if __name__ == "__main__":
     _ensure_runtime_log_file()
     cfg = load_config()
@@ -382,6 +400,7 @@ if __name__ == "__main__":
         restart_requested = False
         last_trading_enabled: bool | None = None
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
+        command_kwargs = _build_command_kwargs(symbol)
 
         print("Running LIVE on Binance Futures...")
         set_leverage(symbol, lvrg)
@@ -391,7 +410,12 @@ if __name__ == "__main__":
                 if control_client is None:
                     control_client = get_control_client()
 
-                state, restart_now = process_pending_commands(control_client, state, save_state)
+                state, restart_now = process_pending_commands(
+                    control_client,
+                    state,
+                    save_state,
+                    **command_kwargs,
+                )
                 restart_requested = restart_requested or restart_now
 
                 if restart_requested:
@@ -404,6 +428,7 @@ if __name__ == "__main__":
                     limits = cfg["limits"]
                     params = cfg["params"]
                     set_leverage(symbol, lvrg)
+                    command_kwargs = _build_command_kwargs(symbol)
                     restart_requested = False
                     print(f"[{_ts()}] Restart command applied: config reloaded")
 
@@ -419,6 +444,7 @@ if __name__ == "__main__":
                         control_client,
                         live_poll_seconds,
                         control_poll_slice_seconds,
+                        command_kwargs=command_kwargs,
                     )
                     restart_requested = restart_requested or restart_now
                     continue
@@ -470,6 +496,7 @@ if __name__ == "__main__":
                     control_client,
                     live_poll_seconds,
                     control_poll_slice_seconds,
+                    command_kwargs=command_kwargs,
                 )
                 restart_requested = restart_requested or restart_now
 
@@ -480,6 +507,7 @@ if __name__ == "__main__":
                     control_client,
                     10,
                     control_poll_slice_seconds,
+                    command_kwargs=command_kwargs,
                 )
                 restart_requested = restart_requested or restart_now
 

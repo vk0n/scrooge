@@ -35,4 +35,9 @@ Pages:
 - `/config` uses form-based editor backed by `GET /api/config/editable` and `POST /api/config/editable`
   - supports `Save` and `Save & Restart`
   - no free-form YAML editing
-- `/controls` sends `POST /api/control/{start|stop|restart}`, then polls `GET /api/control/commands/{id}` for execution status (`start` resume, `stop` pause, `restart` reload config)
+- `/controls` sends `POST /api/control/{start|stop|restart|close-position|update-sl|update-tp}`, then polls `GET /api/control/commands/{id}` for execution status
+  - `start` resumes trading
+  - `stop` pauses trading
+  - `restart` reloads config and resumes trading
+  - `close-position` requests manual close of the current position
+  - `update-sl` / `update-tp` update current position levels (requires positive numeric `value`)

@@ -15,6 +15,14 @@ REDIS_DB = int(os.getenv("SCROOGE_REDIS_DB", "0"))
 CONTROL_QUEUE_KEY = os.getenv("SCROOGE_CONTROL_QUEUE_KEY", "scrooge:control:queue")
 COMMAND_STATUS_PREFIX = os.getenv("SCROOGE_COMMAND_STATUS_PREFIX", "scrooge:control:command:")
 COMMAND_STATUS_TTL_SECONDS = int(os.getenv("SCROOGE_COMMAND_STATUS_TTL_SECONDS", "86400"))
+SUPPORTED_ACTIONS = {
+    "start",
+    "stop",
+    "restart",
+    "close_position",
+    "update_sl",
+    "update_tp",
+}
 
 
 def _now_iso() -> str:
@@ -36,22 +44,28 @@ def _status_key(command_id: str) -> str:
     return f"{COMMAND_STATUS_PREFIX}{command_id}"
 
 
-def enqueue_control_command(action: str, requested_by: str | None) -> dict[str, str]:
+def enqueue_control_command(action: str, requested_by: str | None, payload: dict[str, Any] | None = None) -> dict[str, str]:
+    normalized_action = action.strip().lower()
+    if normalized_action not in SUPPORTED_ACTIONS:
+        raise ValueError(f"Unsupported action: {action}")
+
     command_id = uuid.uuid4().hex
     created_at = _now_iso()
     status_key = _status_key(command_id)
 
     command_payload = {
         "id": command_id,
-        "action": action,
+        "action": normalized_action,
+        "payload": payload or {},
         "requested_by": requested_by or "unknown",
         "created_at": created_at,
     }
     status_payload = {
         "command_id": command_id,
-        "action": action,
+        "action": normalized_action,
         "status": "pending",
         "message": "",
+        "payload": json.dumps(payload or {}),
         "requested_by": requested_by or "unknown",
         "created_at": created_at,
         "updated_at": created_at,
@@ -71,7 +85,7 @@ def enqueue_control_command(action: str, requested_by: str | None) -> dict[str, 
         "command_id": command_id,
         "status": "pending",
         "queued_at": created_at,
-        "action": action,
+        "action": normalized_action,
     }
 
 
@@ -90,5 +104,10 @@ def get_command_status(command_id: str) -> dict[str, Any] | None:
             payload["service_status"] = json.loads(service_status_raw)
         except json.JSONDecodeError:
             payload["service_status"] = service_status_raw
+    raw_command_payload = payload.get("payload")
+    if raw_command_payload:
+        try:
+            payload["payload"] = json.loads(raw_command_payload)
+        except json.JSONDecodeError:
+            payload["payload"] = raw_command_payload
     return payload
-

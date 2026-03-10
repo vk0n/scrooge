@@ -66,10 +66,13 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - `POST /api/control/start`
   - `POST /api/control/stop`
   - `POST /api/control/restart`
+  - `POST /api/control/close-position`
+  - `POST /api/control/update-sl` with JSON body `{ "value": <positive number> }`
+  - `POST /api/control/update-tp` with JSON body `{ "value": <positive number> }`
   - `GET /api/control/commands/{command_id}`
   - Auth: either `Authorization: Basic ...` or header `X-Scrooge-Control-Token: ...`
   - Mutating actions are queued via Redis and executed asynchronously by bot runtime loop.
-  - Semantics: `start` = resume trading, `stop` = pause trading, `restart` = resume + config reload.
+  - Semantics: `start` = resume trading, `stop` = pause trading, `restart` = resume + config reload, `close-position` = manual close active position, `update-sl`/`update-tp` = update current position levels.
   - Note: commands are processed only when live bot service is running (Compose `live` profile).
 - `config.yaml`, `state.json`, `trade_history.jsonl`, `balance_history.jsonl`, and `trading_log.txt` are read from runtime paths.
 - WebSocket live endpoints:

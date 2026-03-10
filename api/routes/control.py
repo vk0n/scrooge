@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
+from pydantic import BaseModel, Field
 
 from services.auth_service import require_control_or_basic_auth
 from services.command_service import enqueue_control_command, get_command_status
@@ -15,34 +16,71 @@ def _requested_by(request: Request) -> str:
     return "token-user"
 
 
-@router.post("/start")
-def start(request: Request, x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
-    require_control_or_basic_auth(request=request, control_token=x_scrooge_control_token)
+class UpdateLevelRequest(BaseModel):
+    value: float = Field(..., gt=0)
+
+
+def _enqueue_action(
+    request: Request,
+    action: str,
+    control_token: str | None,
+    payload: dict[str, object] | None = None,
+) -> dict[str, object]:
+    require_control_or_basic_auth(request=request, control_token=control_token)
     try:
-        command = enqueue_control_command(action="start", requested_by=_requested_by(request))
+        return enqueue_control_command(action=action, requested_by=_requested_by(request), payload=payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    return command
+
+
+@router.post("/start")
+def start(request: Request, x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
+    return _enqueue_action(request=request, action="start", control_token=x_scrooge_control_token)
 
 
 @router.post("/stop")
 def stop(request: Request, x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
-    require_control_or_basic_auth(request=request, control_token=x_scrooge_control_token)
-    try:
-        command = enqueue_control_command(action="stop", requested_by=_requested_by(request))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    return command
+    return _enqueue_action(request=request, action="stop", control_token=x_scrooge_control_token)
 
 
 @router.post("/restart")
 def restart(request: Request, x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
-    require_control_or_basic_auth(request=request, control_token=x_scrooge_control_token)
-    try:
-        command = enqueue_control_command(action="restart", requested_by=_requested_by(request))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    return command
+    return _enqueue_action(request=request, action="restart", control_token=x_scrooge_control_token)
+
+
+@router.post("/close-position")
+def close_position(request: Request, x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
+    return _enqueue_action(request=request, action="close_position", control_token=x_scrooge_control_token)
+
+
+@router.post("/update-sl")
+def update_sl(
+    data: UpdateLevelRequest,
+    request: Request,
+    x_scrooge_control_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    return _enqueue_action(
+        request=request,
+        action="update_sl",
+        control_token=x_scrooge_control_token,
+        payload={"value": data.value},
+    )
+
+
+@router.post("/update-tp")
+def update_tp(
+    data: UpdateLevelRequest,
+    request: Request,
+    x_scrooge_control_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    return _enqueue_action(
+        request=request,
+        action="update_tp",
+        control_token=x_scrooge_control_token,
+        payload={"value": data.value},
+    )
 
 
 @router.get("/commands/{command_id}")
