@@ -5,20 +5,38 @@ import yaml
 from tqdm import tqdm
 from dotenv import load_dotenv
 from binance.client import Client
+from pathlib import Path
+from typing import Any
 from strategy import run_strategy
 from report import compute_stats
 from data import build_dataset
 import data as data_module
 
-CONFIG_PATH = "config.yaml"
+CONFIG_PATH = Path(
+    os.getenv(
+        "SCROOGE_BACKTEST_CONFIG_PATH",
+        os.getenv("SCROOGE_CONFIG_PATH", "config.backtest.yaml"),
+    )
+).expanduser()
+
+
+def load_config() -> dict[str, Any]:
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Config file not found: {CONFIG_PATH}")
+    with CONFIG_PATH.open("r", encoding="utf-8") as file_obj:
+        cfg = yaml.safe_load(file_obj)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Config must be a YAML mapping: {CONFIG_PATH}")
+    if cfg.get("live") is True:
+        raise ValueError(f"Optimize requires backtest config (live must be false): {CONFIG_PATH}")
+    return cfg
 
 load_dotenv()
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 data_module.set_client(Client(api_key, api_secret))
 
-with open(CONFIG_PATH, "r") as f:
-    cfg = yaml.safe_load(f)
+cfg = load_config()
 
 symbol = cfg["symbol"]
 lvrg = cfg["leverage"]

@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
 
   bot:
+    profiles: ["live"]
     build:
       context: .
       dockerfile: docker/bot.Dockerfile
@@ -24,6 +25,8 @@ services:
       SCROOGE_COMMAND_STATUS_TTL_SECONDS: "${SCROOGE_COMMAND_STATUS_TTL_SECONDS:-86400}"
       SCROOGE_LIVE_POLL_SECONDS: "${SCROOGE_LIVE_POLL_SECONDS:-60}"
       SCROOGE_CONTROL_POLL_SLICE_SECONDS: "${SCROOGE_CONTROL_POLL_SLICE_SECONDS:-1}"
+      SCROOGE_CONFIG_PATH: "${SCROOGE_CONFIG_PATH:-/runtime/config.yaml}"
+      SCROOGE_LOG_FILE: "${SCROOGE_LOG_FILE:-/runtime/trading_log.txt}"
       SCROOGE_STATE_FILE: "${SCROOGE_STATE_FILE:-/runtime/state.json}"
       SCROOGE_TRADE_HISTORY_FILE: "${SCROOGE_TRADE_HISTORY_FILE:-/runtime/trade_history.jsonl}"
       SCROOGE_BALANCE_HISTORY_FILE: "${SCROOGE_BALANCE_HISTORY_FILE:-/runtime/balance_history.jsonl}"
@@ -33,13 +36,38 @@ services:
       - ./config.yaml:/runtime/config.yaml:ro
     restart: unless-stopped
 
+  backtest:
+    profiles: ["backtest"]
+    build:
+      context: .
+      dockerfile: docker/bot.Dockerfile
+    depends_on:
+      - redis
+    command: ["sh", "/app/docker/backtest_entrypoint.sh"]
+    working_dir: /runtime
+    environment:
+      BINANCE_API_KEY: "${BINANCE_API_KEY:-}"
+      BINANCE_API_SECRET: "${BINANCE_API_SECRET:-}"
+      SCROOGE_CONFIG_PATH: "${SCROOGE_BACKTEST_CONFIG_PATH:-/runtime/config.backtest.yaml}"
+      SCROOGE_BACKTEST_ROOT: "${SCROOGE_BACKTEST_ROOT:-/runtime/backtests}"
+      SCROOGE_REDIS_HOST: "${SCROOGE_REDIS_HOST:-redis}"
+      SCROOGE_REDIS_PORT: "${SCROOGE_REDIS_PORT:-6379}"
+      SCROOGE_REDIS_DB: "${SCROOGE_REDIS_DB:-0}"
+      SCROOGE_CONTROL_QUEUE_KEY: "${SCROOGE_CONTROL_QUEUE_KEY:-scrooge:control:queue}"
+      SCROOGE_COMMAND_STATUS_PREFIX: "${SCROOGE_COMMAND_STATUS_PREFIX:-scrooge:control:command:}"
+      SCROOGE_COMMAND_STATUS_TTL_SECONDS: "${SCROOGE_COMMAND_STATUS_TTL_SECONDS:-86400}"
+      SCROOGE_CHART_SOURCE: "dataset"
+    volumes:
+      - scrooge_runtime:/runtime
+      - ./config.backtest.yaml:/runtime/config.backtest.yaml:ro
+    restart: "no"
+
   api:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
     container_name: scrooge-api
     depends_on:
-      - bot
       - redis
     environment:
       SCROOGE_GUI_USERNAME: "${SCROOGE_GUI_USERNAME}"

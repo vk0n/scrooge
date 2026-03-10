@@ -1,6 +1,7 @@
 # requirements:
 # pip install python-binance pandas pandas_ta matplotlib
 
+import os
 import pandas as pd
 from tqdm import tqdm
 from datetime import datetime
@@ -14,7 +15,7 @@ from state import (
 )
 
 
-LOG_FILE = "trading_log.txt"
+LOG_FILE = os.getenv("SCROOGE_LOG_FILE", "trading_log.txt")
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 def save_log(log_buffer):

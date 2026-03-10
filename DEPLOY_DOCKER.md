@@ -1,97 +1,95 @@
-# Scrooge Control Plane: Docker Compose 3+1 (+ bot command queue)
+# Scrooge Control Plane: Docker Compose profiles (live + backtest)
 
 Architecture:
-- `bot` container: trading runtime (`main.py`)
 - `api` container: FastAPI control plane
 - `frontend` container: Next.js UI
 - `proxy` container: Nginx entrypoint (single public port)
 - `redis` container: command queue and command status storage
+- `bot` service (`profile: live`): long-running live trading runtime
+- `backtest` service (`profile: backtest`): one-shot backtest runner job
 
-`bot` and `api` use one shared Docker volume (`scrooge_runtime`) for runtime files.
+All services use shared Docker volume `scrooge_runtime`.
 
-## 1. Prepare `.env`
+## 1. Prepare configs
 
-Create `.env` next to `docker-compose.yml`:
+Live config:
+- `config.yaml` (`live: true`)
+
+Backtest config:
+- `config.backtest.yaml` (`live: false`)
+
+## 2. Prepare `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Then edit `.env`:
+Set at least:
 
 ```env
 BINANCE_API_KEY=...
 BINANCE_API_SECRET=...
-
 SCROOGE_GUI_USERNAME=admin
 SCROOGE_GUI_PASSWORD=strong_password_here
-
-# Optional for machine integrations (without Basic auth) on /api/control/*
-SCROOGE_CONTROL_TOKEN=long_random_token_here
-
-# Queue settings
-SCROOGE_REDIS_HOST=redis
-SCROOGE_REDIS_PORT=6379
-SCROOGE_REDIS_DB=0
-SCROOGE_CONTROL_QUEUE_KEY=scrooge:control:queue
-SCROOGE_COMMAND_STATUS_PREFIX=scrooge:control:command:
-SCROOGE_COMMAND_STATUS_TTL_SECONDS=86400
-
-# Bot loop tuning
-SCROOGE_LIVE_POLL_SECONDS=60
-SCROOGE_CONTROL_POLL_SLICE_SECONDS=1
-
-# WebSocket tuning
-SCROOGE_WS_PUSH_INTERVAL_SECONDS=2
-SCROOGE_WS_LOG_LINES=200
-
-# Charting
-SCROOGE_CHART_MAX_CANDLES=1500
-SCROOGE_CHART_DATASET_MAX_CANDLES=10000
-SCROOGE_CHART_TIMEOUT_SECONDS=10
-SCROOGE_CHART_SOURCE=auto
-SCROOGE_CHART_DATASET_PATH=/runtime/chart_dataset.csv
-SCROOGE_RUNTIME_CHART_DATASET_PATH=/runtime/chart_dataset.csv
 ```
 
-## 2. Start stack
+## 3. Run modes
+
+Control plane only (no bot process):
 
 ```bash
 docker compose up -d --build
 ```
 
+Control plane + live bot:
+
+```bash
+docker compose --profile live up -d --build
+```
+
+One-shot backtest run:
+
+```bash
+docker compose --profile backtest run --rm backtest
+```
+
+Backtest artifacts are written into:
+- `/runtime/backtests/<run_id>/...`
+- symlink `/runtime/backtests/latest` points to last run
+
 Open UI:
 - `http://<host>:3000`
 
-## 3. Runtime data model
+## 4. Runtime data model (live)
 
-- `config.yaml` from host is mounted read-only into `bot` and read-write into `api` (for limited editable config API).
-- `state.json` (runtime snapshot only), `trade_history.jsonl`, `balance_history.jsonl`, `trading_log.txt`, and `chart_dataset.csv` are created/updated inside shared volume `scrooge_runtime`.
-- Bot writes live/backtest candles to `chart_dataset.csv`; chart API can read from this dataset (`source=dataset`) and use Binance as fallback (`source=auto`).
-- Restarting containers does not lose runtime data (volume persists).
+- API edits/reads `config.yaml` via `/runtime/config.yaml`.
+- Live runtime writes:
+  - `/runtime/state.json` (runtime snapshot only)
+  - `/runtime/trade_history.jsonl`
+  - `/runtime/balance_history.jsonl`
+  - `/runtime/trading_log.txt`
+  - `/runtime/chart_dataset.csv`
 
-## 4. Control behavior
+## 5. Control behavior
 
-`/api/control/*` is queued via Redis:
-- API enqueues command (`start/stop/restart`) and returns `command_id`.
-- `bot` consumes queue directly and updates command status.
-- UI polls `GET /api/control/commands/{command_id}` for final status.
+`/api/control/*` commands are queued via Redis.
 
-Control semantics:
-- `start` = resume trading (container keeps running)
-- `stop` = pause trading (container keeps running)
-- `restart` = resume trading + reload `config.yaml` inside bot loop
+Important:
+- Commands are processed only when `bot` service is running (`--profile live`).
+- `start` = resume trading loop
+- `stop` = pause trading loop
+- `restart` = resume + config reload
 
-If you need full process restart/stop, use Docker operations manually (`docker compose restart bot`, etc.).
+## 6. Stop / cleanup
 
-## 5. Stop / cleanup
+Stop stack:
 
-Stop services:
 ```bash
 docker compose down
 ```
 
 Stop and remove runtime volume:
+
 ```bash
 docker compose down -v
 ```

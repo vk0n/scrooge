@@ -70,6 +70,7 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - Auth: either `Authorization: Basic ...` or header `X-Scrooge-Control-Token: ...`
   - Mutating actions are queued via Redis and executed asynchronously by bot runtime loop.
   - Semantics: `start` = resume trading, `stop` = pause trading, `restart` = resume + config reload.
+  - Note: commands are processed only when live bot service is running (Compose `live` profile).
 - `config.yaml`, `state.json`, `trade_history.jsonl`, `balance_history.jsonl`, and `trading_log.txt` are read from runtime paths.
 - WebSocket live endpoints:
   - `ws://localhost:8000/ws`

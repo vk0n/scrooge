@@ -62,10 +62,11 @@ signal.signal(signal.SIGINT, handle_exit)
 
 
 def load_config() -> dict[str, Any]:
-    with open("config.yaml", "r", encoding="utf-8") as file_obj:
+    config_path = Path(os.getenv("SCROOGE_CONFIG_PATH", "config.yaml")).expanduser()
+    with config_path.open("r", encoding="utf-8") as file_obj:
         config = yaml.safe_load(file_obj)
     if not isinstance(config, dict):
-        raise ValueError("config.yaml must contain a YAML object")
+        raise ValueError(f"{config_path} must contain a YAML object")
     return config
 
 
@@ -102,7 +103,7 @@ def _ensure_runtime_log_file() -> None:
     Ensure runtime log file exists so API logs endpoint can read it immediately.
     """
     try:
-        log_path = Path("trading_log.txt")
+        log_path = Path(os.getenv("SCROOGE_LOG_FILE", "trading_log.txt")).expanduser()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch(exist_ok=True)
     except OSError as exc:
@@ -321,6 +322,29 @@ def _write_chart_dataset_snapshot(df: Any, symbol: str, path: Path, balance_hist
         print(f"[{_ts()}] Failed to write chart dataset snapshot: {exc}")
 
 
+def _compress_balance_history_for_state(balance_history: list[float] | None) -> list[float]:
+    """
+    Keep only balance change points for persisted state history.
+    This keeps backtest-derived history compact while preserving step changes.
+    """
+    if not balance_history:
+        return []
+
+    compressed: list[float] = []
+    last_value: float | None = None
+    for item in balance_history:
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value):
+            continue
+        if last_value is None or not math.isclose(value, last_value, rel_tol=0.0, abs_tol=1e-9):
+            compressed.append(value)
+            last_value = value
+    return compressed
+
+
 if __name__ == "__main__":
     _ensure_runtime_log_file()
     cfg = load_config()
@@ -335,14 +359,6 @@ if __name__ == "__main__":
 
     intervals = cfg["intervals"]
     limits = cfg["limits"]
-    backtest_period_days = cfg["backtest_period_days"]
-    backtest_period_end_time = cfg["backtest_period_end_time"]
-    enable_plot = cfg["enable_plot"]
-    plot_split_by_year = cfg.get("plot_split_by_year", True)
-    run_mc = cfg["run_monte_carlo"]
-    run_rw = cfg["run_rolling_window_backtest_distribution"]
-    rolling_window_days = cfg["rolling_window_days"]
-    rolling_window_workers = cfg.get("rolling_window_workers")
 
     params = cfg["params"]
 
@@ -468,6 +484,15 @@ if __name__ == "__main__":
                 restart_requested = restart_requested or restart_now
 
     else:
+        backtest_period_days = cfg["backtest_period_days"]
+        backtest_period_end_time = cfg["backtest_period_end_time"]
+        enable_plot = cfg["enable_plot"]
+        plot_split_by_year = cfg.get("plot_split_by_year", True)
+        run_mc = cfg["run_monte_carlo"]
+        run_rw = cfg["run_rolling_window_backtest_distribution"]
+        rolling_window_days = cfg["rolling_window_days"]
+        rolling_window_workers = cfg.get("rolling_window_workers")
+
         print("Running BACKTEST...")
         df = build_dataset(
             symbol=symbol,
@@ -487,6 +512,13 @@ if __name__ == "__main__":
             use_state=False,
             **params,
         )
+        state["balance_history"] = _compress_balance_history_for_state(balance_history)
+        state["balance"] = float(final_balance)
+        if len(state["balance_history"]) != len(balance_history):
+            print(
+                f"[{_ts()}] Compressed backtest balance history "
+                f"from {len(balance_history)} to {len(state['balance_history'])} points for state persistence"
+            )
         save_state(state)
         _write_chart_dataset_snapshot(
             df=df,
