@@ -36,6 +36,8 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - `SCROOGE_CONTROL_QUEUE_KEY`
   - `SCROOGE_COMMAND_STATUS_PREFIX`
   - `SCROOGE_COMMAND_STATUS_TTL_SECONDS`
+  - `SCROOGE_WS_PUSH_INTERVAL_SECONDS`
+  - `SCROOGE_WS_LOG_LINES`
 - Optional runtime file path overrides:
   - `SCROOGE_CONFIG_PATH`
   - `SCROOGE_STATE_PATH`
@@ -61,4 +63,7 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - Mutating actions are queued via Redis and executed asynchronously by bot runtime loop.
   - Semantics: `start` = resume trading, `stop` = pause trading, `restart` = resume + config reload.
 - `config.yaml`, `state.json`, and `trading_log.txt` are read from the project root.
-- WebSocket endpoint remains available at `ws://localhost:8000/ws` (mock).
+- WebSocket live endpoints:
+  - `ws://localhost:8000/ws`
+  - `ws://localhost:8000/ws/status`
+  - Pushes `status` and `logs` snapshots every few seconds.

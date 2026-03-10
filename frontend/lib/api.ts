@@ -33,3 +33,29 @@ export async function fetchApi<T>(path: string, options: ApiRequestOptions = {})
 
   return (await response.json()) as T;
 }
+
+export function buildWebSocketUrl(path: string, query?: Record<string, string>): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const baseOrigin = API_BASE_URL || window.location.origin;
+  let url: URL;
+  try {
+    url = new URL(baseOrigin);
+  } catch {
+    return null;
+  }
+
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = normalizedPath;
+
+  if (query) {
+    Object.entries(query).forEach(([key, value]) => {
+      url.searchParams.set(key, value);
+    });
+  }
+
+  return url.toString();
+}

@@ -1,12 +1,128 @@
 from __future__ import annotations
 
+import asyncio
+import os
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from services.auth_service import require_ws_auth
+from services.config_service import load_config
+from services.log_service import LOG_PATH, read_last_log_lines
+from services.state_service import (
+    load_state,
+    resolve_balance,
+    resolve_current_position,
+    resolve_last_update_timestamp,
+    resolve_trading_enabled,
+    resolve_trailing_state,
+)
 
 router = APIRouter()
+
+WS_PUSH_INTERVAL_SECONDS = float(os.getenv("SCROOGE_WS_PUSH_INTERVAL_SECONDS", "2"))
+WS_DEFAULT_LOG_LINES = int(os.getenv("SCROOGE_WS_LOG_LINES", "200"))
+
+
+def _build_status_snapshot() -> dict[str, Any]:
+    warnings: list[str] = []
+    config: dict[str, Any] = {}
+    state: dict[str, Any] = {
+        "position": None,
+        "trade_history": [],
+        "balance_history": [],
+        "session_start": None,
+        "session_end": None,
+        "trading_enabled": True,
+    }
+
+    try:
+        config = load_config()
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(str(exc))
+
+    try:
+        loaded_state, state_warnings = load_state()
+        state = loaded_state
+        warnings.extend(state_warnings)
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(str(exc))
+
+    trading_enabled = resolve_trading_enabled(state)
+    position = state.get("position")
+
+    return {
+        "bot_running_status": "running" if trading_enabled else "paused",
+        "trading_enabled": trading_enabled,
+        "balance": resolve_balance(state, default_balance=config.get("initial_balance")),
+        "current_position": resolve_current_position(position),
+        "leverage": config.get("leverage"),
+        "symbol": config.get("symbol"),
+        "trailing_state": resolve_trailing_state(position),
+        "open_trade_info": position,
+        "last_update_timestamp": resolve_last_update_timestamp(state),
+        "warnings": warnings,
+    }
+
+
+def _build_logs_snapshot(lines: int) -> dict[str, Any]:
+    try:
+        tail_lines = read_last_log_lines(lines)
+        warnings: list[str] = []
+    except Exception as exc:  # noqa: BLE001
+        tail_lines = []
+        warnings = [str(exc)]
+    return {
+        "path": str(LOG_PATH),
+        "requested_lines": lines,
+        "returned_lines": len(tail_lines),
+        "lines": tail_lines,
+        "warnings": warnings,
+    }
+
+
+def _resolve_lines(raw_value: str | None) -> int:
+    if not raw_value:
+        return WS_DEFAULT_LOG_LINES
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return WS_DEFAULT_LOG_LINES
+    return max(1, min(parsed, 5000))
+
+
+async def _stream_status(websocket: WebSocket) -> None:
+    lines = _resolve_lines(websocket.query_params.get("lines"))
+
+    await websocket.send_json(
+        {
+            "type": "hello",
+            "mode": "live",
+            "message": "Scrooge control WS connected",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "push_interval_seconds": WS_PUSH_INTERVAL_SECONDS,
+            "log_lines": lines,
+        }
+    )
+
+    while True:
+        now_iso = datetime.now(UTC).isoformat()
+        await websocket.send_json(
+            {
+                "type": "status",
+                "timestamp": now_iso,
+                "data": _build_status_snapshot(),
+            }
+        )
+        await websocket.send_json(
+            {
+                "type": "logs",
+                "timestamp": now_iso,
+                "data": _build_logs_snapshot(lines),
+            }
+        )
+        await asyncio.sleep(max(0.5, WS_PUSH_INTERVAL_SECONDS))
 
 
 @router.websocket("")
@@ -17,24 +133,24 @@ async def websocket_status(websocket: WebSocket) -> None:
 
     await websocket.accept()
     try:
-        await websocket.send_json(
-            {
-                "type": "hello",
-                "mode": "mock",
-                "message": "Scrooge control WS connected",
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
-        )
-
-        while True:
-            message = await websocket.receive_text()
-            await websocket.send_json(
-                {
-                    "type": "echo",
-                    "mode": "mock",
-                    "received": message,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                }
-            )
+        await _stream_status(websocket)
     except WebSocketDisconnect:
+        return
+    except RuntimeError:
+        # Socket may already be closed by client.
+        return
+
+
+@router.websocket("/status")
+async def websocket_status_path(websocket: WebSocket) -> None:
+    if not require_ws_auth(websocket):
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+
+    await websocket.accept()
+    try:
+        await _stream_status(websocket)
+    except WebSocketDisconnect:
+        return
+    except RuntimeError:
         return

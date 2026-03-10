@@ -8,7 +8,7 @@ function toBase64(raw: string): string {
   return window.btoa(raw);
 }
 
-export function getAuthorizationHeader(): string | null {
+export function getSavedBasicCredentials(): { username: string; password: string } | null {
   if (typeof window === "undefined") {
     return null;
   }
@@ -19,12 +19,20 @@ export function getAuthorizationHeader(): string | null {
     }
     const parsed = JSON.parse(raw) as StoredAuth;
     if (parsed.mode === "basic" && parsed.username.trim() && parsed.password) {
-      return `Basic ${toBase64(`${parsed.username}:${parsed.password}`)}`;
+      return { username: parsed.username.trim(), password: parsed.password };
     }
     return null;
   } catch {
     return null;
   }
+}
+
+export function getAuthorizationHeader(): string | null {
+  const creds = getSavedBasicCredentials();
+  if (!creds) {
+    return null;
+  }
+  return `Basic ${toBase64(`${creds.username}:${creds.password}`)}`;
 }
 
 export function saveBasicAuth(username: string, password: string): void {

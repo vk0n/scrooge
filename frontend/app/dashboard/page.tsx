@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-import { fetchApi } from "../../lib/api";
+import { getSavedBasicCredentials } from "../../lib/auth";
+import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 
 type StatusPayload = {
   bot_running_status: string;
@@ -18,6 +19,7 @@ type StatusPayload = {
 };
 
 const POLL_MS = 60000;
+const WS_RECONNECT_MS = 5000;
 
 function displayValue(value: unknown): string {
   if (value === null || value === undefined) {
@@ -65,9 +67,12 @@ export default function DashboardPage(): JSX.Element {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [wsConnected, setWsConnected] = useState<boolean>(false);
 
-  async function loadStatus(): Promise<void> {
-    setLoading(true);
+  async function loadStatus(silent = false): Promise<void> {
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const payload = await fetchApi<StatusPayload>("/api/status");
       setData(payload);
@@ -75,22 +80,86 @@ export default function DashboardPage(): JSX.Element {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load status");
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }
 
   useEffect((): (() => void) => {
-    void (async () => {
-      await loadStatus();
-    })();
+    let closedByUser = false;
+    let reconnectTimer: number | null = null;
+    let socket: WebSocket | null = null;
+
+    const creds = getSavedBasicCredentials();
+    if (!creds) {
+      setWsConnected(false);
+      return () => undefined;
+    }
+
+    const connect = (): void => {
+      const wsUrl = buildWebSocketUrl("/ws/status", {
+        username: creds.username,
+        password: creds.password
+      });
+      if (!wsUrl) {
+        setWsConnected(false);
+        return;
+      }
+
+      socket = new WebSocket(wsUrl);
+      socket.onopen = () => {
+        setWsConnected(true);
+      };
+      socket.onmessage = (event: MessageEvent<string>) => {
+        try {
+          const payload = JSON.parse(event.data) as { type?: string; data?: StatusPayload };
+          if (payload.type === "status" && payload.data) {
+            setData(payload.data);
+            setError(null);
+            setLoading(false);
+          }
+        } catch {
+          // Ignore malformed WS payloads and keep fallback polling active.
+        }
+      };
+      socket.onclose = () => {
+        setWsConnected(false);
+        if (!closedByUser) {
+          reconnectTimer = window.setTimeout(connect, WS_RECONNECT_MS);
+        }
+      };
+      socket.onerror = () => {
+        setWsConnected(false);
+      };
+    };
+
+    connect();
+
+    return () => {
+      closedByUser = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.close();
+      }
+    };
+  }, []);
+
+  useEffect((): (() => void) => {
+    void loadStatus(false);
+    if (wsConnected) {
+      return () => undefined;
+    }
     const intervalId = window.setInterval(() => {
-      void loadStatus();
+      void loadStatus(true);
     }, POLL_MS);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [wsConnected]);
 
   const openTradeInfo = data?.open_trade_info ?? null;
   const sl = readPositionNumber(openTradeInfo, "sl");
@@ -101,9 +170,13 @@ export default function DashboardPage(): JSX.Element {
   return (
     <section className="panel">
       <h1>Dashboard</h1>
-      <p className="muted">Read-only runtime snapshot (auto-refresh every {POLL_MS / 1000}s).</p>
+      <p className="muted">
+        {wsConnected
+          ? "Live mode: WebSocket updates."
+          : `Fallback mode: polling every ${POLL_MS / 1000}s.`}
+      </p>
       <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
-        <button type="button" onClick={() => void loadStatus()}>
+        <button type="button" onClick={() => void loadStatus(false)}>
           Refresh now
         </button>
         {loading ? <span className="muted">Loading...</span> : null}
