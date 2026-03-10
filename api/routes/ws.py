@@ -30,8 +30,7 @@ def _build_status_snapshot() -> dict[str, Any]:
     config: dict[str, Any] = {}
     state: dict[str, Any] = {
         "position": None,
-        "trade_history": [],
-        "balance_history": [],
+        "balance": None,
         "session_start": None,
         "session_end": None,
         "trading_enabled": True,

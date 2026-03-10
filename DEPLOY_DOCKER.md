@@ -44,6 +44,14 @@ SCROOGE_CONTROL_POLL_SLICE_SECONDS=1
 # WebSocket tuning
 SCROOGE_WS_PUSH_INTERVAL_SECONDS=2
 SCROOGE_WS_LOG_LINES=200
+
+# Charting
+SCROOGE_CHART_MAX_CANDLES=1500
+SCROOGE_CHART_DATASET_MAX_CANDLES=10000
+SCROOGE_CHART_TIMEOUT_SECONDS=10
+SCROOGE_CHART_SOURCE=auto
+SCROOGE_CHART_DATASET_PATH=/runtime/chart_dataset.csv
+SCROOGE_RUNTIME_CHART_DATASET_PATH=/runtime/chart_dataset.csv
 ```
 
 ## 2. Start stack
@@ -58,7 +66,8 @@ Open UI:
 ## 3. Runtime data model
 
 - `config.yaml` from host is mounted read-only into `bot` and read-write into `api` (for limited editable config API).
-- `state.json` and `trading_log.txt` are created/updated inside shared volume `scrooge_runtime`.
+- `state.json` (runtime snapshot only), `trade_history.jsonl`, `balance_history.jsonl`, `trading_log.txt`, and `chart_dataset.csv` are created/updated inside shared volume `scrooge_runtime`.
+- Bot writes live/backtest candles to `chart_dataset.csv`; chart API can read from this dataset (`source=dataset`) and use Binance as fallback (`source=auto`).
 - Restarting containers does not lose runtime data (volume persists).
 
 ## 4. Control behavior

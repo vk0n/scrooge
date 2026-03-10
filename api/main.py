@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from routes.config import router as config_router
+from routes.chart import router as chart_router
 from routes.control import router as control_router
 from routes.health import router as health_router
 from routes.logs import router as logs_router
@@ -42,6 +43,7 @@ app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(status_router, prefix="/api/status", tags=["status"], dependencies=[Depends(require_http_auth)])
 app.include_router(logs_router, prefix="/api/logs", tags=["logs"], dependencies=[Depends(require_http_auth)])
 app.include_router(config_router, prefix="/api/config", tags=["config"], dependencies=[Depends(require_http_auth)])
+app.include_router(chart_router, prefix="/api/chart", tags=["chart"], dependencies=[Depends(require_http_auth)])
 app.include_router(control_router, prefix="/api/control", tags=["control"])
 app.include_router(ws_router, prefix="/ws", tags=["ws"])
 

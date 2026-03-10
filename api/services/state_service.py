@@ -19,8 +19,7 @@ def load_state() -> tuple[dict[str, Any], list[str]]:
         return (
             {
                 "position": None,
-                "trade_history": [],
-                "balance_history": [],
+                "balance": None,
                 "session_start": None,
                 "session_end": None,
                 "trading_enabled": True,

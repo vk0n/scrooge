@@ -4,6 +4,9 @@ import pandas as pd
 import pandas_ta as ta
 from datetime import datetime, timedelta
 
+
+REQUIRED_INDICATOR_COLUMNS = ("BBL", "BBM", "BBU", "ATR", "RSI", "EMA")
+
 _client = None
 
 
@@ -101,6 +104,35 @@ def prepare_multi_tf(df_small, df_medium, df_big):
     return df_merged
 
 
+def _sanitize_dataset(df, required_columns=REQUIRED_INDICATOR_COLUMNS):
+    """
+    Drop warmup rows where key indicators are not ready yet.
+    This keeps dataset clean for backtests/charts/ML and avoids useless head tail.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    missing_required_columns = [column for column in required_columns if column not in out.columns]
+    if missing_required_columns:
+        raise ValueError(
+            "Dataset is missing required indicator columns: "
+            + ", ".join(missing_required_columns)
+        )
+
+    initial_rows = len(out)
+    out = out.dropna(subset=list(required_columns)).copy()
+    out.reset_index(drop=True, inplace=True)
+    dropped_rows = initial_rows - len(out)
+    if dropped_rows > 0:
+        print(f"[DATASET] Dropped {dropped_rows} warmup rows with incomplete indicators.")
+
+    if out.empty:
+        raise ValueError("Dataset became empty after dropping warmup rows.")
+
+    return out
+
+
 def build_dataset(
     symbol="BTCUSDT",
     intervals=None,
@@ -131,7 +163,13 @@ def build_dataset(
 
     if os.path.exists(output_path):
         print(f"[CACHE] Found existing dataset: {output_path}")
-        return pd.read_pickle(output_path)
+        cached = pd.read_pickle(output_path)
+        sanitized = _sanitize_dataset(cached)
+        if len(sanitized) != len(cached):
+            sanitized.to_pickle(output_path)
+            sanitized.to_csv(output_path.replace(".pkl", ".csv"), index=False)
+            print(f"[CACHE] Rewrote sanitized dataset cache → {output_path}")
+        return sanitized
 
     print(f"[FETCH] Fetching data for last {backtest_period_days} days on {symbol}: {interval_small}, {interval_medium}, {interval_big}")
     df_small = fetch_historical_paginated(symbol, interval_small, start_time, end_time)
@@ -140,6 +178,7 @@ def build_dataset(
 
     print("[MERGE] Preparing multi-timeframe dataframe...")
     df_merged = prepare_multi_tf(df_small, df_medium, df_big)
+    df_merged = _sanitize_dataset(df_merged)
 
     df_merged.to_pickle(output_path)
     df_merged.to_csv(output_path.replace(".pkl", ".csv"), index=False)

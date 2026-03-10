@@ -7,6 +7,7 @@ import { clearAuth, hasSavedAuth } from "../lib/auth";
 
 const links: Array<{ href: string; label: string }> = [
   { href: "/dashboard", label: "Dashboard" },
+  { href: "/chart", label: "Chart" },
   { href: "/logs", label: "Logs" },
   { href: "/config", label: "Config" },
   { href: "/controls", label: "Controls" },

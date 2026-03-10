@@ -38,14 +38,22 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - `SCROOGE_COMMAND_STATUS_TTL_SECONDS`
   - `SCROOGE_WS_PUSH_INTERVAL_SECONDS`
   - `SCROOGE_WS_LOG_LINES`
+  - `SCROOGE_CHART_MAX_CANDLES`
+  - `SCROOGE_CHART_DATASET_MAX_CANDLES`
+  - `SCROOGE_CHART_TIMEOUT_SECONDS`
+  - `SCROOGE_CHART_SOURCE` (`auto`/`dataset`/`binance`)
+  - `SCROOGE_CHART_DATASET_PATH` (CSV path or directory)
 - Optional runtime file path overrides:
   - `SCROOGE_CONFIG_PATH`
   - `SCROOGE_STATE_PATH`
+  - `SCROOGE_TRADE_HISTORY_PATH`
+  - `SCROOGE_BALANCE_HISTORY_PATH`
   - `SCROOGE_LOG_PATH`
 
 - Read endpoints:
   - `GET /health`
   - `GET /api/status`
+  - `GET /api/chart?symbol=BTCUSDT&period=1d&interval=1m&indicators=true&source=auto`
   - `GET /api/config`
   - `GET /api/config/editable`
   - `GET /api/logs?lines=200`
@@ -62,7 +70,7 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - Auth: either `Authorization: Basic ...` or header `X-Scrooge-Control-Token: ...`
   - Mutating actions are queued via Redis and executed asynchronously by bot runtime loop.
   - Semantics: `start` = resume trading, `stop` = pause trading, `restart` = resume + config reload.
-- `config.yaml`, `state.json`, and `trading_log.txt` are read from the project root.
+- `config.yaml`, `state.json`, `trade_history.jsonl`, `balance_history.jsonl`, and `trading_log.txt` are read from runtime paths.
 - WebSocket live endpoints:
   - `ws://localhost:8000/ws`
   - `ws://localhost:8000/ws/status`

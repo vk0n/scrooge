@@ -59,7 +59,8 @@ h2 {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -86,7 +87,8 @@ input[type="number"] {
 }
 
 input[type="text"],
-input[type="password"] {
+input[type="password"],
+select {
   border: 1px solid var(--border);
   background: #0d141d;
   color: var(--text);

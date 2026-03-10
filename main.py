@@ -2,6 +2,8 @@ print("Hello!\nI am Scrooge...")
 
 # requirements:
 # pip install python-binance pandas pandas_ta
+import csv
+import math
 import os
 import signal
 import sys
@@ -107,6 +109,218 @@ def _ensure_runtime_log_file() -> None:
         print(f"[{_ts()}] Failed to ensure log file exists: {exc}")
 
 
+def _parse_open_time_to_ms(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return int(value.timestamp() * 1000)
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric > 10_000_000_000:
+            return int(numeric)
+        if numeric > 100_000_000:
+            return int(numeric * 1000)
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        numeric = int(text)
+        if numeric > 10_000_000_000:
+            return numeric
+        if numeric > 100_000_000:
+            return numeric * 1000
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return int(datetime.fromisoformat(normalized).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _format_open_time(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    text = str(value).strip()
+    if text:
+        return text
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _coerce_optional_float(value: Any) -> float | str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(numeric):
+        return ""
+    return numeric
+
+
+def _read_last_chart_dataset_ts_ms(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        last_line = ""
+        with path.open("r", encoding="utf-8", errors="replace") as file_obj:
+            for line in file_obj:
+                if line.strip():
+                    last_line = line.strip()
+        if not last_line or last_line.startswith("open_time,"):
+            return None
+        first_cell = last_line.split(",", 1)[0]
+        return _parse_open_time_to_ms(first_cell)
+    except OSError as exc:
+        print(f"[{_ts()}] Failed reading chart dataset tail: {exc}")
+        return None
+
+
+def _read_dataset_header_columns(path: Path) -> list[str] | None:
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as file_obj:
+            header = [column.strip() for column in file_obj.readline().strip().split(",") if column.strip()]
+        return header or None
+    except OSError:
+        return None
+
+
+def _append_latest_chart_candle(
+    df: Any,
+    symbol: str,
+    path: Path,
+    last_ts_ms: int | None,
+    balance: float | None = None,
+) -> int | None:
+    if df is None or len(df) == 0:  # noqa: PLR2004
+        return last_ts_ms
+
+    latest = df.iloc[-1]
+    ts_ms = _parse_open_time_to_ms(latest.get("open_time"))
+    if ts_ms is None:
+        return last_ts_ms
+    if last_ts_ms is not None and ts_ms <= last_ts_ms:
+        return last_ts_ms
+
+    open_price = latest.get("open")
+    high_price = latest.get("high")
+    low_price = latest.get("low")
+    close_price = latest.get("close")
+    volume = latest.get("volume")
+    if None in (open_price, high_price, low_price, close_price, volume):
+        return last_ts_ms
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not path.exists() or path.stat().st_size == 0
+        existing_header = _read_dataset_header_columns(path)
+        default_header = [
+            "open_time",
+            "symbol",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "balance",
+            "EMA",
+            "RSI",
+            "BBL",
+            "BBM",
+            "BBU",
+            "ATR",
+        ]
+        header = default_header if write_header else (existing_header or default_header)
+
+        row_map: dict[str, float | str] = {
+            "open_time": _format_open_time(latest.get("open_time")),
+            "symbol": symbol,
+            "open": float(open_price),
+            "high": float(high_price),
+            "low": float(low_price),
+            "close": float(close_price),
+            "volume": float(volume),
+            "balance": _coerce_optional_float(balance),
+            "EMA": _coerce_optional_float(latest.get("EMA")),
+            "RSI": _coerce_optional_float(latest.get("RSI")),
+            "BBL": _coerce_optional_float(latest.get("BBL")),
+            "BBM": _coerce_optional_float(latest.get("BBM")),
+            "BBU": _coerce_optional_float(latest.get("BBU")),
+            "ATR": _coerce_optional_float(latest.get("ATR")),
+        }
+
+        with path.open("a", encoding="utf-8", newline="") as file_obj:
+            writer = csv.writer(file_obj)
+            if write_header:
+                writer.writerow(header)
+            row_values = [row_map.get(column, "") for column in header]
+            writer.writerow(row_values)
+        return ts_ms
+    except OSError as exc:
+        print(f"[{_ts()}] Failed to append chart dataset candle: {exc}")
+        return last_ts_ms
+
+
+def _write_chart_dataset_snapshot(df: Any, symbol: str, path: Path, balance_history: list[float] | None = None) -> None:
+    if df is None or len(df) == 0:  # noqa: PLR2004
+        return
+    required = {"open_time", "open", "high", "low", "close", "volume"}
+    columns = set(df.columns)
+    if not required.issubset(columns):
+        print(f"[{_ts()}] Skip chart dataset snapshot: missing required columns")
+        return
+
+    aligned_balance_history: list[float | str] = []
+    if balance_history:
+        clean_history: list[float] = []
+        for value in balance_history:
+            try:
+                clean_history.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if clean_history:
+            rows_count = len(df)
+            history_count = len(clean_history)
+            if history_count >= rows_count:
+                aligned_balance_history = clean_history[-rows_count:]
+            else:
+                # Right-align shorter history with candles so newest balances match newest candles.
+                aligned_balance_history = ([""] * (rows_count - history_count)) + clean_history
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="") as file_obj:
+            writer = csv.writer(file_obj)
+            writer.writerow(
+                ["open_time", "symbol", "open", "high", "low", "close", "volume", "balance", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"]
+            )
+            for idx, row in enumerate(df.itertuples(index=False)):
+                balance_value: float | str = ""
+                if aligned_balance_history and idx < len(aligned_balance_history):
+                    balance_value = aligned_balance_history[idx]
+                writer.writerow(
+                    [
+                        _format_open_time(getattr(row, "open_time", None)),
+                        symbol,
+                        float(getattr(row, "open")),
+                        float(getattr(row, "high")),
+                        float(getattr(row, "low")),
+                        float(getattr(row, "close")),
+                        float(getattr(row, "volume")),
+                        balance_value,
+                        _coerce_optional_float(getattr(row, "EMA", None)),
+                        _coerce_optional_float(getattr(row, "RSI", None)),
+                        _coerce_optional_float(getattr(row, "BBL", None)),
+                        _coerce_optional_float(getattr(row, "BBM", None)),
+                        _coerce_optional_float(getattr(row, "BBU", None)),
+                        _coerce_optional_float(getattr(row, "ATR", None)),
+                    ]
+                )
+    except OSError as exc:
+        print(f"[{_ts()}] Failed to write chart dataset snapshot: {exc}")
+
+
 if __name__ == "__main__":
     _ensure_runtime_log_file()
     cfg = load_config()
@@ -134,6 +348,7 @@ if __name__ == "__main__":
 
     live_poll_seconds = _env_int("SCROOGE_LIVE_POLL_SECONDS", 60)
     control_poll_slice_seconds = _env_int("SCROOGE_CONTROL_POLL_SLICE_SECONDS", 1)
+    chart_dataset_path = Path(os.getenv("SCROOGE_RUNTIME_CHART_DATASET_PATH", "chart_dataset.csv")).expanduser()
 
     load_dotenv()
     api_key = os.getenv("BINANCE_API_KEY")
@@ -150,6 +365,7 @@ if __name__ == "__main__":
         control_client = get_control_client()
         restart_requested = False
         last_trading_enabled: bool | None = None
+        last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
 
         print("Running LIVE on Binance Futures...")
         set_leverage(symbol, lvrg)
@@ -223,6 +439,13 @@ if __name__ == "__main__":
                     allow_entries=trading_enabled,
                     **params,
                 )
+                last_chart_dataset_ts_ms = _append_latest_chart_candle(
+                    df=df,
+                    symbol=symbol,
+                    path=chart_dataset_path,
+                    last_ts_ms=last_chart_dataset_ts_ms,
+                    balance=float(balance),
+                )
 
                 # Wait until next candle
                 print(f"[{_ts()}] Waiting for next check...")
@@ -261,7 +484,15 @@ if __name__ == "__main__":
             symbol=symbol,
             leverage=lvrg,
             use_full_balance=use_full_balance,
+            use_state=False,
             **params,
+        )
+        save_state(state)
+        _write_chart_dataset_snapshot(
+            df=df,
+            symbol=symbol,
+            path=chart_dataset_path,
+            balance_history=balance_history,
         )
         stats = compute_stats(initial_balance, final_balance, trades, balance_history)
 

@@ -1,4 +1,3 @@
-import json
 import pandas as pd
 import matplotlib.pyplot as plt
 import webbrowser
@@ -10,9 +9,13 @@ from plotly.subplots import make_subplots
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from data import fetch_historical_paginated, prepare_multi_tf
+from state import (
+    load_balance_history,
+    load_state as load_runtime_state,
+    load_trade_history,
+)
 from strategy import run_strategy
 
-STATE_FILE = "state.json"
 _client = None
 _rw_df = None
 _rw_start_time = None
@@ -76,10 +79,10 @@ def _rw_worker(offset):
     return final_balance, pnl_pct, win_rate, max_drawdown
 
 def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    return None
+    state = load_runtime_state(include_history=False)
+    state["trade_history"] = load_trade_history()
+    state["balance_history"] = load_balance_history()
+    return state
 
 def fetch_session_klines(symbol, interval, start_ts, end_ts):
     """Fetch historical klines from Binance for session period."""

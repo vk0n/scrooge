@@ -30,6 +30,7 @@ Authentication:
 
 Pages:
 - `/dashboard` uses live WebSocket updates (`/ws/status`) with polling fallback to `GET /api/status`
+- `/chart` reads `GET /api/chart` and renders Plotly candlesticks, trade markers, indicators, and equity curve
 - `/logs` uses live WebSocket updates (`/ws/status?lines=N`) with polling fallback to `GET /api/logs?lines=N`
 - `/config` uses form-based editor backed by `GET /api/config/editable` and `POST /api/config/editable`
   - supports `Save` and `Save & Restart`
