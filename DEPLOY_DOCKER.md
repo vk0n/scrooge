@@ -53,7 +53,7 @@ Open UI:
 
 ## 3. Runtime data model
 
-- `config.yaml` from host is mounted read-only into both `bot` and `api`.
+- `config.yaml` from host is mounted read-only into `bot` and read-write into `api` (for limited editable config API).
 - `state.json` and `trading_log.txt` are created/updated inside shared volume `scrooge_runtime`.
 - Restarting containers does not lose runtime data (volume persists).
 

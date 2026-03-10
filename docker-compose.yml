@@ -53,7 +53,7 @@ services:
       SCROOGE_COMMAND_STATUS_TTL_SECONDS: "${SCROOGE_COMMAND_STATUS_TTL_SECONDS:-86400}"
     volumes:
       - scrooge_runtime:/runtime
-      - ./config.yaml:/runtime/config.yaml:ro
+      - ./config.yaml:/runtime/config.yaml
     restart: unless-stopped
 
   frontend:

@@ -30,5 +30,7 @@ Authentication:
 Pages:
 - `/dashboard` reads `GET /api/status`, auto-refreshes every 60s, and has manual refresh
 - `/logs` reads `GET /api/logs?lines=N`, supports manual refresh and optional auto-refresh every 60s
-- `/config` reads `GET /api/config`, supports JSON/YAML read-only view (default YAML) and auto-refresh every 60s
+- `/config` uses form-based editor backed by `GET /api/config/editable` and `POST /api/config/editable`
+  - supports `Save` and `Save & Restart`
+  - no free-form YAML editing
 - `/controls` sends `POST /api/control/{start|stop|restart}`, then polls `GET /api/control/commands/{id}` for execution status (`start` resume, `stop` pause, `restart` reload config)

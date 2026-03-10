@@ -45,7 +45,13 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - `GET /health`
   - `GET /api/status`
   - `GET /api/config`
+  - `GET /api/config/editable`
   - `GET /api/logs?lines=200`
+- Config write endpoint:
+  - `POST /api/config/editable`
+  - Accepts only validated editable subset (`symbol`, `leverage`, `use_full_balance`, `qty`, selected `params.*`)
+  - Creates `config.yaml` backup before overwrite and returns `backup_path`
+  - Returns `restart_required` for save-and-restart flow
 - Control endpoints:
   - `POST /api/control/start`
   - `POST /api/control/stop`
