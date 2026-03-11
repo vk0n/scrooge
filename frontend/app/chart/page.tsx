@@ -515,28 +515,26 @@ export default function ChartPage(): JSX.Element {
   }, [data, includeIndicators]);
 
   return (
-    <section className="panel">
+    <section className="panel page-shell">
       <h1>Chart</h1>
       <p className="muted">Read-only visual context for price action, trades, and equity.</p>
 
-      <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", marginBottom: "1rem" }}>
-        <label htmlFor="chart-symbol">
-          Symbol:
+      <div className="form-grid">
+        <label htmlFor="chart-symbol" className="field-stack">
+          Symbol
           <input
             id="chart-symbol"
             value={symbol}
             onChange={(event) => setSymbol(event.target.value.toUpperCase())}
-            style={{ marginLeft: "0.4rem", width: "8rem" }}
           />
         </label>
 
-        <label htmlFor="chart-period">
-          Period:
+        <label htmlFor="chart-period" className="field-stack">
+          Period
           <select
             id="chart-period"
             value={period}
             onChange={(event) => setPeriod(event.target.value)}
-            style={{ marginLeft: "0.4rem" }}
           >
             {PERIOD_OPTIONS.map((option) => (
               <option key={option} value={option}>
@@ -546,13 +544,12 @@ export default function ChartPage(): JSX.Element {
           </select>
         </label>
 
-        <label htmlFor="chart-interval">
-          Interval:
+        <label htmlFor="chart-interval" className="field-stack">
+          Interval
           <select
             id="chart-interval"
             value={interval}
             onChange={(event) => setInterval(event.target.value)}
-            style={{ marginLeft: "0.4rem" }}
           >
             {INTERVAL_OPTIONS.map((option) => (
               <option key={option} value={option}>
@@ -562,13 +559,12 @@ export default function ChartPage(): JSX.Element {
           </select>
         </label>
 
-        <label htmlFor="chart-source">
-          Source:
+        <label htmlFor="chart-source" className="field-stack">
+          Source
           <select
             id="chart-source"
             value={source}
             onChange={(event) => setSource(event.target.value)}
-            style={{ marginLeft: "0.4rem" }}
           >
             {SOURCE_OPTIONS.map((option) => (
               <option key={option} value={option}>
@@ -577,25 +573,25 @@ export default function ChartPage(): JSX.Element {
             ))}
           </select>
         </label>
+      </div>
 
-        <label htmlFor="chart-indicators">
+      <div className="toolbar">
+        <label htmlFor="chart-indicators" className="field-inline">
           <input
             id="chart-indicators"
             type="checkbox"
             checked={includeIndicators}
             onChange={(event) => setIncludeIndicators(event.target.checked)}
-            style={{ marginRight: "0.35rem" }}
           />
           Indicators
         </label>
 
-        <label htmlFor="chart-autorefresh">
+        <label htmlFor="chart-autorefresh" className="field-inline">
           <input
             id="chart-autorefresh"
             type="checkbox"
             checked={autoRefresh}
             onChange={(event) => setAutoRefresh(event.target.checked)}
-            style={{ marginRight: "0.35rem" }}
           />
           Auto-refresh ({POLL_MS / 1000}s)
         </label>
@@ -641,21 +637,21 @@ export default function ChartPage(): JSX.Element {
       <p className="muted">Mode: {endCursorMs === null ? "Live window" : "Historical window"}</p>
       {error ? <p>{error}</p> : null}
 
-      <div ref={priceChartRef} style={{ width: "100%", minHeight: "460px", marginBottom: "1rem" }} />
-      <div ref={equityChartRef} style={{ width: "100%", minHeight: "280px", marginBottom: "1rem" }} />
-      <div ref={rsiChartRef} style={{ width: "100%", minHeight: "240px", marginBottom: "1rem" }} />
+      <div ref={priceChartRef} className="chart-surface chart-surface-lg" />
+      <div ref={equityChartRef} className="chart-surface chart-surface-md" />
+      <div ref={rsiChartRef} className="chart-surface chart-surface-sm" />
 
       {data?.open_position ? (
         <>
           <h2>Current Open Position</h2>
-          <pre>{JSON.stringify(data.open_position, null, 2)}</pre>
+          <pre className="json-box">{JSON.stringify(data.open_position, null, 2)}</pre>
         </>
       ) : null}
 
       {data?.warnings.length ? (
         <>
           <h2>Warnings</h2>
-          <ul>
+          <ul className="warning-list">
             {data.warnings.map((warning) => (
               <li key={warning}>{warning}</li>
             ))}

@@ -1,6 +1,6 @@
-# Scrooge Control Frontend (Stage 2)
+# Scrooge Control Frontend
 
-This is the Stage 2 frontend for the Scrooge control plane.
+Next.js frontend for the Scrooge control plane.
 
 ## Run
 
@@ -30,14 +30,19 @@ Authentication:
 
 Pages:
 - `/dashboard` uses live WebSocket updates (`/ws/status`) with polling fallback to `GET /api/status`
+  - includes runtime controls (`start` / `stop` / `restart`)
+  - includes config quick editor backed by `GET /api/config/editable` and `POST /api/config/editable`
+    - editable fields: `symbol`, `leverage`, `qty`, `use_full_balance`
+    - supports `Save` and `Save & Restart`
+    - strategy params are intentionally hidden in UI
+  - includes open-position controls (`close-position`, `update-sl`, `update-tp`)
+  - command execution status is shown inline in dashboard
 - `/chart` reads `GET /api/chart` and renders Plotly candlesticks, trade markers, indicators, and equity curve
 - `/logs` uses live WebSocket updates (`/ws/status?lines=N`) with polling fallback to `GET /api/logs?lines=N`
-- `/config` uses form-based editor backed by `GET /api/config/editable` and `POST /api/config/editable`
-  - supports `Save` and `Save & Restart`
-  - no free-form YAML editing
-- `/controls` sends `POST /api/control/{start|stop|restart|close-position|update-sl|update-tp}`, then polls `GET /api/control/commands/{id}` for execution status
-  - `start` resumes trading
-  - `stop` pauses trading
-  - `restart` reloads config and resumes trading
-  - `close-position` requests manual close of the current position
-  - `update-sl` / `update-tp` update current position levels (requires positive numeric `value`)
+- `/config` redirects to `/dashboard` (legacy route kept for compatibility)
+- `/controls` redirects to `/dashboard` (legacy route kept for compatibility)
+
+UX notes:
+- mobile-friendly layout (compact cards, responsive toolbars/forms)
+- sticky top navigation + bottom mobile navigation for primary pages
+- touch-friendly controls and readable log/config/chart blocks on phone screens

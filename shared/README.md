@@ -1,5 +1,5 @@
-# Shared contracts (Stage 1)
+# Shared Contracts
 
 Reserved for shared API payload schemas and constants between `api/` and `frontend/`.
 
-No runtime code is required in Stage 1.
+No runtime code is required in this directory.

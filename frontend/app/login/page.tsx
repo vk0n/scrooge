@@ -22,33 +22,31 @@ export default function LoginPage(): JSX.Element {
   }
 
   return (
-    <section className="panel">
+    <section className="panel page-shell auth-shell">
       <h1>Login</h1>
       <p className="muted">Provide basic auth credentials to access protected API endpoints.</p>
-      <div style={{ display: "grid", gap: "0.75rem", maxWidth: "420px" }}>
-        <label htmlFor="guiUser">
+      <div className="auth-form">
+        <label htmlFor="guiUser" className="field-stack">
           Username
           <input
             id="guiUser"
             type="text"
             value={username}
             onChange={(event) => setUsername(event.target.value)}
-            style={{ width: "100%", marginTop: "0.4rem" }}
           />
         </label>
-        <label htmlFor="guiPassword">
+        <label htmlFor="guiPassword" className="field-stack">
           Password
           <input
             id="guiPassword"
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            style={{ width: "100%", marginTop: "0.4rem" }}
           />
         </label>
       </div>
 
-      <div style={{ marginTop: "1rem" }}>
+      <div className="toolbar">
         <button type="button" onClick={submitLogin}>
           Save credentials
         </button>

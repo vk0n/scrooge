@@ -1,6 +1,6 @@
-# Scrooge Control API (Stage 5)
+# Scrooge Control API
 
-This is a Stage 5 backend for the Scrooge control plane.
+FastAPI backend for the Scrooge control plane.
 
 ## Run
 

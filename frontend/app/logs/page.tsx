@@ -126,7 +126,7 @@ export default function LogsPage(): JSX.Element {
   }, [autoRefresh, lineCount, wsConnected]);
 
   return (
-    <section className="panel">
+    <section className="panel page-shell">
       <h1>Logs</h1>
       <p className="muted">
         {autoRefresh
@@ -135,9 +135,9 @@ export default function LogsPage(): JSX.Element {
             : `Fallback mode: polling every ${POLL_MS / 1000}s.`
           : "Manual mode: auto updates disabled."}
       </p>
-      <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", marginBottom: "1rem" }}>
-        <label htmlFor="lineCount">
-          Lines:
+      <div className="toolbar">
+        <label htmlFor="lineCount" className="field-stack">
+          Lines
           <input
             id="lineCount"
             type="number"
@@ -150,16 +150,14 @@ export default function LogsPage(): JSX.Element {
                 setLineCount(value);
               }
             }}
-            style={{ marginLeft: "0.5rem", width: "6rem" }}
           />
         </label>
-        <label htmlFor="autoRefresh">
+        <label htmlFor="autoRefresh" className="field-inline">
           <input
             id="autoRefresh"
             type="checkbox"
             checked={autoRefresh}
             onChange={(event) => setAutoRefresh(event.target.checked)}
-            style={{ marginRight: "0.5rem" }}
           />
           Auto updates
         </label>
@@ -173,13 +171,13 @@ export default function LogsPage(): JSX.Element {
         <>
           <p className="muted">Returned: {data.returned_lines} / {data.requested_lines}</p>
           {data.warnings?.length ? (
-            <ul>
+            <ul className="warning-list">
               {data.warnings.map((warning) => (
                 <li key={warning}>{warning}</li>
               ))}
             </ul>
           ) : null}
-          <pre>{data.lines.join("\n")}</pre>
+          <pre className="log-box">{data.lines.join("\n")}</pre>
         </>
       ) : null}
     </section>

@@ -6,7 +6,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Scrooge Control Plane",
-  description: "Stage 1 scaffold"
+  description: "Control and monitoring interface for Scrooge bot"
 };
 
 type RootLayoutProps = {
@@ -17,7 +17,7 @@ export default function RootLayout({ children }: RootLayoutProps): JSX.Element {
   return (
     <html lang="en">
       <body>
-        <main>
+        <main className="app-shell">
           <Nav />
           {children}
         </main>
