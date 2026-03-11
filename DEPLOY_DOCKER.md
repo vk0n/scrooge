@@ -53,6 +53,16 @@ One-shot backtest run:
 docker compose --profile backtest run --rm backtest
 ```
 
+Optional host export for backtest artifacts:
+- Set in `config.backtest.yaml`:
+  - `export_artifacts_to_host: true`
+  - `host_artifacts_dir: /host_artifacts`
+- Host bind path is controlled by `.env`:
+  - `SCROOGE_HOST_BACKTEST_ARTIFACTS_DIR=./backtest_artifacts`
+- Output appears in:
+  - `./backtest_artifacts/<run_ts>/...`
+  - symlink `./backtest_artifacts/latest`
+
 Backtest artifacts are written into:
 - `/runtime/backtests/<run_id>/...`
 - symlink `/runtime/backtests/latest` points to last run

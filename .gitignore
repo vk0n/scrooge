@@ -112,6 +112,7 @@ trade_history.jsonl
 balance_history.jsonl
 chart_dataset.csv
 trading_log.txt
+backtest_artifacts/
 scrooge-env
 .env
 .venv

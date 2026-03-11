@@ -1,15 +1,17 @@
 live: false
 symbol: BTCUSDT
-leverage: 1
+leverage: 3
 initial_balance: 10000
 use_full_balance: true
 qty: null
 enable_plot: false
 plot_split_by_year: false
-run_monte_carlo: true
-run_rolling_window_backtest_distribution: true
+run_monte_carlo: false
+run_rolling_window_backtest_distribution: false
 rolling_window_days: 365
 rolling_window_workers: 8
+export_artifacts_to_host: true
+host_artifacts_dir: /host_artifacts
 intervals:
   small: 1m
   medium: 1h
@@ -19,7 +21,7 @@ limits:
   medium: 500
   big: 100
 backtest_period_end_time: ''
-backtest_period_days: 365
+backtest_period_days: 1825
 params:
   sl_mult: 3.7
   tp_mult: 1.9
