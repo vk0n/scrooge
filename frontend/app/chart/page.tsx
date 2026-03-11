@@ -71,6 +71,27 @@ const PERIOD_OPTIONS = ["6h", "12h", "1d", "3d", "1w", "2w", "4w", "12w", "26w",
 const INTERVAL_OPTIONS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"];
 const SOURCE_OPTIONS = ["auto", "dataset", "binance"] as const;
 const POLL_MS = 60000;
+const CHART_THEME = {
+  upCandle: "#34d399",
+  downCandle: "#f87171",
+  longEntry: "#22c55e",
+  shortEntry: "#ef4444",
+  neutralMarker: "#9ca3af",
+  exitOutline: "#e5e7eb",
+  openPosition: "#f59e0b",
+  ema: "#38bdf8",
+  bbUpperLower: "#a78bfa",
+  bbMiddle: "#c4b5fd",
+  slLevel: "#fb7185",
+  tpLevel: "#4ade80",
+  equity: "#34d399",
+  rsi: "#f59e0b",
+  bg: "#0d141d",
+  text: "#e6edf6",
+  mutedText: "#9db0c8",
+  rsiUpper: "#ef4444",
+  rsiLower: "#22c55e",
+} as const;
 
 function parsePeriodMs(period: string): number {
   const match = /^(\d+)([mhdw])$/i.exec(period.trim());
@@ -231,8 +252,8 @@ export default function ChartPage(): JSX.Element {
           high: candleHigh,
           low: candleLow,
           close: candleClose,
-          increasing: { line: { color: "#34d399" } },
-          decreasing: { line: { color: "#f87171" } },
+          increasing: { line: { color: CHART_THEME.upCandle } },
+          decreasing: { line: { color: CHART_THEME.downCandle } },
         },
       ];
 
@@ -246,7 +267,7 @@ export default function ChartPage(): JSX.Element {
           name: "Long Entries",
           x: longEntries.map((marker) => marker.time),
           y: longEntries.map((marker) => marker.price),
-          marker: { color: "#22c55e", symbol: "triangle-up", size: 10 },
+          marker: { color: CHART_THEME.longEntry, symbol: "triangle-up", size: 10 },
         });
       }
       if (shortEntries.length) {
@@ -256,15 +277,15 @@ export default function ChartPage(): JSX.Element {
           name: "Short Entries",
           x: shortEntries.map((marker) => marker.time),
           y: shortEntries.map((marker) => marker.price),
-          marker: { color: "#ef4444", symbol: "triangle-down", size: 10 },
+          marker: { color: CHART_THEME.shortEntry, symbol: "triangle-down", size: 10 },
         });
       }
       if (data.markers.exits.length) {
         const exitColors = data.markers.exits.map((marker) => {
           if (typeof marker.net_pnl !== "number") {
-            return "#9ca3af";
+            return CHART_THEME.neutralMarker;
           }
-          return marker.net_pnl >= 0 ? "#22c55e" : "#ef4444";
+          return marker.net_pnl >= 0 ? CHART_THEME.longEntry : CHART_THEME.shortEntry;
         });
         traces.push({
           type: "scatter",
@@ -276,7 +297,7 @@ export default function ChartPage(): JSX.Element {
             color: exitColors,
             symbol: "x",
             size: 10,
-            line: { width: 1.1, color: "#e5e7eb" },
+            line: { width: 1.1, color: CHART_THEME.exitOutline },
           },
         });
       }
@@ -288,7 +309,7 @@ export default function ChartPage(): JSX.Element {
           name: "Open Position",
           x: [data.open_position.time],
           y: [data.open_position.entry],
-          marker: { color: "#f59e0b", symbol: "diamond", size: 11 },
+          marker: { color: CHART_THEME.openPosition, symbol: "diamond", size: 11 },
         });
       }
 
@@ -300,7 +321,7 @@ export default function ChartPage(): JSX.Element {
           name: "EMA(20)",
           x: ema.x,
           y: ema.y,
-          line: { color: "#38bdf8", width: 1.4 },
+          line: { color: CHART_THEME.ema, width: 1.4 },
         });
       }
 
@@ -315,7 +336,7 @@ export default function ChartPage(): JSX.Element {
             name: "BB Upper",
             x: upper.x,
             y: upper.y,
-            line: { color: "#a78bfa", width: 1, dash: "dot" },
+            line: { color: CHART_THEME.bbUpperLower, width: 1, dash: "dot" },
           },
           {
             type: "scatter",
@@ -323,7 +344,7 @@ export default function ChartPage(): JSX.Element {
             name: "BB Middle",
             x: middle.x,
             y: middle.y,
-            line: { color: "#c4b5fd", width: 1, dash: "dash" },
+            line: { color: CHART_THEME.bbMiddle, width: 1, dash: "dash" },
           },
           {
             type: "scatter",
@@ -331,7 +352,7 @@ export default function ChartPage(): JSX.Element {
             name: "BB Lower",
             x: lower.x,
             y: lower.y,
-            line: { color: "#a78bfa", width: 1, dash: "dot" },
+            line: { color: CHART_THEME.bbUpperLower, width: 1, dash: "dot" },
           }
         );
       }
@@ -344,7 +365,7 @@ export default function ChartPage(): JSX.Element {
         y0: level.price,
         y1: level.price,
         line: {
-          color: level.type === "sl" ? "#fb7185" : "#4ade80",
+          color: level.type === "sl" ? CHART_THEME.slLevel : CHART_THEME.tpLevel,
           width: 1,
           dash: level.type === "sl" ? "dot" : "dash",
         },
@@ -356,9 +377,9 @@ export default function ChartPage(): JSX.Element {
           traces,
           {
             title: `${data.symbol} Price`,
-            paper_bgcolor: "#0d141d",
-            plot_bgcolor: "#0d141d",
-            font: { color: "#e6edf6" },
+            paper_bgcolor: CHART_THEME.bg,
+            plot_bgcolor: CHART_THEME.bg,
+            font: { color: CHART_THEME.text },
             xaxis: { type: "date", rangeslider: { visible: true } },
             yaxis: { title: "Price" },
             margin: { t: 45, r: 16, b: 40, l: 55 },
@@ -426,14 +447,14 @@ export default function ChartPage(): JSX.Element {
               name: "Equity",
               x: data.equity_curve.map((point) => point.time),
               y: data.equity_curve.map((point) => point.balance),
-              line: { color: "#34d399", width: 1.8, shape: "hv" },
+              line: { color: CHART_THEME.equity, width: 1.8, shape: "hv" },
             },
           ],
           {
             title: "Equity Curve",
-            paper_bgcolor: "#0d141d",
-            plot_bgcolor: "#0d141d",
-            font: { color: "#e6edf6" },
+            paper_bgcolor: CHART_THEME.bg,
+            plot_bgcolor: CHART_THEME.bg,
+            font: { color: CHART_THEME.text },
             xaxis: { type: "date" },
             yaxis: { title: "Balance" },
             margin: { t: 40, r: 16, b: 40, l: 55 },
@@ -456,14 +477,14 @@ export default function ChartPage(): JSX.Element {
                 name: "RSI(14)",
                 x: rsi.x,
                 y: rsi.y,
-                line: { color: "#f59e0b", width: 1.4 },
+                line: { color: CHART_THEME.rsi, width: 1.4 },
               },
             ],
             {
               title: "RSI",
-              paper_bgcolor: "#0d141d",
-              plot_bgcolor: "#0d141d",
-              font: { color: "#e6edf6" },
+              paper_bgcolor: CHART_THEME.bg,
+              plot_bgcolor: CHART_THEME.bg,
+              font: { color: CHART_THEME.text },
               xaxis: { type: "date" },
               yaxis: { title: "RSI", range: [0, 100] },
               margin: { t: 40, r: 16, b: 40, l: 55 },
@@ -475,7 +496,7 @@ export default function ChartPage(): JSX.Element {
                   x1: 1,
                   y0: 70,
                   y1: 70,
-                  line: { color: "#ef4444", dash: "dot", width: 1 },
+                  line: { color: CHART_THEME.rsiUpper, dash: "dot", width: 1 },
                 },
                 {
                   type: "line",
@@ -484,7 +505,7 @@ export default function ChartPage(): JSX.Element {
                   x1: 1,
                   y0: 30,
                   y1: 30,
-                  line: { color: "#22c55e", dash: "dot", width: 1 },
+                  line: { color: CHART_THEME.rsiLower, dash: "dot", width: 1 },
                 },
               ],
             },
@@ -496,9 +517,9 @@ export default function ChartPage(): JSX.Element {
             [],
             {
               title: "RSI (not available)",
-              paper_bgcolor: "#0d141d",
-              plot_bgcolor: "#0d141d",
-              font: { color: "#9db0c8" },
+              paper_bgcolor: CHART_THEME.bg,
+              plot_bgcolor: CHART_THEME.bg,
+              font: { color: CHART_THEME.mutedText },
               margin: { t: 40, r: 16, b: 30, l: 40 },
             },
             { responsive: true, displaylogo: false }

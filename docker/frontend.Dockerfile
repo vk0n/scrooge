@@ -23,6 +23,7 @@ RUN npm ci --omit=dev
 
 COPY --from=builder /app/frontend/.next /app/frontend/.next
 COPY --from=builder /app/frontend/next.config.mjs /app/frontend/next.config.mjs
+COPY --from=builder /app/frontend/public /app/frontend/public
 
 EXPOSE 3000
 

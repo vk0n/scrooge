@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -38,7 +39,16 @@ export default function Nav(): JSX.Element {
       <nav className="panel top-nav">
         <div className="nav-header">
           <Link href="/dashboard" className="nav-brand">
-            Scrooge Control
+            <Image
+              src="/brand/png/scrooge-mark-light-64.png"
+              alt="Scrooge mark"
+              width={36}
+              height={36}
+              className="nav-brand-mark"
+              priority
+              unoptimized
+            />
+            <span>Scrooge Control</span>
           </Link>
           <div className="nav-actions">
             <Link href="/login" className={`nav-link${loginActive ? " active" : ""}`}>
