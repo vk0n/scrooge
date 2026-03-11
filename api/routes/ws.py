@@ -25,6 +25,17 @@ WS_PUSH_INTERVAL_SECONDS = float(os.getenv("SCROOGE_WS_PUSH_INTERVAL_SECONDS", "
 WS_DEFAULT_LOG_LINES = int(os.getenv("SCROOGE_WS_LOG_LINES", "200"))
 
 
+def _default_balance_for_mode(config: dict[str, Any]) -> Any | None:
+    live_value = config.get("live")
+    if live_value is None:
+        is_live_mode = True
+    elif isinstance(live_value, str):
+        is_live_mode = live_value.strip().lower() not in {"0", "false", "no", "off"}
+    else:
+        is_live_mode = bool(live_value)
+    return None if is_live_mode else config.get("initial_balance")
+
+
 def _build_status_snapshot() -> dict[str, Any]:
     warnings: list[str] = []
     config: dict[str, Any] = {}
@@ -54,7 +65,7 @@ def _build_status_snapshot() -> dict[str, Any]:
     return {
         "bot_running_status": "running" if trading_enabled else "paused",
         "trading_enabled": trading_enabled,
-        "balance": resolve_balance(state, default_balance=config.get("initial_balance")),
+        "balance": resolve_balance(state, default_balance=_default_balance_for_mode(config)),
         "current_position": resolve_current_position(position),
         "leverage": config.get("leverage"),
         "symbol": config.get("symbol"),

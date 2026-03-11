@@ -29,7 +29,7 @@ from report import (
 )
 from state import add_closed_trade, load_state, save_state, update_balance, update_position
 from strategy import run_strategy
-from trade import check_balance, close_position, get_balance, get_open_position, set_leverage
+from trade import close_position, get_balance, get_open_position, set_leverage
 
 state: dict[str, Any] | None = None
 
@@ -437,6 +437,10 @@ if __name__ == "__main__":
                     print(f"[{_ts()}] Trading status: {'running' if trading_enabled else 'paused'}")
                     last_trading_enabled = trading_enabled
 
+                current_balance = get_balance()
+                update_balance(state, current_balance)
+                print(f"[{_ts()}] Balance: {current_balance:.2f} USDT")
+
                 if not trading_enabled and state.get("position") is None:
                     print(f"[{_ts()}] Trading paused (idle). Waiting for next check...")
                     state, restart_now = _sleep_with_command_poll(
@@ -449,9 +453,7 @@ if __name__ == "__main__":
                     restart_requested = restart_requested or restart_now
                     continue
 
-                current_balance = get_balance()
-                # Log account balance and current position
-                check_balance()
+                # Log current position
                 pos = get_open_position(symbol)
                 if pos:
                     position = state.get("position") if isinstance(state.get("position"), dict) else {}

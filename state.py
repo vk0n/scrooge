@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 from datetime import datetime
@@ -366,10 +367,24 @@ def update_position(state: dict[str, Any], position: dict[str, Any] | None) -> N
 
 def update_balance(state: dict[str, Any], balance: float) -> None:
     """
-    Update current balance in state, append to balance history file, and persist.
+    Update current balance in state and persist.
+    Append to balance history only when the value changed.
     """
     balance_value = _as_float_or_none(balance)
+    previous_value = _as_float_or_none(state.get("balance"))
+    should_append = False
     if balance_value is not None:
+        if previous_value is None:
+            latest = load_balance_history(limit=1)
+            previous_value = latest[-1] if latest else None
+        should_append = previous_value is None or not math.isclose(
+            balance_value,
+            previous_value,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+
+    if should_append:
         try:
             _append_jsonl(
                 _balance_history_path(),

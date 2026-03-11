@@ -15,6 +15,17 @@ from services.state_service import (
 router = APIRouter()
 
 
+def _default_balance_for_mode(config: dict[str, object]) -> object | None:
+    live_value = config.get("live")
+    if live_value is None:
+        is_live_mode = True
+    elif isinstance(live_value, str):
+        is_live_mode = live_value.strip().lower() not in {"0", "false", "no", "off"}
+    else:
+        is_live_mode = bool(live_value)
+    return None if is_live_mode else config.get("initial_balance")
+
+
 @router.get("")
 def get_status() -> dict[str, object]:
     try:
@@ -40,7 +51,7 @@ def get_status() -> dict[str, object]:
     return {
         "bot_running_status": bot_running_status,
         "trading_enabled": trading_enabled,
-        "balance": resolve_balance(state, default_balance=config.get("initial_balance")),
+        "balance": resolve_balance(state, default_balance=_default_balance_for_mode(config)),
         "current_position": resolve_current_position(position),
         "leverage": config.get("leverage"),
         "symbol": config.get("symbol"),
