@@ -394,6 +394,10 @@ if __name__ == "__main__":
 
     # Load or create state
     state = load_state()
+    state_path = Path(os.getenv("SCROOGE_STATE_FILE", "state.json")).expanduser()
+    if not state_path.exists():
+        save_state(state)
+        print(f"[{_ts()}] Initialized state file: {state_path}")
 
     if live:
         control_client = get_control_client()
