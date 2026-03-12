@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
 import { fetchApi } from "../../lib/api";
+import { formatDateTimeEu } from "../../lib/datetime";
 
 type Candle = {
   time: string;
@@ -260,7 +261,7 @@ function ChartContent(): JSX.Element {
     }
     const rangeLabel =
       data.range_start && data.range_end
-        ? `${new Date(data.range_start).toLocaleString()} → ${new Date(data.range_end).toLocaleString()}`
+        ? `${formatDateTimeEu(data.range_start)} → ${formatDateTimeEu(data.range_end)}`
         : "Range unavailable";
     const requested = data.requested_interval ?? data.interval;
     const intervalLabel = requested === data.interval ? data.interval : `${requested} -> ${data.interval}`;

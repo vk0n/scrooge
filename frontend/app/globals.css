@@ -237,14 +237,14 @@ button:disabled {
 .dialog-user-field > input[type="password"],
 .dialog-user-field > input[type="number"],
 .dialog-user-field > select {
-  border-color: #446890;
-  background: linear-gradient(180deg, rgba(20, 39, 66, 0.92) 0%, rgba(12, 26, 45, 0.96) 100%);
-  color: #e6efff;
-  box-shadow: inset 0 0 0 1px rgba(129, 168, 219, 0.18);
+  border-color: #3a4456;
+  background: linear-gradient(180deg, rgba(16, 21, 30, 0.9) 0%, rgba(11, 15, 22, 0.95) 100%);
+  color: #e6edf6;
+  box-shadow: inset 0 0 0 1px rgba(96, 110, 130, 0.14);
 }
 
 .dialog-user-field > input::placeholder {
-  color: #9ab0ce;
+  color: #9daec8;
 }
 
 .dialog-user-field > input:focus,
@@ -252,11 +252,11 @@ button:disabled {
 .dialog-user-field > input[type="password"]:focus,
 .dialog-user-field > input[type="number"]:focus,
 .dialog-user-field > select:focus {
-  border-color: #6390c3;
+  border-color: #526179;
   outline: none;
   box-shadow:
-    inset 0 0 0 1px rgba(150, 188, 235, 0.24),
-    0 0 0 2px rgba(88, 132, 186, 0.26);
+    inset 0 0 0 1px rgba(106, 124, 150, 0.2),
+    0 0 0 2px rgba(82, 97, 121, 0.22);
 }
 
 .dialog-user-toggle {
@@ -737,6 +737,10 @@ pre {
   transition: transform 140ms ease;
 }
 
+.position-accordion-summary-disabled {
+  cursor: default;
+}
+
 .position-accordion:not([open]) .position-accordion-summary::after {
   transform: rotate(-90deg);
 }
@@ -804,6 +808,12 @@ pre {
   border-color: #b13d4c;
   background: rgba(177, 61, 76, 0.2);
   color: #ffd4da;
+}
+
+.position-upnl-badge-neutral {
+  border-color: #617187;
+  background: rgba(97, 113, 135, 0.22);
+  color: #d9e2ef;
 }
 
 .position-accordion-status {
@@ -896,6 +906,10 @@ pre {
 
 .traits-accordion-body {
   gap: 0.62rem;
+}
+
+.traits-accordion .position-accordion-summary::after {
+  margin-left: auto;
 }
 
 .position-controls-grid {

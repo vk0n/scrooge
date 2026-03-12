@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
+import { formatDateTimeEu } from "../../lib/datetime";
 
 type StatusPayload = {
   bot_running_status: string;
@@ -215,17 +216,118 @@ function unrealizedPnlClass(value: number | null): string {
   return "metric-value value-neutral";
 }
 
-function formatUnrealizedPnl(value: number | null): string {
+function formatUnrealizedPnlUsd(value: number | null): string {
   if (value === null) {
     return "N/A";
   }
   if (!Number.isFinite(value)) {
     return "N/A";
   }
+  const absolute = Math.abs(value).toFixed(2);
   if (value > 0) {
-    return `+${value.toFixed(2)}`;
+    return `+$${absolute}`;
   }
-  return value.toFixed(2);
+  if (value < 0) {
+    return `-$${absolute}`;
+  }
+  return "$0.00";
+}
+
+function readFirstPositionNumber(openTradeInfo: Record<string, unknown> | null, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = readPositionNumber(openTradeInfo, key);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function readEntryPrice(openTradeInfo: Record<string, unknown> | null): number | null {
+  return readFirstPositionNumber(openTradeInfo, ["entry", "entry_price", "open_price", "avg_entry_price"]);
+}
+
+function readPositionSize(openTradeInfo: Record<string, unknown> | null): number | null {
+  return readFirstPositionNumber(openTradeInfo, ["size", "qty", "amount", "position_size"]);
+}
+
+function readLastPrice(openTradeInfo: Record<string, unknown> | null): number | null {
+  return readFirstPositionNumber(openTradeInfo, [
+    "last_price",
+    "lastPrice",
+    "current_price",
+    "currentPrice",
+    "mark_price",
+    "markPrice",
+    "price"
+  ]);
+}
+
+function readUnrealizedPnlPercent(
+  openTradeInfo: Record<string, unknown> | null,
+  unrealizedPnl: number | null
+): number | null {
+  const directPercent = readFirstPositionNumber(openTradeInfo, [
+    "unrealized_pnl_pct",
+    "unrealized_pnl_percent",
+    "unrealizedPnlPct",
+    "unrealizedPnlPercent",
+    "upl_pct",
+    "upl_percent",
+    "pnl_pct",
+    "pnl_percent",
+    "net_pnl_pct",
+    "net_pnl_percent",
+    "gross_pnl_pct",
+    "gross_pnl_percent",
+    "roi"
+  ]);
+  if (directPercent !== null) {
+    return directPercent;
+  }
+
+  if (unrealizedPnl === null) {
+    return null;
+  }
+  const entryPrice = readEntryPrice(openTradeInfo);
+  const positionSize = readPositionSize(openTradeInfo);
+  if (entryPrice === null || positionSize === null) {
+    return null;
+  }
+
+  const notional = Math.abs(positionSize) * entryPrice;
+  if (!Number.isFinite(notional) || notional <= 0) {
+    return null;
+  }
+  return (unrealizedPnl / notional) * 100;
+}
+
+function formatPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  if (value > 0) {
+    return `+${value.toFixed(2)}%`;
+  }
+  if (value < 0) {
+    return `${value.toFixed(2)}%`;
+  }
+  return "0.00%";
+}
+
+function formatPositionOpenTime(openTradeInfo: Record<string, unknown> | null): string {
+  if (!openTradeInfo) {
+    return "N/A";
+  }
+  const rawTime =
+    openTradeInfo.time ??
+    openTradeInfo.open_time ??
+    openTradeInfo.openTime ??
+    openTradeInfo.entry_time ??
+    openTradeInfo.entryTime ??
+    openTradeInfo.opened_at ??
+    openTradeInfo.openedAt;
+  return formatDateTimeEu(rawTime);
 }
 
 function tailGuardValueClass(trailingState: Record<string, unknown> | null): string {
@@ -607,6 +709,10 @@ function DashboardContent(): JSX.Element {
   const tp = readPositionNumber(openTradeInfo, "tp");
   const liquidationPrice = readPositionNumber(openTradeInfo, "liq_price");
   const unrealizedPnl = readUnrealizedPnl(openTradeInfo);
+  const unrealizedPnlPercent = readUnrealizedPnlPercent(openTradeInfo, unrealizedPnl);
+  const entryPrice = readEntryPrice(openTradeInfo);
+  const lastPrice = readLastPrice(openTradeInfo);
+  const openTime = formatPositionOpenTime(openTradeInfo);
   const hasOpenPosition = openTradeInfo !== null;
   const tradingIsEnabled = data?.trading_enabled;
   const traitRows = PARAM_DEFS.map((def) => ({
@@ -627,15 +733,23 @@ function DashboardContent(): JSX.Element {
       ? "position-summary-phrase position-summary-phrase-paused"
       : "position-summary-phrase position-summary-phrase-looking";
   const positionSummaryIcon = hasOpenPosition ? "" : tradingIsEnabled === false ? "😴" : "🔎";
-  const showPositionUpnlBadge = hasOpenPosition ? unrealizedPnl !== null : Boolean(positionSummaryIcon);
+  const showPositionUpnlBadge = hasOpenPosition || Boolean(positionSummaryIcon);
   const positionUpnlBadgeClass = hasOpenPosition
-    ? unrealizedPnl !== null && unrealizedPnl < 0
-      ? "position-upnl-badge position-upnl-badge-negative"
-      : "position-upnl-badge position-upnl-badge-positive"
+    ? unrealizedPnlPercent === null
+      ? "position-upnl-badge position-upnl-badge-neutral"
+      : unrealizedPnlPercent < 0
+        ? "position-upnl-badge position-upnl-badge-negative"
+        : "position-upnl-badge position-upnl-badge-positive"
     : tradingIsEnabled === false
       ? "position-upnl-badge position-upnl-badge-negative"
       : "position-upnl-badge position-upnl-badge-positive";
-  const positionUpnlBadgeText = hasOpenPosition ? `uPnL $${formatUnrealizedPnl(unrealizedPnl)}` : positionSummaryIcon;
+  const positionUpnlBadgeText = hasOpenPosition ? formatPercent(unrealizedPnlPercent) : positionSummaryIcon;
+
+  useEffect(() => {
+    if (!hasOpenPosition) {
+      setPositionExpanded(false);
+    }
+  }, [hasOpenPosition]);
 
   return (
     <section className="panel page-shell office-panel">
@@ -671,14 +785,28 @@ function DashboardContent(): JSX.Element {
             </div>
             <p className="status-helper">
               Ticker: {displayValue(data.symbol)} • Leverage:{" "}
-              {data.leverage === null || data.leverage === undefined ? "N/A" : `x${displayValue(data.leverage)}`}
+              {data.leverage === null || data.leverage === undefined ? "N/A" : `x${displayValue(data.leverage)}`} • Last Price:{" "}
+              {displayValue(lastPrice)}
             </p>
             <details
               className="position-accordion"
-              open={positionExpanded}
-              onToggle={(event) => setPositionExpanded(event.currentTarget.open)}
+              open={hasOpenPosition && positionExpanded}
+              onToggle={(event) => {
+                if (!hasOpenPosition) {
+                  event.currentTarget.open = false;
+                  return;
+                }
+                setPositionExpanded(event.currentTarget.open);
+              }}
             >
-              <summary className="position-accordion-summary">
+              <summary
+                className={`position-accordion-summary${!hasOpenPosition ? " position-accordion-summary-disabled" : ""}`}
+                onClick={(event) => {
+                  if (!hasOpenPosition) {
+                    event.preventDefault();
+                  }
+                }}
+              >
                 <span className="position-accordion-title">Current Trade</span>
                 <span className="position-summary-right">
                   <span className={positionSummaryPhraseClass}>
@@ -698,8 +826,16 @@ function DashboardContent(): JSX.Element {
                     </span>
                   </div>
                   <div className="kv-item metric-card">
+                    <span className="kv-label">Entry Price</span>
+                    <span className="metric-value">{displayValue(entryPrice)}</span>
+                  </div>
+                  <div className="kv-item metric-card">
+                    <span className="kv-label">Opened At</span>
+                    <span className="metric-value">{openTime}</span>
+                  </div>
+                  <div className="kv-item metric-card">
                     <span className="kv-label">Floating PnL</span>
-                    <span className={unrealizedPnlClass(unrealizedPnl)}>{formatUnrealizedPnl(unrealizedPnl)}</span>
+                    <span className={unrealizedPnlClass(unrealizedPnl)}>{formatUnrealizedPnlUsd(unrealizedPnl)}</span>
                   </div>
                 </div>
 
@@ -716,7 +852,6 @@ function DashboardContent(): JSX.Element {
                           min="0"
                           value={slValue}
                           onChange={(event) => setSlValue(event.target.value)}
-                          placeholder="e.g. 61234.5"
                           disabled={busyAction !== null || !hasOpenPosition}
                         />
                       </label>
@@ -743,7 +878,6 @@ function DashboardContent(): JSX.Element {
                           min="0"
                           value={tpValue}
                           onChange={(event) => setTpValue(event.target.value)}
-                          placeholder="e.g. 64500"
                           disabled={busyAction !== null || !hasOpenPosition}
                         />
                       </label>
@@ -965,7 +1099,7 @@ function DashboardContent(): JSX.Element {
       ) : null}
 
       {data ? (
-        <p className="technical-footnote">Last whisper from the market: {displayValue(data.last_update_timestamp)}</p>
+        <p className="technical-footnote">Last whisper from the market: {formatDateTimeEu(data.last_update_timestamp)}</p>
       ) : null}
     </section>
   );
