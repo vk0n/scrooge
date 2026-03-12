@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 
@@ -17,7 +18,7 @@ const DEFAULT_LINES = 200;
 const POLL_MS = 60000;
 const WS_RECONNECT_MS = 5000;
 
-export default function LogsPage(): JSX.Element {
+function LogsContent(): JSX.Element {
   const [data, setData] = useState<LogsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -181,5 +182,13 @@ export default function LogsPage(): JSX.Element {
         </>
       ) : null}
     </section>
+  );
+}
+
+export default function LogsPage(): JSX.Element {
+  return (
+    <AuthGate>
+      <LogsContent />
+    </AuthGate>
   );
 }

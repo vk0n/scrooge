@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 
@@ -356,7 +357,7 @@ function buildEditablePayload(form: ConfigFormState): EditableConfig {
   };
 }
 
-export default function DashboardPage(): JSX.Element {
+function DashboardContent(): JSX.Element {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -967,5 +968,13 @@ export default function DashboardPage(): JSX.Element {
         <p className="technical-footnote">Last whisper from the market: {displayValue(data.last_update_timestamp)}</p>
       ) : null}
     </section>
+  );
+}
+
+export default function DashboardPage(): JSX.Element {
+  return (
+    <AuthGate>
+      <DashboardContent />
+    </AuthGate>
   );
 }

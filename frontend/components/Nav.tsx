@@ -17,8 +17,6 @@ export default function Nav(): JSX.Element {
   const pathname = usePathname();
   const [isAuthed, setIsAuthed] = useState<boolean>(false);
 
-  const loginActive = pathname === "/login";
-
   useEffect(() => {
     setIsAuthed(hasSavedAuth());
   }, [pathname]);
@@ -37,7 +35,7 @@ export default function Nav(): JSX.Element {
     <>
       <nav className="panel top-nav">
         <div className="nav-header">
-          <Link href="/dashboard" className="nav-brand">
+          <Link href={isAuthed ? "/dashboard" : "/login"} className="nav-brand">
             <Image
               src="/brand/png/scrooge-mark-light-64.png"
               alt="Scrooge mark"
@@ -49,13 +47,8 @@ export default function Nav(): JSX.Element {
             />
             <span>Scrooge Control</span>
           </Link>
-          <div className="nav-actions">
-            {!isAuthed ? (
-              <Link href="/login" className={`nav-link${loginActive ? " active" : ""}`}>
-                Enter
-              </Link>
-            ) : null}
-            {isAuthed ? (
+          {isAuthed ? (
+            <div className="nav-actions">
               <Link
                 href="/login"
                 className="nav-link"
@@ -66,24 +59,28 @@ export default function Nav(): JSX.Element {
               >
                 Step Out
               </Link>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </div>
-        <div className="nav-links">
+        {isAuthed ? (
+          <div className="nav-links">
+            {primaryLinks.map((link) => (
+              <Link key={link.href} href={link.href} className={linkClass(link.href)}>
+                {link.label}
+              </Link>
+            ))}
+          </div>
+        ) : null}
+      </nav>
+      {isAuthed ? (
+        <nav className="bottom-nav" aria-label="Mobile navigation">
           {primaryLinks.map((link) => (
-            <Link key={link.href} href={link.href} className={linkClass(link.href)}>
-              {link.label}
+            <Link key={link.href} href={link.href} className={bottomLinkClass(link.href)}>
+              {link.mobileLabel ?? link.label}
             </Link>
           ))}
-        </div>
-      </nav>
-      <nav className="bottom-nav" aria-label="Mobile navigation">
-        {primaryLinks.map((link) => (
-          <Link key={link.href} href={link.href} className={bottomLinkClass(link.href)}>
-            {link.mobileLabel ?? link.label}
-          </Link>
-        ))}
-      </nav>
+        </nav>
+      ) : null}
     </>
   );
 }

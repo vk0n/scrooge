@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import AuthGate from "../../components/AuthGate";
 import { fetchApi } from "../../lib/api";
 
 type Candle = {
@@ -152,7 +153,7 @@ function parseRelayoutXRange(eventData: PlotlyRelayoutEvent): [number, number] |
   return [arrayStart, arrayEnd];
 }
 
-export default function ChartPage(): JSX.Element {
+function ChartContent(): JSX.Element {
   const priceChartRef = useRef<HTMLDivElement | null>(null);
   const equityChartRef = useRef<HTMLDivElement | null>(null);
   const rsiChartRef = useRef<HTMLDivElement | null>(null);
@@ -799,5 +800,13 @@ export default function ChartPage(): JSX.Element {
         </>
       ) : null}
     </section>
+  );
+}
+
+export default function ChartPage(): JSX.Element {
+  return (
+    <AuthGate>
+      <ChartContent />
+    </AuthGate>
   );
 }
