@@ -75,10 +75,18 @@ def resolve_trailing_state(position: Any) -> dict[str, Any] | None:
     if not isinstance(position, dict):
         return None
 
+    trail_active = bool(position.get("trail_active", False))
+    trail_price = None
+    if trail_active:
+        trail_price = position.get("trail_price")
+        if trail_price is None:
+            trail_price = position.get("tp")
+
     return {
-        "trail_active": bool(position.get("trail_active", False)),
+        "trail_active": trail_active,
         "trail_max": position.get("trail_max"),
         "trail_min": position.get("trail_min"),
+        "trail_price": trail_price,
         "tp": position.get("tp"),
         "sl": position.get("sl"),
     }

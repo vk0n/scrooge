@@ -1,7 +1,8 @@
 "use client";
 
+import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 
 import { saveBasicAuth } from "../../lib/auth";
 
@@ -21,13 +22,33 @@ export default function LoginPage(): JSX.Element {
     router.push("/dashboard");
   }
 
+  function onSubmit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    submitLogin();
+  }
+
   return (
     <section className="panel page-shell auth-shell">
-      <h1>Login</h1>
-      <p className="muted">Provide basic auth credentials to access protected API endpoints.</p>
-      <div className="auth-form">
-        <label htmlFor="guiUser" className="field-stack">
-          Username
+      <div className="auth-hero">
+        <Image
+          src="/brand/png/scrooge-mark-light-512.png"
+          alt="Scrooge logo"
+          width={148}
+          height={148}
+          className="auth-hero-logo"
+          priority
+          unoptimized
+        />
+        <p className="auth-greeting dialog-scrooge">
+          Hello!
+          <br />
+          I am Scrooge...
+        </p>
+      </div>
+      <h1>Enter the Office</h1>
+      <form className="auth-form" onSubmit={onSubmit}>
+        <label htmlFor="guiUser" className="field-stack dialog-user-field">
+          Your Name
           <input
             id="guiUser"
             type="text"
@@ -35,8 +56,8 @@ export default function LoginPage(): JSX.Element {
             onChange={(event) => setUsername(event.target.value)}
           />
         </label>
-        <label htmlFor="guiPassword" className="field-stack">
-          Password
+        <label htmlFor="guiPassword" className="field-stack dialog-user-field">
+          Vault Key
           <input
             id="guiPassword"
             type="password"
@@ -44,15 +65,15 @@ export default function LoginPage(): JSX.Element {
             onChange={(event) => setPassword(event.target.value)}
           />
         </label>
-      </div>
 
-      <div className="toolbar">
-        <button type="button" onClick={submitLogin}>
-          Save credentials
-        </button>
-      </div>
+        <div className="toolbar">
+          <button type="submit" className="dialog-user-btn">
+            Open the Office Door
+          </button>
+        </div>
+      </form>
 
-      {error ? <p>{error}</p> : null}
+      {error ? <p className="auth-error dialog-scrooge dialog-scrooge-error">{error}</p> : null}
     </section>
   );
 }

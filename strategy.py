@@ -129,6 +129,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                         "tp": tp,
                         "liq_price": liquidation_price,
                         "trail_active": False,
+                        "trail_price": None,
                         "time": row_ts,
                     }
 
@@ -165,6 +166,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                         "tp": tp,
                         "liq_price": liquidation_price,
                         "trail_active": False,
+                        "trail_price": None,
                         "time": row_ts,
                     }
                     
@@ -285,6 +287,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                         if price > base_tp and rsi < rsi_long_tp_threshold:
                             position["trail_active"] = True
                             position["trail_max"] = price
+                            position["trail_price"] = price - atr * trail_atr_mult
                             if live:
                                 update_position(state, position)
                                 log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for LONG {symbol} at {price}")
@@ -296,6 +299,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                             position["trail_max"] = price
                             current_trail_tp = position["trail_max"] - atr * trail_atr_mult
                             position["tp"] = current_trail_tp
+                            position["trail_price"] = current_trail_tp
                             if live:
                                 update_position(state, position)
                                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Trailing stop moved up to {current_trail_tp:.1f}")
@@ -400,6 +404,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                         if price < base_tp and rsi > rsi_short_tp_threshold:
                             position["trail_active"] = True
                             position["trail_min"] = price
+                            position["trail_price"] = price + atr * trail_atr_mult
                             if live:
                                 update_position(state, position)
                                 log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for SHORT {symbol} at {price}")
@@ -411,6 +416,7 @@ def run_strategy(df, live=False, initial_balance=1000,
                             position["trail_min"] = price
                             current_trail_tp = position["trail_min"] + atr * trail_atr_mult
                             position["tp"] = current_trail_tp
+                            position["trail_price"] = current_trail_tp
                             if live:
                                 update_position(state, position)
                                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Trailing stop moved down to {current_trail_tp:.1f}")

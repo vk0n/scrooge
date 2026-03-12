@@ -306,7 +306,7 @@ export default function ChartPage(): JSX.Element {
         traces.push({
           type: "scatter",
           mode: "markers",
-          name: "Open Position",
+          name: "Open Trade",
           x: [data.open_position.time],
           y: [data.open_position.entry],
           marker: { color: CHART_THEME.openPosition, symbol: "diamond", size: 11 },
@@ -456,7 +456,7 @@ export default function ChartPage(): JSX.Element {
             plot_bgcolor: CHART_THEME.bg,
             font: { color: CHART_THEME.text },
             xaxis: { type: "date" },
-            yaxis: { title: "Balance" },
+            yaxis: { title: "Vault" },
             margin: { t: 40, r: 16, b: 40, l: 55 },
           },
           { responsive: true, displaylogo: false }
@@ -537,21 +537,21 @@ export default function ChartPage(): JSX.Element {
 
   return (
     <section className="panel page-shell">
-      <h1>Chart</h1>
-      <p className="muted">Read-only visual context for price action, trades, and equity.</p>
+      <p className="dialog-scrooge">Read-only map of candles, trades, and vault curve.</p>
 
-      <div className="form-grid">
-        <label htmlFor="chart-symbol" className="field-stack">
-          Symbol
+      <div className="form-grid chart-controls-grid">
+        <label htmlFor="chart-symbol" className="field-stack dialog-user-field chart-control-field">
+          Pair
           <input
             id="chart-symbol"
+            type="text"
             value={symbol}
             onChange={(event) => setSymbol(event.target.value.toUpperCase())}
           />
         </label>
 
-        <label htmlFor="chart-period" className="field-stack">
-          Period
+        <label htmlFor="chart-period" className="field-stack dialog-user-field chart-control-field">
+          Window
           <select
             id="chart-period"
             value={period}
@@ -565,8 +565,8 @@ export default function ChartPage(): JSX.Element {
           </select>
         </label>
 
-        <label htmlFor="chart-interval" className="field-stack">
-          Interval
+        <label htmlFor="chart-interval" className="field-stack dialog-user-field chart-control-field">
+          Candle Step
           <select
             id="chart-interval"
             value={interval}
@@ -580,8 +580,8 @@ export default function ChartPage(): JSX.Element {
           </select>
         </label>
 
-        <label htmlFor="chart-source" className="field-stack">
-          Source
+        <label htmlFor="chart-source" className="field-stack dialog-user-field chart-control-field">
+          Feed
           <select
             id="chart-source"
             value={source}
@@ -596,39 +596,43 @@ export default function ChartPage(): JSX.Element {
         </label>
       </div>
 
-      <div className="toolbar">
-        <label htmlFor="chart-indicators" className="field-inline">
+      <div className="toolbar chart-toolbar">
+        <label htmlFor="chart-indicators" className="field-inline dialog-user-toggle chart-toolbar-toggle">
           <input
             id="chart-indicators"
             type="checkbox"
+            className="dialog-user-check"
             checked={includeIndicators}
             onChange={(event) => setIncludeIndicators(event.target.checked)}
           />
-          Indicators
+          Show Indicators
         </label>
 
-        <label htmlFor="chart-autorefresh" className="field-inline">
+        <label htmlFor="chart-autorefresh" className="field-inline dialog-user-toggle chart-toolbar-toggle">
           <input
             id="chart-autorefresh"
             type="checkbox"
+            className="dialog-user-check"
             checked={autoRefresh}
             onChange={(event) => setAutoRefresh(event.target.checked)}
           />
-          Auto-refresh ({POLL_MS / 1000}s)
+          Auto Scout ({POLL_MS / 1000}s)
         </label>
 
         <button
           type="button"
+          className="dialog-user-btn chart-toolbar-btn"
           onClick={() => {
             const stepMs = parsePeriodMs(period);
             setEndCursorMs((prev) => (prev === null ? Date.now() - stepMs : prev - stepMs));
           }}
         >
-          Prev window
+          Earlier
         </button>
 
         <button
           type="button"
+          className="dialog-user-btn chart-toolbar-btn"
           onClick={() => {
             const stepMs = parsePeriodMs(period);
             setEndCursorMs((prev) => {
@@ -641,22 +645,27 @@ export default function ChartPage(): JSX.Element {
           }}
           disabled={endCursorMs === null}
         >
-          Next window
+          Later
         </button>
 
-        <button type="button" onClick={() => setEndCursorMs(null)} disabled={endCursorMs === null}>
-          Latest
+        <button
+          type="button"
+          className="dialog-user-btn chart-toolbar-btn"
+          onClick={() => setEndCursorMs(null)}
+          disabled={endCursorMs === null}
+        >
+          Now
         </button>
 
-        <button type="button" onClick={() => void loadChart(false)}>
-          Refresh now
+        <button type="button" className="dialog-user-btn chart-toolbar-btn" onClick={() => void loadChart(false)}>
+          Scout Now
         </button>
-        {loading ? <span className="muted">Loading...</span> : null}
+        {loading ? <span className="dialog-scrooge dialog-scrooge-compact">Loading...</span> : null}
       </div>
 
-      <p className="muted">{chartMeta}</p>
-      <p className="muted">Mode: {endCursorMs === null ? "Live window" : "Historical window"}</p>
-      {error ? <p>{error}</p> : null}
+      <p className="dialog-scrooge">{chartMeta}</p>
+      <p className="dialog-scrooge">Mode: {endCursorMs === null ? "Live scouting" : "Historical scouting"}</p>
+      {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
 
       <div ref={priceChartRef} className="chart-surface chart-surface-lg" />
       <div ref={equityChartRef} className="chart-surface chart-surface-md" />
@@ -664,14 +673,14 @@ export default function ChartPage(): JSX.Element {
 
       {data?.open_position ? (
         <>
-          <h2>Current Open Position</h2>
+          <h2>Current Trade Snapshot</h2>
           <pre className="json-box">{JSON.stringify(data.open_position, null, 2)}</pre>
         </>
       ) : null}
 
       {data?.warnings.length ? (
         <>
-          <h2>Warnings</h2>
+          <h2>Red Flags</h2>
           <ul className="warning-list">
             {data.warnings.map((warning) => (
               <li key={warning}>{warning}</li>

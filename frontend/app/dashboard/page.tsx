@@ -44,6 +44,23 @@ type EditableConfig = {
   leverage: number | null;
   use_full_balance: boolean | null;
   qty: number | null;
+  params?: EditableParams | null;
+};
+
+type EditableParams = {
+  sl_mult?: number | null;
+  tp_mult?: number | null;
+  trail_atr_mult?: number | null;
+  rsi_extreme_long?: number | null;
+  rsi_extreme_short?: number | null;
+  rsi_long_open_threshold?: number | null;
+  rsi_long_qty_threshold?: number | null;
+  rsi_long_tp_threshold?: number | null;
+  rsi_long_close_threshold?: number | null;
+  rsi_short_open_threshold?: number | null;
+  rsi_short_qty_threshold?: number | null;
+  rsi_short_tp_threshold?: number | null;
+  rsi_short_close_threshold?: number | null;
 };
 
 type EditableConfigResponse = {
@@ -68,6 +85,21 @@ type ConfigFormState = {
 const POLL_MS = 60000;
 const WS_RECONNECT_MS = 5000;
 const COMMAND_POLL_MS = 2000;
+const PARAM_DEFS: Array<{ key: keyof EditableParams; label: string }> = [
+  { key: "sl_mult", label: "Safety Mult" },
+  { key: "tp_mult", label: "Treasure Mult" },
+  { key: "trail_atr_mult", label: "Tail Guard" },
+  { key: "rsi_extreme_long", label: "Long Extreme" },
+  { key: "rsi_extreme_short", label: "Short Extreme" },
+  { key: "rsi_long_open_threshold", label: "Long Open" },
+  { key: "rsi_long_qty_threshold", label: "Long Size" },
+  { key: "rsi_long_tp_threshold", label: "Long Treasure" },
+  { key: "rsi_long_close_threshold", label: "Long Exit" },
+  { key: "rsi_short_open_threshold", label: "Short Open" },
+  { key: "rsi_short_qty_threshold", label: "Short Size" },
+  { key: "rsi_short_tp_threshold", label: "Short Treasure" },
+  { key: "rsi_short_close_threshold", label: "Short Exit" },
+];
 
 function displayValue(value: unknown): string {
   if (value === null || value === undefined) {
@@ -80,6 +112,16 @@ function displayValue(value: unknown): string {
     return value ? "true" : "false";
   }
   return String(value);
+}
+
+function formatParamValue(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return value.toFixed(4).replace(/\.?0+$/, "");
 }
 
 function readPositionNumber(openTradeInfo: Record<string, unknown> | null, key: string): number | null {
@@ -111,24 +153,24 @@ function readUnrealizedPnl(openTradeInfo: Record<string, unknown> | null): numbe
   return null;
 }
 
-function botStatusBadgeClass(status: string | undefined): string {
-  if (status === "running") {
+function scoutingStatusBadgeClass(tradingEnabled: boolean | undefined, hasOpenPosition: boolean): string {
+  if (hasOpenPosition) {
     return "badge badge-good";
   }
-  if (status === "paused" || status === "stopped") {
-    return "badge badge-bad";
+  if (tradingEnabled === true) {
+    return "badge badge-warn";
   }
-  return "badge badge-muted";
+  return "badge badge-bad";
 }
 
-function tradingEnabledBadgeClass(enabled: boolean | undefined): string {
-  if (enabled === true) {
-    return "badge badge-good";
+function scoutingStatusText(tradingEnabled: boolean | undefined, hasOpenPosition: boolean): string {
+  if (hasOpenPosition) {
+    return "In the middle of a trade...";
   }
-  if (enabled === false) {
-    return "badge badge-bad";
+  if (tradingEnabled === true) {
+    return "Looking for trade...";
   }
-  return "badge badge-muted";
+  return "Resting...";
 }
 
 function positionSideBadgeClass(side: unknown): string {
@@ -183,6 +225,34 @@ function formatUnrealizedPnl(value: number | null): string {
     return `+${value.toFixed(2)}`;
   }
   return value.toFixed(2);
+}
+
+function tailGuardValueClass(trailingState: Record<string, unknown> | null): string {
+  if (!trailingState) {
+    return "metric-value value-neutral";
+  }
+  const trailActive = trailingState.trail_active === true;
+  if (!trailActive) {
+    return "metric-value value-neutral";
+  }
+  return "metric-value value-positive";
+}
+
+function resolveTailGuardValue(trailingState: Record<string, unknown> | null): string {
+  if (!trailingState) {
+    return "N/A";
+  }
+  const trailActive = trailingState.trail_active === true;
+  if (!trailActive) {
+    return "Off";
+  }
+  const trailPrice =
+    readPositionNumber(trailingState, "trail_price") ??
+    readPositionNumber(trailingState, "tp");
+  if (trailPrice === null) {
+    return "Active";
+  }
+  return trailPrice.toFixed(2);
 }
 
 function commandStatusBadgeClass(status: string | undefined): string {
@@ -300,6 +370,8 @@ export default function DashboardPage(): JSX.Element {
   const [configSaving, setConfigSaving] = useState<boolean>(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [configInfo, setConfigInfo] = useState<string | null>(null);
+  const [positionExpanded, setPositionExpanded] = useState<boolean>(false);
+  const [configParams, setConfigParams] = useState<EditableParams | null>(null);
 
   async function loadStatus(silent = false): Promise<void> {
     if (!silent) {
@@ -367,6 +439,7 @@ export default function DashboardPage(): JSX.Element {
     try {
       const payload = await fetchApi<EditableConfigResponse>("/api/config/editable");
       setConfigForm(editableToForm(payload.editable));
+      setConfigParams(payload.editable.params ?? null);
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : "Failed to load editable config");
     } finally {
@@ -380,7 +453,7 @@ export default function DashboardPage(): JSX.Element {
     }
 
     if (saveAndRestart) {
-      const confirmed = window.confirm("Save config and restart trading?");
+      const confirmed = window.confirm("Save the knobs and restart the office engine?");
       if (!confirmed) {
         return;
       }
@@ -396,10 +469,11 @@ export default function DashboardPage(): JSX.Element {
         body: payload
       });
       setConfigForm(editableToForm(result.editable));
+      setConfigParams(result.editable.params ?? null);
       if (result.updated) {
-        setConfigInfo(`Config saved. Changed: ${result.changed_fields.join(", ")}`);
+        setConfigInfo(`Knobs saved. Changed: ${result.changed_fields.join(", ")}`);
       } else {
-        setConfigInfo("No config changes detected");
+        setConfigInfo("No knob changes detected");
       }
 
       if (saveAndRestart) {
@@ -531,272 +605,324 @@ export default function DashboardPage(): JSX.Element {
   const liquidationPrice = readPositionNumber(openTradeInfo, "liq_price");
   const unrealizedPnl = readUnrealizedPnl(openTradeInfo);
   const hasOpenPosition = openTradeInfo !== null;
+  const tradingIsEnabled = data?.trading_enabled;
+  const traitRows = PARAM_DEFS.map((def) => ({
+    key: def.key,
+    label: def.label,
+    value: formatParamValue(configParams?.[def.key]),
+  }));
+  const positionSummaryText = hasOpenPosition
+    ? `Unrealized PnL: ${formatUnrealizedPnl(unrealizedPnl)}`
+    : tradingIsEnabled === false
+      ? "Trading paused."
+      : "Looking for one...";
+  const positionSummaryClass = hasOpenPosition
+    ? unrealizedPnl !== null && unrealizedPnl > 0
+      ? "position-accordion-status value-positive"
+      : unrealizedPnl !== null && unrealizedPnl < 0
+        ? "position-accordion-status value-negative"
+        : "position-accordion-status value-neutral"
+    : tradingIsEnabled === false
+      ? "position-accordion-status position-accordion-status-paused"
+      : "position-accordion-status position-accordion-status-idle";
 
   return (
-    <section className="panel page-shell">
-      <h1>Dashboard</h1>
-      <p className="muted">
-        {wsConnected
-          ? "Live mode: WebSocket updates."
-          : `Fallback mode: polling every ${POLL_MS / 1000}s.`}
-      </p>
-      <div className="toolbar">
-        <button
-          type="button"
-          onClick={() => {
-            void loadStatus(false);
-            void loadEditableConfig();
-          }}
-          disabled={configSaving}
-        >
-          Refresh now
-        </button>
-        {loading ? <span className="muted">Loading...</span> : null}
-      </div>
-      {error ? <p>{error}</p> : null}
+    <section className="panel page-shell office-panel">
+      {!wsConnected ? (
+        <p className="dialog-scrooge dialog-scrooge-warning">
+          Wire is down (WebSocket disconnected). Courier polling every {POLL_MS / 1000}s.
+        </p>
+      ) : null}
+      {loading ? <p className="dialog-scrooge dialog-scrooge-compact">Loading...</p> : null}
+      {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
       {data ? (
         <>
-          <h2>Runtime</h2>
-          <div className="kv-grid">
-            <div className="kv-item metric-card">
-              <span className="kv-label">Bot status</span>
-              <span className={botStatusBadgeClass(data.bot_running_status)}>{displayValue(data.bot_running_status)}</span>
+          <p className="dialog-scrooge">My current status.</p>
+          <div className="section-block">
+            <div className="status-strip">
+              <div className="status-chip">
+                <span className="status-chip-label">Status</span>
+                <span className={scoutingStatusBadgeClass(data.trading_enabled, hasOpenPosition)}>
+                  {scoutingStatusText(data.trading_enabled, hasOpenPosition)}
+                </span>
+              </div>
+              <div className="status-chip">
+                <span className="status-chip-label">Vault</span>
+                <span className="metric-value vault-value">
+                  {displayValue(data.balance)}
+                  {typeof data.balance === "number" && Number.isFinite(data.balance) ? (
+                    <span className="vault-dollar" aria-hidden="true">
+                      $
+                    </span>
+                  ) : null}
+                </span>
+              </div>
             </div>
-            <div className="kv-item metric-card">
-              <span className="kv-label">Trading enabled</span>
-              <span className={tradingEnabledBadgeClass(data.trading_enabled)}>{displayValue(data.trading_enabled)}</span>
+            <p className="status-helper">
+              Ticker: {displayValue(data.symbol)} • Leverage:{" "}
+              {data.leverage === null || data.leverage === undefined ? "N/A" : `x${displayValue(data.leverage)}`}
+            </p>
+            <div className="traits-panel">
+              <h3 className="traits-title">Trait Sheet</h3>
+              <div className="traits-grid">
+                {traitRows.map((trait) => (
+                  <div key={trait.key} className="traits-item">
+                    <span className="traits-name">{trait.label}</span>
+                    <span className="traits-value">{trait.value}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="kv-item metric-card">
-              <span className="kv-label">Balance</span>
-              <span className="metric-value">{displayValue(data.balance)}</span>
-            </div>
-            <div className="kv-item metric-card">
-              <span className="kv-label">Current symbol</span>
-              <span className="metric-value">{displayValue(data.symbol)}</span>
-            </div>
-            <div className="kv-item metric-card">
-              <span className="kv-label">Leverage</span>
-              <span className="metric-value">{displayValue(data.leverage)}</span>
-            </div>
-          </div>
-          <div className="toolbar">
-            <button type="button" onClick={() => void runControlAction("start")} disabled={busyAction !== null}>
-              Start Trading
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                void runControlAction("stop", {
-                  confirmMessage: "Confirm STOP trading action?"
-                })
-              }
-              disabled={busyAction !== null}
-            >
-              Stop Trading
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                void runControlAction("restart", {
-                  confirmMessage: "Confirm RESTART trading action?"
-                })
-              }
-              disabled={busyAction !== null}
-            >
-              Restart Trading
-            </button>
-            {busyAction ? <span className="muted">Executing {busyAction}...</span> : null}
-          </div>
-
-          <h2>Open Position</h2>
-          <div className="kv-grid">
-            <div className="kv-item metric-card">
-              <span className="kv-label">Position side</span>
-              <span className={positionSideBadgeClass(data.current_position)}>
-                {formatPositionSide(data.current_position)}
-              </span>
-            </div>
-            <div className="kv-item metric-card">
-              <span className="kv-label">Unrealized PnL</span>
-              <span className={unrealizedPnlClass(unrealizedPnl)}>{formatUnrealizedPnl(unrealizedPnl)}</span>
-            </div>
-            <div className="kv-item metric-card">
-              <span className="kv-label">SL</span>
-              <span className="metric-value">{displayValue(sl)}</span>
-            </div>
-            <div className="kv-item metric-card">
-              <span className="kv-label">TP</span>
-              <span className="metric-value">{displayValue(tp)}</span>
-            </div>
-            <div className="kv-item metric-card">
-              <span className="kv-label">Trailing active</span>
-              <span className="metric-value">{displayValue(data.trailing_state?.trail_active)}</span>
-            </div>
-            <div className="kv-item metric-card">
-              <span className="kv-label">Liquidation price</span>
-              <span className="metric-value">{displayValue(liquidationPrice)}</span>
-            </div>
-          </div>
-          <div className="position-controls-grid">
-            <div className="position-control-item">
-              <label className="field-stack">
-                New SL
-                <input
-                  type="number"
-                  step="any"
-                  min="0"
-                  value={slValue}
-                  onChange={(event) => setSlValue(event.target.value)}
-                  placeholder="e.g. 61234.5"
-                  disabled={busyAction !== null || !hasOpenPosition}
-                />
-              </label>
+            <div className="toolbar">
               <button
                 type="button"
-                onClick={() => void runUpdate("update-sl", slValue)}
-                disabled={busyAction !== null || !hasOpenPosition}
+                className="dialog-user-btn"
+                onClick={() =>
+                  void runControlAction("start", {
+                    confirmMessage: "Open the trading floor now?"
+                  })
+                }
+                disabled={busyAction !== null}
               >
-                Update SL
+                Open for Business
               </button>
-            </div>
-            <div className="position-control-item">
-              <label className="field-stack">
-                New TP
-                <input
-                  type="number"
-                  step="any"
-                  min="0"
-                  value={tpValue}
-                  onChange={(event) => setTpValue(event.target.value)}
-                  placeholder="e.g. 64500"
-                  disabled={busyAction !== null || !hasOpenPosition}
-                />
-              </label>
               <button
                 type="button"
-                onClick={() => void runUpdate("update-tp", tpValue)}
-                disabled={busyAction !== null || !hasOpenPosition}
+                className="dialog-user-btn"
+                onClick={() =>
+                  void runControlAction("stop", {
+                    confirmMessage: "Close the trading floor for now?"
+                  })
+                }
+                disabled={busyAction !== null}
               >
-                Update TP
+                Close the Floor
               </button>
+              <button
+                type="button"
+                className="dialog-user-btn"
+                onClick={() =>
+                  void runControlAction("restart", {
+                    confirmMessage: "Rewind the office engine?"
+                  })
+                }
+                disabled={busyAction !== null}
+              >
+                Wind It Again
+              </button>
+              {busyAction ? <span className="dialog-scrooge dialog-scrooge-compact">Executing {busyAction}...</span> : null}
             </div>
           </div>
-          <div className="position-controls-actions">
-            <button
-              type="button"
-              className={`position-close-btn ${closePositionButtonClass(unrealizedPnl)}`}
-              onClick={() =>
-                void runControlAction("close-position", {
-                  confirmMessage: "Confirm manual CLOSE of current position?"
-                })
-              }
-              disabled={busyAction !== null || !hasOpenPosition}
-            >
-              Close Position
-            </button>
-          </div>
-          {!hasOpenPosition ? <p className="muted">No active position. Position actions are disabled.</p> : null}
-          <p className="muted">
-            Last state update: {displayValue(data.last_update_timestamp)}
-          </p>
 
-          <h2>Config</h2>
-          <p className="muted">Quick editor for core runtime fields. Strategy params are hidden for now.</p>
-          <div className="toolbar">
-            <button
-              type="button"
-              onClick={() => void loadEditableConfig()}
-              disabled={configSaving || busyAction !== null}
-            >
-              Reload from file
-            </button>
-            <button
-              type="button"
-              onClick={() => void saveEditableConfig(false)}
-              disabled={configLoading || configSaving || busyAction !== null || !configForm}
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              onClick={() => void saveEditableConfig(true)}
-              disabled={configLoading || configSaving || busyAction !== null || !configForm}
-            >
-              Save & Restart
-            </button>
-            {configSaving ? <span className="muted">Saving...</span> : null}
-          </div>
-          {configError ? <p>{configError}</p> : null}
-          {configInfo ? <p>{configInfo}</p> : null}
-          {configLoading || !configForm ? (
-            <p className="muted">Loading editable configuration...</p>
-          ) : (
-            <div className="form-grid">
-              <label className="kv-item">
-                <span className="kv-label">Symbol</span>
-                <input
-                  type="text"
-                  value={configForm.symbol}
-                  onChange={(event) =>
-                    setConfigForm((prev) => (prev ? { ...prev, symbol: event.target.value } : prev))
+          <details
+            className="position-accordion"
+            open={positionExpanded}
+            onToggle={(event) => setPositionExpanded(event.currentTarget.open)}
+          >
+            <summary className="position-accordion-summary">
+              <span className="position-accordion-title">Current Trade</span>
+              <span className={positionSummaryClass}>{positionSummaryText}</span>
+            </summary>
+            <div className="position-accordion-body">
+              <div className="trade-pulse-grid">
+                <div className="kv-item metric-card">
+                  <span className="kv-label">Trade Side</span>
+                  <span className={positionSideBadgeClass(data.current_position)}>
+                    {formatPositionSide(data.current_position)}
+                  </span>
+                </div>
+                <div className="kv-item metric-card">
+                  <span className="kv-label">Floating PnL</span>
+                  <span className={unrealizedPnlClass(unrealizedPnl)}>{formatUnrealizedPnl(unrealizedPnl)}</span>
+                </div>
+              </div>
+
+              <div className="trade-manage-grid">
+                <div className="kv-item trade-manage-card">
+                  <span className="kv-label">Safety Net</span>
+                  <span className="metric-value">{displayValue(sl)}</span>
+                  <div className="trade-edit-row">
+                    <label className="field-stack dialog-user-field trade-edit-field">
+                      Set Safety Net
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={slValue}
+                        onChange={(event) => setSlValue(event.target.value)}
+                        placeholder="e.g. 61234.5"
+                        disabled={busyAction !== null || !hasOpenPosition}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="dialog-user-btn"
+                      onClick={() => void runUpdate("update-sl", slValue)}
+                      disabled={busyAction !== null || !hasOpenPosition}
+                    >
+                      Apply Net
+                    </button>
+                  </div>
+                </div>
+
+                <div className="kv-item trade-manage-card">
+                  <span className="kv-label">Treasure Mark</span>
+                  <span className="metric-value">{displayValue(tp)}</span>
+                  <div className="trade-edit-row">
+                    <label className="field-stack dialog-user-field trade-edit-field">
+                      Set Treasure Mark
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={tpValue}
+                        onChange={(event) => setTpValue(event.target.value)}
+                        placeholder="e.g. 64500"
+                        disabled={busyAction !== null || !hasOpenPosition}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="dialog-user-btn"
+                      onClick={() => void runUpdate("update-tp", tpValue)}
+                      disabled={busyAction !== null || !hasOpenPosition}
+                    >
+                      Mark Treasure
+                    </button>
+                  </div>
+                </div>
+
+                <div className="kv-item trade-manage-card">
+                  <span className="kv-label">Tail Guard</span>
+                  <span className={tailGuardValueClass(data.trailing_state)}>
+                    {resolveTailGuardValue(data.trailing_state)}
+                  </span>
+                </div>
+              </div>
+
+              {liquidationPrice !== null ? (
+                <p className="trade-danger-line">Danger line: {displayValue(liquidationPrice)}</p>
+              ) : null}
+
+              <div className="position-controls-actions">
+                <button
+                  type="button"
+                  className={`position-close-btn dialog-user-btn ${closePositionButtonClass(unrealizedPnl)}`}
+                  onClick={() =>
+                    void runControlAction("close-position", {
+                      confirmMessage: "Close this trade by hand?"
+                    })
                   }
-                />
-              </label>
-              <label className="kv-item">
-                <span className="kv-label">Leverage</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={125}
-                  value={configForm.leverage}
-                  onChange={(event) =>
-                    setConfigForm((prev) => (prev ? { ...prev, leverage: event.target.value } : prev))
-                  }
-                />
-              </label>
-              <label className="kv-item">
-                <span className="kv-label">Qty (empty = null)</span>
-                <input
-                  type="number"
-                  step="0.000001"
-                  min={0}
-                  value={configForm.qty}
-                  onChange={(event) => setConfigForm((prev) => (prev ? { ...prev, qty: event.target.value } : prev))}
-                />
-              </label>
-              <label className="kv-item">
-                <span className="kv-label">Use full balance</span>
-                <span className="field-inline">
+                  disabled={busyAction !== null || !hasOpenPosition}
+                >
+                  Close This Trade
+                </button>
+              </div>
+            </div>
+          </details>
+          <div className="section-block">
+            <h2>Config</h2>
+            <p className="dialog-scrooge">Tune core runtime knobs. Deep strategy runes stay hidden for now.</p>
+            <div className="toolbar">
+              <button
+                type="button"
+                className="dialog-user-btn"
+                onClick={() => void loadEditableConfig()}
+                disabled={configSaving || busyAction !== null}
+              >
+                Reload Knobs
+              </button>
+              <button
+                type="button"
+                className="dialog-user-btn"
+                onClick={() => void saveEditableConfig(false)}
+                disabled={configLoading || configSaving || busyAction !== null || !configForm}
+              >
+                Save Knobs
+              </button>
+              <button
+                type="button"
+                className="dialog-user-btn"
+                onClick={() => void saveEditableConfig(true)}
+                disabled={configLoading || configSaving || busyAction !== null || !configForm}
+              >
+                Save + Rewind
+              </button>
+              {configSaving ? <span className="dialog-scrooge dialog-scrooge-compact">Saving...</span> : null}
+            </div>
+            {configError ? <p className="dialog-scrooge dialog-scrooge-error">{configError}</p> : null}
+            {configInfo ? <p className="dialog-scrooge">{configInfo}</p> : null}
+            {configLoading || !configForm ? (
+              <p className="dialog-scrooge">Loading editable configuration...</p>
+            ) : (
+              <div className="form-grid">
+                <label className="kv-item dialog-user-field">
+                  <span className="kv-label">Pair</span>
                   <input
-                    type="checkbox"
-                    checked={configForm.use_full_balance}
+                    type="text"
+                    value={configForm.symbol}
                     onChange={(event) =>
-                      setConfigForm((prev) => (prev ? { ...prev, use_full_balance: event.target.checked } : prev))
+                      setConfigForm((prev) => (prev ? { ...prev, symbol: event.target.value } : prev))
                     }
                   />
-                  <span>{configForm.use_full_balance ? "Enabled" : "Disabled"}</span>
-                </span>
-              </label>
-            </div>
-          )}
+                </label>
+                <label className="kv-item dialog-user-field">
+                  <span className="kv-label">Leverage</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={125}
+                    value={configForm.leverage}
+                    onChange={(event) =>
+                      setConfigForm((prev) => (prev ? { ...prev, leverage: event.target.value } : prev))
+                    }
+                  />
+                </label>
+                <label className="kv-item dialog-user-field">
+                  <span className="kv-label">Stake (empty = null)</span>
+                  <input
+                    type="number"
+                    step="0.000001"
+                    min={0}
+                    value={configForm.qty}
+                    onChange={(event) => setConfigForm((prev) => (prev ? { ...prev, qty: event.target.value } : prev))}
+                  />
+                </label>
+                <label className="kv-item dialog-user-field">
+                  <span className="kv-label">All-in Vault</span>
+                  <span className="field-inline dialog-user-toggle">
+                    <input
+                      type="checkbox"
+                      className="dialog-user-check"
+                      checked={configForm.use_full_balance}
+                      onChange={(event) =>
+                        setConfigForm((prev) => (prev ? { ...prev, use_full_balance: event.target.checked } : prev))
+                      }
+                    />
+                    <span>{configForm.use_full_balance ? "On" : "Off"}</span>
+                  </span>
+                </label>
+              </div>
+            )}
+          </div>
         </>
       ) : null}
 
-      {controlError ? <p>{controlError}</p> : null}
+      {controlError ? <p className="dialog-scrooge dialog-scrooge-error">{controlError}</p> : null}
 
       {commandStatus ? (
         <div className="kv-item metric-card">
-          <span className="kv-label">Last command</span>
+          <span className="kv-label">Last Order</span>
           <span className={commandStatusBadgeClass(commandStatus.status)}>
             {commandStatus.action}: {commandStatus.status}
           </span>
-          {commandStatus.message ? <span className="muted">{commandStatus.message}</span> : null}
+          {commandStatus.message ? <span className="dialog-scrooge">{commandStatus.message}</span> : null}
         </div>
       ) : null}
 
       {data?.warnings.length ? (
         <>
-          <h2>Warnings</h2>
+          <h2>Red Flags</h2>
           <ul className="warning-list">
             {data.warnings.map((warning) => (
               <li key={warning}>{warning}</li>
@@ -807,9 +933,13 @@ export default function DashboardPage(): JSX.Element {
 
       {openTradeInfo ? (
         <>
-          <h2>Open trade info</h2>
+          <h2>Trade Ledger Entry</h2>
           <pre className="json-box">{JSON.stringify(openTradeInfo, null, 2)}</pre>
         </>
+      ) : null}
+
+      {data ? (
+        <p className="technical-footnote">Last whisper from the market: {displayValue(data.last_update_timestamp)}</p>
       ) : null}
     </section>
   );

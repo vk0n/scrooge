@@ -127,17 +127,16 @@ export default function LogsPage(): JSX.Element {
 
   return (
     <section className="panel page-shell">
-      <h1>Logs</h1>
-      <p className="muted">
+      <p className="dialog-scrooge">
         {autoRefresh
           ? wsConnected
-            ? "Live mode: WebSocket updates."
-            : `Fallback mode: polling every ${POLL_MS / 1000}s.`
-          : "Manual mode: auto updates disabled."}
+            ? "Live quill: entries stream in real time."
+            : `Courier mode: polling every ${POLL_MS / 1000}s.`
+          : "Manual reading mode: auto updates disabled."}
       </p>
-      <div className="toolbar">
-        <label htmlFor="lineCount" className="field-stack">
-          Lines
+      <div className="toolbar logs-toolbar">
+        <label htmlFor="lineCount" className="line-count-inline dialog-user-field">
+          <span>Rows</span>
           <input
             id="lineCount"
             type="number"
@@ -152,24 +151,25 @@ export default function LogsPage(): JSX.Element {
             }}
           />
         </label>
-        <label htmlFor="autoRefresh" className="field-inline">
+        <label htmlFor="autoRefresh" className="field-inline dialog-user-toggle logs-toolbar-toggle">
           <input
             id="autoRefresh"
             type="checkbox"
+            className="dialog-user-check"
             checked={autoRefresh}
             onChange={(event) => setAutoRefresh(event.target.checked)}
           />
-          Auto updates
+          Auto tail
         </label>
-        <button type="button" onClick={() => void loadLogs(lineCount, false)}>
-          Refresh now
+        <button type="button" className="dialog-user-btn logs-toolbar-btn" onClick={() => void loadLogs(lineCount, false)}>
+          Read Again
         </button>
-        {loading ? <span className="muted">Loading...</span> : null}
+        {loading ? <span className="dialog-scrooge dialog-scrooge-compact">Loading...</span> : null}
       </div>
-      {error ? <p>{error}</p> : null}
+      {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
       {data ? (
         <>
-          <p className="muted">Returned: {data.returned_lines} / {data.requested_lines}</p>
+          <p className="dialog-scrooge">Pulled: {data.returned_lines} / {data.requested_lines}</p>
           {data.warnings?.length ? (
             <ul className="warning-list">
               {data.warnings.map((warning) => (

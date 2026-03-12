@@ -2,19 +2,18 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { clearAuth, hasSavedAuth } from "../lib/auth";
 
-const primaryLinks: Array<{ href: string; label: string }> = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/chart", label: "Chart" },
-  { href: "/logs", label: "Logs" }
+const primaryLinks: Array<{ href: string; label: string; mobileLabel?: string }> = [
+  { href: "/dashboard", label: "Office" },
+  { href: "/chart", label: "Market Map", mobileLabel: "Map" },
+  { href: "/logs", label: "Ledger" }
 ];
 
 export default function Nav(): JSX.Element {
-  const router = useRouter();
   const pathname = usePathname();
   const [isAuthed, setIsAuthed] = useState<boolean>(false);
 
@@ -42,8 +41,8 @@ export default function Nav(): JSX.Element {
             <Image
               src="/brand/png/scrooge-mark-light-64.png"
               alt="Scrooge mark"
-              width={36}
-              height={36}
+              width={44}
+              height={44}
               className="nav-brand-mark"
               priority
               unoptimized
@@ -51,20 +50,22 @@ export default function Nav(): JSX.Element {
             <span>Scrooge Control</span>
           </Link>
           <div className="nav-actions">
-            <Link href="/login" className={`nav-link${loginActive ? " active" : ""}`}>
-              Login
-            </Link>
+            {!isAuthed ? (
+              <Link href="/login" className={`nav-link${loginActive ? " active" : ""}`}>
+                Enter
+              </Link>
+            ) : null}
             {isAuthed ? (
-              <button
-                type="button"
+              <Link
+                href="/login"
+                className="nav-link"
                 onClick={() => {
                   clearAuth();
                   setIsAuthed(false);
-                  router.push("/login");
                 }}
               >
-                Logout
-              </button>
+                Step Out
+              </Link>
             ) : null}
           </div>
         </div>
@@ -79,7 +80,7 @@ export default function Nav(): JSX.Element {
       <nav className="bottom-nav" aria-label="Mobile navigation">
         {primaryLinks.map((link) => (
           <Link key={link.href} href={link.href} className={bottomLinkClass(link.href)}>
-            {link.label}
+            {link.mobileLabel ?? link.label}
           </Link>
         ))}
       </nav>
