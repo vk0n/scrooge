@@ -164,6 +164,8 @@ export default function ChartPage(): JSX.Element {
   const [includeIndicators, setIncludeIndicators] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
   const [endCursorMs, setEndCursorMs] = useState<number | null>(null);
+  const [controlsExpanded, setControlsExpanded] = useState<boolean>(true);
+  const [chartsExpanded, setChartsExpanded] = useState<boolean>(false);
 
   const [data, setData] = useState<ChartPayload | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -210,6 +212,46 @@ export default function ChartPage(): JSX.Element {
       window.clearInterval(intervalId);
     };
   }, [autoRefresh, period, interval, source, includeIndicators, endCursorMs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      setControlsExpanded(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.toggle("chart-fullscreen-active", chartsExpanded);
+    return () => {
+      document.body.classList.remove("chart-fullscreen-active");
+    };
+  }, [chartsExpanded]);
+
+  useEffect(() => {
+    if (!chartsExpanded) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setChartsExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [chartsExpanded]);
+
+  useEffect(() => {
+    const resizeTimer = window.setTimeout(() => {
+      window.dispatchEvent(new Event("resize"));
+    }, 120);
+    return () => {
+      window.clearTimeout(resizeTimer);
+    };
+  }, [chartsExpanded]);
 
   const chartMeta = useMemo(() => {
     if (!data) {
@@ -376,15 +418,28 @@ export default function ChartPage(): JSX.Element {
           priceChartRef.current,
           traces,
           {
-            title: `${data.symbol} Price`,
+            title: {
+              text: `${data.symbol} Price`,
+              x: 0.5,
+              xanchor: "center",
+              y: 0.975,
+              yanchor: "top",
+            },
             paper_bgcolor: CHART_THEME.bg,
             plot_bgcolor: CHART_THEME.bg,
             font: { color: CHART_THEME.text },
             xaxis: { type: "date", rangeslider: { visible: true } },
             yaxis: { title: "Price" },
-            margin: { t: 45, r: 16, b: 40, l: 55 },
+            margin: { t: 92, r: 16, b: 40, l: 55 },
             shapes: priceShapes,
-            legend: { orientation: "h", y: 1.12 },
+            legend: {
+              orientation: "h",
+              x: 0,
+              xanchor: "left",
+              y: 1.14,
+              yanchor: "bottom",
+              font: { size: 11 },
+            },
           },
           { responsive: true, displaylogo: false }
         );
@@ -394,6 +449,23 @@ export default function ChartPage(): JSX.Element {
 
         const candleTimesMs = data.candles.map((candle) => Date.parse(candle.time));
         let relayoutInProgress = false;
+
+        const syncAuxiliaryXRange = (range: [number, number] | null): void => {
+          const targets = [equityChartRef.current, rsiChartRef.current].filter(
+            (node): node is HTMLDivElement => node !== null
+          );
+          if (!targets.length) {
+            return;
+          }
+          const payload = range
+            ? {
+                "xaxis.range": [new Date(range[0]).toISOString(), new Date(range[1]).toISOString()],
+              }
+            : { "xaxis.autorange": true };
+          targets.forEach((target) => {
+            void Plotly.relayout(target, payload);
+          });
+        };
 
         const rescaleVisibleY = (startMs: number, endMs: number): void => {
           let minPrice = Number.POSITIVE_INFINITY;
@@ -422,6 +494,7 @@ export default function ChartPage(): JSX.Element {
             return;
           }
           if (eventData["xaxis.autorange"] === true) {
+            syncAuxiliaryXRange(null);
             relayoutInProgress = true;
             void Plotly.relayout(chartEl, { "yaxis.autorange": true }).finally(() => {
               relayoutInProgress = false;
@@ -434,6 +507,7 @@ export default function ChartPage(): JSX.Element {
             return;
           }
           rescaleVisibleY(range[0], range[1]);
+          syncAuxiliaryXRange(range);
         });
       }
 
@@ -539,137 +613,173 @@ export default function ChartPage(): JSX.Element {
     <section className="panel page-shell">
       <p className="dialog-scrooge">Read-only map of candles, trades, and vault curve.</p>
 
-      <div className="form-grid chart-controls-grid">
-        <label htmlFor="chart-symbol" className="field-stack dialog-user-field chart-control-field">
-          Pair
-          <input
-            id="chart-symbol"
-            type="text"
-            value={symbol}
-            onChange={(event) => setSymbol(event.target.value.toUpperCase())}
-          />
-        </label>
+      <details
+        className="chart-controls-accordion"
+        open={controlsExpanded}
+        onToggle={(event) => setControlsExpanded(event.currentTarget.open)}
+      >
+        <summary className="chart-controls-summary">
+          <span className="chart-controls-title">Scout controls</span>
+          <span className="chart-controls-summary-hint">{controlsExpanded ? "Hide" : "Show"}</span>
+        </summary>
+        <div className="chart-controls-body">
+          <div className="form-grid chart-controls-grid">
+            <label
+              htmlFor="chart-symbol"
+              className="field-stack dialog-user-field chart-control-field chart-control-field-symbol"
+            >
+              Pair
+              <input
+                id="chart-symbol"
+                type="text"
+                value={symbol}
+                onChange={(event) => setSymbol(event.target.value.toUpperCase())}
+              />
+            </label>
 
-        <label htmlFor="chart-period" className="field-stack dialog-user-field chart-control-field">
-          Window
-          <select
-            id="chart-period"
-            value={period}
-            onChange={(event) => setPeriod(event.target.value)}
-          >
-            {PERIOD_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
+            <label htmlFor="chart-period" className="field-stack dialog-user-field chart-control-field">
+              Window
+              <select
+                id="chart-period"
+                value={period}
+                onChange={(event) => setPeriod(event.target.value)}
+              >
+                {PERIOD_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <label htmlFor="chart-interval" className="field-stack dialog-user-field chart-control-field">
-          Candle Step
-          <select
-            id="chart-interval"
-            value={interval}
-            onChange={(event) => setInterval(event.target.value)}
-          >
-            {INTERVAL_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
+            <label htmlFor="chart-interval" className="field-stack dialog-user-field chart-control-field">
+              Candle Step
+              <select
+                id="chart-interval"
+                value={interval}
+                onChange={(event) => setInterval(event.target.value)}
+              >
+                {INTERVAL_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <label htmlFor="chart-source" className="field-stack dialog-user-field chart-control-field">
-          Feed
-          <select
-            id="chart-source"
-            value={source}
-            onChange={(event) => setSource(event.target.value)}
-          >
-            {SOURCE_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+            <label htmlFor="chart-source" className="field-stack dialog-user-field chart-control-field">
+              Feed
+              <select
+                id="chart-source"
+                value={source}
+                onChange={(event) => setSource(event.target.value)}
+              >
+                {SOURCE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
 
-      <div className="toolbar chart-toolbar">
-        <label htmlFor="chart-indicators" className="field-inline dialog-user-toggle chart-toolbar-toggle">
-          <input
-            id="chart-indicators"
-            type="checkbox"
-            className="dialog-user-check"
-            checked={includeIndicators}
-            onChange={(event) => setIncludeIndicators(event.target.checked)}
-          />
-          Show Indicators
-        </label>
+          <div className="toolbar chart-toolbar">
+            <label htmlFor="chart-indicators" className="field-inline dialog-user-toggle chart-toolbar-toggle">
+              <input
+                id="chart-indicators"
+                type="checkbox"
+                className="dialog-user-check"
+                checked={includeIndicators}
+                onChange={(event) => setIncludeIndicators(event.target.checked)}
+              />
+              Show Indicators
+            </label>
 
-        <label htmlFor="chart-autorefresh" className="field-inline dialog-user-toggle chart-toolbar-toggle">
-          <input
-            id="chart-autorefresh"
-            type="checkbox"
-            className="dialog-user-check"
-            checked={autoRefresh}
-            onChange={(event) => setAutoRefresh(event.target.checked)}
-          />
-          Auto Scout ({POLL_MS / 1000}s)
-        </label>
+            <label htmlFor="chart-autorefresh" className="field-inline dialog-user-toggle chart-toolbar-toggle">
+              <input
+                id="chart-autorefresh"
+                type="checkbox"
+                className="dialog-user-check"
+                checked={autoRefresh}
+                onChange={(event) => setAutoRefresh(event.target.checked)}
+              />
+              Auto Scout ({POLL_MS / 1000}s)
+            </label>
 
-        <button
-          type="button"
-          className="dialog-user-btn chart-toolbar-btn"
-          onClick={() => {
-            const stepMs = parsePeriodMs(period);
-            setEndCursorMs((prev) => (prev === null ? Date.now() - stepMs : prev - stepMs));
-          }}
-        >
-          Earlier
-        </button>
+            <button
+              type="button"
+              className="dialog-user-btn chart-toolbar-btn"
+              onClick={() => {
+                const stepMs = parsePeriodMs(period);
+                setEndCursorMs((prev) => (prev === null ? Date.now() - stepMs : prev - stepMs));
+              }}
+            >
+              Earlier
+            </button>
 
-        <button
-          type="button"
-          className="dialog-user-btn chart-toolbar-btn"
-          onClick={() => {
-            const stepMs = parsePeriodMs(period);
-            setEndCursorMs((prev) => {
-              if (prev === null) {
-                return null;
-              }
-              const next = prev + stepMs;
-              return next >= Date.now() ? null : next;
-            });
-          }}
-          disabled={endCursorMs === null}
-        >
-          Later
-        </button>
+            <button
+              type="button"
+              className="dialog-user-btn chart-toolbar-btn"
+              onClick={() => {
+                const stepMs = parsePeriodMs(period);
+                setEndCursorMs((prev) => {
+                  if (prev === null) {
+                    return null;
+                  }
+                  const next = prev + stepMs;
+                  return next >= Date.now() ? null : next;
+                });
+              }}
+              disabled={endCursorMs === null}
+            >
+              Later
+            </button>
 
-        <button
-          type="button"
-          className="dialog-user-btn chart-toolbar-btn"
-          onClick={() => setEndCursorMs(null)}
-          disabled={endCursorMs === null}
-        >
-          Now
-        </button>
+            <button
+              type="button"
+              className="dialog-user-btn chart-toolbar-btn"
+              onClick={() => setEndCursorMs(null)}
+              disabled={endCursorMs === null}
+            >
+              Now
+            </button>
 
-        <button type="button" className="dialog-user-btn chart-toolbar-btn" onClick={() => void loadChart(false)}>
-          Scout Now
-        </button>
-        {loading ? <span className="dialog-scrooge dialog-scrooge-compact">Loading...</span> : null}
-      </div>
+            <button type="button" className="dialog-user-btn chart-toolbar-btn" onClick={() => void loadChart(false)}>
+              Scout Now
+            </button>
+            {loading ? <span className="dialog-scrooge dialog-scrooge-compact">Loading...</span> : null}
+          </div>
+        </div>
+      </details>
 
       <p className="dialog-scrooge">{chartMeta}</p>
       <p className="dialog-scrooge">Mode: {endCursorMs === null ? "Live scouting" : "Historical scouting"}</p>
       {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
 
-      <div ref={priceChartRef} className="chart-surface chart-surface-lg" />
-      <div ref={equityChartRef} className="chart-surface chart-surface-md" />
-      <div ref={rsiChartRef} className="chart-surface chart-surface-sm" />
+      <div className="chart-view-toolbar">
+        <button
+          type="button"
+          className="dialog-user-btn chart-toolbar-btn chart-view-btn"
+          onClick={() => setChartsExpanded((prev) => !prev)}
+        >
+          {chartsExpanded ? "Exit Fullscreen" : "Fullscreen Charts"}
+        </button>
+      </div>
+
+      <div className={`chart-stack ${chartsExpanded ? "chart-stack-fullscreen" : ""}`}>
+        {chartsExpanded ? (
+          <button
+            type="button"
+            className="dialog-user-btn chart-toolbar-btn chart-fullscreen-close"
+            onClick={() => setChartsExpanded(false)}
+          >
+            Exit Fullscreen
+          </button>
+        ) : null}
+        <div ref={priceChartRef} className="chart-surface chart-surface-lg" />
+        <div ref={equityChartRef} className="chart-surface chart-surface-md" />
+        <div ref={rsiChartRef} className="chart-surface chart-surface-sm" />
+      </div>
 
       {data?.open_position ? (
         <>
