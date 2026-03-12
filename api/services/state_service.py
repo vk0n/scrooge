@@ -20,6 +20,8 @@ def load_state() -> tuple[dict[str, Any], list[str]]:
             {
                 "position": None,
                 "balance": None,
+                "last_price": None,
+                "last_price_updated_at": None,
                 "session_start": None,
                 "session_end": None,
                 "trading_enabled": True,
@@ -61,6 +63,18 @@ def resolve_balance(state: dict[str, Any], default_balance: Any = None) -> float
             return balance
 
     return _maybe_float(default_balance)
+
+
+def resolve_last_price(state: dict[str, Any]) -> float | None:
+    return _maybe_float(state.get("last_price"))
+
+
+def resolve_last_price_updated_at(state: dict[str, Any]) -> str | None:
+    value = state.get("last_price_updated_at")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def resolve_current_position(position: Any) -> str | None:

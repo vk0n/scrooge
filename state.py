@@ -41,6 +41,8 @@ def _default_state() -> dict[str, Any]:
     return {
         "position": None,
         "balance": None,
+        "last_price": None,
+        "last_price_updated_at": None,
         "session_start": now_ms,
         "session_end": None,
         "trading_enabled": True,
@@ -65,6 +67,13 @@ def _as_float_or_none(value: Any) -> float | None:
         return None
 
 
+def _as_text_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
 def _normalize_state(raw_state: Any) -> dict[str, Any]:
     default = _default_state()
     if not isinstance(raw_state, dict):
@@ -79,6 +88,8 @@ def _normalize_state(raw_state: Any) -> dict[str, Any]:
         normalized.setdefault("position", None)
 
     normalized["balance"] = _as_float_or_none(normalized.get("balance"))
+    normalized["last_price"] = _as_float_or_none(normalized.get("last_price"))
+    normalized["last_price_updated_at"] = _as_text_or_none(normalized.get("last_price_updated_at"))
     normalized["session_start"] = _as_int_or_default(normalized.get("session_start"), default["session_start"])
     normalized["session_end"] = _as_int_or_default(normalized.get("session_end"), None)
     normalized["trading_enabled"] = bool(normalized.get("trading_enabled", True))

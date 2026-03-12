@@ -11,6 +11,8 @@ type StatusPayload = {
   bot_running_status: string;
   trading_enabled?: boolean;
   balance: number | null;
+  last_price: number | null;
+  last_price_updated_at?: string | null;
   current_position: string | null;
   leverage: number | null;
   symbol: string | null;
@@ -249,18 +251,6 @@ function readEntryPrice(openTradeInfo: Record<string, unknown> | null): number |
 
 function readPositionSize(openTradeInfo: Record<string, unknown> | null): number | null {
   return readFirstPositionNumber(openTradeInfo, ["size", "qty", "amount", "position_size"]);
-}
-
-function readLastPrice(openTradeInfo: Record<string, unknown> | null): number | null {
-  return readFirstPositionNumber(openTradeInfo, [
-    "last_price",
-    "lastPrice",
-    "current_price",
-    "currentPrice",
-    "mark_price",
-    "markPrice",
-    "price"
-  ]);
 }
 
 function readUnrealizedPnlPercent(
@@ -711,7 +701,7 @@ function DashboardContent(): JSX.Element {
   const unrealizedPnl = readUnrealizedPnl(openTradeInfo);
   const unrealizedPnlPercent = readUnrealizedPnlPercent(openTradeInfo, unrealizedPnl);
   const entryPrice = readEntryPrice(openTradeInfo);
-  const lastPrice = readLastPrice(openTradeInfo);
+  const lastPrice = data?.last_price ?? null;
   const openTime = formatPositionOpenTime(openTradeInfo);
   const hasOpenPosition = openTradeInfo !== null;
   const tradingIsEnabled = data?.trading_enabled;

@@ -61,6 +61,10 @@ def _ratio_to_percent(numerator, denominator):
 
 
 def _refresh_position_snapshot(position, price, leverage, ts_label):
+    # Keep ticker price at state level (not per-position).
+    position.pop("last_price", None)
+    position.pop("last_price_updated_at", None)
+
     side = str(position.get("side", "")).strip().lower()
     size = _to_float(position.get("size")) or 0.0
     entry_price = _to_float(position.get("entry"))
@@ -71,7 +75,6 @@ def _refresh_position_snapshot(position, price, leverage, ts_label):
     if mark_price is None:
         return
 
-    position["last_price"] = mark_price
     position["updated_at"] = ts_label
 
     if entry_price is None or entry_price <= 0 or size <= 0:
@@ -106,6 +109,7 @@ def _refresh_position_snapshot(position, price, leverage, ts_label):
 
 _TRANSIENT_POSITION_FIELDS = {
     "last_price",
+    "last_price_updated_at",
     "unrealized_pnl",
     "unrealized_pnl_pct",
     "position_notional",
@@ -115,6 +119,14 @@ _TRANSIENT_POSITION_FIELDS = {
     "distance_to_tp_pct",
     "updated_at",
 }
+
+
+def _refresh_market_snapshot(state, price, ts_label):
+    market_price = _to_float(price)
+    if market_price is None:
+        return
+    state["last_price"] = market_price
+    state["last_price_updated_at"] = ts_label
 
 
 def _sanitize_trade_for_history(trade):
@@ -169,6 +181,9 @@ def run_strategy(df, live=False, initial_balance=1000,
         rsi   = row["RSI"]
         ema   = row["EMA"]
         row_ts = _format_event_timestamp(row.get("open_time"))
+
+        if live:
+            _refresh_market_snapshot(state, price, row_ts)
         
         if position is None:
             if not allow_entries:
