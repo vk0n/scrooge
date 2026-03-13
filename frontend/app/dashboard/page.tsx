@@ -557,7 +557,7 @@ function DashboardContent(): JSX.Element {
       setConfigForm(editableToForm(payload.editable));
       setConfigParams(payload.editable.params ?? null);
     } catch (err) {
-      setConfigError(err instanceof Error ? err.message : "Failed to load editable config");
+      setConfigError(err instanceof Error ? err.message : "Failed to load contract");
     } finally {
       setConfigLoading(false);
     }
@@ -569,7 +569,7 @@ function DashboardContent(): JSX.Element {
     }
 
     if (saveAndRestart) {
-      const confirmed = window.confirm("Save the instructions and restart the office engine?");
+      const confirmed = window.confirm("Update the contract and reopen the office?");
       if (!confirmed) {
         return;
       }
@@ -587,16 +587,16 @@ function DashboardContent(): JSX.Element {
       setConfigForm(editableToForm(result.editable));
       setConfigParams(result.editable.params ?? null);
       if (result.updated) {
-        setConfigInfo(`Instructions saved. Changed: ${result.changed_fields.join(", ")}`);
+        setConfigInfo(`Contract updated. Changed: ${result.changed_fields.join(", ")}`);
       } else {
-        setConfigInfo("No knob changes detected");
+        setConfigInfo("No contract changes detected.");
       }
 
       if (saveAndRestart) {
         await runControlAction("restart");
       }
     } catch (err) {
-      setConfigError(err instanceof Error ? err.message : "Failed to save config");
+      setConfigError(err instanceof Error ? err.message : "Failed to update contract");
     } finally {
       setConfigSaving(false);
     }
@@ -757,7 +757,7 @@ function DashboardContent(): JSX.Element {
       {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
       {data ? (
         <>
-          <p className="dialog-scrooge">My current status.</p>
+          <p className="dialog-scrooge">My current status:</p>
           <div className="section-block">
             <div className="status-strip">
               <div className="status-chip">
@@ -981,11 +981,10 @@ function DashboardContent(): JSX.Element {
               {busyAction ? <span className="dialog-scrooge dialog-scrooge-compact">Executing {busyAction}...</span> : null}
             </div>
           </div>
+          <p className="dialog-scrooge">My contract:</p>
           <div className="section-block">
-            <h2>Config</h2>
-            <p className="dialog-scrooge">Tune core runtime instructions. Deep strategy runes stay hidden for now.</p>
             {configLoading || !configForm ? (
-              <p className="dialog-scrooge">Loading editable configuration...</p>
+              <p className="dialog-scrooge">Reviewing the contract...</p>
             ) : (
               <div className="form-grid config-form-grid">
                 <label className="kv-item dialog-user-field config-field">
@@ -1047,7 +1046,7 @@ function DashboardContent(): JSX.Element {
                 onClick={() => void saveEditableConfig(false)}
                 disabled={configLoading || configSaving || busyAction !== null || !configForm}
               >
-                Save Instructions
+                Update Contract
               </button>
               <button
                 type="button"
@@ -1055,7 +1054,7 @@ function DashboardContent(): JSX.Element {
                 onClick={() => void saveEditableConfig(true)}
                 disabled={configLoading || configSaving || busyAction !== null || !configForm}
               >
-                Save + Rewind
+                Update and Reopen Office
               </button>
               <button
                 type="button"
@@ -1063,9 +1062,9 @@ function DashboardContent(): JSX.Element {
                 onClick={() => void loadEditableConfig()}
                 disabled={configSaving || busyAction !== null}
               >
-                Reload Instructions
+                Review Contract
               </button>
-              {configSaving ? <span className="dialog-scrooge dialog-scrooge-compact">Saving...</span> : null}
+              {configSaving ? <span className="dialog-scrooge dialog-scrooge-compact">Updating contract...</span> : null}
             </div>
             {configError ? <p className="dialog-scrooge dialog-scrooge-error">{configError}</p> : null}
             {configInfo ? <p className="dialog-scrooge">{configInfo}</p> : null}

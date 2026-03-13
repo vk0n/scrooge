@@ -72,7 +72,7 @@ type ChartPayload = {
   warnings: string[];
 };
 
-const PERIOD_OPTIONS = ["6h", "12h", "1d", "3d", "1w", "2w", "4w", "12w", "26w", "52w"];
+const PERIOD_OPTIONS = ["15m", "30m", "1h", "2h", "3h", "4h", "6h", "12h", "1d", "3d", "1w", "2w", "4w", "12w", "26w", "52w"];
 const INTERVAL_OPTIONS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"];
 const SOURCE_OPTIONS = ["auto", "dataset", "binance"] as const;
 const POLL_MS = 60000;
@@ -632,10 +632,7 @@ function ChartContent(): JSX.Element {
         </summary>
         <div className="chart-controls-body">
           <div className="form-grid chart-controls-grid">
-            <label
-              htmlFor="chart-symbol"
-              className="field-stack dialog-user-field chart-control-field chart-control-field-symbol"
-            >
+            <label htmlFor="chart-symbol" className="field-stack dialog-user-field chart-control-field">
               Pair
               <input
                 id="chart-symbol"
@@ -691,71 +688,77 @@ function ChartContent(): JSX.Element {
             </label>
           </div>
 
-          <div className="toolbar chart-toolbar">
-            <label htmlFor="chart-indicators" className="field-inline dialog-user-toggle chart-toolbar-toggle">
-              <input
-                id="chart-indicators"
-                type="checkbox"
-                className="dialog-user-check"
-                checked={includeIndicators}
-                onChange={(event) => setIncludeIndicators(event.target.checked)}
-              />
-              Show Indicators
-            </label>
+          <div className="chart-toolbar">
+            <div className="chart-toolbar-group chart-toolbar-group-toggles">
+              <label htmlFor="chart-indicators" className="field-inline dialog-user-toggle chart-toolbar-toggle">
+                <input
+                  id="chart-indicators"
+                  type="checkbox"
+                  className="dialog-user-check"
+                  checked={includeIndicators}
+                  onChange={(event) => setIncludeIndicators(event.target.checked)}
+                />
+                Show Indicators
+              </label>
 
-            <label htmlFor="chart-autorefresh" className="field-inline dialog-user-toggle chart-toolbar-toggle">
-              <input
-                id="chart-autorefresh"
-                type="checkbox"
-                className="dialog-user-check"
-                checked={autoRefresh}
-                onChange={(event) => setAutoRefresh(event.target.checked)}
-              />
-              Auto Scout ({POLL_MS / 1000}s)
-            </label>
+              <label htmlFor="chart-autorefresh" className="field-inline dialog-user-toggle chart-toolbar-toggle">
+                <input
+                  id="chart-autorefresh"
+                  type="checkbox"
+                  className="dialog-user-check"
+                  checked={autoRefresh}
+                  onChange={(event) => setAutoRefresh(event.target.checked)}
+                />
+                Auto Scout ({POLL_MS / 1000}s)
+              </label>
+            </div>
 
-            <button
-              type="button"
-              className="dialog-user-btn chart-toolbar-btn"
-              onClick={() => {
-                const stepMs = parsePeriodMs(period);
-                setEndCursorMs((prev) => (prev === null ? Date.now() - stepMs : prev - stepMs));
-              }}
-            >
-              Earlier
-            </button>
+            <div className="chart-toolbar-group chart-toolbar-group-nav">
+              <button
+                type="button"
+                className="dialog-user-btn chart-toolbar-btn"
+                onClick={() => {
+                  const stepMs = parsePeriodMs(period);
+                  setEndCursorMs((prev) => (prev === null ? Date.now() - stepMs : prev - stepMs));
+                }}
+              >
+                Earlier
+              </button>
 
-            <button
-              type="button"
-              className="dialog-user-btn chart-toolbar-btn"
-              onClick={() => {
-                const stepMs = parsePeriodMs(period);
-                setEndCursorMs((prev) => {
-                  if (prev === null) {
-                    return null;
-                  }
-                  const next = prev + stepMs;
-                  return next >= Date.now() ? null : next;
-                });
-              }}
-              disabled={endCursorMs === null}
-            >
-              Later
-            </button>
+              <button
+                type="button"
+                className="dialog-user-btn chart-toolbar-btn"
+                onClick={() => {
+                  const stepMs = parsePeriodMs(period);
+                  setEndCursorMs((prev) => {
+                    if (prev === null) {
+                      return null;
+                    }
+                    const next = prev + stepMs;
+                    return next >= Date.now() ? null : next;
+                  });
+                }}
+                disabled={endCursorMs === null}
+              >
+                Later
+              </button>
 
-            <button
-              type="button"
-              className="dialog-user-btn chart-toolbar-btn"
-              onClick={() => setEndCursorMs(null)}
-              disabled={endCursorMs === null}
-            >
-              Now
-            </button>
+              <button
+                type="button"
+                className="dialog-user-btn chart-toolbar-btn"
+                onClick={() => setEndCursorMs(null)}
+                disabled={endCursorMs === null}
+              >
+                Now
+              </button>
+            </div>
 
-            <button type="button" className="dialog-user-btn chart-toolbar-btn" onClick={() => void loadChart(false)}>
-              Scout Now
-            </button>
-            {loading ? <span className="dialog-scrooge dialog-scrooge-compact">Loading...</span> : null}
+            <div className="chart-toolbar-group chart-toolbar-group-primary">
+              <button type="button" className="dialog-user-btn chart-toolbar-btn" onClick={() => void loadChart(false)}>
+                Scout Now
+              </button>
+              {loading ? <span className="dialog-scrooge dialog-scrooge-compact chart-toolbar-status">Loading...</span> : null}
+            </div>
           </div>
         </div>
       </details>
@@ -772,7 +775,7 @@ function ChartContent(): JSX.Element {
         </button>
       </div>
 
-      <div className={`chart-stack ${chartsExpanded ? "chart-stack-fullscreen" : ""}`}>
+      <div className={`chart-stack ${chartsExpanded ? "chart-stack-fullscreen" : ""}`} data-swipe-lock>
         {chartsExpanded ? (
           <button
             type="button"

@@ -490,7 +490,31 @@ pre {
 }
 
 .chart-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.42rem 0.55rem;
+}
+
+.chart-toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 0.42rem;
+  min-width: 0;
+}
+
+.chart-toolbar-group-toggles {
+  flex: 1 1 320px;
+}
+
+.chart-toolbar-group-nav {
+  flex: 0 1 auto;
+}
+
+.chart-toolbar-group-primary {
+  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .chart-toolbar-btn {
@@ -658,7 +682,7 @@ pre {
 }
 
 .chart-controls-grid {
-  grid-template-columns: repeat(auto-fit, minmax(140px, 220px));
+  grid-template-columns: minmax(140px, 1.2fr) repeat(3, minmax(118px, 1fr));
   justify-content: start;
   gap: 0.5rem;
 }
@@ -674,6 +698,10 @@ pre {
   padding: 0.28rem 0.5rem;
   border-radius: 9px;
   font-size: 0.94rem;
+}
+
+.chart-toolbar-status {
+  margin-left: 0.1rem;
 }
 
 .chart-view-toolbar {
@@ -1392,18 +1420,18 @@ pre {
     font-size: 0.88rem;
   }
 
-  .chart-control-field-symbol {
-    grid-column: 1 / -1;
-  }
-
   .chart-toolbar {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
     gap: 0.34rem;
   }
 
-  .chart-toolbar > * {
-    width: 100%;
+  .chart-toolbar-group {
+    gap: 0.34rem;
+  }
+
+  .chart-toolbar-group-primary {
+    margin-left: 0;
   }
 
   .chart-toolbar-btn,
@@ -1412,10 +1440,6 @@ pre {
     padding: 0.22rem 0.4rem;
     border-radius: 8px;
     font-size: 0.84rem;
-  }
-
-  .chart-toolbar > .dialog-scrooge-compact {
-    grid-column: 1 / -1;
   }
 
   .chart-view-toolbar {
@@ -1498,21 +1522,29 @@ pre {
   }
 
   .chart-controls-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .chart-control-field-symbol {
-    grid-column: auto;
-  }
-
-  .chart-toolbar {
-    grid-template-columns: 1fr;
+  .chart-controls-grid .chart-control-field {
+    min-width: 0;
   }
 
   .chart-toolbar-btn,
   .chart-toolbar-toggle {
     min-height: 1.64rem;
     font-size: 0.82rem;
+  }
+
+  .chart-toolbar-group-nav {
+    justify-content: space-between;
+  }
+
+  .chart-toolbar-group-primary {
+    justify-content: flex-start;
+  }
+
+  .chart-toolbar-status {
+    margin-left: 0;
   }
 
   .chart-surface-lg {

@@ -6,12 +6,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { clearAuth, hasSavedAuth } from "../lib/auth";
-
-const primaryLinks: Array<{ href: string; label: string; mobileLabel?: string }> = [
-  { href: "/dashboard", label: "Office" },
-  { href: "/chart", label: "Market Map", mobileLabel: "Map" },
-  { href: "/logs", label: "Ledger" }
-];
+import { PRIMARY_LINKS } from "../lib/navigation";
 
 export default function Nav(): JSX.Element {
   const pathname = usePathname();
@@ -64,7 +59,7 @@ export default function Nav(): JSX.Element {
         </div>
         {isAuthed ? (
           <div className="nav-links">
-            {primaryLinks.map((link) => (
+            {PRIMARY_LINKS.map((link) => (
               <Link key={link.href} href={link.href} className={linkClass(link.href)}>
                 {link.label}
               </Link>
@@ -74,7 +69,7 @@ export default function Nav(): JSX.Element {
       </nav>
       {isAuthed ? (
         <nav className="bottom-nav" aria-label="Mobile navigation">
-          {primaryLinks.map((link) => (
+          {PRIMARY_LINKS.map((link) => (
             <Link key={link.href} href={link.href} className={bottomLinkClass(link.href)}>
               {link.mobileLabel ?? link.label}
             </Link>
