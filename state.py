@@ -61,6 +61,7 @@ def _default_state() -> dict[str, Any]:
     return {
         "position": None,
         "balance": None,
+        "manual_trade_suggestion": None,
         "last_price": None,
         "last_price_updated_at": None,
         "updated_at": _now_text(),
@@ -96,6 +97,21 @@ def _as_text_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text if text else None
+
+
+def _normalize_manual_trade_suggestion(value: Any) -> dict[str, str | None] | None:
+    if not isinstance(value, dict):
+        return None
+
+    side = _as_text_or_none(value.get("side"))
+    if side not in {"buy", "sell"}:
+        return None
+
+    return {
+        "side": side,
+        "requested_at": _as_text_or_none(value.get("requested_at")),
+        "requested_by": _as_text_or_none(value.get("requested_by")),
+    }
 
 
 def _status_from_code(code: str, labels: dict[str, str]) -> dict[str, str] | None:
@@ -141,6 +157,7 @@ def _sync_ui_statuses(state: dict[str, Any]) -> None:
     trade_status = _trade_status_from_position(position)
     if isinstance(position, dict):
         bot_status = _status_from_code("managing_open_trade", BOT_STATUS_LABELS)
+        state["manual_trade_suggestion"] = None
     elif not trading_enabled:
         bot_status = _status_from_code("resting", BOT_STATUS_LABELS)
     else:
@@ -165,6 +182,7 @@ def _normalize_state(raw_state: Any) -> dict[str, Any]:
         normalized.setdefault("position", None)
 
     normalized["balance"] = _as_float_or_none(normalized.get("balance"))
+    normalized["manual_trade_suggestion"] = _normalize_manual_trade_suggestion(normalized.get("manual_trade_suggestion"))
     normalized["last_price"] = _as_float_or_none(normalized.get("last_price"))
     normalized["last_price_updated_at"] = _as_text_or_none(normalized.get("last_price_updated_at"))
     normalized["updated_at"] = _as_text_or_none(normalized.get("updated_at"))

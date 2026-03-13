@@ -60,8 +60,9 @@ type TrailingState = {
   sl: number | null;
 };
 
-type ControlAction = "start" | "stop" | "restart" | "close_position" | "update_sl" | "update_tp";
-type ControlEndpoint = "start" | "stop" | "restart" | "close-position" | "update-sl" | "update-tp";
+type TradeSuggestionSide = "buy" | "sell";
+type ControlAction = "start" | "stop" | "restart" | "close_position" | "suggest_trade" | "update_sl" | "update_tp";
+type ControlEndpoint = "start" | "stop" | "restart" | "close-position" | "suggest-trade" | "update-sl" | "update-tp";
 
 type ControlResponse = {
   action: ControlAction;
@@ -479,6 +480,7 @@ function DashboardContent(): JSX.Element {
   const [controlError, setControlError] = useState<string | null>(null);
   const [commandResult, setCommandResult] = useState<ControlResponse | null>(null);
   const [commandStatus, setCommandStatus] = useState<CommandStatusResponse | null>(null);
+  const [showTradeSuggestions, setShowTradeSuggestions] = useState<boolean>(false);
   const [slValue, setSlValue] = useState<string>("");
   const [tpValue, setTpValue] = useState<string>("");
   const [configForm, setConfigForm] = useState<ConfigFormState | null>(null);
@@ -547,6 +549,15 @@ function DashboardContent(): JSX.Element {
       body: { value: numericValue },
       confirmMessage: `Confirm ${label} update to ${numericValue}?`
     });
+  }
+
+  async function runSuggestedTrade(side: TradeSuggestionSide): Promise<void> {
+    const actionLabel = side === "buy" ? "buy" : "sell";
+    await runControlAction("suggest-trade", {
+      body: { side },
+      confirmMessage: `Are you sure I should ${actionLabel} right now?`
+    });
+    setShowTradeSuggestions(false);
   }
 
   async function loadEditableConfig(): Promise<void> {
@@ -743,7 +754,9 @@ function DashboardContent(): JSX.Element {
   useEffect(() => {
     if (!hasOpenPosition) {
       setPositionExpanded(false);
+      return;
     }
+    setShowTradeSuggestions(false);
   }, [hasOpenPosition]);
 
   return (
@@ -925,6 +938,38 @@ function DashboardContent(): JSX.Element {
                 </div>
               </div>
             </details>
+            {!hasOpenPosition ? (
+              <div className="toolbar trade-suggest-toolbar">
+                <button
+                  type="button"
+                  className="dialog-user-btn"
+                  onClick={() => setShowTradeSuggestions((prev) => !prev)}
+                  disabled={busyAction !== null}
+                >
+                  Suggest a Trade
+                </button>
+                {showTradeSuggestions ? (
+                  <div className="trade-suggest-actions">
+                    <button
+                      type="button"
+                      className="dialog-user-btn button-success"
+                      onClick={() => void runSuggestedTrade("buy")}
+                      disabled={busyAction !== null}
+                    >
+                      Buy
+                    </button>
+                    <button
+                      type="button"
+                      className="dialog-user-btn button-danger"
+                      onClick={() => void runSuggestedTrade("sell")}
+                      disabled={busyAction !== null}
+                    >
+                      Sell
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <details className="position-accordion traits-accordion">
               <summary className="position-accordion-summary">

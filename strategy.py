@@ -92,6 +92,21 @@ def _resolve_search_status(price, ema, previous_status):
     return _status_from_code("looking_for_buy_opportunity", SEARCH_STATUS_LABELS)
 
 
+def _normalize_manual_trade_suggestion(value):
+    if not isinstance(value, dict):
+        return None
+
+    side = str(value.get("side", "")).strip().lower()
+    if side not in {"buy", "sell"}:
+        return None
+
+    return {
+        "side": side,
+        "requested_at": str(value.get("requested_at", "")).strip() or None,
+        "requested_by": str(value.get("requested_by", "")).strip() or None,
+    }
+
+
 def _refresh_position_snapshot(position, price, leverage, ts_label):
     # Keep ticker price at state level (not per-position).
     position.pop("last_price", None)
@@ -202,6 +217,7 @@ def run_strategy(df, live=False, initial_balance=1000,
             "position": None,
             "trade_history": [],
             "balance_history": [],
+            "manual_trade_suggestion": None,
             "updated_at": None,
             "search_status": None,
             "bot_status": None,
@@ -214,6 +230,21 @@ def run_strategy(df, live=False, initial_balance=1000,
     trade_history = state.get("trade_history", [])
     balance_history = state.get("balance_history", [])
     log_buffer = []
+
+    def calc_liquidation_price(entry, leverage_value, side):
+        # Binance Futures isolated margin formula approximation
+        if side == "long":
+            return entry * (1 - 1 / leverage_value)
+        return entry * (1 + 1 / leverage_value)
+
+    def consume_manual_trade_suggestion():
+        suggestion = _normalize_manual_trade_suggestion(state.get("manual_trade_suggestion"))
+        if suggestion is None:
+            return None
+        state["manual_trade_suggestion"] = None
+        if live:
+            save_state(state)
+        return suggestion
 
     if live:
         df_iter = [df.iloc[-1]]
@@ -240,19 +271,16 @@ def run_strategy(df, live=False, initial_balance=1000,
             if not allow_entries:
                 continue
 
+            manual_trade_suggestion = consume_manual_trade_suggestion() if live else None
+            manual_side = manual_trade_suggestion["side"] if manual_trade_suggestion else None
+            manual_long = manual_side == "buy"
+            manual_short = manual_side == "sell"
+            
             # determine position size
             qty_local = compute_qty(symbol, balance, leverage, price, qty, use_full_balance, live)
-            
-            # --- Helper: liquidation price estimation (isolated margin logic) ---
-            def calc_liquidation_price(entry, leverage, side):
-                # Binance Futures isolated margin formula approximation
-                if side == "long":
-                    return entry * (1 - 1 / leverage)
-                else:
-                    return entry * (1 + 1 / leverage)
 
             # OPEN LOGIC
-            if price < lower and rsi < rsi_long_open_threshold and price > ema:
+            if (price < lower and rsi < rsi_long_open_threshold and price > ema) or manual_long:
                 qty_open = qty_local * 0.5 if rsi > rsi_long_qty_threshold else qty_local
                 fb = False if rsi > rsi_long_qty_threshold else True 
                 sl = price - atr * sl_mult
@@ -261,10 +289,17 @@ def run_strategy(df, live=False, initial_balance=1000,
 
                 # skip if SL is beyond liquidation
                 if sl < liquidation_price:
+                    trigger_label = "manual suggestion" if manual_long else "strategy rules"
                     if live:
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] ⚠️ Skipped LONG entry at {price}: SL ({sl:.1f}) below liquidation ({liquidation_price:.1f})")
+                        log_buffer.append(
+                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⚠️ Skipped LONG entry at {price}: "
+                            f"SL ({sl:.1f}) below liquidation ({liquidation_price:.1f}) [{trigger_label}]"
+                        )
                     else:
-                        log_buffer.append(f"[{row_ts}] ⚠️ Skipped LONG entry at {price}: SL ({sl:.1f}) below liquidation ({liquidation_price:.1f})")
+                        log_buffer.append(
+                            f"[{row_ts}] ⚠️ Skipped LONG entry at {price}: "
+                            f"SL ({sl:.1f}) below liquidation ({liquidation_price:.1f}) [{trigger_label}]"
+                        )
                 else:
                     position = {
                         "side": "long",
@@ -286,12 +321,21 @@ def run_strategy(df, live=False, initial_balance=1000,
                             balance = get_balance()
                             update_position(state, position)
                             update_balance(state, balance)
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}")
+                        reason_suffix = " by manual suggestion" if manual_long else ""
+                        log_buffer.append(
+                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                            f"Opened LONG {qty_open} {symbol} at {price}{reason_suffix}, "
+                            f"fee={qty_open * price * fee_rate:.2f}"
+                        )
                     else:
                         balance -= qty_open * price * fee_rate
-                        log_buffer.append(f"[{row_ts}] Opened LONG {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}, full_ballance: {fb}")
+                        reason_suffix = " by manual suggestion" if manual_long else ""
+                        log_buffer.append(
+                            f"[{row_ts}] Opened LONG {qty_open} {symbol} at {price}{reason_suffix}, "
+                            f"fee={qty_open * price * fee_rate:.2f}, full_ballance: {fb}"
+                        )
 
-            elif price > upper and rsi > rsi_short_open_threshold and price < ema:
+            elif (price > upper and rsi > rsi_short_open_threshold and price < ema) or manual_short:
                 qty_open = qty_local * 0.5 if rsi < rsi_short_qty_threshold else qty_local
                 fb = False if rsi < rsi_short_qty_threshold else True 
                 sl = price + atr * sl_mult
@@ -300,10 +344,17 @@ def run_strategy(df, live=False, initial_balance=1000,
 
                 # skip if SL is beyond liquidation
                 if sl > liquidation_price:
+                    trigger_label = "manual suggestion" if manual_short else "strategy rules"
                     if live:
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] ⚠️ Skipped SHORT entry at {price}: SL ({sl:.1f}) above liquidation ({liquidation_price:.1f})")
+                        log_buffer.append(
+                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⚠️ Skipped SHORT entry at {price}: "
+                            f"SL ({sl:.1f}) above liquidation ({liquidation_price:.1f}) [{trigger_label}]"
+                        )
                     else:
-                        log_buffer.append(f"[{row_ts}] ⚠️ Skipped SHORT entry at {price}: SL ({sl:.1f}) above liquidation ({liquidation_price:.1f})")
+                        log_buffer.append(
+                            f"[{row_ts}] ⚠️ Skipped SHORT entry at {price}: "
+                            f"SL ({sl:.1f}) above liquidation ({liquidation_price:.1f}) [{trigger_label}]"
+                        )
                 else:
                     position = {
                         "side": "short",
@@ -325,10 +376,19 @@ def run_strategy(df, live=False, initial_balance=1000,
                             balance = get_balance()
                             update_position(state, position)
                             update_balance(state, balance)
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}")
+                        reason_suffix = " by manual suggestion" if manual_short else ""
+                        log_buffer.append(
+                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                            f"Opened SHORT {qty_open} {symbol} at {price}{reason_suffix}, "
+                            f"fee={qty_open * price * fee_rate:.2f}"
+                        )
                     else:
                         balance -= qty_open * price * fee_rate
-                        log_buffer.append(f"[{row_ts}] Opened SHORT {qty_open} {symbol} at {price}, fee={qty_open * price * fee_rate:.2f}, full_ballance: {fb}")
+                        reason_suffix = " by manual suggestion" if manual_short else ""
+                        log_buffer.append(
+                            f"[{row_ts}] Opened SHORT {qty_open} {symbol} at {price}{reason_suffix}, "
+                            f"fee={qty_open * price * fee_rate:.2f}, full_ballance: {fb}"
+                        )
 
         else:
             # MANAGEMENT for open position

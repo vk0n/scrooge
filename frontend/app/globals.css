@@ -482,6 +482,20 @@ pre {
   min-width: 0;
 }
 
+.trade-suggest-toolbar {
+  display: inline-grid;
+  justify-self: end;
+  justify-items: end;
+  gap: 0.42rem;
+}
+
+.trade-suggest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.42rem;
+}
+
 .office-panel .dialog-user-btn {
   min-height: 1.95rem;
   padding: 0.34rem 0.58rem;
@@ -1499,6 +1513,23 @@ pre {
 
   .toolbar > * {
     width: 100%;
+  }
+
+  .trade-suggest-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.45rem;
+  }
+
+  .trade-suggest-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .trade-suggest-toolbar > .dialog-user-btn,
+  .trade-suggest-actions > * {
+    width: auto;
   }
 
   .config-toolbar {

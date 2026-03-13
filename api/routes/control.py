@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -18,6 +20,10 @@ def _requested_by(request: Request) -> str:
 
 class UpdateLevelRequest(BaseModel):
     value: float = Field(..., gt=0)
+
+
+class SuggestTradeRequest(BaseModel):
+    side: Literal["buy", "sell"]
 
 
 def _enqueue_action(
@@ -53,6 +59,20 @@ def restart(request: Request, x_scrooge_control_token: str | None = Header(defau
 @router.post("/close-position")
 def close_position(request: Request, x_scrooge_control_token: str | None = Header(default=None)) -> dict[str, object]:
     return _enqueue_action(request=request, action="close_position", control_token=x_scrooge_control_token)
+
+
+@router.post("/suggest-trade")
+def suggest_trade(
+    data: SuggestTradeRequest,
+    request: Request,
+    x_scrooge_control_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    return _enqueue_action(
+        request=request,
+        action="suggest_trade",
+        control_token=x_scrooge_control_token,
+        payload={"side": data.side},
+    )
 
 
 @router.post("/update-sl")

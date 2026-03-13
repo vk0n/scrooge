@@ -19,7 +19,7 @@ REDIS_DB = int(os.getenv("SCROOGE_REDIS_DB", "0"))
 CONTROL_QUEUE_KEY = os.getenv("SCROOGE_CONTROL_QUEUE_KEY", "scrooge:control:queue")
 COMMAND_STATUS_PREFIX = os.getenv("SCROOGE_COMMAND_STATUS_PREFIX", "scrooge:control:command:")
 COMMAND_STATUS_TTL_SECONDS = int(os.getenv("SCROOGE_COMMAND_STATUS_TTL_SECONDS", "86400"))
-SUPPORTED_ACTIONS = {"start", "stop", "restart", "close_position", "update_sl", "update_tp"}
+SUPPORTED_ACTIONS = {"start", "stop", "restart", "close_position", "suggest_trade", "update_sl", "update_tp"}
 TRADE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -72,6 +72,13 @@ def _validate_level_update(action: str, new_value: float, position: dict[str, An
             raise ValueError("TP for long position must be above entry price")
         if side == "short" and entry is not None and new_value >= entry:
             raise ValueError("TP for short position must be below entry price")
+
+
+def _normalize_suggested_side(value: Any) -> str | None:
+    if value is None:
+        return None
+    side = str(value).strip().lower()
+    return side if side in {"buy", "sell"} else None
 
 
 def _status_snapshot(state: dict[str, Any]) -> dict[str, Any]:
@@ -204,12 +211,33 @@ def process_pending_commands(
                 message = "Trading resumed." if not was_enabled else "Trading is already running."
             elif action == "stop":
                 state["trading_enabled"] = False
+                state["manual_trade_suggestion"] = None
                 message = "Trading paused." if was_enabled else "Trading is already paused."
             elif action == "restart":
                 state["trading_enabled"] = True
                 restart_requested = True
                 message = "Trading restart requested. Config reload scheduled."
                 save_state_fn(state)
+            elif action == "suggest_trade":
+                if not bool(state.get("trading_enabled", True)):
+                    raise ValueError("Cannot suggest a trade while trading is paused")
+                if isinstance(state.get("position"), dict):
+                    raise ValueError("Cannot suggest a trade while a position is already open")
+
+                requested_side = _normalize_suggested_side(command_payload.get("side"))
+                if requested_side is None:
+                    raise ValueError("Invalid trade side. Expected 'buy' or 'sell'.")
+
+                state["manual_trade_suggestion"] = {
+                    "side": requested_side,
+                    "requested_at": _now_iso(),
+                    "requested_by": str(payload.get("requested_by", "unknown")).strip() or "unknown",
+                }
+                save_state_fn(state)
+                message = (
+                    f"{requested_side.capitalize()} suggestion recorded. "
+                    f"Scrooge will try it on the next live tick and manage it by the usual rules."
+                )
             elif action in {"update_sl", "update_tp"}:
                 position = state.get("position")
                 if not isinstance(position, dict):

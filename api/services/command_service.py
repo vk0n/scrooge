@@ -20,6 +20,7 @@ SUPPORTED_ACTIONS = {
     "stop",
     "restart",
     "close_position",
+    "suggest_trade",
     "update_sl",
     "update_tp",
 }
