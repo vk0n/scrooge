@@ -774,18 +774,6 @@ pre {
   white-space: nowrap;
 }
 
-.position-summary-phrase-looking {
-  border-color: #6a3a5a;
-}
-
-.position-summary-phrase-paused {
-  border-color: #7b2f3a;
-}
-
-.position-summary-phrase-open {
-  border-color: #5b3652;
-}
-
 .position-upnl-badge {
   display: inline-flex;
   align-items: center;
@@ -814,6 +802,12 @@ pre {
   border-color: #617187;
   background: rgba(97, 113, 135, 0.22);
   color: #d9e2ef;
+}
+
+.position-upnl-badge-paused {
+  border-color: #8d6b2f;
+  background: rgba(141, 107, 47, 0.2);
+  color: #ffe0ab;
 }
 
 .position-accordion-status {
@@ -870,6 +864,12 @@ pre {
 .trade-manage-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.62rem;
+}
+
+.trade-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 0.62rem;
 }
 

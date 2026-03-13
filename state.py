@@ -12,10 +12,30 @@ STATE_FILE = os.getenv("SCROOGE_STATE_FILE", "state.json")
 TRADE_HISTORY_FILE = os.getenv("SCROOGE_TRADE_HISTORY_FILE", "trade_history.jsonl")
 BALANCE_HISTORY_FILE = os.getenv("SCROOGE_BALANCE_HISTORY_FILE", "balance_history.jsonl")
 STATE_BACKUP_SUFFIX = ".bak"
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+SEARCH_STATUS_LABELS = {
+    "looking_for_buy_opportunity": "Looking for a buy opportunity...",
+    "looking_for_sell_opportunity": "Looking for a sell opportunity...",
+}
+BOT_STATUS_LABELS = {
+    "resting": "Resting...",
+    **SEARCH_STATUS_LABELS,
+    "managing_open_trade": "Managing an open trade...",
+}
+TRADE_STATUS_LABELS = {
+    "locking_in_profit": "Locking in profit...",
+    "waiting_for_more_profit": "Waiting for more profit...",
+    "waiting_for_profit": "Waiting for profit...",
+}
 
 
 def _now_ms() -> int:
     return int(datetime.now().timestamp() * 1000)
+
+
+def _now_text() -> str:
+    return datetime.now().strftime(TIMESTAMP_FORMAT)
 
 
 def _state_path() -> Path:
@@ -43,6 +63,10 @@ def _default_state() -> dict[str, Any]:
         "balance": None,
         "last_price": None,
         "last_price_updated_at": None,
+        "updated_at": _now_text(),
+        "search_status": None,
+        "bot_status": None,
+        "trade_status": None,
         "session_start": now_ms,
         "session_end": None,
         "trading_enabled": True,
@@ -74,6 +98,59 @@ def _as_text_or_none(value: Any) -> str | None:
     return text if text else None
 
 
+def _status_from_code(code: str, labels: dict[str, str]) -> dict[str, str] | None:
+    label = labels.get(code)
+    if label is None:
+        return None
+    return {"code": code, "label": label}
+
+
+def _normalize_ui_status(value: Any, labels: dict[str, str]) -> dict[str, str] | None:
+    if isinstance(value, dict):
+        raw_code = value.get("code")
+    else:
+        raw_code = value
+
+    code = _as_text_or_none(raw_code)
+    if code is None:
+        return None
+    return _status_from_code(code, labels)
+
+
+def _trade_status_from_position(position: Any) -> dict[str, str] | None:
+    if not isinstance(position, dict):
+        return None
+
+    if bool(position.get("trail_active", False)):
+        return _status_from_code("locking_in_profit", TRADE_STATUS_LABELS)
+
+    unrealized_pnl = _as_float_or_none(position.get("unrealized_pnl"))
+    if unrealized_pnl is not None and unrealized_pnl < 0:
+        return _status_from_code("waiting_for_profit", TRADE_STATUS_LABELS)
+    return _status_from_code("waiting_for_more_profit", TRADE_STATUS_LABELS)
+
+
+def _sync_ui_statuses(state: dict[str, Any]) -> None:
+    position = state.get("position")
+    trading_enabled = bool(state.get("trading_enabled", True))
+
+    search_status = _normalize_ui_status(state.get("search_status"), SEARCH_STATUS_LABELS)
+    if search_status is None:
+        search_status = _normalize_ui_status(state.get("bot_status"), SEARCH_STATUS_LABELS)
+
+    trade_status = _trade_status_from_position(position)
+    if isinstance(position, dict):
+        bot_status = _status_from_code("managing_open_trade", BOT_STATUS_LABELS)
+    elif not trading_enabled:
+        bot_status = _status_from_code("resting", BOT_STATUS_LABELS)
+    else:
+        bot_status = search_status
+
+    state["search_status"] = search_status
+    state["bot_status"] = bot_status
+    state["trade_status"] = trade_status
+
+
 def _normalize_state(raw_state: Any) -> dict[str, Any]:
     default = _default_state()
     if not isinstance(raw_state, dict):
@@ -90,6 +167,10 @@ def _normalize_state(raw_state: Any) -> dict[str, Any]:
     normalized["balance"] = _as_float_or_none(normalized.get("balance"))
     normalized["last_price"] = _as_float_or_none(normalized.get("last_price"))
     normalized["last_price_updated_at"] = _as_text_or_none(normalized.get("last_price_updated_at"))
+    normalized["updated_at"] = _as_text_or_none(normalized.get("updated_at"))
+    normalized["search_status"] = _normalize_ui_status(normalized.get("search_status"), SEARCH_STATUS_LABELS)
+    normalized["bot_status"] = _normalize_ui_status(normalized.get("bot_status"), BOT_STATUS_LABELS)
+    normalized["trade_status"] = _normalize_ui_status(normalized.get("trade_status"), TRADE_STATUS_LABELS)
     normalized["session_start"] = _as_int_or_default(normalized.get("session_start"), default["session_start"])
     normalized["session_end"] = _as_int_or_default(normalized.get("session_end"), None)
     normalized["trading_enabled"] = bool(normalized.get("trading_enabled", True))
@@ -346,6 +427,9 @@ def save_state(state: dict[str, Any]) -> None:
     normalized["session_end"] = _now_ms()
     if normalized.get("session_start") is None:
         normalized["session_start"] = normalized["session_end"]
+    if normalized.get("updated_at") is None:
+        normalized["updated_at"] = normalized.get("last_price_updated_at") or _now_text()
+    _sync_ui_statuses(normalized)
 
     if normalized.get("balance") is None:
         latest = load_balance_history(limit=1)

@@ -10,6 +10,8 @@ const EU_DATETIME_FORMATTER = new Intl.DateTimeFormat("uk-UA", {
   hour12: false
 });
 
+const LOCAL_DATETIME_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+
 function toDate(value: unknown): Date | null {
   if (value instanceof Date) {
     return Number.isFinite(value.getTime()) ? value : null;
@@ -39,7 +41,8 @@ function toDate(value: unknown): Date | null {
     return toDate(numeric);
   }
 
-  const parsed = new Date(trimmed);
+  const normalized = LOCAL_DATETIME_RE.test(trimmed) ? trimmed.replace(" ", "T") : trimmed;
+  const parsed = new Date(normalized);
   return Number.isFinite(parsed.getTime()) ? parsed : null;
 }
 

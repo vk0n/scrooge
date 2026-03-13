@@ -13,13 +13,51 @@ type StatusPayload = {
   balance: number | null;
   last_price: number | null;
   last_price_updated_at?: string | null;
+  bot_status: UiStatus | null;
   current_position: string | null;
   leverage: number | null;
   symbol: string | null;
-  trailing_state: Record<string, unknown> | null;
-  open_trade_info: Record<string, unknown> | null;
+  trailing_state: TrailingState | null;
+  trade_status: UiStatus | null;
+  open_trade_info: OpenTradeInfo | null;
   last_update_timestamp: string | null;
   warnings: string[];
+};
+
+type UiStatus = {
+  code: string;
+  label: string;
+};
+
+type OpenTradeInfo = {
+  side: "long" | "short";
+  size: number;
+  entry: number;
+  sl: number | null;
+  tp: number | null;
+  liq_price: number | null;
+  trail_active: boolean;
+  trail_price: number | null;
+  trail_max: number | null;
+  trail_min: number | null;
+  entry_time: string;
+  unrealized_pnl: number | null;
+  unrealized_pnl_pct: number | null;
+  position_notional: number | null;
+  margin_used: number | null;
+  roi_pct: number | null;
+  distance_to_sl_pct: number | null;
+  distance_to_tp_pct: number | null;
+  updated_at: string | null;
+};
+
+type TrailingState = {
+  trail_active: boolean;
+  trail_max: number | null;
+  trail_min: number | null;
+  trail_price: number | null;
+  tp: number | null;
+  sl: number | null;
 };
 
 type ControlAction = "start" | "stop" | "restart" | "close_position" | "update_sl" | "update_tp";
@@ -104,6 +142,7 @@ const PARAM_DEFS: Array<{ key: keyof EditableParams; label: string }> = [
   { key: "rsi_short_tp_threshold", label: "Short Treasure" },
   { key: "rsi_short_close_threshold", label: "Short Exit" },
 ];
+const COMMON_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "EUR", "TRY", "USD"];
 
 function displayValue(value: unknown): string {
   if (value === null || value === undefined) {
@@ -128,53 +167,75 @@ function formatParamValue(value: number | null | undefined): string {
   return value.toFixed(4).replace(/\.?0+$/, "");
 }
 
-function readPositionNumber(openTradeInfo: Record<string, unknown> | null, key: string): number | null {
-  if (!openTradeInfo) {
-    return null;
+function statusBadgeClass(status: UiStatus | null): string {
+  if (!status) {
+    return "badge badge-muted";
   }
-  const value = openTradeInfo[key];
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function readUnrealizedPnl(openTradeInfo: Record<string, unknown> | null): number | null {
-  if (!openTradeInfo) {
-    return null;
-  }
-  const candidates = ["unrealized_pnl", "unrealizedPnl", "upl", "net_pnl", "gross_pnl"];
-  for (const key of candidates) {
-    const value = readPositionNumber(openTradeInfo, key);
-    if (value !== null) {
-      return value;
-    }
-  }
-  return null;
-}
-
-function scoutingStatusBadgeClass(tradingEnabled: boolean | undefined, hasOpenPosition: boolean): string {
-  if (hasOpenPosition) {
+  if (status.code === "managing_open_trade") {
     return "badge badge-good";
   }
-  if (tradingEnabled === true) {
+  if (status.code === "looking_for_buy_opportunity" || status.code === "looking_for_sell_opportunity") {
     return "badge badge-warn";
   }
-  return "badge badge-bad";
+  if (status.code === "resting") {
+    return "badge badge-bad";
+  }
+  return "badge badge-muted";
 }
 
-function scoutingStatusText(tradingEnabled: boolean | undefined, hasOpenPosition: boolean): string {
+function tradeSummaryText(status: UiStatus | null): string {
+  if (!status) {
+    return "No open trade";
+  }
+  return status.label;
+}
+
+function tradeSummaryPhraseClass(status: UiStatus | null): string {
+  return "position-summary-phrase";
+}
+
+function positionSummaryBadgeClass(
+  hasOpenPosition: boolean,
+  unrealizedPnlPercent: number | null,
+  botStatus: UiStatus | null
+): string {
   if (hasOpenPosition) {
-    return "In the middle of a trade...";
+    if (unrealizedPnlPercent === null) {
+      return "position-upnl-badge position-upnl-badge-neutral";
+    }
+    if (unrealizedPnlPercent < 0) {
+      return "position-upnl-badge position-upnl-badge-negative";
+    }
+    return "position-upnl-badge position-upnl-badge-positive";
   }
-  if (tradingEnabled === true) {
-    return "Looking for trade...";
+
+  if (botStatus?.code === "looking_for_buy_opportunity") {
+    return "position-upnl-badge position-upnl-badge-positive";
   }
-  return "Resting...";
+  if (botStatus?.code === "looking_for_sell_opportunity") {
+    return "position-upnl-badge position-upnl-badge-negative";
+  }
+  if (botStatus?.code === "resting") {
+    return "position-upnl-badge position-upnl-badge-paused";
+  }
+  return "position-upnl-badge position-upnl-badge-neutral";
+}
+
+function positionSummaryBadgeText(
+  hasOpenPosition: boolean,
+  unrealizedPnlPercent: number | null,
+  botStatus: UiStatus | null
+): string | null {
+  if (hasOpenPosition) {
+    return formatPercent(unrealizedPnlPercent);
+  }
+  if (botStatus?.code === "looking_for_buy_opportunity" || botStatus?.code === "looking_for_sell_opportunity") {
+    return "🔎";
+  }
+  if (botStatus?.code === "resting") {
+    return "😴";
+  }
+  return null;
 }
 
 function positionSideBadgeClass(side: unknown): string {
@@ -235,61 +296,38 @@ function formatUnrealizedPnlUsd(value: number | null): string {
   return "$0.00";
 }
 
-function readFirstPositionNumber(openTradeInfo: Record<string, unknown> | null, keys: string[]): number | null {
-  for (const key of keys) {
-    const value = readPositionNumber(openTradeInfo, key);
-    if (value !== null) {
-      return value;
+function formatUsd(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  return `$${value.toFixed(2)}`;
+}
+
+function resolveBaseAsset(symbol: string | null | undefined): string | null {
+  if (!symbol) {
+    return null;
+  }
+  const normalized = symbol.trim().toUpperCase();
+  if (!normalized) {
+    return null;
+  }
+
+  for (const quoteAsset of COMMON_QUOTE_ASSETS) {
+    if (normalized.endsWith(quoteAsset) && normalized.length > quoteAsset.length) {
+      return normalized.slice(0, -quoteAsset.length);
     }
   }
-  return null;
+  return normalized;
 }
 
-function readEntryPrice(openTradeInfo: Record<string, unknown> | null): number | null {
-  return readFirstPositionNumber(openTradeInfo, ["entry", "entry_price", "open_price", "avg_entry_price"]);
-}
-
-function readPositionSize(openTradeInfo: Record<string, unknown> | null): number | null {
-  return readFirstPositionNumber(openTradeInfo, ["size", "qty", "amount", "position_size"]);
-}
-
-function readUnrealizedPnlPercent(
-  openTradeInfo: Record<string, unknown> | null,
-  unrealizedPnl: number | null
-): number | null {
-  const directPercent = readFirstPositionNumber(openTradeInfo, [
-    "unrealized_pnl_pct",
-    "unrealized_pnl_percent",
-    "unrealizedPnlPct",
-    "unrealizedPnlPercent",
-    "upl_pct",
-    "upl_percent",
-    "pnl_pct",
-    "pnl_percent",
-    "net_pnl_pct",
-    "net_pnl_percent",
-    "gross_pnl_pct",
-    "gross_pnl_percent",
-    "roi"
-  ]);
-  if (directPercent !== null) {
-    return directPercent;
+function formatAssetAmount(value: number | null | undefined, symbol: string | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "N/A";
   }
-
-  if (unrealizedPnl === null) {
-    return null;
-  }
-  const entryPrice = readEntryPrice(openTradeInfo);
-  const positionSize = readPositionSize(openTradeInfo);
-  if (entryPrice === null || positionSize === null) {
-    return null;
-  }
-
-  const notional = Math.abs(positionSize) * entryPrice;
-  if (!Number.isFinite(notional) || notional <= 0) {
-    return null;
-  }
-  return (unrealizedPnl / notional) * 100;
+  const amount = Math.abs(value);
+  const formatted = amount.toFixed(6).replace(/\.?0+$/, "");
+  const baseAsset = resolveBaseAsset(symbol);
+  return baseAsset ? `${formatted} ${baseAsset}` : formatted;
 }
 
 function formatPercent(value: number | null): string {
@@ -305,43 +343,26 @@ function formatPercent(value: number | null): string {
   return "0.00%";
 }
 
-function formatPositionOpenTime(openTradeInfo: Record<string, unknown> | null): string {
-  if (!openTradeInfo) {
-    return "N/A";
-  }
-  const rawTime =
-    openTradeInfo.time ??
-    openTradeInfo.open_time ??
-    openTradeInfo.openTime ??
-    openTradeInfo.entry_time ??
-    openTradeInfo.entryTime ??
-    openTradeInfo.opened_at ??
-    openTradeInfo.openedAt;
-  return formatDateTimeEu(rawTime);
-}
-
-function tailGuardValueClass(trailingState: Record<string, unknown> | null): string {
+function tailGuardValueClass(trailingState: TrailingState | null): string {
   if (!trailingState) {
     return "metric-value value-neutral";
   }
-  const trailActive = trailingState.trail_active === true;
+  const trailActive = trailingState.trail_active;
   if (!trailActive) {
     return "metric-value value-neutral";
   }
   return "metric-value value-positive";
 }
 
-function resolveTailGuardValue(trailingState: Record<string, unknown> | null): string {
+function resolveTailGuardValue(trailingState: TrailingState | null): string {
   if (!trailingState) {
     return "N/A";
   }
-  const trailActive = trailingState.trail_active === true;
+  const trailActive = trailingState.trail_active;
   if (!trailActive) {
     return "Off";
   }
-  const trailPrice =
-    readPositionNumber(trailingState, "trail_price") ??
-    readPositionNumber(trailingState, "tp");
+  const trailPrice = trailingState.trail_price ?? trailingState.tp;
   if (trailPrice === null) {
     return "Active";
   }
@@ -695,45 +716,29 @@ function DashboardContent(): JSX.Element {
   }, [commandStatus]);
 
   const openTradeInfo = data?.open_trade_info ?? null;
-  const sl = readPositionNumber(openTradeInfo, "sl");
-  const tp = readPositionNumber(openTradeInfo, "tp");
-  const liquidationPrice = readPositionNumber(openTradeInfo, "liq_price");
-  const unrealizedPnl = readUnrealizedPnl(openTradeInfo);
-  const unrealizedPnlPercent = readUnrealizedPnlPercent(openTradeInfo, unrealizedPnl);
-  const entryPrice = readEntryPrice(openTradeInfo);
+  const sl = openTradeInfo?.sl ?? null;
+  const tp = openTradeInfo?.tp ?? null;
+  const liquidationPrice = openTradeInfo?.liq_price ?? null;
+  const unrealizedPnl = openTradeInfo?.unrealized_pnl ?? null;
+  const unrealizedPnlPercent = openTradeInfo?.unrealized_pnl_pct ?? null;
+  const entryPrice = openTradeInfo?.entry ?? null;
+  const positionSize = openTradeInfo?.size ?? null;
+  const marginUsed = openTradeInfo?.margin_used ?? null;
   const lastPrice = data?.last_price ?? null;
-  const openTime = formatPositionOpenTime(openTradeInfo);
+  const openTime = formatDateTimeEu(openTradeInfo?.entry_time ?? null);
   const hasOpenPosition = openTradeInfo !== null;
-  const tradingIsEnabled = data?.trading_enabled;
+  const botStatus = data?.bot_status ?? null;
+  const tradeStatus = data?.trade_status ?? null;
   const traitRows = PARAM_DEFS.map((def) => ({
     key: def.key,
     label: def.label,
     value: formatParamValue(configParams?.[def.key]),
   }));
-  const positionSummaryText = hasOpenPosition
-    ? unrealizedPnl !== null && unrealizedPnl < 0
-      ? "Waiting for profit..."
-      : "Waiting for more..."
-    : tradingIsEnabled === false
-      ? "Trading paused."
-      : "Looking for one...";
-  const positionSummaryPhraseClass = hasOpenPosition
-    ? "position-summary-phrase position-summary-phrase-open"
-    : tradingIsEnabled === false
-      ? "position-summary-phrase position-summary-phrase-paused"
-      : "position-summary-phrase position-summary-phrase-looking";
-  const positionSummaryIcon = hasOpenPosition ? "" : tradingIsEnabled === false ? "😴" : "🔎";
-  const showPositionUpnlBadge = hasOpenPosition || Boolean(positionSummaryIcon);
-  const positionUpnlBadgeClass = hasOpenPosition
-    ? unrealizedPnlPercent === null
-      ? "position-upnl-badge position-upnl-badge-neutral"
-      : unrealizedPnlPercent < 0
-        ? "position-upnl-badge position-upnl-badge-negative"
-        : "position-upnl-badge position-upnl-badge-positive"
-    : tradingIsEnabled === false
-      ? "position-upnl-badge position-upnl-badge-negative"
-      : "position-upnl-badge position-upnl-badge-positive";
-  const positionUpnlBadgeText = hasOpenPosition ? formatPercent(unrealizedPnlPercent) : positionSummaryIcon;
+  const positionSummaryText = tradeSummaryText(tradeStatus);
+  const positionSummaryPhraseClass = tradeSummaryPhraseClass(tradeStatus);
+  const positionUpnlBadgeText = positionSummaryBadgeText(hasOpenPosition, unrealizedPnlPercent, botStatus);
+  const showPositionUpnlBadge = positionUpnlBadgeText !== null;
+  const positionUpnlBadgeClass = positionSummaryBadgeClass(hasOpenPosition, unrealizedPnlPercent, botStatus);
 
   useEffect(() => {
     if (!hasOpenPosition) {
@@ -757,8 +762,8 @@ function DashboardContent(): JSX.Element {
             <div className="status-strip">
               <div className="status-chip">
                 <span className="status-chip-label">Status</span>
-                <span className={scoutingStatusBadgeClass(data.trading_enabled, hasOpenPosition)}>
-                  {scoutingStatusText(data.trading_enabled, hasOpenPosition)}
+                <span className={statusBadgeClass(botStatus)}>
+                  {botStatus?.label ?? "N/A"}
                 </span>
               </div>
               <div className="status-chip">
@@ -811,8 +816,8 @@ function DashboardContent(): JSX.Element {
                 <div className="trade-pulse-grid">
                   <div className="kv-item metric-card">
                     <span className="kv-label">Trade Side</span>
-                    <span className={positionSideBadgeClass(data.current_position)}>
-                      {formatPositionSide(data.current_position)}
+                    <span className={positionSideBadgeClass(openTradeInfo?.side ?? data.current_position)}>
+                      {formatPositionSide(openTradeInfo?.side ?? data.current_position)}
                     </span>
                   </div>
                   <div className="kv-item metric-card">
@@ -826,6 +831,23 @@ function DashboardContent(): JSX.Element {
                   <div className="kv-item metric-card">
                     <span className="kv-label">Floating PnL</span>
                     <span className={unrealizedPnlClass(unrealizedPnl)}>{formatUnrealizedPnlUsd(unrealizedPnl)}</span>
+                  </div>
+                </div>
+
+                <div className="trade-detail-grid">
+                  <div className="kv-item metric-card">
+                    <span className="kv-label">Margin Used</span>
+                    <span className="metric-value">{formatUsd(marginUsed)}</span>
+                  </div>
+                  <div className="kv-item metric-card">
+                    <span className="kv-label">Position Size</span>
+                    <span className="metric-value">{formatAssetAmount(positionSize, data?.symbol)}</span>
+                  </div>
+                  <div className="kv-item metric-card">
+                    <span className="kv-label">Tail Guard</span>
+                    <span className={tailGuardValueClass(data.trailing_state)}>
+                      {resolveTailGuardValue(data.trailing_state)}
+                    </span>
                   </div>
                 </div>
 
@@ -880,13 +902,6 @@ function DashboardContent(): JSX.Element {
                         Mark Treasure
                       </button>
                     </div>
-                  </div>
-
-                  <div className="kv-item trade-manage-card">
-                    <span className="kv-label">Tail Guard</span>
-                    <span className={tailGuardValueClass(data.trailing_state)}>
-                      {resolveTailGuardValue(data.trailing_state)}
-                    </span>
                   </div>
                 </div>
 
@@ -1078,13 +1093,6 @@ function DashboardContent(): JSX.Element {
               <li key={warning}>{warning}</li>
             ))}
           </ul>
-        </>
-      ) : null}
-
-      {openTradeInfo ? (
-        <>
-          <h2>Trade Ledger Entry</h2>
-          <pre className="json-box">{JSON.stringify(openTradeInfo, null, 2)}</pre>
         </>
       ) : null}
 

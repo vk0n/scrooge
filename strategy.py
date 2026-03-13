@@ -17,6 +17,10 @@ from state import (
 
 LOG_FILE = os.getenv("SCROOGE_LOG_FILE", "trading_log.txt")
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+SEARCH_STATUS_LABELS = {
+    "looking_for_buy_opportunity": "Looking for a buy opportunity...",
+    "looking_for_sell_opportunity": "Looking for a sell opportunity...",
+}
 
 def save_log(log_buffer):
     """Log message to file with timestamp (no print to avoid clutter)."""
@@ -60,10 +64,44 @@ def _ratio_to_percent(numerator, denominator):
     return (numerator / denominator) * 100.0
 
 
+def _status_from_code(code, labels):
+    label = labels.get(code)
+    if label is None:
+        return None
+    return {"code": code, "label": label}
+
+
+def _resolve_search_status(price, ema, previous_status):
+    price_value = _to_float(price)
+    ema_value = _to_float(ema)
+    previous_code = None
+    if isinstance(previous_status, dict):
+        raw_code = str(previous_status.get("code", "")).strip()
+        if raw_code in SEARCH_STATUS_LABELS:
+            previous_code = raw_code
+
+    if price_value is None or ema_value is None:
+        return _status_from_code(previous_code, SEARCH_STATUS_LABELS) if previous_code else None
+
+    if price_value > ema_value:
+        return _status_from_code("looking_for_buy_opportunity", SEARCH_STATUS_LABELS)
+    if price_value < ema_value:
+        return _status_from_code("looking_for_sell_opportunity", SEARCH_STATUS_LABELS)
+    if previous_code:
+        return _status_from_code(previous_code, SEARCH_STATUS_LABELS)
+    return _status_from_code("looking_for_buy_opportunity", SEARCH_STATUS_LABELS)
+
+
 def _refresh_position_snapshot(position, price, leverage, ts_label):
     # Keep ticker price at state level (not per-position).
     position.pop("last_price", None)
     position.pop("last_price_updated_at", None)
+
+    # Keep stable naming in runtime state for open-position timestamps.
+    if position.get("entry_time") is None and position.get("time") is not None:
+        position["entry_time"] = position.get("time")
+    if position.get("time") is None and position.get("entry_time") is not None:
+        position["time"] = position.get("entry_time")
 
     side = str(position.get("side", "")).strip().lower()
     size = _to_float(position.get("size")) or 0.0
@@ -76,6 +114,13 @@ def _refresh_position_snapshot(position, price, leverage, ts_label):
         return
 
     position["updated_at"] = ts_label
+    position["unrealized_pnl"] = None
+    position["unrealized_pnl_pct"] = None
+    position["position_notional"] = None
+    position["margin_used"] = None
+    position["roi_pct"] = None
+    position["distance_to_sl_pct"] = None
+    position["distance_to_tp_pct"] = None
 
     if entry_price is None or entry_price <= 0 or size <= 0:
         return
@@ -127,6 +172,7 @@ def _refresh_market_snapshot(state, price, ts_label):
         return
     state["last_price"] = market_price
     state["last_price_updated_at"] = ts_label
+    state["updated_at"] = ts_label
 
 
 def _sanitize_trade_for_history(trade):
@@ -156,6 +202,10 @@ def run_strategy(df, live=False, initial_balance=1000,
             "position": None,
             "trade_history": [],
             "balance_history": [],
+            "updated_at": None,
+            "search_status": None,
+            "bot_status": None,
+            "trade_status": None,
             "session_start": None,
             "session_end": None
         }
@@ -184,6 +234,7 @@ def run_strategy(df, live=False, initial_balance=1000,
 
         if live:
             _refresh_market_snapshot(state, price, row_ts)
+        state["search_status"] = _resolve_search_status(price, ema, state.get("search_status"))
         
         if position is None:
             if not allow_entries:

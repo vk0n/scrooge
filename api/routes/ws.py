@@ -13,10 +13,12 @@ from services.log_service import LOG_PATH, read_last_log_lines
 from services.state_service import (
     load_state,
     resolve_balance,
-    resolve_current_position,
+    resolve_bot_status,
     resolve_last_price,
     resolve_last_price_updated_at,
     resolve_last_update_timestamp,
+    resolve_open_trade_info,
+    resolve_trade_status,
     resolve_trading_enabled,
     resolve_trailing_state,
 )
@@ -48,6 +50,8 @@ def _build_status_snapshot() -> dict[str, Any]:
         "balance": None,
         "last_price": None,
         "last_price_updated_at": None,
+        "bot_status": None,
+        "trade_status": None,
         "session_start": None,
         "session_end": None,
         "trading_enabled": True,
@@ -67,6 +71,7 @@ def _build_status_snapshot() -> dict[str, Any]:
 
     trading_enabled = resolve_trading_enabled(state)
     position = state.get("position")
+    open_trade_info = resolve_open_trade_info(position)
     balance_value = resolve_balance(state, default_balance=_default_balance_for_mode(config))
     if _is_live_mode(config) and balance_value is None:
         warnings.append("Live balance unavailable: exchange balance has not been written to state yet.")
@@ -77,11 +82,13 @@ def _build_status_snapshot() -> dict[str, Any]:
         "balance": balance_value,
         "last_price": resolve_last_price(state),
         "last_price_updated_at": resolve_last_price_updated_at(state),
-        "current_position": resolve_current_position(position),
+        "bot_status": resolve_bot_status(state),
+        "current_position": open_trade_info["side"] if open_trade_info else None,
         "leverage": config.get("leverage"),
         "symbol": config.get("symbol"),
         "trailing_state": resolve_trailing_state(position),
-        "open_trade_info": position,
+        "trade_status": resolve_trade_status(state),
+        "open_trade_info": open_trade_info,
         "last_update_timestamp": resolve_last_update_timestamp(state),
         "warnings": warnings,
     }
