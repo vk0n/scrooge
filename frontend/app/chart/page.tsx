@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
 import { fetchApi } from "../../lib/api";
-import { formatDateTimeEu } from "../../lib/datetime";
-
 type Candle = {
   time: string;
   open: number;
@@ -36,6 +34,10 @@ type ChartPayload = {
   requested_source?: string;
   period: string;
   candles: Candle[];
+  rsi_levels?: {
+    long_tp?: number | null;
+    short_tp?: number | null;
+  };
   markers: {
     entries: Marker[];
     exits: Marker[];
@@ -49,6 +51,7 @@ type ChartPayload = {
     entry?: number | null;
     sl?: number | null;
     tp?: number | null;
+    trail_price?: number | null;
     liq_price?: number | null;
     size?: number | null;
     time?: string | null;
@@ -255,20 +258,6 @@ function ChartContent(): JSX.Element {
     };
   }, [chartsExpanded]);
 
-  const chartMeta = useMemo(() => {
-    if (!data) {
-      return "No chart data";
-    }
-    const rangeLabel =
-      data.range_start && data.range_end
-        ? `${formatDateTimeEu(data.range_start)} → ${formatDateTimeEu(data.range_end)}`
-        : "Range unavailable";
-    const requested = data.requested_interval ?? data.interval;
-    const intervalLabel = requested === data.interval ? data.interval : `${requested} -> ${data.interval}`;
-    const sourceLabel = data.requested_source && data.source ? `${data.requested_source} -> ${data.source}` : data.source ?? source;
-    return `${data.symbol} | ${sourceLabel} | ${intervalLabel} | ${data.candles.length} candles | ${rangeLabel}`;
-  }, [data, source]);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -410,8 +399,8 @@ function ChartContent(): JSX.Element {
         y1: level.price,
         line: {
           color: level.type === "sl" ? CHART_THEME.slLevel : CHART_THEME.tpLevel,
-          width: 1,
-          dash: level.type === "sl" ? "dot" : "dash",
+          width: level.type === "trail" ? 1.2 : 1,
+          dash: level.type === "sl" ? "dot" : level.type === "trail" ? "dashdot" : "dash",
         },
       }));
 
@@ -450,6 +439,9 @@ function ChartContent(): JSX.Element {
         chartEl.removeAllListeners?.("plotly_relayout");
 
         const candleTimesMs = data.candles.map((candle) => Date.parse(candle.time));
+        const currentLevelPrices = data.current_levels
+          .map((level) => level.price)
+          .filter((price): price is number => Number.isFinite(price));
         let relayoutInProgress = false;
 
         const syncAuxiliaryXRange = (range: [number, number] | null): void => {
@@ -480,6 +472,10 @@ function ChartContent(): JSX.Element {
             minPrice = Math.min(minPrice, candleLow[index]);
             maxPrice = Math.max(maxPrice, candleHigh[index]);
           }
+          currentLevelPrices.forEach((price) => {
+            minPrice = Math.min(minPrice, price);
+            maxPrice = Math.max(maxPrice, price);
+          });
           if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice)) {
             return;
           }
@@ -497,10 +493,9 @@ function ChartContent(): JSX.Element {
           }
           if (eventData["xaxis.autorange"] === true) {
             syncAuxiliaryXRange(null);
-            relayoutInProgress = true;
-            void Plotly.relayout(chartEl, { "yaxis.autorange": true }).finally(() => {
-              relayoutInProgress = false;
-            });
+            if (candleTimesMs.length) {
+              rescaleVisibleY(candleTimesMs[0], candleTimesMs[candleTimesMs.length - 1]);
+            }
             return;
           }
 
@@ -511,6 +506,10 @@ function ChartContent(): JSX.Element {
           rescaleVisibleY(range[0], range[1]);
           syncAuxiliaryXRange(range);
         });
+
+        if (candleTimesMs.length) {
+          rescaleVisibleY(candleTimesMs[0], candleTimesMs[candleTimesMs.length - 1]);
+        }
       }
 
       if (equityChartRef.current) {
@@ -544,6 +543,32 @@ function ChartContent(): JSX.Element {
         const hasRsi = includeIndicators && rsiPoints.length > 0;
         if (hasRsi) {
           const rsi = pointsToXY(rsiPoints);
+          const rsiLongTp = data.rsi_levels?.long_tp;
+          const rsiShortTp = data.rsi_levels?.short_tp;
+          const rsiShapes = [
+            rsiLongTp === null || rsiLongTp === undefined
+              ? null
+              : {
+                  type: "line",
+                  xref: "paper",
+                  x0: 0,
+                  x1: 1,
+                  y0: rsiLongTp,
+                  y1: rsiLongTp,
+                  line: { color: CHART_THEME.rsiUpper, dash: "dot", width: 1 },
+                },
+            rsiShortTp === null || rsiShortTp === undefined
+              ? null
+              : {
+                  type: "line",
+                  xref: "paper",
+                  x0: 0,
+                  x1: 1,
+                  y0: rsiShortTp,
+                  y1: rsiShortTp,
+                  line: { color: CHART_THEME.rsiLower, dash: "dot", width: 1 },
+                },
+          ].filter(Boolean);
           await Plotly.react(
             rsiChartRef.current,
             [
@@ -564,26 +589,7 @@ function ChartContent(): JSX.Element {
               xaxis: { type: "date" },
               yaxis: { title: "RSI", range: [0, 100] },
               margin: { t: 40, r: 16, b: 40, l: 55 },
-              shapes: [
-                {
-                  type: "line",
-                  xref: "paper",
-                  x0: 0,
-                  x1: 1,
-                  y0: 70,
-                  y1: 70,
-                  line: { color: CHART_THEME.rsiUpper, dash: "dot", width: 1 },
-                },
-                {
-                  type: "line",
-                  xref: "paper",
-                  x0: 0,
-                  x1: 1,
-                  y0: 30,
-                  y1: 30,
-                  line: { color: CHART_THEME.rsiLower, dash: "dot", width: 1 },
-                },
-              ],
+              shapes: rsiShapes,
             },
             { responsive: true, displaylogo: false }
           );
@@ -754,8 +760,6 @@ function ChartContent(): JSX.Element {
         </div>
       </details>
 
-      <p className="dialog-scrooge">{chartMeta}</p>
-      <p className="dialog-scrooge">Mode: {endCursorMs === null ? "Live scouting" : "Historical scouting"}</p>
       {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
 
       <div className="chart-view-toolbar">
@@ -782,13 +786,6 @@ function ChartContent(): JSX.Element {
         <div ref={equityChartRef} className="chart-surface chart-surface-md" />
         <div ref={rsiChartRef} className="chart-surface chart-surface-sm" />
       </div>
-
-      {data?.open_position ? (
-        <>
-          <h2>Current Trade Snapshot</h2>
-          <pre className="json-box">{JSON.stringify(data.open_position, null, 2)}</pre>
-        </>
-      ) : null}
 
       {data?.warnings.length ? (
         <>

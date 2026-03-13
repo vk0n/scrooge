@@ -668,6 +668,7 @@ def _normalize_open_position(position: Any) -> dict[str, Any] | None:
     entry = _to_float(position.get("entry"))
     sl = _to_float(position.get("sl"))
     tp = _to_float(position.get("tp"))
+    trail_price = _to_float(position.get("trail_price"))
     liq_price = _to_float(position.get("liq_price"))
     size = _to_float(position.get("size"))
     time_ms = _parse_time_to_ms(position.get("time"))
@@ -677,6 +678,7 @@ def _normalize_open_position(position: Any) -> dict[str, Any] | None:
         "entry": entry,
         "sl": sl,
         "tp": tp,
+        "trail_price": trail_price,
         "liq_price": liq_price,
         "size": size,
         "time": _iso_from_ts_ms(time_ms) if time_ms is not None else None,
@@ -690,11 +692,26 @@ def _build_current_levels(open_position: dict[str, Any] | None) -> list[dict[str
     levels: list[dict[str, Any]] = []
     sl = _to_float(open_position.get("sl"))
     tp = _to_float(open_position.get("tp"))
+    trail_price = _to_float(open_position.get("trail_price"))
+    trail_active = bool(open_position.get("trail_active", False))
     if sl is not None:
         levels.append({"type": "sl", "price": sl})
-    if tp is not None:
+    if trail_active:
+        active_trail = trail_price if trail_price is not None else tp
+        if active_trail is not None:
+            levels.append({"type": "trail", "price": active_trail})
+    elif tp is not None:
         levels.append({"type": "tp", "price": tp})
     return levels
+
+
+def _build_rsi_levels(config: dict[str, Any]) -> dict[str, float | None]:
+    params = config.get("params")
+    params_map = params if isinstance(params, dict) else {}
+    return {
+        "long_tp": _to_float(params_map.get("rsi_long_tp_threshold")),
+        "short_tp": _to_float(params_map.get("rsi_short_tp_threshold")),
+    }
 
 
 def _build_markers(state: dict[str, Any], range_start_ms: int | None, range_end_ms: int | None) -> dict[str, list[dict[str, Any]]]:
@@ -967,6 +984,7 @@ def build_chart_payload(
     markers = _build_markers(state=state_for_chart, range_start_ms=range_start_ms, range_end_ms=range_end_ms)
     open_position = _normalize_open_position(state_for_chart.get("position"))
     current_levels = _build_current_levels(open_position)
+    rsi_levels = _build_rsi_levels(config)
     indicators: dict[str, Any] = {}
     if include_indicators and candles:
         if source_used == "dataset":
@@ -999,6 +1017,7 @@ def build_chart_payload(
         "candles": public_candles,
         "markers": markers,
         "current_levels": current_levels,
+        "rsi_levels": rsi_levels,
         "open_position": open_position,
         "indicators": indicators,
         "equity_curve": equity_curve,
