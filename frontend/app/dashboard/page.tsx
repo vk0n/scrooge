@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
+import { buildContractParagraphs, type EditableConfig } from "../../lib/contract";
 import { formatDateTimeEu } from "../../lib/datetime";
 
 type StatusPayload = {
@@ -82,67 +83,24 @@ type CommandStatusResponse = {
   } | string;
 };
 
-type EditableConfig = {
-  symbol: string | null;
-  leverage: number | null;
-  use_full_balance: boolean | null;
-  qty: number | null;
-  params?: EditableParams | null;
-};
-
-type EditableParams = {
-  sl_mult?: number | null;
-  tp_mult?: number | null;
-  trail_atr_mult?: number | null;
-  rsi_extreme_long?: number | null;
-  rsi_extreme_short?: number | null;
-  rsi_long_open_threshold?: number | null;
-  rsi_long_qty_threshold?: number | null;
-  rsi_long_tp_threshold?: number | null;
-  rsi_long_close_threshold?: number | null;
-  rsi_short_open_threshold?: number | null;
-  rsi_short_qty_threshold?: number | null;
-  rsi_short_tp_threshold?: number | null;
-  rsi_short_close_threshold?: number | null;
-};
-
-type EditableConfigResponse = {
+type RawConfigResponse = {
+  raw_text: string;
   editable: EditableConfig;
+  path: string;
 };
 
-type SaveEditableResponse = {
+type SaveRawConfigResponse = {
   updated: boolean;
   restart_required: boolean;
   changed_fields: string[];
   backup_path: string | null;
+  raw_text: string;
   editable: EditableConfig;
-};
-
-type ConfigFormState = {
-  symbol: string;
-  leverage: string;
-  use_full_balance: boolean;
-  qty: string;
 };
 
 const POLL_MS = 60000;
 const WS_RECONNECT_MS = 5000;
 const COMMAND_POLL_MS = 2000;
-const PARAM_DEFS: Array<{ key: keyof EditableParams; label: string }> = [
-  { key: "sl_mult", label: "Safety Mult" },
-  { key: "tp_mult", label: "Treasure Mult" },
-  { key: "trail_atr_mult", label: "Tail Guard" },
-  { key: "rsi_extreme_long", label: "Long Extreme" },
-  { key: "rsi_extreme_short", label: "Short Extreme" },
-  { key: "rsi_long_open_threshold", label: "Long Open" },
-  { key: "rsi_long_qty_threshold", label: "Long Size" },
-  { key: "rsi_long_tp_threshold", label: "Long Treasure" },
-  { key: "rsi_long_close_threshold", label: "Long Exit" },
-  { key: "rsi_short_open_threshold", label: "Short Open" },
-  { key: "rsi_short_qty_threshold", label: "Short Size" },
-  { key: "rsi_short_tp_threshold", label: "Short Treasure" },
-  { key: "rsi_short_close_threshold", label: "Short Exit" },
-];
 const COMMON_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "EUR", "TRY", "USD"];
 
 function displayValue(value: unknown): string {
@@ -156,16 +114,6 @@ function displayValue(value: unknown): string {
     return value ? "true" : "false";
   }
   return String(value);
-}
-
-function formatParamValue(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "N/A";
-  }
-  if (Number.isInteger(value)) {
-    return String(value);
-  }
-  return value.toFixed(4).replace(/\.?0+$/, "");
 }
 
 function statusBadgeClass(status: UiStatus | null): string {
@@ -197,14 +145,14 @@ function tradeSummaryPhraseClass(status: UiStatus | null): string {
 
 function positionSummaryBadgeClass(
   hasOpenPosition: boolean,
-  unrealizedPnlPercent: number | null,
+  roiPercent: number | null,
   botStatus: UiStatus | null
 ): string {
   if (hasOpenPosition) {
-    if (unrealizedPnlPercent === null) {
+    if (roiPercent === null) {
       return "position-upnl-badge position-upnl-badge-neutral";
     }
-    if (unrealizedPnlPercent < 0) {
+    if (roiPercent < 0) {
       return "position-upnl-badge position-upnl-badge-negative";
     }
     return "position-upnl-badge position-upnl-badge-positive";
@@ -224,11 +172,11 @@ function positionSummaryBadgeClass(
 
 function positionSummaryBadgeText(
   hasOpenPosition: boolean,
-  unrealizedPnlPercent: number | null,
+  roiPercent: number | null,
   botStatus: UiStatus | null
 ): string | null {
   if (hasOpenPosition) {
-    return formatPercent(unrealizedPnlPercent);
+    return formatPercent(roiPercent);
   }
   if (botStatus?.code === "looking_for_buy_opportunity" || botStatus?.code === "looking_for_sell_opportunity") {
     return "🔎";
@@ -393,84 +341,6 @@ function closePositionButtonClass(unrealizedPnl: number | null): string {
   return "button-neutral";
 }
 
-function numberToInput(value: number | null | undefined): string {
-  if (value === null || value === undefined) {
-    return "";
-  }
-  return String(value);
-}
-
-function editableToForm(editable: EditableConfig): ConfigFormState {
-  return {
-    symbol: editable.symbol ?? "",
-    leverage: numberToInput(editable.leverage),
-    use_full_balance: Boolean(editable.use_full_balance),
-    qty: numberToInput(editable.qty)
-  };
-}
-
-function parseNumberField(
-  raw: string,
-  fieldName: string,
-  options: { min?: number; max?: number; integer?: boolean; allowEmpty?: boolean; exclusiveMin?: boolean }
-): number | null {
-  const value = raw.trim();
-  if (!value) {
-    if (options.allowEmpty) {
-      return null;
-    }
-    throw new Error(`${fieldName} is required`);
-  }
-
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`${fieldName} must be a number`);
-  }
-  if (options.integer && !Number.isInteger(parsed)) {
-    throw new Error(`${fieldName} must be an integer`);
-  }
-  if (options.min !== undefined) {
-    if (options.exclusiveMin && parsed <= options.min) {
-      throw new Error(`${fieldName} must be > ${options.min}`);
-    }
-    if (!options.exclusiveMin && parsed < options.min) {
-      throw new Error(`${fieldName} must be >= ${options.min}`);
-    }
-  }
-  if (options.max !== undefined && parsed > options.max) {
-    throw new Error(`${fieldName} must be <= ${options.max}`);
-  }
-
-  return parsed;
-}
-
-function buildEditablePayload(form: ConfigFormState): EditableConfig {
-  const symbol = form.symbol.trim().toUpperCase();
-  if (!/^[A-Z0-9]{3,20}$/.test(symbol)) {
-    throw new Error("Symbol must match [A-Z0-9]{3,20}");
-  }
-
-  const leverage = parseNumberField(form.leverage, "Leverage", {
-    min: 1,
-    max: 125,
-    integer: true
-  });
-  const qty = form.use_full_balance
-    ? null
-    : parseNumberField(form.qty, "Qty", {
-        min: 0,
-        exclusiveMin: true,
-        allowEmpty: true
-      });
-
-  return {
-    symbol,
-    leverage,
-    use_full_balance: form.use_full_balance,
-    qty
-  };
-}
-
 function DashboardContent(): JSX.Element {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -483,13 +353,15 @@ function DashboardContent(): JSX.Element {
   const [showTradeSuggestions, setShowTradeSuggestions] = useState<boolean>(false);
   const [slValue, setSlValue] = useState<string>("");
   const [tpValue, setTpValue] = useState<string>("");
-  const [configForm, setConfigForm] = useState<ConfigFormState | null>(null);
+  const [editableConfig, setEditableConfig] = useState<EditableConfig | null>(null);
+  const [rawConfigText, setRawConfigText] = useState<string>("");
+  const [rawConfigDraft, setRawConfigDraft] = useState<string>("");
+  const [contractEditing, setContractEditing] = useState<boolean>(false);
   const [configLoading, setConfigLoading] = useState<boolean>(true);
   const [configSaving, setConfigSaving] = useState<boolean>(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [configInfo, setConfigInfo] = useState<string | null>(null);
   const [positionExpanded, setPositionExpanded] = useState<boolean>(false);
-  const [configParams, setConfigParams] = useState<EditableParams | null>(null);
 
   async function loadStatus(silent = false): Promise<void> {
     if (!silent) {
@@ -564,9 +436,11 @@ function DashboardContent(): JSX.Element {
     setConfigLoading(true);
     setConfigError(null);
     try {
-      const payload = await fetchApi<EditableConfigResponse>("/api/config/editable");
-      setConfigForm(editableToForm(payload.editable));
-      setConfigParams(payload.editable.params ?? null);
+      const payload = await fetchApi<RawConfigResponse>("/api/config/raw");
+      setEditableConfig(payload.editable);
+      setRawConfigText(payload.raw_text);
+      setRawConfigDraft(payload.raw_text);
+      setContractEditing(false);
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : "Failed to load contract");
     } finally {
@@ -574,36 +448,35 @@ function DashboardContent(): JSX.Element {
     }
   }
 
-  async function saveEditableConfig(saveAndRestart: boolean): Promise<void> {
-    if (!configForm) {
+  async function saveEditableConfig(): Promise<void> {
+    if (!editableConfig) {
       return;
     }
 
-    if (saveAndRestart) {
-      const confirmed = window.confirm("Update the contract and reopen the office?");
-      if (!confirmed) {
-        return;
-      }
+    const confirmed = window.confirm("Update the contract and reopen the office?");
+    if (!confirmed) {
+      return;
     }
 
     setConfigSaving(true);
     setConfigError(null);
     setConfigInfo(null);
     try {
-      const payload = buildEditablePayload(configForm);
-      const result = await fetchApi<SaveEditableResponse>("/api/config/editable", {
+      const result = await fetchApi<SaveRawConfigResponse>("/api/config/raw", {
         method: "POST",
-        body: payload
+        body: { raw_text: rawConfigDraft }
       });
-      setConfigForm(editableToForm(result.editable));
-      setConfigParams(result.editable.params ?? null);
+      setEditableConfig(result.editable);
+      setRawConfigText(result.raw_text);
+      setRawConfigDraft(result.raw_text);
+      setContractEditing(false);
       if (result.updated) {
-        setConfigInfo(`Contract updated. Changed: ${result.changed_fields.join(", ")}`);
+        setConfigInfo("Contract updated.");
       } else {
         setConfigInfo("No contract changes detected.");
       }
 
-      if (saveAndRestart) {
+      if (result.updated) {
         await runControlAction("restart");
       }
     } catch (err) {
@@ -731,7 +604,7 @@ function DashboardContent(): JSX.Element {
   const tp = openTradeInfo?.tp ?? null;
   const liquidationPrice = openTradeInfo?.liq_price ?? null;
   const unrealizedPnl = openTradeInfo?.unrealized_pnl ?? null;
-  const unrealizedPnlPercent = openTradeInfo?.unrealized_pnl_pct ?? null;
+  const roiPercent = openTradeInfo?.roi_pct ?? null;
   const entryPrice = openTradeInfo?.entry ?? null;
   const positionSize = openTradeInfo?.size ?? null;
   const marginUsed = openTradeInfo?.margin_used ?? null;
@@ -741,16 +614,12 @@ function DashboardContent(): JSX.Element {
   const tradingEnabled = data?.trading_enabled ?? true;
   const botStatus = data?.bot_status ?? null;
   const tradeStatus = data?.trade_status ?? null;
-  const traitRows = PARAM_DEFS.map((def) => ({
-    key: def.key,
-    label: def.label,
-    value: formatParamValue(configParams?.[def.key]),
-  }));
+  const contractParagraphs = editableConfig ? buildContractParagraphs(editableConfig) : [];
   const positionSummaryText = tradeSummaryText(tradeStatus);
   const positionSummaryPhraseClass = tradeSummaryPhraseClass(tradeStatus);
-  const positionUpnlBadgeText = positionSummaryBadgeText(hasOpenPosition, unrealizedPnlPercent, botStatus);
+  const positionUpnlBadgeText = positionSummaryBadgeText(hasOpenPosition, roiPercent, botStatus);
   const showPositionUpnlBadge = positionUpnlBadgeText !== null;
-  const positionUpnlBadgeClass = positionSummaryBadgeClass(hasOpenPosition, unrealizedPnlPercent, botStatus);
+  const positionUpnlBadgeClass = positionSummaryBadgeClass(hasOpenPosition, roiPercent, botStatus);
 
   useEffect(() => {
     if (!hasOpenPosition) {
@@ -1018,104 +887,83 @@ function DashboardContent(): JSX.Element {
           </div>
           <p className="dialog-scrooge">My contract:</p>
           <div className="section-block">
-            {configLoading || !configForm ? (
+            {configLoading || !editableConfig ? (
               <p className="dialog-scrooge">Reviewing the contract...</p>
+            ) : contractEditing ? (
+              <div className="contract-editor">
+                <p className="contract-editor-note">
+                  Revise the technical YAML below. The contract text above will refresh only after the office accepts the new file.
+                </p>
+                <label className="dialog-user-field contract-editor-field">
+                  <span className="kv-label">Technical Config</span>
+                  <textarea
+                    value={rawConfigDraft}
+                    onChange={(event) => setRawConfigDraft(event.target.value)}
+                    disabled={configSaving || busyAction !== null}
+                    spellCheck={false}
+                  />
+                </label>
+              </div>
             ) : (
-              <>
-                <div className="form-grid config-form-grid">
-                  <label className="kv-item dialog-user-field config-field">
-                    <span className="kv-label">Pair</span>
-                    <input
-                      type="text"
-                      value={configForm.symbol}
-                      onChange={(event) =>
-                        setConfigForm((prev) => (prev ? { ...prev, symbol: event.target.value } : prev))
-                      }
-                    />
-                  </label>
-                  <label className="kv-item dialog-user-field config-field">
-                    <span className="kv-label">Leverage</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={125}
-                      value={configForm.leverage}
-                      onChange={(event) =>
-                        setConfigForm((prev) => (prev ? { ...prev, leverage: event.target.value } : prev))
-                      }
-                    />
-                  </label>
-                  <label className="kv-item dialog-user-field config-field">
-                    <span className="kv-label">All-in Vault</span>
-                    <span className="field-inline dialog-user-toggle config-toggle">
-                      <input
-                        type="checkbox"
-                        className="dialog-user-check"
-                        checked={configForm.use_full_balance}
-                        onChange={(event) =>
-                          setConfigForm((prev) => (prev ? { ...prev, use_full_balance: event.target.checked } : prev))
-                        }
-                      />
-                      <span>{configForm.use_full_balance ? "On" : "Off"}</span>
-                    </span>
-                  </label>
-                  {!configForm.use_full_balance ? (
-                    <label className="kv-item dialog-user-field config-field">
-                      <span className="kv-label">Stake (empty = null)</span>
-                      <input
-                        type="number"
-                        step="0.000001"
-                        min={0}
-                        value={configForm.qty}
-                        onChange={(event) =>
-                          setConfigForm((prev) => (prev ? { ...prev, qty: event.target.value } : prev))
-                        }
-                      />
-                    </label>
-                  ) : null}
-                </div>
-                <details className="position-accordion traits-accordion">
-                  <summary className="position-accordion-summary">
-                    <span className="position-accordion-title">Trait Sheet</span>
-                  </summary>
-                  <div className="position-accordion-body traits-accordion-body">
-                    <div className="traits-grid">
-                      {traitRows.map((trait) => (
-                        <div key={trait.key} className="traits-item">
-                          <span className="traits-name">{trait.label}</span>
-                          <span className="traits-value">{trait.value}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </details>
-              </>
+              <div className="contract-sheet" aria-label="My contract">
+                {contractParagraphs.map((paragraph, paragraphIndex) => (
+                  <p key={`contract-paragraph-${paragraphIndex}`}>
+                    {paragraph.map((segment, segmentIndex) =>
+                      segment.kind === "value" ? (
+                        <span
+                          key={`contract-segment-${paragraphIndex}-${segmentIndex}`}
+                          className="contract-value"
+                          title={segment.path}
+                        >
+                          {segment.display}
+                        </span>
+                      ) : (
+                        <span key={`contract-segment-${paragraphIndex}-${segmentIndex}`}>{segment.text}</span>
+                      )
+                    )}
+                  </p>
+                ))}
+              </div>
             )}
             <div className="toolbar config-toolbar">
-              <button
-                type="button"
-                className="dialog-user-btn config-action-btn"
-                onClick={() => void saveEditableConfig(false)}
-                disabled={configLoading || configSaving || busyAction !== null || !configForm}
-              >
-                Update Contract
-              </button>
-              <button
-                type="button"
-                className="dialog-user-btn config-action-btn"
-                onClick={() => void saveEditableConfig(true)}
-                disabled={configLoading || configSaving || busyAction !== null || !configForm}
-              >
-                Update and Reopen Office
-              </button>
-              <button
-                type="button"
-                className="dialog-user-btn config-action-btn"
-                onClick={() => void loadEditableConfig()}
-                disabled={configSaving || busyAction !== null}
-              >
-                Review Contract
-              </button>
+              {contractEditing ? (
+                <>
+                  <button
+                    type="button"
+                    className="dialog-user-btn config-action-btn"
+                    onClick={() => void saveEditableConfig()}
+                    disabled={configLoading || configSaving || busyAction !== null || !editableConfig}
+                  >
+                    Update and Reopen Office
+                  </button>
+                  <button
+                    type="button"
+                    className="dialog-user-btn config-action-btn"
+                    onClick={() => {
+                      setRawConfigDraft(rawConfigText);
+                      setContractEditing(false);
+                      setConfigError(null);
+                    }}
+                    disabled={configSaving || busyAction !== null}
+                  >
+                    Cancel Revision
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="dialog-user-btn config-action-btn"
+                  onClick={() => {
+                    setRawConfigDraft(rawConfigText);
+                    setContractEditing(true);
+                    setConfigError(null);
+                    setConfigInfo(null);
+                  }}
+                  disabled={configLoading || configSaving || busyAction !== null || !editableConfig}
+                >
+                  Update Contract
+                </button>
+              )}
               {configSaving ? <span className="dialog-scrooge dialog-scrooge-compact">Updating contract...</span> : null}
             </div>
             {configError ? <p className="dialog-scrooge dialog-scrooge-error">{configError}</p> : null}

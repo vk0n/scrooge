@@ -48,6 +48,12 @@ _PERIOD_UNIT_TO_MS = {
 }
 _PERIOD_RE = re.compile(r"^(?P<count>\d+)(?P<unit>[mhdwMHDW])$")
 _INTERVAL_SEQUENCE: list[tuple[str, int]] = sorted(_INTERVAL_TO_MS.items(), key=lambda item: item[1])
+STRATEGY_RSI_PERIOD = 11
+STRATEGY_EMA_PERIOD = 50
+STRATEGY_BB_PERIOD = 20
+STRATEGY_BB_STD_MULT = 2.0
+DEFAULT_STRATEGY_MEDIUM_INTERVAL = "1h"
+DEFAULT_STRATEGY_BIG_INTERVAL = "4h"
 
 
 def _project_root() -> Path:
@@ -612,13 +618,64 @@ def _points_from_series(times: list[str], values: list[float | None]) -> list[di
     return [{"time": times[idx], "value": values[idx]} for idx in range(min(len(times), len(values)))]
 
 
-def _build_indicators(candles: list[dict[str, Any]]) -> dict[str, Any]:
+def _normalize_strategy_interval(value: Any, default: str) -> str:
+    raw = str(value or default).strip()
+    if raw in _INTERVAL_TO_MS:
+        return raw
+    return default
+
+
+def _build_indicator_spec(config: dict[str, Any]) -> dict[str, Any]:
+    intervals = config.get("intervals")
+    interval_map = intervals if isinstance(intervals, dict) else {}
+    medium_interval = _normalize_strategy_interval(interval_map.get("medium"), DEFAULT_STRATEGY_MEDIUM_INTERVAL)
+    big_interval = _normalize_strategy_interval(interval_map.get("big"), DEFAULT_STRATEGY_BIG_INTERVAL)
+    return {
+        "ema": {
+            "period": STRATEGY_EMA_PERIOD,
+            "interval": big_interval,
+        },
+        "rsi": {
+            "period": STRATEGY_RSI_PERIOD,
+            "interval": big_interval,
+        },
+        "bollinger": {
+            "period": STRATEGY_BB_PERIOD,
+            "std_mult": STRATEGY_BB_STD_MULT,
+            "interval": medium_interval,
+        },
+    }
+
+
+def _align_series_to_times(
+    source_times_ms: list[int],
+    source_values: list[float | None],
+    target_times_ms: list[int],
+) -> list[float | None]:
+    aligned: list[float | None] = []
+    source_index = 0
+    current_value: float | None = None
+    source_count = min(len(source_times_ms), len(source_values))
+    for target_ts_ms in target_times_ms:
+        while source_index < source_count and source_times_ms[source_index] <= target_ts_ms:
+            current_value = source_values[source_index]
+            source_index += 1
+        aligned.append(current_value)
+    return aligned
+
+
+def _build_indicators(candles: list[dict[str, Any]], indicator_spec: dict[str, Any] | None = None) -> dict[str, Any]:
     closes = [float(candle["close"]) for candle in candles]
     times = [str(candle["time"]) for candle in candles]
+    spec = indicator_spec or _build_indicator_spec({})
+    ema_period = int(spec["ema"]["period"])
+    rsi_period = int(spec["rsi"]["period"])
+    bollinger_period = int(spec["bollinger"]["period"])
+    bollinger_std_mult = float(spec["bollinger"]["std_mult"])
 
-    ema_values = _ema(closes, period=20)
-    bb_upper, bb_middle, bb_lower = _bollinger(closes, period=20, std_mult=2.0)
-    rsi_values = _rsi(closes, period=14)
+    ema_values = _ema(closes, period=ema_period)
+    bb_upper, bb_middle, bb_lower = _bollinger(closes, period=bollinger_period, std_mult=bollinger_std_mult)
+    rsi_values = _rsi(closes, period=rsi_period)
 
     return {
         "ema": _points_from_series(times, ema_values),
@@ -659,6 +716,105 @@ def _build_indicators_from_candle_fields(candles: list[dict[str, Any]]) -> dict[
         },
         "rsi": _points_from_series(times, rsi_values),
     }
+
+
+def _build_strategy_fallback_indicators(
+    symbol: str,
+    config: dict[str, Any],
+    target_candles: list[dict[str, Any]],
+    period_ms: int,
+    end_ms: int | None,
+) -> tuple[dict[str, Any], list[str]]:
+    if not target_candles:
+        return {}, []
+
+    indicator_spec = _build_indicator_spec(config)
+    target_times = [str(candle["time"]) for candle in target_candles]
+    target_times_ms = [int(candle["ts_ms"]) for candle in target_candles if candle.get("ts_ms") is not None]
+    if not target_times_ms:
+        return {}, []
+
+    warnings: list[str] = []
+    indicators: dict[str, Any] = {}
+    effective_end_ms = end_ms if end_ms is not None else target_times_ms[-1]
+
+    ema_spec = indicator_spec["ema"]
+    rsi_spec = indicator_spec["rsi"]
+    bollinger_spec = indicator_spec["bollinger"]
+
+    big_interval = str(ema_spec["interval"])
+    big_interval_ms = _parse_interval_to_ms(big_interval)
+    big_warmup_candles = max(int(ema_spec["period"]), int(rsi_spec["period"]) + 1)
+    big_candles, big_warnings = _fetch_candles_from_binance(
+        symbol=symbol,
+        period_ms=period_ms + big_warmup_candles * big_interval_ms,
+        interval=big_interval,
+        end_ms=effective_end_ms,
+    )
+    warnings.extend(big_warnings)
+    if big_candles:
+        big_closes = [float(candle["close"]) for candle in big_candles]
+        big_times_ms = [int(candle["ts_ms"]) for candle in big_candles]
+        ema_values = _align_series_to_times(
+            source_times_ms=big_times_ms,
+            source_values=_ema(big_closes, period=int(ema_spec["period"])),
+            target_times_ms=target_times_ms,
+        )
+        rsi_values = _align_series_to_times(
+            source_times_ms=big_times_ms,
+            source_values=_rsi(big_closes, period=int(rsi_spec["period"])),
+            target_times_ms=target_times_ms,
+        )
+        if any(value is not None for value in ema_values):
+            indicators["ema"] = _points_from_series(target_times, ema_values)
+        if any(value is not None for value in rsi_values):
+            indicators["rsi"] = _points_from_series(target_times, rsi_values)
+
+    medium_interval = str(bollinger_spec["interval"])
+    medium_interval_ms = _parse_interval_to_ms(medium_interval)
+    medium_warmup_candles = int(bollinger_spec["period"])
+    medium_candles, medium_warnings = _fetch_candles_from_binance(
+        symbol=symbol,
+        period_ms=period_ms + medium_warmup_candles * medium_interval_ms,
+        interval=medium_interval,
+        end_ms=effective_end_ms,
+    )
+    warnings.extend(medium_warnings)
+    if medium_candles:
+        medium_closes = [float(candle["close"]) for candle in medium_candles]
+        medium_times_ms = [int(candle["ts_ms"]) for candle in medium_candles]
+        bb_upper_values, bb_middle_values, bb_lower_values = _bollinger(
+            medium_closes,
+            period=int(bollinger_spec["period"]),
+            std_mult=float(bollinger_spec["std_mult"]),
+        )
+        aligned_upper = _align_series_to_times(
+            source_times_ms=medium_times_ms,
+            source_values=bb_upper_values,
+            target_times_ms=target_times_ms,
+        )
+        aligned_middle = _align_series_to_times(
+            source_times_ms=medium_times_ms,
+            source_values=bb_middle_values,
+            target_times_ms=target_times_ms,
+        )
+        aligned_lower = _align_series_to_times(
+            source_times_ms=medium_times_ms,
+            source_values=bb_lower_values,
+            target_times_ms=target_times_ms,
+        )
+        if any(
+            value is not None
+            for series in (aligned_upper, aligned_middle, aligned_lower)
+            for value in series
+        ):
+            indicators["bollinger"] = {
+                "upper": _points_from_series(target_times, aligned_upper),
+                "middle": _points_from_series(target_times, aligned_middle),
+                "lower": _points_from_series(target_times, aligned_lower),
+            }
+
+    return indicators, warnings
 
 
 def _normalize_open_position(position: Any) -> dict[str, Any] | None:
@@ -985,15 +1141,44 @@ def build_chart_payload(
     open_position = _normalize_open_position(state_for_chart.get("position"))
     current_levels = _build_current_levels(open_position)
     rsi_levels = _build_rsi_levels(config)
+    indicator_spec = _build_indicator_spec(config)
     indicators: dict[str, Any] = {}
     if include_indicators and candles:
-        if source_used == "dataset":
-            indicators = _build_indicators_from_candle_fields(candles)
-            if not indicators:
-                warnings.append("Dataset has no indicator columns, falling back to computed indicators.")
-                indicators = _build_indicators(candles)
-        else:
-            indicators = _build_indicators(candles)
+        indicator_candles = candles
+        if source_used != "dataset":
+            dataset_indicator_candles, dataset_indicator_warnings = _fetch_candles_from_dataset(
+                symbol=resolved_symbol,
+                period_ms=period_ms,
+                interval=interval_used,
+                end_ms=end_ms,
+            )
+            for warning in dataset_indicator_warnings:
+                if warning not in warnings:
+                    warnings.append(warning)
+            if dataset_indicator_candles:
+                indicator_candles = dataset_indicator_candles
+
+        indicators = _build_indicators_from_candle_fields(indicator_candles)
+        if not indicators:
+            strategy_fallback_indicators, strategy_fallback_warnings = _build_strategy_fallback_indicators(
+                symbol=resolved_symbol,
+                config=config,
+                target_candles=candles,
+                period_ms=period_ms,
+                end_ms=range_end_ms,
+            )
+            for warning in strategy_fallback_warnings:
+                if warning not in warnings:
+                    warnings.append(warning)
+            if strategy_fallback_indicators:
+                warnings.append("Dataset indicators unavailable, falling back to Binance strategy indicators.")
+                indicators = strategy_fallback_indicators
+            else:
+                warnings.append(
+                    "Dataset indicators unavailable, and strategy-aligned Binance indicators failed. "
+                    "Falling back to computed indicators from chart candles."
+                )
+                indicators = _build_indicators(candles, indicator_spec=indicator_spec)
     equity_curve = _build_equity_curve_from_candle_balance(candles)
     if not equity_curve:
         equity_curve = _build_equity_curve(
@@ -1018,6 +1203,7 @@ def build_chart_payload(
         "markers": markers,
         "current_levels": current_levels,
         "rsi_levels": rsi_levels,
+        "indicator_spec": indicator_spec,
         "open_position": open_position,
         "indicators": indicators,
         "equity_curve": equity_curve,

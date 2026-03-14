@@ -46,6 +46,21 @@ type ChartPayload = {
     liquidation: Marker[];
   };
   current_levels: Array<{ type: string; price: number }>;
+  indicator_spec?: {
+    ema?: {
+      period?: number;
+      interval?: string;
+    };
+    rsi?: {
+      period?: number;
+      interval?: string;
+    };
+    bollinger?: {
+      period?: number;
+      std_mult?: number;
+      interval?: string;
+    };
+  };
   open_position: {
     side?: string;
     entry?: number | null;
@@ -348,10 +363,13 @@ function ChartContent(): JSX.Element {
 
       if (includeIndicators && data.indicators?.ema?.length) {
         const ema = pointsToXY(data.indicators.ema);
+        const emaPeriod = data.indicator_spec?.ema?.period ?? 50;
+        const emaInterval = data.indicator_spec?.ema?.interval;
+        const emaLabel = emaInterval ? `EMA(${emaPeriod}, ${emaInterval})` : `EMA(${emaPeriod})`;
         traces.push({
           type: "scatter",
           mode: "lines",
-          name: "EMA(20)",
+          name: emaLabel,
           x: ema.x,
           y: ema.y,
           line: { color: CHART_THEME.ema, width: 1.4 },
@@ -545,6 +563,9 @@ function ChartContent(): JSX.Element {
           const rsi = pointsToXY(rsiPoints);
           const rsiLongTp = data.rsi_levels?.long_tp;
           const rsiShortTp = data.rsi_levels?.short_tp;
+          const rsiPeriod = data.indicator_spec?.rsi?.period ?? 11;
+          const rsiInterval = data.indicator_spec?.rsi?.interval;
+          const rsiLabel = rsiInterval ? `RSI (${rsiPeriod}, ${rsiInterval})` : `RSI (${rsiPeriod})`;
           const rsiShapes = [
             rsiLongTp === null || rsiLongTp === undefined
               ? null
@@ -575,14 +596,14 @@ function ChartContent(): JSX.Element {
               {
                 type: "scatter",
                 mode: "lines",
-                name: "RSI(14)",
+                name: rsiLabel,
                 x: rsi.x,
                 y: rsi.y,
                 line: { color: CHART_THEME.rsi, width: 1.4 },
               },
             ],
             {
-              title: "RSI",
+              title: rsiLabel,
               paper_bgcolor: CHART_THEME.bg,
               plot_bgcolor: CHART_THEME.bg,
               font: { color: CHART_THEME.text },

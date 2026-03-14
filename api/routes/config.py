@@ -5,7 +5,14 @@ import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from services.config_service import CONFIG_PATH, extract_editable_config, load_config, update_editable_config
+from services.config_service import (
+    CONFIG_PATH,
+    extract_editable_config,
+    load_config,
+    load_raw_config_text,
+    update_editable_config,
+    update_raw_config_text,
+)
 
 router = APIRouter()
 
@@ -28,13 +35,43 @@ class EditableParamsPayload(BaseModel):
     rsi_short_close_threshold: float | None = Field(default=None, ge=0, le=100)
 
 
+class EditableIntervalsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    small: str | None = Field(default=None, min_length=2, max_length=6)
+    medium: str | None = Field(default=None, min_length=2, max_length=6)
+    big: str | None = Field(default=None, min_length=2, max_length=6)
+
+    @field_validator("small", "medium", "big")
+    @classmethod
+    def validate_interval(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"\d+[mhdw]", normalized):
+            raise ValueError("interval must look like 1m, 1h, 4h, 1d, or 1w")
+        return normalized
+
+
+class EditableLimitsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    small: int | None = Field(default=None, ge=1)
+    medium: int | None = Field(default=None, ge=1)
+    big: int | None = Field(default=None, ge=1)
+
+
 class EditableConfigPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    live: bool | None = None
     symbol: str | None = Field(default=None, min_length=3, max_length=20)
     leverage: int | None = Field(default=None, ge=1, le=125)
+    initial_balance: float | None = Field(default=None, gt=0)
     use_full_balance: bool | None = None
     qty: float | None = Field(default=None, gt=0)
+    intervals: EditableIntervalsPayload | None = None
+    limits: EditableLimitsPayload | None = None
     params: EditableParamsPayload | None = None
 
     @field_validator("symbol")
@@ -48,6 +85,12 @@ class EditableConfigPayload(BaseModel):
         if not re.fullmatch(r"[A-Z0-9]{3,20}", normalized):
             raise ValueError("symbol must match [A-Z0-9]{3,20}")
         return normalized
+
+
+class RawConfigPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw_text: str = Field(min_length=1)
 
 
 @router.get("")
@@ -86,6 +129,39 @@ def update_editable(payload: EditableConfigPayload) -> dict[str, object]:
 
     try:
         result = update_editable_config(patch)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return result
+
+
+@router.get("/raw")
+def get_raw_config() -> dict[str, object]:
+    try:
+        raw_text = load_raw_config_text()
+        config = load_config()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "raw_text": raw_text,
+        "editable": extract_editable_config(config),
+        "path": str(CONFIG_PATH),
+    }
+
+
+@router.post("/raw")
+def update_raw_config(payload: RawConfigPayload) -> dict[str, object]:
+    try:
+        result = update_raw_config_text(payload.raw_text)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

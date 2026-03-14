@@ -696,6 +696,74 @@ pre {
   font-size: 0.88rem;
 }
 
+.contract-sheet {
+  display: grid;
+  gap: 0.82rem;
+  padding: 0.8rem 0.92rem;
+  border: 1px solid rgba(90, 102, 122, 0.28);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(17, 21, 29, 0.94), rgba(10, 14, 20, 0.98)),
+    radial-gradient(circle at top right, rgba(112, 30, 58, 0.1), transparent 42%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.contract-sheet > p {
+  margin: 0;
+  color: #dfe6f0;
+  line-height: 1.62;
+  font-size: 0.93rem;
+  text-wrap: pretty;
+}
+
+.contract-value {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0.08rem;
+  padding: 0.02rem 0.34rem;
+  border: 1px solid rgba(125, 46, 72, 0.54);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(76, 19, 42, 0.62), rgba(56, 17, 32, 0.78));
+  color: #ffd9e5;
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 0.88em;
+  line-height: 1.35;
+  cursor: help;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.contract-value:hover {
+  border-color: rgba(187, 76, 115, 0.72);
+  background: linear-gradient(180deg, rgba(94, 24, 52, 0.72), rgba(70, 19, 40, 0.88));
+  color: #ffe6ee;
+}
+
+.contract-editor {
+  display: grid;
+  gap: 0.62rem;
+}
+
+.contract-editor-note {
+  margin: 0;
+  color: #b8c4d4;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.contract-editor-field {
+  gap: 0.36rem;
+}
+
+.contract-editor-field > textarea {
+  min-height: 21rem;
+  padding: 0.72rem 0.78rem;
+  border-radius: 12px;
+  resize: vertical;
+  font-size: 0.92rem;
+  line-height: 1.56;
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+}
+
 .chart-controls-grid {
   grid-template-columns: minmax(140px, 1.2fr) repeat(3, minmax(118px, 1fr));
   justify-content: start;
@@ -1541,14 +1609,14 @@ pre {
     gap: 0.36rem;
   }
 
+  .config-toolbar > .config-action-btn:only-child {
+    grid-column: 1 / -1;
+  }
+
   .config-toolbar > .config-action-btn {
     min-height: 1.7rem;
     padding: 0.24rem 0.38rem;
     font-size: 0.83rem;
-  }
-
-  .config-toolbar > .config-action-btn:nth-child(3) {
-    grid-column: 1 / -1;
   }
 
   .config-toolbar > .dialog-scrooge-compact {
