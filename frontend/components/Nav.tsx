@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 
 import { clearAuth, hasSavedAuth } from "../lib/auth";
 import { PRIMARY_LINKS } from "../lib/navigation";
+import PushNotificationControl from "./PushNotificationControl";
 
 export default function Nav(): JSX.Element {
   const pathname = usePathname();
@@ -54,6 +55,7 @@ export default function Nav(): JSX.Element {
               >
                 Step Out
               </Link>
+              <PushNotificationControl variant="nav" />
             </div>
           ) : null}
         </div>

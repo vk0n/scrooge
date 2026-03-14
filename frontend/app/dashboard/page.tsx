@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
-import PushNotificationControl from "../../components/PushNotificationControl";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 import { buildContractParagraphs, type EditableConfig } from "../../lib/contract";
@@ -104,12 +103,28 @@ const WS_RECONNECT_MS = 5000;
 const COMMAND_POLL_MS = 2000;
 const COMMON_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "EUR", "TRY", "USD"];
 
+function formatNumberValue(
+  value: number | null | undefined,
+  options: {
+    minimumFractionDigits?: number;
+    maximumFractionDigits?: number;
+  } = {}
+): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: options.minimumFractionDigits ?? 0,
+    maximumFractionDigits: options.maximumFractionDigits ?? 2
+  }).format(value);
+}
+
 function displayValue(value: unknown): string {
   if (value === null || value === undefined) {
     return "N/A";
   }
   if (typeof value === "number") {
-    return Number.isFinite(value) ? value.toFixed(2) : "N/A";
+    return formatNumberValue(value);
   }
   if (typeof value === "boolean") {
     return value ? "true" : "false";
@@ -133,6 +148,29 @@ function statusBadgeClass(status: UiStatus | null): string {
   return "badge badge-muted";
 }
 
+function statusIntentBadgeClass(status: UiStatus | null): string | null {
+  if (status?.code === "looking_for_buy_opportunity") {
+    return "position-upnl-badge position-upnl-badge-positive";
+  }
+  if (status?.code === "looking_for_sell_opportunity") {
+    return "position-upnl-badge position-upnl-badge-negative";
+  }
+  if (status?.code === "resting") {
+    return "position-upnl-badge position-upnl-badge-paused";
+  }
+  return null;
+}
+
+function statusIntentBadgeText(status: UiStatus | null): string | null {
+  if (status?.code === "looking_for_buy_opportunity" || status?.code === "looking_for_sell_opportunity") {
+    return "🔎";
+  }
+  if (status?.code === "resting") {
+    return "😴";
+  }
+  return null;
+}
+
 function tradeSummaryText(status: UiStatus | null): string {
   if (!status) {
     return "No open trade";
@@ -146,8 +184,7 @@ function tradeSummaryPhraseClass(status: UiStatus | null): string {
 
 function positionSummaryBadgeClass(
   hasOpenPosition: boolean,
-  roiPercent: number | null,
-  botStatus: UiStatus | null
+  roiPercent: number | null
 ): string {
   if (hasOpenPosition) {
     if (roiPercent === null) {
@@ -158,32 +195,15 @@ function positionSummaryBadgeClass(
     }
     return "position-upnl-badge position-upnl-badge-positive";
   }
-
-  if (botStatus?.code === "looking_for_buy_opportunity") {
-    return "position-upnl-badge position-upnl-badge-positive";
-  }
-  if (botStatus?.code === "looking_for_sell_opportunity") {
-    return "position-upnl-badge position-upnl-badge-negative";
-  }
-  if (botStatus?.code === "resting") {
-    return "position-upnl-badge position-upnl-badge-paused";
-  }
   return "position-upnl-badge position-upnl-badge-neutral";
 }
 
 function positionSummaryBadgeText(
   hasOpenPosition: boolean,
-  roiPercent: number | null,
-  botStatus: UiStatus | null
+  roiPercent: number | null
 ): string | null {
   if (hasOpenPosition) {
     return formatPercent(roiPercent);
-  }
-  if (botStatus?.code === "looking_for_buy_opportunity" || botStatus?.code === "looking_for_sell_opportunity") {
-    return "🔎";
-  }
-  if (botStatus?.code === "resting") {
-    return "😴";
   }
   return null;
 }
@@ -236,7 +256,10 @@ function formatUnrealizedPnlUsd(value: number | null): string {
   if (!Number.isFinite(value)) {
     return "N/A";
   }
-  const absolute = Math.abs(value).toFixed(2);
+  const absolute = formatNumberValue(Math.abs(value), {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
   if (value > 0) {
     return `+$${absolute}`;
   }
@@ -250,7 +273,20 @@ function formatUsd(value: number | null): string {
   if (value === null || !Number.isFinite(value)) {
     return "N/A";
   }
-  return `$${value.toFixed(2)}`;
+  return `$${formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatVaultAmount(value: number | null): string {
+  return formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatPrice(value: number | null | undefined): string {
+  return formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatLeverage(value: number | null | undefined): string {
+  const formatted = formatNumberValue(value, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  return formatted === "N/A" ? "N/A" : `x${formatted}`;
 }
 
 function resolveBaseAsset(symbol: string | null | undefined): string | null {
@@ -274,8 +310,10 @@ function formatAssetAmount(value: number | null | undefined, symbol: string | nu
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "N/A";
   }
-  const amount = Math.abs(value);
-  const formatted = amount.toFixed(6).replace(/\.?0+$/, "");
+  const formatted = formatNumberValue(Math.abs(value), {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6
+  });
   const baseAsset = resolveBaseAsset(symbol);
   return baseAsset ? `${formatted} ${baseAsset}` : formatted;
 }
@@ -285,10 +323,10 @@ function formatPercent(value: number | null): string {
     return "N/A";
   }
   if (value > 0) {
-    return `+${value.toFixed(2)}%`;
+    return `+${formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
   }
   if (value < 0) {
-    return `${value.toFixed(2)}%`;
+    return `${formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
   }
   return "0.00%";
 }
@@ -316,7 +354,7 @@ function resolveTailGuardValue(trailingState: TrailingState | null): string {
   if (trailPrice === null) {
     return "Active";
   }
-  return trailPrice.toFixed(2);
+  return formatPrice(trailPrice);
 }
 
 function commandStatusBadgeClass(status: string | undefined): string {
@@ -618,9 +656,11 @@ function DashboardContent(): JSX.Element {
   const contractParagraphs = editableConfig ? buildContractParagraphs(editableConfig) : [];
   const positionSummaryText = tradeSummaryText(tradeStatus);
   const positionSummaryPhraseClass = tradeSummaryPhraseClass(tradeStatus);
-  const positionUpnlBadgeText = positionSummaryBadgeText(hasOpenPosition, roiPercent, botStatus);
+  const positionUpnlBadgeText = positionSummaryBadgeText(hasOpenPosition, roiPercent);
   const showPositionUpnlBadge = positionUpnlBadgeText !== null;
-  const positionUpnlBadgeClass = positionSummaryBadgeClass(hasOpenPosition, roiPercent, botStatus);
+  const positionUpnlBadgeClass = positionSummaryBadgeClass(hasOpenPosition, roiPercent);
+  const statusIntentText = statusIntentBadgeText(botStatus);
+  const statusIntentClass = statusIntentBadgeClass(botStatus);
 
   useEffect(() => {
     if (!hasOpenPosition) {
@@ -646,14 +686,19 @@ function DashboardContent(): JSX.Element {
             <div className="status-strip">
               <div className="status-chip">
                 <span className="status-chip-label">Status</span>
-                <span className={statusBadgeClass(botStatus)}>
-                  {botStatus?.label ?? "N/A"}
+                <span className="status-chip-value">
+                  <span className={statusBadgeClass(botStatus)}>
+                    {botStatus?.label ?? "N/A"}
+                  </span>
+                  {statusIntentText && statusIntentClass ? (
+                    <span className={statusIntentClass}>{statusIntentText}</span>
+                  ) : null}
                 </span>
               </div>
               <div className="status-chip">
                 <span className="status-chip-label">Vault</span>
                 <span className="metric-value vault-value">
-                  {displayValue(data.balance)}
+                  {formatVaultAmount(data.balance)}
                   {typeof data.balance === "number" && Number.isFinite(data.balance) ? (
                     <span className="vault-dollar" aria-hidden="true">
                       $
@@ -664,11 +709,10 @@ function DashboardContent(): JSX.Element {
             </div>
             <p className="status-helper">
               Ticker: {displayValue(data.symbol)} • Leverage:{" "}
-              {data.leverage === null || data.leverage === undefined ? "N/A" : `x${displayValue(data.leverage)}`} • Last Price:{" "}
-              {displayValue(lastPrice)}
+              {formatLeverage(data.leverage)} • Last Price: {formatPrice(lastPrice)}
             </p>
             <details
-              className="position-accordion"
+              className="position-accordion position-accordion-featured"
               open={hasOpenPosition && positionExpanded}
               onToggle={(event) => {
                 if (!hasOpenPosition) {
@@ -706,7 +750,7 @@ function DashboardContent(): JSX.Element {
                   </div>
                   <div className="kv-item metric-card">
                     <span className="kv-label">Entry Price</span>
-                    <span className="metric-value">{displayValue(entryPrice)}</span>
+                    <span className="metric-value">{formatPrice(entryPrice)}</span>
                   </div>
                   <div className="kv-item metric-card">
                     <span className="kv-label">Opened At</span>
@@ -738,7 +782,7 @@ function DashboardContent(): JSX.Element {
                 <div className="trade-manage-grid">
                   <div className="kv-item trade-manage-card">
                     <span className="kv-label">Safety Net</span>
-                    <span className="metric-value">{displayValue(sl)}</span>
+                    <span className="metric-value">{formatPrice(sl)}</span>
                     <div className="trade-edit-row">
                       <label className="field-stack dialog-user-field trade-edit-field">
                         Set Safety Net
@@ -764,7 +808,7 @@ function DashboardContent(): JSX.Element {
 
                   <div className="kv-item trade-manage-card">
                     <span className="kv-label">Treasure Mark</span>
-                    <span className="metric-value">{displayValue(tp)}</span>
+                    <span className="metric-value">{formatPrice(tp)}</span>
                     <div className="trade-edit-row">
                       <label className="field-stack dialog-user-field trade-edit-field">
                         Set Treasure Mark
@@ -790,7 +834,7 @@ function DashboardContent(): JSX.Element {
                 </div>
 
                 {liquidationPrice !== null ? (
-                  <p className="trade-danger-line">Danger line: {displayValue(liquidationPrice)}</p>
+                  <p className="trade-danger-line">Danger line: {formatPrice(liquidationPrice)}</p>
                 ) : null}
 
                 <div className="position-controls-actions">
@@ -883,7 +927,6 @@ function DashboardContent(): JSX.Element {
               >
                 Wind It Again
               </button>
-              <PushNotificationControl />
               {busyAction ? <span className="dialog-scrooge dialog-scrooge-compact">Executing {busyAction}...</span> : null}
             </div>
           </div>

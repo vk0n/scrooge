@@ -23,6 +23,9 @@ type NotificationTestResponse = {
 };
 
 type NotificationStatus = "unsupported" | "blocked" | "idle" | "enabled";
+type PushNotificationControlProps = {
+  variant?: "panel" | "nav";
+};
 
 function resolveNotificationStatus(
   supported: boolean,
@@ -46,7 +49,9 @@ async function loadCurrentSubscription(): Promise<PushSubscription | null> {
   return registration.pushManager.getSubscription();
 }
 
-export default function PushNotificationControl(): JSX.Element {
+export default function PushNotificationControl({
+  variant = "panel"
+}: PushNotificationControlProps): JSX.Element {
   const [supported, setSupported] = useState<boolean>(false);
   const [permission, setPermission] = useState<NotificationPermission | "unsupported">("unsupported");
   const [subscribed, setSubscribed] = useState<boolean>(false);
@@ -171,6 +176,7 @@ export default function PushNotificationControl(): JSX.Element {
   }
 
   const status = resolveNotificationStatus(supported, permission, subscribed);
+  const navButtonLabel = status === "enabled" ? "Mute Bell" : "Bell";
   const statusLabel =
     status === "enabled"
       ? "The bell is wired for important updates."
@@ -179,6 +185,49 @@ export default function PushNotificationControl(): JSX.Element {
         : status === "unsupported"
           ? "This browser cannot keep Scrooge's bell."
           : "The bell is quiet until you allow notifications.";
+
+  if (variant === "nav") {
+    const navNote =
+      error ??
+      info ??
+      (busy
+        ? "Wiring the bell..."
+        : status === "blocked"
+          ? "Allow notifications in site settings."
+          : status === "unsupported"
+            ? "This browser cannot keep the bell."
+            : null);
+    const navButtonClass = `nav-service-btn${status === "enabled" ? " nav-service-btn-enabled" : ""}${
+      status === "blocked" ? " nav-service-btn-blocked" : ""
+    }`;
+
+    return (
+      <div className="notifications-panel notifications-panel-nav">
+        {status !== "enabled" ? (
+          <button
+            type="button"
+            className={navButtonClass}
+            onClick={() => void enableNotifications()}
+            disabled={busy || !supported}
+          >
+            {navButtonLabel}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={navButtonClass}
+            onClick={() => void disableNotifications()}
+            disabled={busy}
+          >
+            {navButtonLabel}
+          </button>
+        )}
+        {navNote ? (
+          <p className={`nav-service-note${error ? " nav-service-note-error" : ""}`}>{navNote}</p>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="notifications-panel">
