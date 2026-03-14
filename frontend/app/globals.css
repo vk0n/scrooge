@@ -866,13 +866,13 @@ pre {
 }
 
 .position-accordion-featured {
-  border-color: rgba(154, 121, 56, 0.46);
+  border-color: rgba(173, 136, 61, 0.52);
   background:
-    radial-gradient(circle at top right, rgba(185, 145, 62, 0.12), transparent 34%),
-    linear-gradient(180deg, rgba(21, 23, 26, 0.92) 0%, rgba(12, 15, 20, 0.97) 100%);
+    radial-gradient(circle at top right, rgba(215, 168, 68, 0.16), transparent 36%),
+    linear-gradient(180deg, rgba(24, 23, 18, 0.92) 0%, rgba(12, 15, 20, 0.97) 100%);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 223, 148, 0.05),
-    0 0 0 1px rgba(122, 94, 42, 0.12);
+    inset 0 0 0 1px rgba(255, 226, 147, 0.08),
+    0 0 0 1px rgba(148, 114, 47, 0.16);
 }
 
 .position-accordion-summary {
@@ -1281,14 +1281,23 @@ pre {
 .nav-service-btn {
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 0.36rem 0.72rem;
+  padding: 0.3rem 0.56rem;
   min-height: 2rem;
+  min-width: 2.5rem;
   background: rgba(15, 19, 28, 0.84);
   color: var(--muted);
   font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
   font-size: 0.84rem;
   line-height: 1.2;
   white-space: nowrap;
+}
+
+.nav-service-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.98rem;
+  line-height: 1;
 }
 
 .nav-service-btn:hover:not(:disabled) {
@@ -1470,7 +1479,8 @@ pre {
   }
 
   .nav-service-btn {
-    padding: 0.32rem 0.64rem;
+    padding: 0.28rem 0.48rem;
+    min-width: 2.35rem;
     font-size: 0.78rem;
   }
 

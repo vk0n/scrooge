@@ -172,11 +172,12 @@ export default function PushNotificationControl({
       setError(err instanceof Error ? err.message : "Failed to disable notifications.");
     } finally {
       setBusy(false);
-    }
+  }
   }
 
   const status = resolveNotificationStatus(supported, permission, subscribed);
-  const navButtonLabel = status === "enabled" ? "Mute Bell" : "Bell";
+  const navButtonIcon = status === "enabled" ? "🔔" : "🔕";
+  const navButtonLabel = status === "enabled" ? "Mute notifications" : "Enable notifications";
   const statusLabel =
     status === "enabled"
       ? "The bell is wired for important updates."
@@ -209,8 +210,12 @@ export default function PushNotificationControl({
             className={navButtonClass}
             onClick={() => void enableNotifications()}
             disabled={busy || !supported}
+            aria-label={navButtonLabel}
+            title={navButtonLabel}
           >
-            {navButtonLabel}
+            <span className="nav-service-icon" aria-hidden="true">
+              {navButtonIcon}
+            </span>
           </button>
         ) : (
           <button
@@ -218,8 +223,12 @@ export default function PushNotificationControl({
             className={navButtonClass}
             onClick={() => void disableNotifications()}
             disabled={busy}
+            aria-label={navButtonLabel}
+            title={navButtonLabel}
           >
-            {navButtonLabel}
+            <span className="nav-service-icon" aria-hidden="true">
+              {navButtonIcon}
+            </span>
           </button>
         )}
         {navNote ? (
