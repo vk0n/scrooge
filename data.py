@@ -3,11 +3,13 @@ import time
 import pandas as pd
 import pandas_ta as ta
 from datetime import datetime, timedelta
+from event_log import get_technical_logger
 
 
 REQUIRED_INDICATOR_COLUMNS = ("BBL", "BBM", "BBU", "ATR", "RSI", "EMA")
 
 _client = None
+technical_logger = get_technical_logger()
 
 
 def set_client(client):
@@ -125,7 +127,7 @@ def _sanitize_dataset(df, required_columns=REQUIRED_INDICATOR_COLUMNS):
     out.reset_index(drop=True, inplace=True)
     dropped_rows = initial_rows - len(out)
     if dropped_rows > 0:
-        print(f"[DATASET] Dropped {dropped_rows} warmup rows with incomplete indicators.")
+        technical_logger.info("dataset_warmup_rows_dropped count=%s", dropped_rows)
 
     if out.empty:
         raise ValueError("Dataset became empty after dropping warmup rows.")
@@ -162,27 +164,34 @@ def build_dataset(
     start_time = end_time - timedelta(days=backtest_period_days)
 
     if os.path.exists(output_path):
-        print(f"[CACHE] Found existing dataset: {output_path}")
+        technical_logger.info("dataset_cache_found path=%s", output_path)
         cached = pd.read_pickle(output_path)
         sanitized = _sanitize_dataset(cached)
         if len(sanitized) != len(cached):
             sanitized.to_pickle(output_path)
             sanitized.to_csv(output_path.replace(".pkl", ".csv"), index=False)
-            print(f"[CACHE] Rewrote sanitized dataset cache → {output_path}")
+            technical_logger.info("dataset_cache_rewritten_sanitized path=%s", output_path)
         return sanitized
 
-    print(f"[FETCH] Fetching data for last {backtest_period_days} days on {symbol}: {interval_small}, {interval_medium}, {interval_big}")
+    technical_logger.info(
+        "dataset_fetch_started symbol=%s days=%s intervals=%s,%s,%s",
+        symbol,
+        backtest_period_days,
+        interval_small,
+        interval_medium,
+        interval_big,
+    )
     df_small = fetch_historical_paginated(symbol, interval_small, start_time, end_time)
     df_medium = fetch_historical_paginated(symbol, interval_medium, start_time, end_time)
     df_big = fetch_historical_paginated(symbol, interval_big, start_time, end_time)
 
-    print("[MERGE] Preparing multi-timeframe dataframe...")
+    technical_logger.info("dataset_merge_started symbol=%s", symbol)
     df_merged = prepare_multi_tf(df_small, df_medium, df_big)
     df_merged = _sanitize_dataset(df_merged)
 
     df_merged.to_pickle(output_path)
     df_merged.to_csv(output_path.replace(".pkl", ".csv"), index=False)
-    print(f"[DONE] Saved merged dataset → {output_path} ({len(df_merged)} rows)")
+    technical_logger.info("dataset_saved path=%s rows=%s", output_path, len(df_merged))
 
     return df_merged
 

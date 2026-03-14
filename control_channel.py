@@ -4,7 +4,7 @@ import json
 import os
 from datetime import UTC, datetime
 from typing import Any, Callable
-from event_log import emit_event
+from event_log import emit_event, get_technical_logger
 
 try:
     import redis
@@ -22,6 +22,7 @@ COMMAND_STATUS_PREFIX = os.getenv("SCROOGE_COMMAND_STATUS_PREFIX", "scrooge:cont
 COMMAND_STATUS_TTL_SECONDS = int(os.getenv("SCROOGE_COMMAND_STATUS_TTL_SECONDS", "86400"))
 SUPPORTED_ACTIONS = {"start", "stop", "restart", "close_position", "suggest_trade", "update_sl", "update_tp"}
 TRADE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+technical_logger = get_technical_logger()
 
 
 def _now_iso() -> str:
@@ -30,6 +31,13 @@ def _now_iso() -> str:
 
 def _status_key(command_id: str) -> str:
     return f"{COMMAND_STATUS_PREFIX}{command_id}"
+
+
+def _log_message(logger: Callable[[str], None] | None, level: str, message: str) -> None:
+    if logger is not None:
+        logger(message)
+        return
+    getattr(technical_logger, level, technical_logger.info)(message)
 
 
 def _as_float(value: Any) -> float | None:
@@ -115,7 +123,7 @@ def get_control_client() -> Any | None:
     Returns None when Redis support is unavailable or unreachable.
     """
     if redis is None:
-        print("[CONTROL] redis package is not installed; command polling disabled")
+        technical_logger.warning("control_channel_disabled reason=redis_package_missing")
         return None
 
     client = redis.Redis(
@@ -129,12 +137,18 @@ def get_control_client() -> Any | None:
     try:
         client.ping()
     except RedisError as exc:
-        print(f"[CONTROL] Redis unavailable ({REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}): {exc}")
+        technical_logger.warning(
+            "control_redis_unavailable host=%s port=%s db=%s error=%s",
+            REDIS_HOST,
+            REDIS_PORT,
+            REDIS_DB,
+            exc,
+        )
         return None
     return client
 
 
-def _update_status(client: Any, command_id: str, fields: dict[str, Any], logger: Callable[[str], None]) -> None:
+def _update_status(client: Any, command_id: str, fields: dict[str, Any], logger: Callable[[str], None] | None) -> None:
     payload = {k: json.dumps(v) if isinstance(v, (dict, list)) else str(v) for k, v in fields.items()}
     key = _status_key(command_id)
     try:
@@ -143,14 +157,14 @@ def _update_status(client: Any, command_id: str, fields: dict[str, Any], logger:
         pipe.expire(key, COMMAND_STATUS_TTL_SECONDS)
         pipe.execute()
     except RedisError as exc:
-        logger(f"[CONTROL] Failed to update command status for {command_id}: {exc}")
+        _log_message(logger, "warning", f"[CONTROL] Failed to update command status for {command_id}: {exc}")
 
 
 def process_pending_commands(
     client: Any | None,
     state: dict[str, Any],
     save_state_fn: Callable[[dict[str, Any]], None],
-    logger: Callable[[str], None] = print,
+    logger: Callable[[str], None] | None = None,
     symbol: str | None = None,
     close_position_fn: Callable[[str], Any] | None = None,
     get_open_position_fn: Callable[[str], Any] | None = None,
@@ -172,7 +186,7 @@ def process_pending_commands(
         try:
             raw_payload = client.lpop(CONTROL_QUEUE_KEY)
         except RedisError as exc:
-            logger(f"[CONTROL] Failed to poll command queue: {exc}")
+            _log_message(logger, "warning", f"[CONTROL] Failed to poll command queue: {exc}")
             break
 
         if raw_payload is None:
@@ -181,7 +195,7 @@ def process_pending_commands(
         try:
             payload = json.loads(raw_payload)
         except json.JSONDecodeError:
-            logger(f"[CONTROL] Ignoring malformed command payload: {raw_payload}")
+            _log_message(logger, "warning", f"[CONTROL] Ignoring malformed command payload: {raw_payload}")
             continue
 
         command_id = str(payload.get("id", "")).strip()
@@ -190,7 +204,7 @@ def process_pending_commands(
         if not isinstance(command_payload, dict):
             command_payload = {}
         if not command_id:
-            logger(f"[CONTROL] Ignoring command without id: {payload}")
+            _log_message(logger, "warning", f"[CONTROL] Ignoring command without id: {payload}")
             continue
 
         _update_status(
@@ -418,6 +432,6 @@ def process_pending_commands(
             },
             logger,
         )
-        logger(f"[CONTROL] Applied command {action} ({command_id})")
+        _log_message(logger, "info", f"[CONTROL] Applied command {action} ({command_id})")
 
     return state, restart_requested

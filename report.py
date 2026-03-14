@@ -9,6 +9,7 @@ from plotly.subplots import make_subplots
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from data import fetch_historical_paginated, prepare_multi_tf
+from event_log import get_technical_logger
 from state import (
     load_balance_history,
     load_state as load_runtime_state,
@@ -22,6 +23,7 @@ _rw_start_time = None
 _rw_k_days = None
 _rw_start_balance = None
 _rw_strategy_kwargs = None
+technical_logger = get_technical_logger()
 
 
 def set_client(client):
@@ -235,7 +237,7 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=True):
     balance_history = state.get("balance_history", [])
 
     if session_start is None or session_end is None:
-        print("Session timestamps missing in state.json")
+        technical_logger.warning("session_plot_missing_timestamps")
         return
 
     # --- Fetch session price data ---
@@ -244,7 +246,7 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=True):
     df_big = fetch_historical_paginated(symbol, "4h", session_start, session_end)
     df = prepare_multi_tf(df_small, df_medium, df_big)
     if df.empty:
-        print("No klines fetched for the session.")
+        technical_logger.warning("session_plot_no_klines symbol=%s", symbol)
         return
 
     # --- Downsample if dataset is too large (for faster, clearer plotting) ---
@@ -331,13 +333,12 @@ def plot_session(state, symbol="BTCUSDT", interval="1m", show_bbands=True):
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
         plt.savefig(tmpfile.name, dpi=150)
         webbrowser.get("firefox").open(tmpfile.name)
-    print("Session report plotted.")
+    technical_logger.info("session_report_plotted symbol=%s", symbol)
 
     # --- Compute and print session stats ---
     stats = compute_session_stats(trades, balance_history)
-    print("\n=== SESSION STATISTICS ===")
     for k, v in stats.items():
-        print(f"{k}: {v}")
+        technical_logger.info("session_stat %s=%s", k, v)
 
 
 def _write_plotly_fullscreen_html(fig, title):
@@ -510,7 +511,7 @@ def _build_interactive_figure(df, trades, equity_series):
 def plot_results_interactive(df, trades, balance_history, split_by_year=True):
     """Interactive plot with price, trades, RSI, and equity curve (zoom/pan)."""
     if df is None or df.empty:
-        print("No data to plot.")
+        technical_logger.warning("interactive_plot_no_data")
         return
 
     if balance_history:
@@ -567,7 +568,7 @@ def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000
 
     # --- 1. Generate synthetic datetime index for the equity curve ---
     if len(balance_history) == 0:
-        print("No equity data found for Monte Carlo test.")
+        technical_logger.warning("monte_carlo_no_equity_data")
         return {}
 
     start_time = pd.to_datetime(df["open_time"].iloc[0])
@@ -581,7 +582,7 @@ def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000
     monthly_returns = eq_monthly.pct_change().dropna()
 
     if len(monthly_returns) < 3:
-        print("Not enough data for monthly Monte Carlo test.")
+        technical_logger.warning("monte_carlo_not_enough_monthly_data points=%s", len(monthly_returns))
         return {}
 
     # --- 3. Convert to log returns for numerical stability ---
@@ -644,10 +645,8 @@ def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000
             plt.savefig(tmpfile.name, dpi=150)
             webbrowser.get("firefox").open(tmpfile.name)
 
-    # --- 10. Print formatted summary ---
-    print("\nMonte Carlo Stress-Test Summary (Monthly):")
     for k, v in summary.items():
-        print(f"{k}: {v}")
+        technical_logger.info("monte_carlo_stat %s=%s", k, v)
 
     return summary
 
@@ -666,11 +665,11 @@ def rolling_window_backtest_distribution(
     of final balances, similar to the Monte Carlo view.
     """
     if df is None or df.empty:
-        print("No data for rolling window backtest.")
+        technical_logger.warning("rolling_window_no_data")
         return {}
 
     if k_days <= 0:
-        print("k_days must be > 0.")
+        technical_logger.warning("rolling_window_invalid_k_days value=%s", k_days)
         return {}
 
     start_time = pd.to_datetime(df["open_time"].iloc[0])
@@ -682,7 +681,7 @@ def rolling_window_backtest_distribution(
     n_days = min(n_days, total_days)
 
     if n_days < k_days:
-        print("n_days must be >= k_days.")
+        technical_logger.warning("rolling_window_invalid_n_days n_days=%s k_days=%s", n_days, k_days)
         return {}
 
     final_balances = []
@@ -746,7 +745,7 @@ def rolling_window_backtest_distribution(
                 max_drawdowns.append(max_drawdown)
 
     if not final_balances:
-        print("No rolling windows produced results.")
+        technical_logger.warning("rolling_window_no_results")
         return {}
 
     results = np.array(final_balances)
@@ -842,9 +841,8 @@ def rolling_window_backtest_distribution(
             plt.savefig(tmpfile.name, dpi=150)
             webbrowser.get("firefox").open(tmpfile.name)
 
-    print("\nRolling Window Backtest Summary:")
     for k, v in summary.items():
-        print(f"{k}: {v}")
+        technical_logger.info("rolling_window_stat %s=%s", k, v)
 
     return summary
 
@@ -861,4 +859,4 @@ if __name__ == "__main__":
     if state:
         plot_session(state)
     else:
-        print("No state found. Run a trading session first.")
+        technical_logger.warning("session_plot_no_state")

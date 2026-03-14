@@ -1,7 +1,9 @@
 from binance.helpers import round_step_size
 import numpy as np
+from event_log import get_technical_logger
 
 _client = None
+technical_logger = get_technical_logger()
 
 def set_client(client):
     global _client
@@ -22,9 +24,9 @@ def set_leverage(symbol, leverage):
             symbol=symbol,
             leverage=leverage
         )
-        print(f"Leverage set: {resp}")
+        technical_logger.info("leverage_set symbol=%s leverage=%s response=%s", symbol, leverage, resp)
     except Exception as e:
-        print("Error setting leverage:", e)
+        technical_logger.exception("leverage_set_failed symbol=%s leverage=%s error=%s", symbol, leverage, e)
 
 
 def get_symbol_info(symbol):
@@ -112,7 +114,7 @@ def check_balance():
     balances = client.futures_account_balance()
     for b in balances:
         if b["asset"] == "USDT":
-            print(f"Balance: {b['balance']} USDT")
+            technical_logger.debug("balance_checked asset=USDT balance=%s", b["balance"])
     return balances
 
 
@@ -156,7 +158,7 @@ def cancel_sl_tp(symbol):
     for o in open_orders:
         if o["type"] in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]:
             client.futures_cancel_order(symbol=symbol, orderId=o["orderId"])
-            print(f"[CANCEL] Removed {o['type']} order (id={o['orderId']})")
+            technical_logger.info("protective_order_cancelled symbol=%s type=%s order_id=%s", symbol, o["type"], o["orderId"])
 
 
 def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10):
@@ -181,16 +183,21 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
                 type="MARKET",
                 quantity=close_qty
             )
-            print(f"✅ Closed position: {close_side} {close_qty} {symbol}")
+            technical_logger.info(
+                "position_closed symbol=%s side=%s quantity=%s",
+                symbol,
+                close_side,
+                close_qty,
+            )
             cancel_sl_tp(symbol)
             return order
         except Exception as e:
-            print("❌ Error closing position:", e)
+            technical_logger.exception("position_close_failed symbol=%s error=%s", symbol, e)
 
     elif side and qty > 0:
         # --- Open new position ---
         if qty <= 0:
-            print("❌ Not enough margin to open any position")
+            technical_logger.warning("position_open_skipped_not_enough_margin symbol=%s side=%s", symbol, side)
             return
 
         qty, sl = round_qty_price(symbol, qty, sl) if sl else (qty, None)
@@ -204,7 +211,13 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
                 type="MARKET",
                 quantity=qty
             )
-            print(f"✅ Opened position: {side} {qty} {symbol}")
+            technical_logger.info(
+                "position_opened symbol=%s side=%s quantity=%s leverage=%s",
+                symbol,
+                side,
+                qty,
+                leverage,
+            )
 
             # place SL/TP
             if sl:
@@ -215,7 +228,7 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
                 #    stopPrice=sl,
                 #    quantity=qty
                 #)
-                print(f"[SL] Stop-loss set at {sl}")
+                technical_logger.info("stop_loss_prepared symbol=%s side=%s stop_price=%s", symbol, side, sl)
 
             if tp:
                 # client.futures_create_order(
@@ -225,12 +238,12 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
                 #     stopPrice=tp,
                 #     quantity=qty
                 # )
-                print(f"[TP] Take-profit set at {tp}")
+                technical_logger.info("take_profit_prepared symbol=%s side=%s take_profit=%s", symbol, side, tp)
 
             return order
 
         except Exception as e:
-            print("❌ Error opening position:", e)
+            technical_logger.exception("position_open_failed symbol=%s side=%s quantity=%s error=%s", symbol, side, qty, e)
 
 
 def open_position(symbol, side, qty, sl=None, tp=None, leverage=10):
