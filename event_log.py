@@ -6,6 +6,11 @@ import os
 from pathlib import Path
 from typing import Any
 
+try:
+    from api.services.push_service import dispatch_event_push
+except ImportError:  # pragma: no cover - api package may be unavailable in some contexts
+    dispatch_event_push = None
+
 
 UI_LOG_PATH = Path(os.getenv("SCROOGE_LOG_FILE", "trading_log.txt")).expanduser()
 TECHNICAL_LOGGER_NAME = "scrooge.bot"
@@ -356,4 +361,6 @@ def emit_event(
     logger = _ensure_technical_logger()
     log_level = getattr(logging, str(level).upper(), logging.INFO)
     logger.log(log_level, json.dumps(event, ensure_ascii=True, sort_keys=True, default=str))
+    if dispatch_event_push is not None:
+        dispatch_event_push(event)
     return event

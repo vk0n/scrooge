@@ -11,6 +11,7 @@ from routes.chart import router as chart_router
 from routes.control import router as control_router
 from routes.health import router as health_router
 from routes.logs import router as logs_router
+from routes.notifications import router as notifications_router
 from routes.status import router as status_router
 from routes.ws import router as ws_router
 from services.auth_service import require_http_auth
@@ -42,6 +43,7 @@ app.add_middleware(
 app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(status_router, prefix="/api/status", tags=["status"], dependencies=[Depends(require_http_auth)])
 app.include_router(logs_router, prefix="/api/logs", tags=["logs"], dependencies=[Depends(require_http_auth)])
+app.include_router(notifications_router, prefix="/api/notifications", tags=["notifications"], dependencies=[Depends(require_http_auth)])
 app.include_router(config_router, prefix="/api/config", tags=["config"], dependencies=[Depends(require_http_auth)])
 app.include_router(chart_router, prefix="/api/chart", tags=["chart"], dependencies=[Depends(require_http_auth)])
 app.include_router(control_router, prefix="/api/control", tags=["control"])

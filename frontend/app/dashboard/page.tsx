@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
+import PushNotificationControl from "../../components/PushNotificationControl";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 import { buildContractParagraphs, type EditableConfig } from "../../lib/contract";
@@ -884,6 +885,7 @@ function DashboardContent(): JSX.Element {
               </button>
               {busyAction ? <span className="dialog-scrooge dialog-scrooge-compact">Executing {busyAction}...</span> : null}
             </div>
+            <PushNotificationControl />
           </div>
           <p className="dialog-scrooge">My contract:</p>
           <div className="section-block">

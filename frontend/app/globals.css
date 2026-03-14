@@ -696,6 +696,28 @@ pre {
   font-size: 0.88rem;
 }
 
+.notifications-panel {
+  display: grid;
+  gap: 0.42rem;
+}
+
+.notification-toolbar {
+  justify-content: flex-start;
+}
+
+.notification-action-btn {
+  min-height: 1.82rem;
+  padding: 0.28rem 0.52rem;
+  border-radius: 8px;
+  font-size: 0.88rem;
+}
+
+.notification-status {
+  color: #b5c1d3;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .contract-sheet {
   display: grid;
   gap: 0.82rem;
