@@ -4,6 +4,7 @@ import json
 import os
 from datetime import UTC, datetime
 from typing import Any, Callable
+from event_log import emit_event
 
 try:
     import redis
@@ -49,6 +50,14 @@ def _extract_exit_price(order_response: Any) -> float | None:
         if candidate is not None and candidate > 0:
             return candidate
     return None
+
+
+def _ratio_to_percent(numerator: Any, denominator: Any) -> float | None:
+    left = _as_float(numerator)
+    right = _as_float(denominator)
+    if left is None or right is None or right == 0:
+        return None
+    return (left / right) * 100.0
 
 
 def _validate_level_update(action: str, new_value: float, position: dict[str, Any]) -> None:
@@ -206,18 +215,43 @@ def process_pending_commands(
 
         try:
             was_enabled = bool(state.get("trading_enabled", True))
+            event_ts = datetime.now().strftime(TRADE_TIMESTAMP_FORMAT)
             if action == "start":
                 state["trading_enabled"] = True
                 message = "Trading resumed." if not was_enabled else "Trading is already running."
+                if not was_enabled:
+                    emit_event(
+                        code="bot_started",
+                        category="lifecycle",
+                        ts=event_ts,
+                        persist_ui=True,
+                        symbol=symbol,
+                    )
             elif action == "stop":
                 state["trading_enabled"] = False
                 state["manual_trade_suggestion"] = None
                 message = "Trading paused." if was_enabled else "Trading is already paused."
+                if was_enabled:
+                    emit_event(
+                        code="bot_stopped",
+                        category="lifecycle",
+                        ts=event_ts,
+                        persist_ui=True,
+                        symbol=symbol,
+                    )
             elif action == "restart":
                 state["trading_enabled"] = True
                 restart_requested = True
                 message = "Trading restart requested. Config reload scheduled."
                 save_state_fn(state)
+                emit_event(
+                    code="bot_restarted",
+                    category="lifecycle",
+                    ts=event_ts,
+                    persist_ui=True,
+                    symbol=symbol,
+                    notify=True,
+                )
             elif action == "suggest_trade":
                 if not bool(state.get("trading_enabled", True)):
                     raise ValueError("Cannot suggest a trade while trading is paused")
@@ -238,6 +272,15 @@ def process_pending_commands(
                     f"{requested_side.capitalize()} suggestion recorded. "
                     f"Scrooge will try it on the next live tick and manage it by the usual rules."
                 )
+                emit_event(
+                    code="manual_trade_suggested",
+                    category="command",
+                    ts=event_ts,
+                    persist_ui=True,
+                    symbol=symbol,
+                    side="long" if requested_side == "buy" else "short",
+                    requested_by=payload.get("requested_by"),
+                )
             elif action in {"update_sl", "update_tp"}:
                 position = state.get("position")
                 if not isinstance(position, dict):
@@ -256,6 +299,17 @@ def process_pending_commands(
                     message = (
                         f"Updated {field_name.upper()} from {old_value if old_value is not None else 'n/a'} "
                         f"to {new_value}."
+                    )
+                    emit_event(
+                        code="level_updated",
+                        category="risk",
+                        ts=event_ts,
+                        persist_ui=True,
+                        symbol=symbol,
+                        side=position.get("side"),
+                        level_type=field_name,
+                        old_value=old_value,
+                        new_value=new_value,
                     )
             elif action == "close_position":
                 if close_position_fn is None:
@@ -305,6 +359,22 @@ def process_pending_commands(
                         if previous_balance is not None and latest_balance is not None:
                             trade_record["net_pnl"] = latest_balance - previous_balance
                         add_closed_trade_fn(state, trade_record)
+                        emit_event(
+                            code="trade_closed_manual",
+                            category="trade",
+                            ts=event_ts,
+                            level="info",
+                            notify=True,
+                            persist_ui=True,
+                            symbol=symbol,
+                            side=local_position.get("side"),
+                            exit=trade_record.get("exit"),
+                            net_pnl=trade_record.get("net_pnl"),
+                            roi_pct=_ratio_to_percent(
+                                trade_record.get("net_pnl"),
+                                local_position.get("margin_used"),
+                            ),
+                        )
 
                     message = "Manual close command executed."
                     if not has_local_position and has_exchange_position:
@@ -315,6 +385,16 @@ def process_pending_commands(
             if action in {"start", "stop"}:
                 save_state_fn(state)
         except Exception as exc:  # noqa: BLE001
+            emit_event(
+                code="command_failed",
+                category="error",
+                ts=datetime.now().strftime(TRADE_TIMESTAMP_FORMAT),
+                level="warning",
+                persist_ui=True,
+                action=action,
+                reason=str(exc),
+                symbol=symbol,
+            )
             _update_status(
                 client,
                 command_id,

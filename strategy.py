@@ -5,6 +5,7 @@ import os
 import pandas as pd
 from tqdm import tqdm
 from datetime import datetime
+from event_log import emit_event, get_technical_logger
 from trade import compute_qty, can_open_trade, open_position, close_position, get_balance
 from state import (
     load_state,
@@ -199,6 +200,13 @@ def _sanitize_trade_for_history(trade):
     return sanitized
 
 
+def _trade_margin_used(position_value, leverage_value):
+    leverage_numeric = _to_float(leverage_value)
+    if leverage_numeric is None or leverage_numeric <= 0:
+        return None
+    return position_value / leverage_numeric
+
+
 def run_strategy(df, live=False, initial_balance=1000,
                  qty=None, sl_mult = 1.5, tp_mult = 3.0,
                  symbol="BTCUSDT", leverage=1, use_full_balance=True, fee_rate=0.0005,
@@ -230,6 +238,7 @@ def run_strategy(df, live=False, initial_balance=1000,
     trade_history = state.get("trade_history", [])
     balance_history = state.get("balance_history", [])
     log_buffer = []
+    technical_logger = get_technical_logger()
 
     def calc_liquidation_price(entry, leverage_value, side):
         # Binance Futures isolated margin formula approximation
@@ -262,6 +271,7 @@ def run_strategy(df, live=False, initial_balance=1000,
         rsi   = row["RSI"]
         ema   = row["EMA"]
         row_ts = _format_event_timestamp(row.get("open_time"))
+        log_ts = datetime.now().strftime(TIMESTAMP_FORMAT) if live else row_ts
 
         if live:
             _refresh_market_snapshot(state, price, row_ts)
@@ -289,17 +299,19 @@ def run_strategy(df, live=False, initial_balance=1000,
 
                 # skip if SL is beyond liquidation
                 if sl < liquidation_price:
-                    trigger_label = "manual suggestion" if manual_long else "strategy rules"
-                    if live:
-                        log_buffer.append(
-                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⚠️ Skipped LONG entry at {price}: "
-                            f"SL ({sl:.1f}) below liquidation ({liquidation_price:.1f}) [{trigger_label}]"
-                        )
-                    else:
-                        log_buffer.append(
-                            f"[{row_ts}] ⚠️ Skipped LONG entry at {price}: "
-                            f"SL ({sl:.1f}) below liquidation ({liquidation_price:.1f}) [{trigger_label}]"
-                        )
+                    emit_event(
+                        code="entry_skipped_liquidation_guard",
+                        category="risk",
+                        ts=log_ts,
+                        level="warning",
+                        log_buffer=log_buffer,
+                        symbol=symbol,
+                        side="long",
+                        entry=price,
+                        sl=sl,
+                        liq_price=liquidation_price,
+                        trigger="manual_suggestion" if manual_long else "strategy_rules",
+                    )
                 else:
                     position = {
                         "side": "long",
@@ -321,18 +333,45 @@ def run_strategy(df, live=False, initial_balance=1000,
                             balance = get_balance()
                             update_position(state, position)
                             update_balance(state, balance)
-                        reason_suffix = " by manual suggestion" if manual_long else ""
-                        log_buffer.append(
-                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
-                            f"Opened LONG {qty_open} {symbol} at {price}{reason_suffix}, "
-                            f"fee={qty_open * price * fee_rate:.2f}"
+                        emit_event(
+                            code="trade_opened",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=symbol,
+                            side="long",
+                            entry=price,
+                            sl=sl,
+                            tp=tp,
+                            size=qty_open,
+                            leverage=leverage,
+                            fee=qty_open * price * fee_rate,
+                            rsi=rsi,
+                            stake_mode="half" if not fb else "full",
+                            trigger="manual_suggestion" if manual_long else "strategy_rules",
                         )
                     else:
                         balance -= qty_open * price * fee_rate
-                        reason_suffix = " by manual suggestion" if manual_long else ""
-                        log_buffer.append(
-                            f"[{row_ts}] Opened LONG {qty_open} {symbol} at {price}{reason_suffix}, "
-                            f"fee={qty_open * price * fee_rate:.2f}, full_ballance: {fb}"
+                        emit_event(
+                            code="trade_opened",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=symbol,
+                            side="long",
+                            entry=price,
+                            sl=sl,
+                            tp=tp,
+                            size=qty_open,
+                            leverage=leverage,
+                            fee=qty_open * price * fee_rate,
+                            rsi=rsi,
+                            stake_mode="half" if not fb else "full",
+                            trigger="manual_suggestion" if manual_long else "strategy_rules",
                         )
 
             elif (price > upper and rsi > rsi_short_open_threshold and price < ema) or manual_short:
@@ -344,17 +383,19 @@ def run_strategy(df, live=False, initial_balance=1000,
 
                 # skip if SL is beyond liquidation
                 if sl > liquidation_price:
-                    trigger_label = "manual suggestion" if manual_short else "strategy rules"
-                    if live:
-                        log_buffer.append(
-                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⚠️ Skipped SHORT entry at {price}: "
-                            f"SL ({sl:.1f}) above liquidation ({liquidation_price:.1f}) [{trigger_label}]"
-                        )
-                    else:
-                        log_buffer.append(
-                            f"[{row_ts}] ⚠️ Skipped SHORT entry at {price}: "
-                            f"SL ({sl:.1f}) above liquidation ({liquidation_price:.1f}) [{trigger_label}]"
-                        )
+                    emit_event(
+                        code="entry_skipped_liquidation_guard",
+                        category="risk",
+                        ts=log_ts,
+                        level="warning",
+                        log_buffer=log_buffer,
+                        symbol=symbol,
+                        side="short",
+                        entry=price,
+                        sl=sl,
+                        liq_price=liquidation_price,
+                        trigger="manual_suggestion" if manual_short else "strategy_rules",
+                    )
                 else:
                     position = {
                         "side": "short",
@@ -376,18 +417,45 @@ def run_strategy(df, live=False, initial_balance=1000,
                             balance = get_balance()
                             update_position(state, position)
                             update_balance(state, balance)
-                        reason_suffix = " by manual suggestion" if manual_short else ""
-                        log_buffer.append(
-                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
-                            f"Opened SHORT {qty_open} {symbol} at {price}{reason_suffix}, "
-                            f"fee={qty_open * price * fee_rate:.2f}"
+                        emit_event(
+                            code="trade_opened",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=symbol,
+                            side="short",
+                            entry=price,
+                            sl=sl,
+                            tp=tp,
+                            size=qty_open,
+                            leverage=leverage,
+                            fee=qty_open * price * fee_rate,
+                            rsi=rsi,
+                            stake_mode="half" if not fb else "full",
+                            trigger="manual_suggestion" if manual_short else "strategy_rules",
                         )
                     else:
                         balance -= qty_open * price * fee_rate
-                        reason_suffix = " by manual suggestion" if manual_short else ""
-                        log_buffer.append(
-                            f"[{row_ts}] Opened SHORT {qty_open} {symbol} at {price}{reason_suffix}, "
-                            f"fee={qty_open * price * fee_rate:.2f}, full_ballance: {fb}"
+                        emit_event(
+                            code="trade_opened",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=symbol,
+                            side="short",
+                            entry=price,
+                            sl=sl,
+                            tp=tp,
+                            size=qty_open,
+                            leverage=leverage,
+                            fee=qty_open * price * fee_rate,
+                            rsi=rsi,
+                            stake_mode="half" if not fb else "full",
+                            trigger="manual_suggestion" if manual_short else "strategy_rules",
                         )
 
         else:
@@ -420,7 +488,19 @@ def run_strategy(df, live=False, initial_balance=1000,
                     update_position(state, None)
                     update_balance(state, balance)
                     add_closed_trade(state, _sanitize_trade_for_history(trade))
-                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] LONG LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss={loss:.2f}")
+                    emit_event(
+                        code="trade_liquidated",
+                        category="risk",
+                        ts=log_ts,
+                        level="error",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=symbol,
+                        side="long",
+                        liq_price=liquidation_price,
+                        exit=price,
+                        net_pnl=loss,
+                    )
                 else:
                     # Margin used for this trade (portion of balance at risk)
                     margin_used = position_value / leverage
@@ -429,7 +509,19 @@ def run_strategy(df, live=False, initial_balance=1000,
                     trade["net_pnl"] = -margin_used
                     trade["exit_reason"] = "liquidation"
                     trade_history.append(_sanitize_trade_for_history(trade)) # Long LIQUIDATED
-                    log_buffer.append(f"[{row_ts}] LONG LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss=-{margin_used}")
+                    emit_event(
+                        code="trade_liquidated",
+                        category="risk",
+                        ts=log_ts,
+                        level="error",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=symbol,
+                        side="long",
+                        liq_price=liquidation_price,
+                        exit=price,
+                        net_pnl=-margin_used,
+                    )
                 
                 # Close position and continue
                 position = None
@@ -445,7 +537,19 @@ def run_strategy(df, live=False, initial_balance=1000,
                     update_position(state, None)
                     update_balance(state, balance)
                     add_closed_trade(state, _sanitize_trade_for_history(trade))
-                    log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] SHORT LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss={loss:.2f}")
+                    emit_event(
+                        code="trade_liquidated",
+                        category="risk",
+                        ts=log_ts,
+                        level="error",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=symbol,
+                        side="short",
+                        liq_price=liquidation_price,
+                        exit=price,
+                        net_pnl=loss,
+                    )
                 else:
                     # Margin used for this trade
                     margin_used = position_value / leverage
@@ -454,7 +558,19 @@ def run_strategy(df, live=False, initial_balance=1000,
                     trade["net_pnl"] = -margin_used
                     trade["exit_reason"] = "liquidation"
                     trade_history.append(_sanitize_trade_for_history(trade)) # Short LIQUIDATED
-                    log_buffer.append(f"[{row_ts}] SHORT LIQUIDATED at {price}, liq={liquidation_price:.1f}, loss=-{margin_used}")
+                    emit_event(
+                        code="trade_liquidated",
+                        category="risk",
+                        ts=log_ts,
+                        level="error",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=symbol,
+                        side="short",
+                        liq_price=liquidation_price,
+                        exit=price,
+                        net_pnl=-margin_used,
+                    )
 
                 # Close position and continue
                 position = None
@@ -464,6 +580,7 @@ def run_strategy(df, live=False, initial_balance=1000,
             if side == "long":
                 # Emergency RSI exit (extreme overbought)
                 gross_pnl = (price - entry_price) / entry_price * position_value
+                margin_used = _trade_margin_used(position_value, leverage)
                 if rsi > rsi_extreme_long:
                     fee_total = fee_close * 2
                     net_pnl = gross_pnl - fee_total
@@ -485,11 +602,39 @@ def run_strategy(df, live=False, initial_balance=1000,
                         update_position(state, None)
                         update_balance(state, balance)
                         add_closed_trade(state, _sanitize_trade_for_history(trade))
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl:.2f}")
+                        emit_event(
+                            code="trade_closed_rsi_extreme",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=symbol,
+                            side="long",
+                            exit=price,
+                            net_pnl=trade["net_pnl"],
+                            roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                            rsi=rsi,
+                            threshold=rsi_extreme_long,
+                        )
                     else:
                         balance += net_pnl
                         trade_history.append(_sanitize_trade_for_history(trade)) # Long RSI
-                        log_buffer.append(f"[{row_ts}] Closed LONG {size} {symbol} due to RSI>{rsi_extreme_long} (extreme overbought), net={net_pnl:.2f}")
+                        emit_event(
+                            code="trade_closed_rsi_extreme",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=symbol,
+                            side="long",
+                            exit=price,
+                            net_pnl=net_pnl,
+                            roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                            rsi=rsi,
+                            threshold=rsi_extreme_long,
+                        )
                     
                     position = None
 
@@ -502,21 +647,40 @@ def run_strategy(df, live=False, initial_balance=1000,
                             position["trail_price"] = price - atr * trail_atr_mult
                             if live:
                                 update_position(state, position)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for LONG {symbol} at {price}")
-                            else:
-                                log_buffer.append(f"[{row_ts}] Activated trailing TP for LONG {symbol} at {price}")
+                            emit_event(
+                                code="trail_activated",
+                                category="trade",
+                                ts=log_ts,
+                                level="info",
+                                log_buffer=log_buffer,
+                                symbol=symbol,
+                                side="long",
+                                market_price=price,
+                                base_tp=base_tp,
+                                trail_price=position["trail_price"],
+                            )
                     else:
                         # Update or close trailing TP
                         if price > position["trail_max"]:
+                            previous_trail = position.get("trail_price")
                             position["trail_max"] = price
                             current_trail_tp = position["trail_max"] - atr * trail_atr_mult
                             position["tp"] = current_trail_tp
                             position["trail_price"] = current_trail_tp
                             if live:
                                 update_position(state, position)
-                                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Trailing stop moved up to {current_trail_tp:.1f}")
-                            else:
-                                log_buffer.append(f"[{row_ts}] Trailing stop moved up to {current_trail_tp:.1f}")
+                            emit_event(
+                                code="trail_moved",
+                                category="trade",
+                                ts=log_ts,
+                                level="info",
+                                log_buffer=log_buffer,
+                                symbol=symbol,
+                                side="long",
+                                previous_trail=previous_trail,
+                                trail_price=current_trail_tp,
+                                anchor_price=position["trail_max"],
+                            )
                         elif price < position["trail_max"] - atr * trail_atr_mult or rsi > rsi_long_close_threshold:
                             fee_total = fee_close * 2
                             net_pnl = gross_pnl - fee_total
@@ -538,11 +702,37 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 update_position(state, None)
                                 update_balance(state, balance)
                                 add_closed_trade(state, _sanitize_trade_for_history(trade))
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by trailing TP, net={net_pnl:.2f}")
+                                emit_event(
+                                    code="trade_closed_take_profit",
+                                    category="trade",
+                                    ts=log_ts,
+                                    level="info",
+                                    notify=True,
+                                    log_buffer=log_buffer,
+                                    symbol=symbol,
+                                    side="long",
+                                    exit=price,
+                                    net_pnl=trade["net_pnl"],
+                                    roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                                    via_tail_guard=True,
+                                )
                             else:
                                 balance += net_pnl
                                 trade_history.append(_sanitize_trade_for_history(trade)) # Long TP
-                                log_buffer.append(f"[{row_ts}] Closed LONG {size} {symbol} by trailing TP, net={net_pnl:.2f}")
+                                emit_event(
+                                    code="trade_closed_take_profit",
+                                    category="trade",
+                                    ts=log_ts,
+                                    level="info",
+                                    notify=True,
+                                    log_buffer=log_buffer,
+                                    symbol=symbol,
+                                    side="long",
+                                    exit=price,
+                                    net_pnl=net_pnl,
+                                    roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                                    via_tail_guard=True,
+                                )
                             
                             position = None
 
@@ -569,11 +759,35 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 update_position(state, None)
                                 update_balance(state, balance)
                                 add_closed_trade(state, _sanitize_trade_for_history(trade))
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed LONG {size} {symbol} by SL, net={net_pnl:.2f}")
+                                emit_event(
+                                    code="trade_closed_stop_loss",
+                                    category="trade",
+                                    ts=log_ts,
+                                    level="warning",
+                                    notify=True,
+                                    log_buffer=log_buffer,
+                                    symbol=symbol,
+                                    side="long",
+                                    exit=price,
+                                    net_pnl=trade["net_pnl"],
+                                    roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                                )
                             else:
                                 balance += net_pnl
                                 trade_history.append(_sanitize_trade_for_history(trade)) # Long SL
-                                log_buffer.append(f"[{row_ts}] Closed LONG {size} {symbol} by SL, net={net_pnl:.2f}")
+                                emit_event(
+                                    code="trade_closed_stop_loss",
+                                    category="trade",
+                                    ts=log_ts,
+                                    level="warning",
+                                    notify=True,
+                                    log_buffer=log_buffer,
+                                    symbol=symbol,
+                                    side="long",
+                                    exit=price,
+                                    net_pnl=net_pnl,
+                                    roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                                )
                             
                             position = None
 
@@ -581,6 +795,7 @@ def run_strategy(df, live=False, initial_balance=1000,
             elif side == "short":
                 # Emergency RSI exit (extreme oversold)
                 gross_pnl = (entry_price - price) / entry_price * position_value
+                margin_used = _trade_margin_used(position_value, leverage)
                 if rsi < rsi_extreme_short:
                     fee_total = fee_close * 2
                     net_pnl = gross_pnl - fee_total
@@ -602,11 +817,39 @@ def run_strategy(df, live=False, initial_balance=1000,
                         update_position(state, None)
                         update_balance(state, balance)
                         add_closed_trade(state, _sanitize_trade_for_history(trade))
-                        log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl:.2f}")
+                        emit_event(
+                            code="trade_closed_rsi_extreme",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=symbol,
+                            side="short",
+                            exit=price,
+                            net_pnl=trade["net_pnl"],
+                            roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                            rsi=rsi,
+                            threshold=rsi_extreme_short,
+                        )
                     else:
                         balance += net_pnl
                         trade_history.append(_sanitize_trade_for_history(trade)) # Short RSI
-                        log_buffer.append(f"[{row_ts}] Closed SHORT {size} {symbol} due to RSI<{rsi_extreme_short} (extreme oversold), net={net_pnl:.2f}")
+                        emit_event(
+                            code="trade_closed_rsi_extreme",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=symbol,
+                            side="short",
+                            exit=price,
+                            net_pnl=net_pnl,
+                            roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                            rsi=rsi,
+                            threshold=rsi_extreme_short,
+                        )
                     
                     position = None
 
@@ -619,21 +862,40 @@ def run_strategy(df, live=False, initial_balance=1000,
                             position["trail_price"] = price + atr * trail_atr_mult
                             if live:
                                 update_position(state, position)
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Activated trailing TP for SHORT {symbol} at {price}")
-                            else:
-                                log_buffer.append(f"[{row_ts}] Activated trailing TP for SHORT {symbol} at {price}")
+                            emit_event(
+                                code="trail_activated",
+                                category="trade",
+                                ts=log_ts,
+                                level="info",
+                                log_buffer=log_buffer,
+                                symbol=symbol,
+                                side="short",
+                                market_price=price,
+                                base_tp=base_tp,
+                                trail_price=position["trail_price"],
+                            )
                     else:
                         # Update or close trailing TP
                         if price < position["trail_min"]:
+                            previous_trail = position.get("trail_price")
                             position["trail_min"] = price
                             current_trail_tp = position["trail_min"] + atr * trail_atr_mult
                             position["tp"] = current_trail_tp
                             position["trail_price"] = current_trail_tp
                             if live:
                                 update_position(state, position)
-                                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Trailing stop moved down to {current_trail_tp:.1f}")
-                            else:
-                                log_buffer.append(f"[{row_ts}] Trailing stop moved down to {current_trail_tp:.1f}")
+                            emit_event(
+                                code="trail_moved",
+                                category="trade",
+                                ts=log_ts,
+                                level="info",
+                                log_buffer=log_buffer,
+                                symbol=symbol,
+                                side="short",
+                                previous_trail=previous_trail,
+                                trail_price=current_trail_tp,
+                                anchor_price=position["trail_min"],
+                            )
                         elif price > position["trail_min"] + atr * trail_atr_mult or rsi < rsi_short_close_threshold:
                             fee_total = fee_close * 2
                             net_pnl = gross_pnl - fee_total
@@ -655,11 +917,37 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 update_position(state, None)
                                 update_balance(state, balance)
                                 add_closed_trade(state, _sanitize_trade_for_history(trade))
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl:.2f}")
+                                emit_event(
+                                    code="trade_closed_take_profit",
+                                    category="trade",
+                                    ts=log_ts,
+                                    level="info",
+                                    notify=True,
+                                    log_buffer=log_buffer,
+                                    symbol=symbol,
+                                    side="short",
+                                    exit=price,
+                                    net_pnl=trade["net_pnl"],
+                                    roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                                    via_tail_guard=True,
+                                )
                             else:
                                 balance += net_pnl
                                 trade_history.append(_sanitize_trade_for_history(trade)) # Short TP
-                                log_buffer.append(f"[{row_ts}] Closed SHORT {size} {symbol} by trailing TP, net={net_pnl:.2f}")
+                                emit_event(
+                                    code="trade_closed_take_profit",
+                                    category="trade",
+                                    ts=log_ts,
+                                    level="info",
+                                    notify=True,
+                                    log_buffer=log_buffer,
+                                    symbol=symbol,
+                                    side="short",
+                                    exit=price,
+                                    net_pnl=net_pnl,
+                                    roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                                    via_tail_guard=True,
+                                )
                             
                             position = None
 
@@ -686,19 +974,57 @@ def run_strategy(df, live=False, initial_balance=1000,
                                 update_position(state, None)
                                 update_balance(state, balance)
                                 add_closed_trade(state, _sanitize_trade_for_history(trade))
-                                log_buffer.append(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Closed SHORT {size} {symbol} by SL, net={net_pnl:.2f}")
+                                emit_event(
+                                    code="trade_closed_stop_loss",
+                                    category="trade",
+                                    ts=log_ts,
+                                    level="warning",
+                                    notify=True,
+                                    log_buffer=log_buffer,
+                                    symbol=symbol,
+                                    side="short",
+                                    exit=price,
+                                    net_pnl=trade["net_pnl"],
+                                    roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                                )
                             else:
                                 balance += net_pnl
                                 trade_history.append(_sanitize_trade_for_history(trade)) # Short SL
-                                log_buffer.append(f"[{row_ts}] Closed SHORT {size} {symbol} by SL, net={net_pnl:.2f}")
+                                emit_event(
+                                    code="trade_closed_stop_loss",
+                                    category="trade",
+                                    ts=log_ts,
+                                    level="warning",
+                                    notify=True,
+                                    log_buffer=log_buffer,
+                                    symbol=symbol,
+                                    side="short",
+                                    exit=price,
+                                    net_pnl=net_pnl,
+                                    roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                                )
                             
                             position = None
 
             if live and position is not None:
-                print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Unrealized PnL: {gross_pnl:.2f}")
+                technical_logger.debug(
+                    "runtime_open_position_pnl side=%s symbol=%s gross_pnl=%.2f",
+                    side,
+                    symbol,
+                    gross_pnl,
+                )
 
         if live:
-            print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] Price: {price} | BBL: {lower:.1f} | BBM: {mid:.1f} | BBU: {upper:.1f} | RSI: {rsi:.1f} | EMA: {ema:.1f}")
+            technical_logger.debug(
+                "runtime_indicator_snapshot symbol=%s price=%.2f bbl=%.2f bbm=%.2f bbu=%.2f rsi=%.2f ema=%.2f",
+                symbol,
+                price,
+                lower,
+                mid,
+                upper,
+                rsi,
+                ema,
+            )
 
         balance_history.append(balance)
     

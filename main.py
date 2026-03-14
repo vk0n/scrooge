@@ -21,6 +21,7 @@ import report as report_module
 import trade as trade_module
 from control_channel import get_control_client, process_pending_commands
 from data import build_dataset, fetch_historical, prepare_multi_tf
+from event_log import get_technical_logger
 from report import (
     compute_stats,
     monte_carlo_from_equity,
@@ -32,10 +33,7 @@ from strategy import run_strategy
 from trade import close_position, get_balance, get_open_position, set_leverage
 
 state: dict[str, Any] | None = None
-
-
-def _ts() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+technical_logger = get_technical_logger()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -44,16 +42,16 @@ def _env_int(name: str, default: int) -> int:
         value = int(raw)
         return value if value > 0 else default
     except ValueError:
-        print(f"[{_ts()}] Invalid integer for {name}: {raw}. Using {default}")
+        technical_logger.warning("invalid_env_integer name=%s raw=%s fallback=%s", name, raw, default)
         return default
 
 
 def handle_exit(sig: int, frame: Any) -> None:  # noqa: ARG001
     """Handler for Ctrl+C (SIGINT) to gracefully save state and exit."""
     if state:
-        print("\n[EXIT] Saving state before quitting...")
+        technical_logger.info("graceful_exit_saving_state")
         save_state(state)
-        print("[EXIT] State saved.")
+        technical_logger.info("graceful_exit_state_saved")
     sys.exit(0)
 
 
@@ -113,7 +111,7 @@ def _ensure_runtime_log_file() -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch(exist_ok=True)
     except OSError as exc:
-        print(f"[{_ts()}] Failed to ensure log file exists: {exc}")
+        technical_logger.warning("runtime_log_init_failed path=%s error=%s", log_path, exc)
 
 
 def _parse_open_time_to_ms(value: Any) -> int | None:
@@ -178,7 +176,7 @@ def _read_last_chart_dataset_ts_ms(path: Path) -> int | None:
         first_cell = last_line.split(",", 1)[0]
         return _parse_open_time_to_ms(first_cell)
     except OSError as exc:
-        print(f"[{_ts()}] Failed reading chart dataset tail: {exc}")
+        technical_logger.warning("chart_dataset_tail_read_failed path=%s error=%s", path, exc)
         return None
 
 
@@ -265,7 +263,7 @@ def _append_latest_chart_candle(
             writer.writerow(row_values)
         return ts_ms
     except OSError as exc:
-        print(f"[{_ts()}] Failed to append chart dataset candle: {exc}")
+        technical_logger.warning("chart_dataset_append_failed path=%s symbol=%s error=%s", path, symbol, exc)
         return last_ts_ms
 
 
@@ -275,7 +273,7 @@ def _write_chart_dataset_snapshot(df: Any, symbol: str, path: Path, balance_hist
     required = {"open_time", "open", "high", "low", "close", "volume"}
     columns = set(df.columns)
     if not required.issubset(columns):
-        print(f"[{_ts()}] Skip chart dataset snapshot: missing required columns")
+        technical_logger.warning("chart_dataset_snapshot_skipped_missing_columns path=%s", path)
         return
 
     aligned_balance_history: list[float | str] = []
@@ -325,7 +323,7 @@ def _write_chart_dataset_snapshot(df: Any, symbol: str, path: Path, balance_hist
                     ]
                 )
     except OSError as exc:
-        print(f"[{_ts()}] Failed to write chart dataset snapshot: {exc}")
+        technical_logger.warning("chart_dataset_snapshot_write_failed path=%s error=%s", path, exc)
 
 
 def _compress_balance_history_for_state(balance_history: list[float] | None) -> list[float]:
@@ -397,7 +395,7 @@ if __name__ == "__main__":
     state_path = Path(os.getenv("SCROOGE_STATE_FILE", "state.json")).expanduser()
     if not state_path.exists():
         save_state(state)
-        print(f"[{_ts()}] Initialized state file: {state_path}")
+        technical_logger.info("state_initialized path=%s", state_path)
 
     if live:
         control_client = get_control_client()
@@ -406,7 +404,7 @@ if __name__ == "__main__":
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
         command_kwargs = _build_command_kwargs(symbol)
 
-        print("Running LIVE on Binance Futures...")
+        technical_logger.info("bot_mode_live_started symbol=%s leverage=%s", symbol, lvrg)
         set_leverage(symbol, lvrg)
 
         while True:
@@ -434,19 +432,22 @@ if __name__ == "__main__":
                     set_leverage(symbol, lvrg)
                     command_kwargs = _build_command_kwargs(symbol)
                     restart_requested = False
-                    print(f"[{_ts()}] Restart command applied: config reloaded")
+                    technical_logger.info("config_restart_applied symbol=%s leverage=%s", symbol, lvrg)
 
                 trading_enabled = bool(state.get("trading_enabled", True))
                 if trading_enabled != last_trading_enabled:
-                    print(f"[{_ts()}] Trading status: {'running' if trading_enabled else 'paused'}")
+                    technical_logger.info(
+                        "trading_status_changed status=%s",
+                        "running" if trading_enabled else "paused",
+                    )
                     last_trading_enabled = trading_enabled
 
                 current_balance = get_balance()
                 update_balance(state, current_balance)
-                print(f"[{_ts()}] Balance: {current_balance:.2f} USDT")
+                technical_logger.debug("live_balance balance=%.2f", current_balance)
 
                 if not trading_enabled and state.get("position") is None:
-                    print(f"[{_ts()}] Trading paused (idle). Waiting for next check...")
+                    technical_logger.debug("live_idle_wait trading_enabled=false has_position=false")
                     state, restart_now = _sleep_with_command_poll(
                         state,
                         control_client,
@@ -461,12 +462,15 @@ if __name__ == "__main__":
                 pos = get_open_position(symbol)
                 if pos:
                     position = state.get("position") if isinstance(state.get("position"), dict) else {}
-                    print(
-                        f"[{_ts()}] Open position: {pos.get('positionAmt')} {pos.get('symbol')} "
-                        f"| TP: {position.get('tp', 'n/a')} | SL: {position.get('sl', 'n/a')}"
+                    technical_logger.debug(
+                        "live_open_position amount=%s symbol=%s tp=%s sl=%s",
+                        pos.get("positionAmt"),
+                        pos.get("symbol"),
+                        position.get("tp", "n/a"),
+                        position.get("sl", "n/a"),
                     )
                 else:
-                    print(f"[{_ts()}] No open positions")
+                    technical_logger.debug("live_no_open_positions symbol=%s", symbol)
 
                 # Fetch recent historical data
                 df_small = fetch_historical(symbol, intervals["small"], limits["small"])
@@ -496,7 +500,7 @@ if __name__ == "__main__":
                 )
 
                 # Wait until next candle
-                print(f"[{_ts()}] Waiting for next check...")
+                technical_logger.debug("live_wait_for_next_check seconds=%s", live_poll_seconds)
                 state, restart_now = _sleep_with_command_poll(
                     state,
                     control_client,
@@ -507,7 +511,7 @@ if __name__ == "__main__":
                 restart_requested = restart_requested or restart_now
 
             except Exception as e:  # noqa: BLE001
-                print(f"[{_ts()}] Error in live loop: {e}")
+                technical_logger.exception("live_loop_error error=%s", e)
                 state, restart_now = _sleep_with_command_poll(
                     state,
                     control_client,
@@ -527,7 +531,7 @@ if __name__ == "__main__":
         rolling_window_days = cfg["rolling_window_days"]
         rolling_window_workers = cfg.get("rolling_window_workers")
 
-        print("Running BACKTEST...")
+        technical_logger.info("bot_mode_backtest_started symbol=%s leverage=%s", symbol, lvrg)
         df = build_dataset(
             symbol=symbol,
             intervals=intervals,
@@ -549,9 +553,10 @@ if __name__ == "__main__":
         state["balance_history"] = _compress_balance_history_for_state(balance_history)
         state["balance"] = float(final_balance)
         if len(state["balance_history"]) != len(balance_history):
-            print(
-                f"[{_ts()}] Compressed backtest balance history "
-                f"from {len(balance_history)} to {len(state['balance_history'])} points for state persistence"
+            technical_logger.info(
+                "backtest_balance_history_compressed original=%s persisted=%s",
+                len(balance_history),
+                len(state["balance_history"]),
             )
         save_state(state)
         _write_chart_dataset_snapshot(
@@ -563,7 +568,7 @@ if __name__ == "__main__":
         stats = compute_stats(initial_balance, final_balance, trades, balance_history)
 
         for k, v in stats.items():
-            print(f"{k}: {v}")
+            technical_logger.info("backtest_stat %s=%s", k, v)
 
         if enable_plot:
             plot_results_interactive(df, trades, balance_history, split_by_year=plot_split_by_year)
