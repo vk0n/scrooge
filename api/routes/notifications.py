@@ -22,14 +22,14 @@ def _requested_by(request: Request) -> str:
 
 
 class PushSubscriptionKeysPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     p256dh: str = Field(min_length=1)
     auth: str = Field(min_length=1)
 
 
 class PushSubscriptionPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     endpoint: str = Field(min_length=1)
     expirationTime: Optional[int] = None

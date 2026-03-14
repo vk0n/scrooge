@@ -883,9 +883,9 @@ function DashboardContent(): JSX.Element {
               >
                 Wind It Again
               </button>
+              <PushNotificationControl />
               {busyAction ? <span className="dialog-scrooge dialog-scrooge-compact">Executing {busyAction}...</span> : null}
             </div>
-            <PushNotificationControl />
           </div>
           <p className="dialog-scrooge">My contract:</p>
           <div className="section-block">

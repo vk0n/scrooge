@@ -204,9 +204,11 @@ export default function PushNotificationControl(): JSX.Element {
         )}
         {busy ? <span className="dialog-scrooge dialog-scrooge-compact">Wiring the bell...</span> : null}
       </div>
-      <p className="notification-status">{statusLabel}</p>
-      {info ? <p className="dialog-scrooge dialog-scrooge-compact">{info}</p> : null}
-      {error ? <p className="dialog-scrooge dialog-scrooge-error dialog-scrooge-compact">{error}</p> : null}
+      <div className="notification-meta">
+        <p className="notification-status">{statusLabel}</p>
+        {info ? <p className="dialog-scrooge dialog-scrooge-compact">{info}</p> : null}
+        {error ? <p className="dialog-scrooge dialog-scrooge-error dialog-scrooge-compact">{error}</p> : null}
+      </div>
     </div>
   );
 }
