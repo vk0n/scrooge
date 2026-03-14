@@ -738,6 +738,7 @@ function DashboardContent(): JSX.Element {
   const lastPrice = data?.last_price ?? null;
   const openTime = formatDateTimeEu(openTradeInfo?.entry_time ?? null);
   const hasOpenPosition = openTradeInfo !== null;
+  const tradingEnabled = data?.trading_enabled ?? true;
   const botStatus = data?.bot_status ?? null;
   const tradeStatus = data?.trade_status ?? null;
   const traitRows = PARAM_DEFS.map((def) => ({
@@ -971,46 +972,35 @@ function DashboardContent(): JSX.Element {
               </div>
             ) : null}
 
-            <details className="position-accordion traits-accordion">
-              <summary className="position-accordion-summary">
-                <span className="position-accordion-title">Trait Sheet</span>
-              </summary>
-              <div className="position-accordion-body traits-accordion-body">
-                <div className="traits-grid">
-                  {traitRows.map((trait) => (
-                    <div key={trait.key} className="traits-item">
-                      <span className="traits-name">{trait.label}</span>
-                      <span className="traits-value">{trait.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </details>
             <div className="toolbar">
-              <button
-                type="button"
-                className="dialog-user-btn"
-                onClick={() =>
-                  void runControlAction("start", {
-                    confirmMessage: "Open the trading floor now?"
-                  })
-                }
-                disabled={busyAction !== null}
-              >
-                Open for Business
-              </button>
-              <button
-                type="button"
-                className="dialog-user-btn"
-                onClick={() =>
-                  void runControlAction("stop", {
-                    confirmMessage: "Close the trading floor for now?"
-                  })
-                }
-                disabled={busyAction !== null}
-              >
-                Close the Floor
-              </button>
+              {!tradingEnabled ? (
+                <button
+                  type="button"
+                  className="dialog-user-btn"
+                  onClick={() =>
+                    void runControlAction("start", {
+                      confirmMessage: "Open the trading floor now?"
+                    })
+                  }
+                  disabled={busyAction !== null}
+                >
+                  Open for Business
+                </button>
+              ) : null}
+              {tradingEnabled ? (
+                <button
+                  type="button"
+                  className="dialog-user-btn"
+                  onClick={() =>
+                    void runControlAction("stop", {
+                      confirmMessage: "Close the trading floor for now?"
+                    })
+                  }
+                  disabled={busyAction !== null}
+                >
+                  Close the Floor
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="dialog-user-btn"
@@ -1031,58 +1021,75 @@ function DashboardContent(): JSX.Element {
             {configLoading || !configForm ? (
               <p className="dialog-scrooge">Reviewing the contract...</p>
             ) : (
-              <div className="form-grid config-form-grid">
-                <label className="kv-item dialog-user-field config-field">
-                  <span className="kv-label">Pair</span>
-                  <input
-                    type="text"
-                    value={configForm.symbol}
-                    onChange={(event) =>
-                      setConfigForm((prev) => (prev ? { ...prev, symbol: event.target.value } : prev))
-                    }
-                  />
-                </label>
-                <label className="kv-item dialog-user-field config-field">
-                  <span className="kv-label">Leverage</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={125}
-                    value={configForm.leverage}
-                    onChange={(event) =>
-                      setConfigForm((prev) => (prev ? { ...prev, leverage: event.target.value } : prev))
-                    }
-                  />
-                </label>
-                <label className="kv-item dialog-user-field config-field">
-                  <span className="kv-label">All-in Vault</span>
-                  <span className="field-inline dialog-user-toggle config-toggle">
-                    <input
-                      type="checkbox"
-                      className="dialog-user-check"
-                      checked={configForm.use_full_balance}
-                      onChange={(event) =>
-                        setConfigForm((prev) => (prev ? { ...prev, use_full_balance: event.target.checked } : prev))
-                      }
-                    />
-                    <span>{configForm.use_full_balance ? "On" : "Off"}</span>
-                  </span>
-                </label>
-                {!configForm.use_full_balance ? (
+              <>
+                <div className="form-grid config-form-grid">
                   <label className="kv-item dialog-user-field config-field">
-                    <span className="kv-label">Stake (empty = null)</span>
+                    <span className="kv-label">Pair</span>
                     <input
-                      type="number"
-                      step="0.000001"
-                      min={0}
-                      value={configForm.qty}
+                      type="text"
+                      value={configForm.symbol}
                       onChange={(event) =>
-                        setConfigForm((prev) => (prev ? { ...prev, qty: event.target.value } : prev))
+                        setConfigForm((prev) => (prev ? { ...prev, symbol: event.target.value } : prev))
                       }
                     />
                   </label>
-                ) : null}
-              </div>
+                  <label className="kv-item dialog-user-field config-field">
+                    <span className="kv-label">Leverage</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={125}
+                      value={configForm.leverage}
+                      onChange={(event) =>
+                        setConfigForm((prev) => (prev ? { ...prev, leverage: event.target.value } : prev))
+                      }
+                    />
+                  </label>
+                  <label className="kv-item dialog-user-field config-field">
+                    <span className="kv-label">All-in Vault</span>
+                    <span className="field-inline dialog-user-toggle config-toggle">
+                      <input
+                        type="checkbox"
+                        className="dialog-user-check"
+                        checked={configForm.use_full_balance}
+                        onChange={(event) =>
+                          setConfigForm((prev) => (prev ? { ...prev, use_full_balance: event.target.checked } : prev))
+                        }
+                      />
+                      <span>{configForm.use_full_balance ? "On" : "Off"}</span>
+                    </span>
+                  </label>
+                  {!configForm.use_full_balance ? (
+                    <label className="kv-item dialog-user-field config-field">
+                      <span className="kv-label">Stake (empty = null)</span>
+                      <input
+                        type="number"
+                        step="0.000001"
+                        min={0}
+                        value={configForm.qty}
+                        onChange={(event) =>
+                          setConfigForm((prev) => (prev ? { ...prev, qty: event.target.value } : prev))
+                        }
+                      />
+                    </label>
+                  ) : null}
+                </div>
+                <details className="position-accordion traits-accordion">
+                  <summary className="position-accordion-summary">
+                    <span className="position-accordion-title">Trait Sheet</span>
+                  </summary>
+                  <div className="position-accordion-body traits-accordion-body">
+                    <div className="traits-grid">
+                      {traitRows.map((trait) => (
+                        <div key={trait.key} className="traits-item">
+                          <span className="traits-name">{trait.label}</span>
+                          <span className="traits-value">{trait.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              </>
             )}
             <div className="toolbar config-toolbar">
               <button

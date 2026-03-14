@@ -487,6 +487,7 @@ pre {
   justify-self: end;
   justify-items: end;
   gap: 0.42rem;
+  width: fit-content;
 }
 
 .trade-suggest-actions {
@@ -1516,20 +1517,23 @@ pre {
   }
 
   .trade-suggest-toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+    display: grid;
+    justify-self: stretch;
+    justify-items: stretch;
     gap: 0.45rem;
+    width: 100%;
   }
 
   .trade-suggest-actions {
     width: 100%;
-    justify-content: flex-end;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: stretch;
   }
 
   .trade-suggest-toolbar > .dialog-user-btn,
   .trade-suggest-actions > * {
-    width: auto;
+    width: 100%;
   }
 
   .config-toolbar {
