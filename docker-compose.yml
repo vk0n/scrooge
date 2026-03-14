@@ -2,10 +2,14 @@ services:
   redis:
     image: redis:7-alpine
     container_name: scrooge-redis
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
     restart: unless-stopped
 
   bot:
     profiles: ["live"]
+    image: "${SCROOGE_BOT_IMAGE:-vk0n/scrooge-bot:latest}"
     build:
       context: .
       dockerfile: docker/bot.Dockerfile
@@ -34,10 +38,14 @@ services:
     volumes:
       - scrooge_runtime:/runtime
       - ./config.yaml:/runtime/config.yaml:ro
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
     restart: unless-stopped
 
   backtest:
     profiles: ["backtest"]
+    image: "${SCROOGE_BACKTEST_IMAGE:-vk0n/scrooge-bot:latest}"
     build:
       context: .
       dockerfile: docker/bot.Dockerfile
@@ -62,9 +70,13 @@ services:
       - scrooge_runtime:/runtime
       - ./config.backtest.yaml:/runtime/config.backtest.yaml:ro
       - ${SCROOGE_HOST_BACKTEST_ARTIFACTS_DIR:-./backtest_artifacts}:/host_artifacts
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+      com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
     restart: "no"
 
   api:
+    image: "${SCROOGE_API_IMAGE:-vk0n/scrooge-api:latest}"
     build:
       context: .
       dockerfile: docker/api.Dockerfile
@@ -97,9 +109,13 @@ services:
     volumes:
       - scrooge_runtime:/runtime
       - ./config.yaml:/runtime/config.yaml
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
     restart: unless-stopped
 
   frontend:
+    image: "${SCROOGE_FRONTEND_IMAGE:-vk0n/scrooge-frontend:latest}"
     build:
       context: .
       dockerfile: docker/frontend.Dockerfile
@@ -111,10 +127,13 @@ services:
     environment:
       INTERNAL_API_BASE_URL: "${INTERNAL_API_BASE_URL:-http://api:8000}"
       NEXT_PUBLIC_API_BASE_URL: "${NEXT_PUBLIC_API_BASE_URL:-}"
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
     restart: unless-stopped
 
   proxy:
-    image: nginx:1.27-alpine
+    image: "${SCROOGE_PROXY_IMAGE:-nginx:1.27-alpine}"
     container_name: scrooge-proxy
     depends_on:
       - frontend
@@ -123,6 +142,30 @@ services:
       - "3000:80"
     volumes:
       - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
+    restart: unless-stopped
+
+  watchtower:
+    profiles: ["watchtower"]
+    image: containrrr/watchtower:latest
+    container_name: scrooge-watchtower
+    command:
+      - "--label-enable"
+      - "--scope"
+      - "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
+      - "--interval"
+      - "${SCROOGE_WATCHTOWER_POLL_INTERVAL:-300}"
+      - "--cleanup"
+      - "--rolling-restart"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_HTTP_API_TOKEN: "${SCROOGE_WATCHTOWER_HTTP_API_TOKEN:-}"
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+      com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
     restart: unless-stopped
 
 volumes:

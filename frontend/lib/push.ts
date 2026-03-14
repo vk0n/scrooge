@@ -36,12 +36,18 @@ export function serializePushSubscription(subscription: PushSubscription): Brows
   if (!endpoint || !keys.p256dh || !keys.auth) {
     throw new Error("Browser push subscription is missing endpoint or encryption keys.");
   }
-  return {
+  const output: BrowserPushSubscription = {
     endpoint,
-    expirationTime: json.expirationTime ?? subscription.expirationTime,
     keys: {
       p256dh: keys.p256dh,
       auth: keys.auth
     }
   };
+
+  const expirationTime = json.expirationTime ?? subscription.expirationTime;
+  if (typeof expirationTime === "number") {
+    output.expirationTime = expirationTime;
+  }
+
+  return output;
 }

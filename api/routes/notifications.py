@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Optional
 
 from services.push_service import (
     get_push_status,
@@ -31,6 +32,7 @@ class PushSubscriptionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     endpoint: str = Field(min_length=1)
+    expirationTime: Optional[int] = None
     keys: PushSubscriptionKeysPayload
 
 

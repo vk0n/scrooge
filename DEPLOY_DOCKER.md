@@ -33,6 +33,27 @@ SCROOGE_GUI_USERNAME=admin
 SCROOGE_GUI_PASSWORD=strong_password_here
 ```
 
+For registry-based deploys with Watchtower, also set image refs:
+
+```env
+SCROOGE_BOT_IMAGE=vk0n/scrooge-bot:latest
+SCROOGE_BACKTEST_IMAGE=vk0n/scrooge-bot:latest
+SCROOGE_API_IMAGE=vk0n/scrooge-api:latest
+SCROOGE_FRONTEND_IMAGE=vk0n/scrooge-frontend:latest
+SCROOGE_PROXY_IMAGE=nginx:1.27-alpine
+SCROOGE_WATCHTOWER_SCOPE=scrooge
+SCROOGE_WATCHTOWER_POLL_INTERVAL=300
+```
+
+If your registry requires auth, make sure the deployment host is already logged in, for example:
+
+```bash
+docker login
+```
+
+Note:
+- there is no separate Docker Hub image for `backtest` yet, so it can reuse `vk0n/scrooge-bot:latest`
+
 ## 3. Run modes
 
 Control plane only (no bot process):
@@ -41,11 +62,29 @@ Control plane only (no bot process):
 docker compose up -d --build
 ```
 
+Control plane + Watchtower auto-update:
+
+```bash
+docker compose --profile watchtower up -d
+```
+
 Control plane + live bot:
 
 ```bash
 docker compose --profile live up -d --build
 ```
+
+Control plane + live bot + Watchtower auto-update:
+
+```bash
+docker compose --profile live --profile watchtower up -d
+```
+
+Important for Watchtower:
+- it watches only services labeled with `com.centurylinklabs.watchtower.enable=true`
+- it is scoped by `SCROOGE_WATCHTOWER_SCOPE`
+- it can auto-update only pullable images, so `SCROOGE_*_IMAGE` should point to registry tags, not just local-only build names
+- `backtest` is explicitly excluded from Watchtower updates
 
 One-shot backtest run:
 
