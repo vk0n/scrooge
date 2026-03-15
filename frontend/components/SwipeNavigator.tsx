@@ -5,9 +5,9 @@ import { usePathname, useRouter } from "next/navigation";
 
 import { SWIPE_ROUTE_ORDER } from "../lib/navigation";
 
-const SWIPE_THRESHOLD_PX = 72;
-const SWIPE_MAX_DURATION_MS = 600;
-const SWIPE_AXIS_RATIO = 1.25;
+const SWIPE_MAX_DURATION_MS = 900;
+const SWIPE_AXIS_RATIO = 1.1;
+const SWIPE_THRESHOLD_PX = 48;
 const SWIPE_NAV_COOLDOWN_MS = 900;
 const SWIPE_IGNORE_SELECTOR =
   "input, select, textarea, button, a, summary, label, [role='button'], [data-no-swipe], [data-swipe-lock]";
@@ -20,6 +20,7 @@ type SwipeState = {
   lastX: number;
   lastY: number;
   startedAt: number;
+  pointerId: number | null;
 };
 
 function resolveTarget(target: EventTarget | null): HTMLElement | null {
@@ -45,52 +46,78 @@ export default function SwipeNavigator(): null {
     startY: 0,
     lastX: 0,
     lastY: 0,
-    startedAt: 0
+    startedAt: 0,
+    pointerId: null
   });
   const lastNavigationAtRef = useRef<number>(0);
 
   useEffect(() => {
-    const onTouchStart = (event: TouchEvent): void => {
-      const touch = event.touches[0];
-      if (!touch || event.touches.length !== 1) {
-        swipeRef.current.active = false;
-        swipeRef.current.ignore = false;
-        return;
-      }
+    const resetSwipe = (): void => {
+      swipeRef.current.active = false;
+      swipeRef.current.ignore = false;
+      swipeRef.current.pointerId = null;
+    };
 
+    const beginSwipe = ({
+      target,
+      x,
+      y,
+      pointerId
+    }: {
+      target: EventTarget | null;
+      x: number;
+      y: number;
+      pointerId?: number | null;
+    }): void => {
       swipeRef.current = {
         active: true,
-        ignore: shouldIgnoreSwipeTarget(event.target),
-        startX: touch.clientX,
-        startY: touch.clientY,
-        lastX: touch.clientX,
-        lastY: touch.clientY,
-        startedAt: Date.now()
+        ignore: shouldIgnoreSwipeTarget(target),
+        startX: x,
+        startY: y,
+        lastX: x,
+        lastY: y,
+        startedAt: Date.now(),
+        pointerId: pointerId ?? null
       };
     };
 
-    const onTouchMove = (event: TouchEvent): void => {
+    const updateSwipe = ({
+      x,
+      y,
+      pointerId
+    }: {
+      x: number;
+      y: number;
+      pointerId?: number | null;
+    }): void => {
       const swipe = swipeRef.current;
       if (!swipe.active || swipe.ignore) {
         return;
       }
-
-      const touch = event.touches[0];
-      if (!touch || event.touches.length !== 1) {
-        swipeRef.current.active = false;
-        swipeRef.current.ignore = false;
+      if (swipe.pointerId !== null && pointerId !== null && swipe.pointerId !== pointerId) {
         return;
       }
 
-      swipe.lastX = touch.clientX;
-      swipe.lastY = touch.clientY;
+      swipe.lastX = x;
+      swipe.lastY = y;
     };
 
-    const onTouchEnd = (event: TouchEvent): void => {
+    const completeSwipe = ({
+      x,
+      y,
+      pointerId
+    }: {
+      x?: number;
+      y?: number;
+      pointerId?: number | null;
+    }): void => {
       const swipe = swipeRef.current;
-      swipeRef.current.active = false;
+      resetSwipe();
 
       if (!swipe.active || swipe.ignore) {
+        return;
+      }
+      if (swipe.pointerId !== null && pointerId !== null && swipe.pointerId !== pointerId) {
         return;
       }
 
@@ -103,9 +130,8 @@ export default function SwipeNavigator(): null {
         return;
       }
 
-      const touch = event.changedTouches[0];
-      const endX = touch?.clientX ?? swipe.lastX;
-      const endY = touch?.clientY ?? swipe.lastY;
+      const endX = x ?? swipe.lastX;
+      const endY = y ?? swipe.lastY;
       const dx = endX - swipe.startX;
       const dy = endY - swipe.startY;
       const elapsedMs = Date.now() - swipe.startedAt;
@@ -125,9 +151,93 @@ export default function SwipeNavigator(): null {
       router.push(SWIPE_ROUTE_ORDER[targetIndex]);
     };
 
+    if ("PointerEvent" in window) {
+      const onPointerDown = (event: PointerEvent): void => {
+        if (!event.isPrimary || event.pointerType !== "touch") {
+          return;
+        }
+        beginSwipe({
+          target: event.target,
+          x: event.clientX,
+          y: event.clientY,
+          pointerId: event.pointerId
+        });
+      };
+
+      const onPointerMove = (event: PointerEvent): void => {
+        if (event.pointerType !== "touch") {
+          return;
+        }
+        updateSwipe({
+          x: event.clientX,
+          y: event.clientY,
+          pointerId: event.pointerId
+        });
+      };
+
+      const onPointerUp = (event: PointerEvent): void => {
+        if (event.pointerType !== "touch") {
+          return;
+        }
+        completeSwipe({
+          x: event.clientX,
+          y: event.clientY,
+          pointerId: event.pointerId
+        });
+      };
+
+      const onPointerCancel = (): void => {
+        resetSwipe();
+      };
+
+      window.addEventListener("pointerdown", onPointerDown, { passive: true });
+      window.addEventListener("pointermove", onPointerMove, { passive: true });
+      window.addEventListener("pointerup", onPointerUp, { passive: true });
+      window.addEventListener("pointercancel", onPointerCancel, { passive: true });
+
+      return () => {
+        window.removeEventListener("pointerdown", onPointerDown);
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerCancel);
+      };
+    }
+
+    const onTouchStart = (event: TouchEvent): void => {
+      const touch = event.touches[0];
+      if (!touch || event.touches.length !== 1) {
+        resetSwipe();
+        return;
+      }
+      beginSwipe({
+        target: event.target,
+        x: touch.clientX,
+        y: touch.clientY
+      });
+    };
+
+    const onTouchMove = (event: TouchEvent): void => {
+      const touch = event.touches[0];
+      if (!touch || event.touches.length !== 1) {
+        resetSwipe();
+        return;
+      }
+      updateSwipe({
+        x: touch.clientX,
+        y: touch.clientY
+      });
+    };
+
+    const onTouchEnd = (event: TouchEvent): void => {
+      const touch = event.changedTouches[0];
+      completeSwipe({
+        x: touch?.clientX,
+        y: touch?.clientY
+      });
+    };
+
     const onTouchCancel = (): void => {
-      swipeRef.current.active = false;
-      swipeRef.current.ignore = false;
+      resetSwipe();
     };
 
     window.addEventListener("touchstart", onTouchStart, { passive: true });
