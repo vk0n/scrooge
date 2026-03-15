@@ -999,7 +999,7 @@ function DashboardContent(): JSX.Element {
                 ) : null}
 
                 <div className="trade-manage-grid">
-                  <div className="kv-item trade-manage-card">
+                  <div className="kv-item trade-manage-card trade-manage-card-with-quick-btn">
                     <div className="trade-manage-card-head">
                       <span className="kv-label">Safety Net</span>
                       {showBreakEvenSafetyNetAction ? (
