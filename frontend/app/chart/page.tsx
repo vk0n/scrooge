@@ -256,6 +256,20 @@ function pointsToXY(points: IndicatorPoint[]): { x: string[]; y: Array<number | 
   };
 }
 
+function collectIndicatorValues(points: IndicatorPoint[] | undefined): Array<{ tsMs: number; value: number }> {
+  if (!points?.length) {
+    return [];
+  }
+
+  return points.flatMap((point) => {
+    const tsMs = toTimestampMs(point.time);
+    if (tsMs === null || typeof point.value !== "number" || !Number.isFinite(point.value)) {
+      return [];
+    }
+    return [{ tsMs, value: point.value }];
+  });
+}
+
 type PlotlyRelayoutEvent = Record<string, unknown>;
 type PlotlyEventTarget = HTMLDivElement & {
   on?: (event: string, callback: (event: PlotlyRelayoutEvent) => void) => void;
@@ -692,6 +706,14 @@ function ChartContent(): JSX.Element {
         const currentLevelPrices = data.current_levels
           .map((level) => level.price)
           .filter((price): price is number => Number.isFinite(price));
+        const visibleIndicatorValues = includeIndicators
+          ? [
+              ...collectIndicatorValues(data.indicators?.ema),
+              ...collectIndicatorValues(data.indicators?.bollinger?.upper),
+              ...collectIndicatorValues(data.indicators?.bollinger?.middle),
+              ...collectIndicatorValues(data.indicators?.bollinger?.lower),
+            ]
+          : [];
         let relayoutInProgress = false;
 
         const syncAuxiliaryXRange = (range: [number, number] | null): void => {
@@ -722,6 +744,13 @@ function ChartContent(): JSX.Element {
             minPrice = Math.min(minPrice, candleLow[index]);
             maxPrice = Math.max(maxPrice, candleHigh[index]);
           }
+          visibleIndicatorValues.forEach(({ tsMs, value }) => {
+            if (tsMs < startMs || tsMs > endMs) {
+              return;
+            }
+            minPrice = Math.min(minPrice, value);
+            maxPrice = Math.max(maxPrice, value);
+          });
           currentLevelPrices.forEach((price) => {
             minPrice = Math.min(minPrice, price);
             maxPrice = Math.max(maxPrice, price);

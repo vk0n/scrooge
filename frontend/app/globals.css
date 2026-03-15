@@ -1317,12 +1317,12 @@ pre {
 
 .trade-manage-quick-btn {
   flex: 0 0 auto;
-  min-height: 1.48rem;
-  max-width: 10.6rem;
-  padding: 0.12rem 0.38rem;
+  min-height: 1.34rem;
+  max-width: 8.6rem;
+  padding: 0.08rem 0.3rem;
   border-radius: 9px;
-  font-size: 0.66rem;
-  line-height: 1.1;
+  font-size: 0.58rem;
+  line-height: 1.05;
   letter-spacing: 0;
   white-space: normal;
   text-align: center;
@@ -1897,9 +1897,9 @@ pre {
   }
 
   .trade-manage-quick-btn {
-    max-width: 9.4rem;
-    font-size: 0.62rem;
-    padding: 0.1rem 0.34rem;
+    max-width: 7.8rem;
+    font-size: 0.52rem;
+    padding: 0.06rem 0.26rem;
   }
 
   .trade-progress-header {
