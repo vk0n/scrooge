@@ -55,17 +55,19 @@ export default function Nav(): JSX.Element {
               >
                 Step Out
               </Link>
-              <PushNotificationControl variant="nav" />
             </div>
           ) : null}
         </div>
         {isAuthed ? (
-          <div className="nav-links">
-            {PRIMARY_LINKS.map((link) => (
-              <Link key={link.href} href={link.href} className={linkClass(link.href)}>
-                {link.label}
-              </Link>
-            ))}
+          <div className="nav-footer">
+            <div className="nav-links">
+              {PRIMARY_LINKS.map((link) => (
+                <Link key={link.href} href={link.href} className={linkClass(link.href)}>
+                  {link.label}
+                </Link>
+              ))}
+            </div>
+            <PushNotificationControl variant="nav" />
           </div>
         ) : null}
       </nav>

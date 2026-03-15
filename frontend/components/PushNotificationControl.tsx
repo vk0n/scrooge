@@ -188,16 +188,6 @@ export default function PushNotificationControl({
           : "The bell is quiet until you allow notifications.";
 
   if (variant === "nav") {
-    const navNote =
-      error ??
-      info ??
-      (busy
-        ? "Wiring the bell..."
-        : status === "blocked"
-          ? "Allow notifications in site settings."
-          : status === "unsupported"
-            ? "This browser cannot keep the bell."
-            : null);
     const navButtonClass = `nav-service-btn${status === "enabled" ? " nav-service-btn-enabled" : ""}${
       status === "blocked" ? " nav-service-btn-blocked" : ""
     }`;
@@ -231,9 +221,6 @@ export default function PushNotificationControl({
             </span>
           </button>
         )}
-        {navNote ? (
-          <p className={`nav-service-note${error ? " nav-service-note-error" : ""}`}>{navNote}</p>
-        ) : null}
       </div>
     );
   }

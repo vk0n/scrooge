@@ -1501,10 +1501,11 @@ pre {
 }
 
 .notifications-panel-nav {
-  justify-items: end;
-  width: auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
   min-width: 0;
-  flex: none;
+  flex: 0 0 auto;
 }
 
 .nav-service-btn {
@@ -1546,25 +1547,21 @@ pre {
   color: #ffd1d7;
 }
 
-.nav-service-note {
-  margin: 0;
-  max-width: 14rem;
-  color: #98a5b9;
-  font-size: 0.72rem;
-  line-height: 1.35;
-  text-align: right;
-}
-
-.nav-service-note-error {
-  color: #ffb4be;
+.nav-footer {
+  margin-top: 0.92rem;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.64rem;
 }
 
 .nav-links {
-  margin-top: 0.92rem;
   display: flex;
+  flex: 1 1 auto;
   gap: 0.42rem;
   overflow-x: auto;
   padding-bottom: 0.1rem;
+  min-width: 0;
 }
 
 .nav-link {
@@ -1696,7 +1693,7 @@ pre {
   }
 
   .nav-links {
-    margin-top: 0.64rem;
+    margin-top: 0;
   }
 
   .nav-link {
@@ -1707,15 +1704,15 @@ pre {
     gap: 0.28rem;
   }
 
+  .nav-footer {
+    margin-top: 0.64rem;
+    gap: 0.42rem;
+  }
+
   .nav-service-btn {
     padding: 0.28rem 0.48rem;
     min-width: 2.35rem;
     font-size: 0.78rem;
-  }
-
-  .nav-service-note {
-    max-width: 9.5rem;
-    font-size: 0.68rem;
   }
 
   .kv-grid {
