@@ -796,7 +796,7 @@ function ChartContent(): JSX.Element {
         </button>
       </div>
 
-      <div className={`chart-stack ${chartsExpanded ? "chart-stack-fullscreen" : ""}`} data-swipe-lock>
+      <div className={`chart-stack ${chartsExpanded ? "chart-stack-fullscreen" : ""}`}>
         {chartsExpanded ? (
           <button
             type="button"
