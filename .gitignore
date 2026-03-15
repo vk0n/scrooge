@@ -144,5 +144,6 @@ dmypy.json
 api/.venv/
 frontend/node_modules/
 frontend/.next/
+frontend/*.tsbuildinfo
 !frontend/lib/
 !frontend/lib/**

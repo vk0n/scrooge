@@ -52,6 +52,10 @@ export default function SwipeNavigator(): null {
   const lastNavigationAtRef = useRef<number>(0);
 
   useEffect(() => {
+    const eventTarget = window;
+    const hasPointerEvents =
+      typeof (eventTarget as Window & { PointerEvent?: unknown }).PointerEvent === "function";
+
     const resetSwipe = (): void => {
       swipeRef.current.active = false;
       swipeRef.current.ignore = false;
@@ -151,7 +155,7 @@ export default function SwipeNavigator(): null {
       router.push(SWIPE_ROUTE_ORDER[targetIndex]);
     };
 
-    if ("PointerEvent" in window) {
+    if (hasPointerEvents) {
       const onPointerDown = (event: PointerEvent): void => {
         if (!event.isPrimary || event.pointerType !== "touch") {
           return;
@@ -190,16 +194,16 @@ export default function SwipeNavigator(): null {
         resetSwipe();
       };
 
-      window.addEventListener("pointerdown", onPointerDown, { passive: true });
-      window.addEventListener("pointermove", onPointerMove, { passive: true });
-      window.addEventListener("pointerup", onPointerUp, { passive: true });
-      window.addEventListener("pointercancel", onPointerCancel, { passive: true });
+      eventTarget.addEventListener("pointerdown", onPointerDown, { passive: true });
+      eventTarget.addEventListener("pointermove", onPointerMove, { passive: true });
+      eventTarget.addEventListener("pointerup", onPointerUp, { passive: true });
+      eventTarget.addEventListener("pointercancel", onPointerCancel, { passive: true });
 
       return () => {
-        window.removeEventListener("pointerdown", onPointerDown);
-        window.removeEventListener("pointermove", onPointerMove);
-        window.removeEventListener("pointerup", onPointerUp);
-        window.removeEventListener("pointercancel", onPointerCancel);
+        eventTarget.removeEventListener("pointerdown", onPointerDown);
+        eventTarget.removeEventListener("pointermove", onPointerMove);
+        eventTarget.removeEventListener("pointerup", onPointerUp);
+        eventTarget.removeEventListener("pointercancel", onPointerCancel);
       };
     }
 
@@ -240,16 +244,16 @@ export default function SwipeNavigator(): null {
       resetSwipe();
     };
 
-    window.addEventListener("touchstart", onTouchStart, { passive: true });
-    window.addEventListener("touchmove", onTouchMove, { passive: true });
-    window.addEventListener("touchend", onTouchEnd, { passive: true });
-    window.addEventListener("touchcancel", onTouchCancel, { passive: true });
+    eventTarget.addEventListener("touchstart", onTouchStart, { passive: true });
+    eventTarget.addEventListener("touchmove", onTouchMove, { passive: true });
+    eventTarget.addEventListener("touchend", onTouchEnd, { passive: true });
+    eventTarget.addEventListener("touchcancel", onTouchCancel, { passive: true });
 
     return () => {
-      window.removeEventListener("touchstart", onTouchStart);
-      window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", onTouchEnd);
-      window.removeEventListener("touchcancel", onTouchCancel);
+      eventTarget.removeEventListener("touchstart", onTouchStart);
+      eventTarget.removeEventListener("touchmove", onTouchMove);
+      eventTarget.removeEventListener("touchend", onTouchEnd);
+      eventTarget.removeEventListener("touchcancel", onTouchCancel);
     };
   }, [pathname, router]);
 
