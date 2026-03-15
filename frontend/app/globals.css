@@ -2317,7 +2317,7 @@ pre {
   }
 
   .chart-toolbar-group-primary {
-    justify-content: space-between;
+    justify-content: flex-end;
     width: 100%;
   }
 
