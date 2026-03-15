@@ -323,6 +323,7 @@ function ChartContent(): JSX.Element {
   const [endCursorMs, setEndCursorMs] = useState<number | null>(null);
   const [controlsExpanded, setControlsExpanded] = useState<boolean>(true);
   const [chartsExpanded, setChartsExpanded] = useState<boolean>(false);
+  const [compactChartUi, setCompactChartUi] = useState<boolean>(false);
 
   const [data, setData] = useState<ChartPayload | null>(null);
   const [liveStatus, setLiveStatus] = useState<LiveStatusPayload | null>(null);
@@ -456,9 +457,29 @@ function ChartContent(): JSX.Element {
     if (typeof window === "undefined") {
       return;
     }
-    if (window.matchMedia("(max-width: 760px)").matches) {
-      setControlsExpanded(false);
-    }
+
+    const viewportMedia = window.matchMedia("(max-width: 760px)");
+    const coarsePointerMedia = window.matchMedia("(hover: none), (pointer: coarse)");
+
+    const applyViewportMode = (): void => {
+      const isCompact = viewportMedia.matches || coarsePointerMedia.matches;
+      setCompactChartUi(isCompact);
+      if (viewportMedia.matches) {
+        setControlsExpanded(false);
+      }
+    };
+
+    applyViewportMode();
+
+    const handleViewportChange = (): void => applyViewportMode();
+
+    viewportMedia.addEventListener("change", handleViewportChange);
+    coarsePointerMedia.addEventListener("change", handleViewportChange);
+
+    return () => {
+      viewportMedia.removeEventListener("change", handleViewportChange);
+      coarsePointerMedia.removeEventListener("change", handleViewportChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -526,6 +547,13 @@ function ChartContent(): JSX.Element {
             new Date(boundedVisibleRange[1]).toISOString(),
           ]
         : undefined;
+      const plotConfig = {
+        responsive: true,
+        displaylogo: false,
+        displayModeBar: compactChartUi ? false : "hover",
+        scrollZoom: !compactChartUi,
+        doubleClick: "reset+autosize",
+      };
       const openPositionTimeMs =
         typeof data.open_position?.time === "string" ? Date.parse(data.open_position.time) : null;
       const openPositionInRange =
@@ -669,6 +697,7 @@ function ChartContent(): JSX.Element {
               xanchor: "center",
               y: 0.975,
               yanchor: "top",
+              font: { size: compactChartUi ? 12 : 15 },
             },
             paper_bgcolor: CHART_THEME.bg,
             plot_bgcolor: CHART_THEME.bg,
@@ -677,27 +706,22 @@ function ChartContent(): JSX.Element {
             hovermode: "x unified",
             xaxis: {
               type: "date",
-              rangeslider: { visible: true },
+              rangeslider: { visible: !compactChartUi },
               range: initialXRange,
             },
             yaxis: { title: "Price" },
-            margin: { t: 92, r: 16, b: 40, l: 55 },
+            margin: { t: compactChartUi ? 74 : 92, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
             shapes: priceShapes,
             legend: {
               orientation: "h",
               x: 0,
               xanchor: "left",
-              y: 1.14,
+              y: compactChartUi ? 1.1 : 1.14,
               yanchor: "bottom",
-              font: { size: 11 },
+              font: { size: compactChartUi ? 10 : 11 },
             },
           },
-          {
-            responsive: true,
-            displaylogo: false,
-            scrollZoom: true,
-            doubleClick: "reset+autosize",
-          }
+          plotConfig
         );
 
         const chartEl = priceChartRef.current as PlotlyEventTarget;
@@ -819,9 +843,9 @@ function ChartContent(): JSX.Element {
               range: initialXRange,
             },
             yaxis: { title: "Vault" },
-            margin: { t: 40, r: 16, b: 40, l: 55 },
+            margin: { t: compactChartUi ? 34 : 40, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
           },
-          { responsive: true, displaylogo: false, scrollZoom: true, doubleClick: "reset+autosize" }
+          plotConfig
         );
       }
 
@@ -883,10 +907,10 @@ function ChartContent(): JSX.Element {
                 range: initialXRange,
               },
               yaxis: { title: "RSI", range: [0, 100] },
-              margin: { t: 40, r: 16, b: 40, l: 55 },
+              margin: { t: compactChartUi ? 34 : 40, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
               shapes: rsiShapes,
             },
-            { responsive: true, displaylogo: false, scrollZoom: true, doubleClick: "reset+autosize" }
+            plotConfig
           );
         } else {
           await Plotly.react(
@@ -898,9 +922,9 @@ function ChartContent(): JSX.Element {
               plot_bgcolor: CHART_THEME.bg,
               font: { color: CHART_THEME.mutedText },
               uirevision: `${chartRevisionKey}:rsi-empty`,
-              margin: { t: 40, r: 16, b: 30, l: 40 },
+              margin: { t: compactChartUi ? 34 : 40, r: compactChartUi ? 12 : 16, b: compactChartUi ? 24 : 30, l: compactChartUi ? 36 : 40 },
             },
-            { responsive: true, displaylogo: false, scrollZoom: true, doubleClick: "reset+autosize" }
+            plotConfig
           );
         }
       }
@@ -911,7 +935,7 @@ function ChartContent(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [data, includeIndicators, period, source, endCursorMs]);
+  }, [compactChartUi, data, includeIndicators, period, source, endCursorMs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -943,7 +967,7 @@ function ChartContent(): JSX.Element {
   }, [data, liveStatus]);
 
   return (
-    <section className="panel page-shell">
+    <section className="panel page-shell chart-page-shell">
       <p className="dialog-scrooge">Read-only map of candles, trades, and vault curve.</p>
 
       <details
