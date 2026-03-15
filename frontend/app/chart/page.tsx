@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
-import { fetchApi } from "../../lib/api";
+import { getSavedBasicCredentials } from "../../lib/auth";
+import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 type Candle = {
   time: string;
   open: number;
@@ -87,10 +88,39 @@ type ChartPayload = {
   warnings: string[];
 };
 
+type LiveOpenTradeInfo = {
+  side: "long" | "short";
+  entry: number;
+  sl: number | null;
+  tp: number | null;
+  trail_active: boolean;
+  trail_price: number | null;
+  entry_time: string;
+};
+
+type LiveTrailingState = {
+  trail_active: boolean;
+  trail_max: number | null;
+  trail_min: number | null;
+  trail_price: number | null;
+  tp: number | null;
+  sl: number | null;
+};
+
+type LiveStatusPayload = {
+  symbol: string | null;
+  last_price: number | null;
+  last_price_updated_at?: string | null;
+  last_update_timestamp: string | null;
+  open_trade_info: LiveOpenTradeInfo | null;
+  trailing_state: LiveTrailingState | null;
+};
+
 const PERIOD_OPTIONS = ["15m", "30m", "1h", "2h", "3h", "4h", "6h", "12h", "1d", "3d", "1w", "2w", "4w", "12w", "26w", "52w"];
 const INTERVAL_OPTIONS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"];
 const SOURCE_OPTIONS = ["auto", "dataset", "binance"] as const;
 const POLL_MS = 60000;
+const WS_RECONNECT_MS = 5000;
 const CHART_THEME = {
   upCandle: "#34d399",
   downCandle: "#f87171",
@@ -111,7 +141,79 @@ const CHART_THEME = {
   mutedText: "#9db0c8",
   rsiUpper: "#ef4444",
   rsiLower: "#22c55e",
+  livePrice: "#fbbf24",
 } as const;
+
+function buildCurrentLevelShapes(
+  levels: Array<{ type: string; price: number }>,
+  currentPrice: number | null
+): Array<Record<string, unknown>> {
+  const shapes: Array<Record<string, unknown>> = levels.map((level) => ({
+    type: "line",
+    xref: "paper",
+    x0: 0,
+    x1: 1,
+    y0: level.price,
+    y1: level.price,
+    line: {
+      color: level.type === "sl" ? CHART_THEME.slLevel : CHART_THEME.tpLevel,
+      width: level.type === "trail" ? 1.25 : 1,
+      dash: level.type === "sl" ? "dot" : level.type === "trail" ? "dashdot" : "dash",
+    },
+  }));
+
+  if (typeof currentPrice === "number" && Number.isFinite(currentPrice)) {
+    shapes.push({
+      type: "line",
+      xref: "paper",
+      x0: 0,
+      x1: 1,
+      y0: currentPrice,
+      y1: currentPrice,
+      line: {
+        color: CHART_THEME.livePrice,
+        width: 1.1,
+        dash: "solid",
+      },
+    });
+  }
+
+  return shapes;
+}
+
+function resolveLiveLevels(data: ChartPayload | null, liveStatus: LiveStatusPayload | null): Array<{ type: string; price: number }> | null {
+  if (!data || !liveStatus) {
+    return null;
+  }
+
+  const liveSymbol = liveStatus.symbol?.trim().toUpperCase();
+  if (!liveSymbol || liveSymbol !== data.symbol.trim().toUpperCase()) {
+    return null;
+  }
+
+  const openTrade = liveStatus.open_trade_info;
+  if (!openTrade) {
+    return [];
+  }
+
+  const levels: Array<{ type: string; price: number }> = [];
+  if (typeof openTrade.sl === "number" && Number.isFinite(openTrade.sl)) {
+    levels.push({ type: "sl", price: openTrade.sl });
+  }
+
+  if (openTrade.trail_active) {
+    const liveTrail = typeof liveStatus.trailing_state?.trail_price === "number" && Number.isFinite(liveStatus.trailing_state.trail_price)
+      ? liveStatus.trailing_state.trail_price
+      : openTrade.trail_price;
+    if (typeof liveTrail === "number" && Number.isFinite(liveTrail)) {
+      levels.push({ type: "trail", price: liveTrail });
+    }
+  } else if (typeof openTrade.tp === "number" && Number.isFinite(openTrade.tp)) {
+    levels.push({ type: "tp", price: openTrade.tp });
+  }
+
+  return levels;
+}
 
 function parsePeriodMs(period: string): number {
   const match = /^(\d+)([mhdw])$/i.exec(period.trim());
@@ -176,6 +278,9 @@ function ChartContent(): JSX.Element {
   const priceChartRef = useRef<HTMLDivElement | null>(null);
   const equityChartRef = useRef<HTMLDivElement | null>(null);
   const rsiChartRef = useRef<HTMLDivElement | null>(null);
+  const plotlyRef = useRef<any>(null);
+  const plotlyImportPromiseRef = useRef<Promise<any> | null>(null);
+  const visibleXRangeRef = useRef<[number, number] | null>(null);
 
   const [symbol, setSymbol] = useState<string>("BTCUSDT");
   const [period, setPeriod] = useState<string>("1d");
@@ -188,13 +293,31 @@ function ChartContent(): JSX.Element {
   const [chartsExpanded, setChartsExpanded] = useState<boolean>(false);
 
   const [data, setData] = useState<ChartPayload | null>(null);
+  const [liveStatus, setLiveStatus] = useState<LiveStatusPayload | null>(null);
+  const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  async function ensurePlotly(): Promise<any> {
+    if (plotlyRef.current) {
+      return plotlyRef.current;
+    }
+    if (!plotlyImportPromiseRef.current) {
+      plotlyImportPromiseRef.current = import("plotly.js-dist-min").then((module) => {
+        plotlyRef.current = module.default;
+        return module.default;
+      });
+    }
+    return plotlyImportPromiseRef.current;
+  }
 
   async function loadChart(silent = false): Promise<void> {
     const safeSymbol = symbol.trim().toUpperCase() || "BTCUSDT";
     if (!silent) {
       setLoading(true);
+    } else {
+      setRefreshing(true);
     }
     try {
       const query = new URLSearchParams({
@@ -217,6 +340,7 @@ function ChartContent(): JSX.Element {
       if (!silent) {
         setLoading(false);
       }
+      setRefreshing(false);
     }
   }
 
@@ -232,6 +356,69 @@ function ChartContent(): JSX.Element {
       window.clearInterval(intervalId);
     };
   }, [autoRefresh, period, interval, source, includeIndicators, endCursorMs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    visibleXRangeRef.current = null;
+  }, [symbol, period, interval, source, endCursorMs]);
+
+  useEffect((): (() => void) => {
+    let closedByUser = false;
+    let reconnectTimer: number | null = null;
+    let socket: WebSocket | null = null;
+
+    const creds = getSavedBasicCredentials();
+    if (!creds) {
+      setWsConnected(false);
+      return () => undefined;
+    }
+
+    const connect = (): void => {
+      const wsUrl = buildWebSocketUrl("/ws/status", {
+        username: creds.username,
+        password: creds.password,
+      });
+      if (!wsUrl) {
+        setWsConnected(false);
+        return;
+      }
+
+      socket = new WebSocket(wsUrl);
+      socket.onopen = () => {
+        setWsConnected(true);
+      };
+      socket.onmessage = (event: MessageEvent<string>) => {
+        try {
+          const payload = JSON.parse(event.data) as { type?: string; data?: LiveStatusPayload };
+          if (payload.type === "status" && payload.data) {
+            setLiveStatus(payload.data);
+          }
+        } catch {
+          // Ignore malformed WS payloads. Polling still refreshes chart data.
+        }
+      };
+      socket.onclose = () => {
+        setWsConnected(false);
+        if (!closedByUser) {
+          reconnectTimer = window.setTimeout(connect, WS_RECONNECT_MS);
+        }
+      };
+      socket.onerror = () => {
+        setWsConnected(false);
+      };
+    };
+
+    connect();
+
+    return () => {
+      closedByUser = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.close();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -280,10 +467,19 @@ function ChartContent(): JSX.Element {
       if (!data) {
         return;
       }
-      const Plotly = (await import("plotly.js-dist-min")).default;
+      const Plotly = await ensurePlotly();
       if (cancelled) {
         return;
       }
+
+      const chartRevisionKey = `${data.symbol}:${data.interval}:${period}:${source}:${endCursorMs ?? "live"}`;
+      const priceShapes = buildCurrentLevelShapes(data.current_levels, null);
+      const initialXRange = visibleXRangeRef.current
+        ? [
+            new Date(visibleXRangeRef.current[0]).toISOString(),
+            new Date(visibleXRangeRef.current[1]).toISOString(),
+          ]
+        : undefined;
 
       const candleX = data.candles.map((candle) => candle.time);
       const candleOpen = data.candles.map((candle) => candle.open);
@@ -408,20 +604,6 @@ function ChartContent(): JSX.Element {
         );
       }
 
-      const priceShapes = data.current_levels.map((level) => ({
-        type: "line",
-        xref: "paper",
-        x0: 0,
-        x1: 1,
-        y0: level.price,
-        y1: level.price,
-        line: {
-          color: level.type === "sl" ? CHART_THEME.slLevel : CHART_THEME.tpLevel,
-          width: level.type === "trail" ? 1.2 : 1,
-          dash: level.type === "sl" ? "dot" : level.type === "trail" ? "dashdot" : "dash",
-        },
-      }));
-
       if (priceChartRef.current) {
         await Plotly.react(
           priceChartRef.current,
@@ -437,7 +619,13 @@ function ChartContent(): JSX.Element {
             paper_bgcolor: CHART_THEME.bg,
             plot_bgcolor: CHART_THEME.bg,
             font: { color: CHART_THEME.text },
-            xaxis: { type: "date", rangeslider: { visible: true } },
+            uirevision: chartRevisionKey,
+            hovermode: "x unified",
+            xaxis: {
+              type: "date",
+              rangeslider: { visible: true },
+              range: initialXRange,
+            },
             yaxis: { title: "Price" },
             margin: { t: 92, r: 16, b: 40, l: 55 },
             shapes: priceShapes,
@@ -450,7 +638,12 @@ function ChartContent(): JSX.Element {
               font: { size: 11 },
             },
           },
-          { responsive: true, displaylogo: false }
+          {
+            responsive: true,
+            displaylogo: false,
+            scrollZoom: true,
+            doubleClick: "reset+autosize",
+          }
         );
 
         const chartEl = priceChartRef.current as PlotlyEventTarget;
@@ -510,6 +703,7 @@ function ChartContent(): JSX.Element {
             return;
           }
           if (eventData["xaxis.autorange"] === true) {
+            visibleXRangeRef.current = null;
             syncAuxiliaryXRange(null);
             if (candleTimesMs.length) {
               rescaleVisibleY(candleTimesMs[0], candleTimesMs[candleTimesMs.length - 1]);
@@ -521,12 +715,14 @@ function ChartContent(): JSX.Element {
           if (!range) {
             return;
           }
+          visibleXRangeRef.current = range;
           rescaleVisibleY(range[0], range[1]);
           syncAuxiliaryXRange(range);
         });
 
         if (candleTimesMs.length) {
-          rescaleVisibleY(candleTimesMs[0], candleTimesMs[candleTimesMs.length - 1]);
+          const initialRange = visibleXRangeRef.current ?? [candleTimesMs[0], candleTimesMs[candleTimesMs.length - 1]];
+          rescaleVisibleY(initialRange[0], initialRange[1]);
         }
       }
 
@@ -548,11 +744,16 @@ function ChartContent(): JSX.Element {
             paper_bgcolor: CHART_THEME.bg,
             plot_bgcolor: CHART_THEME.bg,
             font: { color: CHART_THEME.text },
-            xaxis: { type: "date" },
+            uirevision: `${chartRevisionKey}:equity`,
+            hovermode: "x unified",
+            xaxis: {
+              type: "date",
+              range: initialXRange,
+            },
             yaxis: { title: "Vault" },
             margin: { t: 40, r: 16, b: 40, l: 55 },
           },
-          { responsive: true, displaylogo: false }
+          { responsive: true, displaylogo: false, scrollZoom: true, doubleClick: "reset+autosize" }
         );
       }
 
@@ -607,12 +808,17 @@ function ChartContent(): JSX.Element {
               paper_bgcolor: CHART_THEME.bg,
               plot_bgcolor: CHART_THEME.bg,
               font: { color: CHART_THEME.text },
-              xaxis: { type: "date" },
+              uirevision: `${chartRevisionKey}:rsi`,
+              hovermode: "x unified",
+              xaxis: {
+                type: "date",
+                range: initialXRange,
+              },
               yaxis: { title: "RSI", range: [0, 100] },
               margin: { t: 40, r: 16, b: 40, l: 55 },
               shapes: rsiShapes,
             },
-            { responsive: true, displaylogo: false }
+            { responsive: true, displaylogo: false, scrollZoom: true, doubleClick: "reset+autosize" }
           );
         } else {
           await Plotly.react(
@@ -623,9 +829,10 @@ function ChartContent(): JSX.Element {
               paper_bgcolor: CHART_THEME.bg,
               plot_bgcolor: CHART_THEME.bg,
               font: { color: CHART_THEME.mutedText },
+              uirevision: `${chartRevisionKey}:rsi-empty`,
               margin: { t: 40, r: 16, b: 30, l: 40 },
             },
-            { responsive: true, displaylogo: false }
+            { responsive: true, displaylogo: false, scrollZoom: true, doubleClick: "reset+autosize" }
           );
         }
       }
@@ -636,7 +843,36 @@ function ChartContent(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [data, includeIndicators]);
+  }, [data, includeIndicators, period, source, endCursorMs]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const applyLiveOverlay = async (): Promise<void> => {
+      if (!data || !priceChartRef.current) {
+        return;
+      }
+
+      const Plotly = await ensurePlotly();
+      if (cancelled) {
+        return;
+      }
+
+      const liveCurrentPrice =
+        liveStatus?.symbol?.trim().toUpperCase() === data.symbol.trim().toUpperCase()
+          ? liveStatus.last_price ?? null
+          : null;
+      const activeLevels = resolveLiveLevels(data, liveStatus) ?? data.current_levels;
+      const priceShapes = buildCurrentLevelShapes(activeLevels, liveCurrentPrice);
+      await Plotly.relayout(priceChartRef.current, { shapes: priceShapes });
+    };
+
+    void applyLiveOverlay();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data, liveStatus]);
 
   return (
     <section className="panel page-shell">
@@ -787,6 +1023,13 @@ function ChartContent(): JSX.Element {
       {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
 
       <div className="chart-view-toolbar">
+        <span
+          className={`chart-view-status ${
+            refreshing ? "chart-view-status-refreshing" : wsConnected ? "chart-view-status-live" : "chart-view-status-polling"
+          }`}
+        >
+          {refreshing ? "Updating map..." : wsConnected ? "Wire live" : autoRefresh ? `Polling ${POLL_MS / 1000}s` : "Manual map"}
+        </span>
         <button
           type="button"
           className="dialog-user-btn chart-toolbar-btn chart-view-btn"

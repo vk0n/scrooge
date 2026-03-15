@@ -844,7 +844,40 @@ pre {
 
 .chart-view-toolbar {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.chart-view-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.84rem;
+  border: 1px solid rgba(84, 96, 114, 0.44);
+  border-radius: 999px;
+  padding: 0.18rem 0.58rem;
+  font-size: 0.78rem;
+  line-height: 1.2;
+  color: #cbd6e6;
+  background: rgba(84, 96, 114, 0.12);
+}
+
+.chart-view-status-live {
+  border-color: rgba(57, 151, 113, 0.44);
+  color: #dff4e9;
+  background: rgba(31, 92, 67, 0.18);
+}
+
+.chart-view-status-refreshing {
+  border-color: rgba(196, 152, 72, 0.46);
+  color: #ffe5b4;
+  background: rgba(91, 63, 18, 0.2);
+}
+
+.chart-view-status-polling {
+  border-color: rgba(90, 104, 129, 0.44);
+  color: #d4ddea;
+  background: rgba(44, 54, 70, 0.18);
 }
 
 .chart-view-btn {
@@ -1905,11 +1938,18 @@ pre {
   }
 
   .chart-view-toolbar {
+    align-items: stretch;
+    flex-direction: column;
     justify-content: stretch;
   }
 
   .chart-view-btn {
     width: 100%;
+  }
+
+  .chart-view-status {
+    width: 100%;
+    justify-content: center;
   }
 
   .chart-surface-lg {
