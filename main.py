@@ -52,6 +52,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "1" if default else "0").strip().lower()
+    return raw not in {"0", "false", "no", "off", ""}
+
+
 def handle_exit(sig: int, frame: Any) -> None:  # noqa: ARG001
     """Handler for Ctrl+C (SIGINT) to gracefully save state and exit."""
     global live_market_stream
@@ -406,6 +411,7 @@ if __name__ == "__main__":
 
     live_poll_seconds = _env_int("SCROOGE_LIVE_POLL_SECONDS", 60)
     control_poll_slice_seconds = _env_int("SCROOGE_CONTROL_POLL_SLICE_SECONDS", 1)
+    debug_strategy_ticks = _env_flag("SCROOGE_DEBUG_STRATEGY_TICKS", False)
     chart_dataset_path = Path(os.getenv("SCROOGE_RUNTIME_CHART_DATASET_PATH", "chart_dataset.csv")).expanduser()
 
     load_dotenv()
@@ -429,6 +435,7 @@ if __name__ == "__main__":
         restart_requested = False
         last_trading_enabled: bool | None = None
         last_balance_refresh_monotonic = 0.0
+        last_strategy_candle_open_time: str | None = None
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
         command_kwargs = _build_command_kwargs(symbol)
         runtime_context: dict[str, Any] = {"state": state}
@@ -489,6 +496,7 @@ if __name__ == "__main__":
                                 raise RuntimeError("Live market stream failed to restart after config reload.")
                         restart_requested = False
                         last_balance_refresh_monotonic = 0.0
+                        last_strategy_candle_open_time = None
                         technical_logger.info("config_restart_applied symbol=%s leverage=%s", symbol, lvrg)
 
                     with state_lock:
@@ -514,6 +522,21 @@ if __name__ == "__main__":
                     df = live_market_stream.take_ready_strategy_frame() if live_market_stream is not None else None
                     if df is None:
                         time.sleep(control_poll_slice_seconds)
+                        continue
+
+                    latest_candle_open_time = "unknown"
+                    try:
+                        latest_candle_value = df.iloc[-1]["open_time"]
+                        latest_candle_open_time = str(latest_candle_value)
+                    except Exception:  # noqa: BLE001
+                        latest_candle_open_time = "unknown"
+
+                    if latest_candle_open_time == last_strategy_candle_open_time:
+                        if debug_strategy_ticks:
+                            technical_logger.debug(
+                                "live_strategy_tick_duplicate_skipped candle_open_time=%s",
+                                latest_candle_open_time,
+                            )
                         continue
 
                     current_balance = get_balance()
@@ -543,6 +566,15 @@ if __name__ == "__main__":
                     else:
                         technical_logger.debug("live_no_open_positions symbol=%s", symbol)
 
+                    if debug_strategy_ticks:
+                        technical_logger.debug(
+                            "live_strategy_tick candle_open_time=%s trading_enabled=%s has_position=%s rows=%s",
+                            latest_candle_open_time,
+                            trading_enabled,
+                            has_position,
+                            len(df),
+                        )
+
                     with state_lock:
                         balance, trades, balance_history, state = run_strategy(
                             df,
@@ -557,6 +589,7 @@ if __name__ == "__main__":
                             **params,
                         )
                         runtime_context["state"] = state
+                    last_strategy_candle_open_time = latest_candle_open_time
                     last_chart_dataset_ts_ms = _append_latest_chart_candle(
                         df=df,
                         symbol=symbol,
