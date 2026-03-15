@@ -231,6 +231,24 @@ function parsePeriodMs(period: string): number {
   return count * (unitToMs[unit] ?? unitToMs.d);
 }
 
+function clampVisibleXRange(
+  range: [number, number] | null,
+  minMs: number,
+  maxMs: number
+): [number, number] | null {
+  if (!range) {
+    return null;
+  }
+
+  const overlapStart = Math.max(range[0], minMs);
+  const overlapEnd = Math.min(range[1], maxMs);
+  if (!Number.isFinite(overlapStart) || !Number.isFinite(overlapEnd) || overlapEnd <= overlapStart) {
+    return null;
+  }
+
+  return [overlapStart, overlapEnd];
+}
+
 function pointsToXY(points: IndicatorPoint[]): { x: string[]; y: Array<number | null> } {
   return {
     x: points.map((point) => point.time),
@@ -472,20 +490,37 @@ function ChartContent(): JSX.Element {
         return;
       }
 
-      const chartRevisionKey = `${data.symbol}:${data.interval}:${period}:${source}:${endCursorMs ?? "live"}`;
-      const priceShapes = buildCurrentLevelShapes(data.current_levels, null);
-      const initialXRange = visibleXRangeRef.current
-        ? [
-            new Date(visibleXRangeRef.current[0]).toISOString(),
-            new Date(visibleXRangeRef.current[1]).toISOString(),
-          ]
-        : undefined;
-
       const candleX = data.candles.map((candle) => candle.time);
       const candleOpen = data.candles.map((candle) => candle.open);
       const candleHigh = data.candles.map((candle) => candle.high);
       const candleLow = data.candles.map((candle) => candle.low);
       const candleClose = data.candles.map((candle) => candle.close);
+      const candleTimesMs = data.candles.map((candle) => Date.parse(candle.time));
+      const chartStartMs = candleTimesMs.find((value) => Number.isFinite(value)) ?? null;
+      const chartEndMs = [...candleTimesMs].reverse().find((value) => Number.isFinite(value)) ?? null;
+      const boundedVisibleRange =
+        chartStartMs !== null && chartEndMs !== null
+          ? clampVisibleXRange(visibleXRangeRef.current, chartStartMs, chartEndMs)
+          : null;
+      visibleXRangeRef.current = boundedVisibleRange;
+
+      const chartRevisionKey = `${data.symbol}:${data.interval}:${period}:${source}:${endCursorMs ?? "live"}`;
+      const priceShapes = buildCurrentLevelShapes(data.current_levels, null);
+      const initialXRange = boundedVisibleRange
+        ? [
+            new Date(boundedVisibleRange[0]).toISOString(),
+            new Date(boundedVisibleRange[1]).toISOString(),
+          ]
+        : undefined;
+      const openPositionTimeMs =
+        typeof data.open_position?.time === "string" ? Date.parse(data.open_position.time) : null;
+      const openPositionInRange =
+        chartStartMs !== null &&
+        chartEndMs !== null &&
+        typeof openPositionTimeMs === "number" &&
+        Number.isFinite(openPositionTimeMs) &&
+        openPositionTimeMs >= chartStartMs &&
+        openPositionTimeMs <= chartEndMs;
 
       const traces: Array<Record<string, unknown>> = [
         {
@@ -546,7 +581,12 @@ function ChartContent(): JSX.Element {
         });
       }
 
-      if (data.open_position?.entry !== null && data.open_position?.entry !== undefined && data.open_position?.time) {
+      if (
+        openPositionInRange &&
+        data.open_position?.entry !== null &&
+        data.open_position?.entry !== undefined &&
+        data.open_position?.time
+      ) {
         traces.push({
           type: "scatter",
           mode: "markers",
@@ -649,7 +689,6 @@ function ChartContent(): JSX.Element {
         const chartEl = priceChartRef.current as PlotlyEventTarget;
         chartEl.removeAllListeners?.("plotly_relayout");
 
-        const candleTimesMs = data.candles.map((candle) => Date.parse(candle.time));
         const currentLevelPrices = data.current_levels
           .map((level) => level.price)
           .filter((price): price is number => Number.isFinite(price));
