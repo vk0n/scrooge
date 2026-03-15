@@ -369,7 +369,7 @@ if __name__ == "__main__":
 
     symbol = cfg["symbol"]
     lvrg = cfg["leverage"]
-    initial_balance = cfg["initial_balance"]
+    initial_balance = cfg.get("initial_balance")
     qty = cfg["qty"]
     use_full_balance = cfg["use_full_balance"]
 
@@ -522,6 +522,9 @@ if __name__ == "__main__":
                 restart_requested = restart_requested or restart_now
 
     else:
+        if initial_balance is None:
+            raise ValueError("Backtest config must include initial_balance.")
+
         backtest_period_days = cfg["backtest_period_days"]
         backtest_period_end_time = cfg["backtest_period_end_time"]
         enable_plot = cfg["enable_plot"]
