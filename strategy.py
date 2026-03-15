@@ -191,6 +191,21 @@ def _refresh_market_snapshot(state, price, ts_label):
     state["updated_at"] = ts_label
 
 
+def refresh_runtime_state_from_price_tick(state, last_price, position_price, leverage, ts_label):
+    """
+    Apply live websocket price updates to runtime state without changing strategy cadence.
+    - `last_price` drives the top-level ticker price shown in UI.
+    - `position_price` can use mark price for open-position metrics when available.
+    """
+    _refresh_market_snapshot(state, last_price, ts_label)
+
+    position = state.get("position")
+    if isinstance(position, dict):
+        snapshot_price = _to_float(position_price)
+        if snapshot_price is not None:
+            _refresh_position_snapshot(position, snapshot_price, leverage, ts_label)
+
+
 def _sanitize_trade_for_history(trade):
     sanitized = {}
     for key, value in trade.items():
