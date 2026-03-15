@@ -302,6 +302,7 @@ def _ensure_technical_logger() -> logging.Logger:
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
         )
+    logging.getLogger("websocket").setLevel(logging.WARNING)
     return logging.getLogger(TECHNICAL_LOGGER_NAME)
 
 
