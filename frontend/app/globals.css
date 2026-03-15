@@ -2317,12 +2317,16 @@ pre {
   }
 
   .chart-toolbar-group-primary {
-    justify-content: flex-end;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    justify-content: stretch;
     width: 100%;
   }
 
   .chart-toolbar-status {
     margin-left: 0;
+    justify-self: start;
   }
 
   .chart-panel {
