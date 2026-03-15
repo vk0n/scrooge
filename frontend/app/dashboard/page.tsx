@@ -586,7 +586,7 @@ function DashboardContent(): JSX.Element {
 
     await runControlAction("update-sl", {
       body: { value: entryPrice },
-      confirmMessage: `Move the Safety Net to break even at ${entryPrice}?`
+      confirmMessage: `Bring the Net to Even at ${entryPrice}?`
     });
   }
 
@@ -1008,8 +1008,12 @@ function DashboardContent(): JSX.Element {
                           className="dialog-user-btn trade-manage-quick-btn"
                           onClick={() => void runBreakEvenSafetyNet()}
                           disabled={busyAction !== null}
+                          title="Bring the Net to Even"
+                          aria-label="Bring the Net to Even"
                         >
-                          Bring the Net to Even
+                          <span className="trade-manage-quick-icon" aria-hidden="true">
+                            ⚖️
+                          </span>
                         </button>
                       ) : null}
                     </div>
