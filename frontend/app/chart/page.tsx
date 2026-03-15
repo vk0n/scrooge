@@ -147,7 +147,7 @@ const CHART_THEME = {
   mutedText: "#9db0c8",
   rsiUpper: "#ef4444",
   rsiLower: "#22c55e",
-  livePrice: "#fbbf24",
+  livePrice: "#d8dee8",
 } as const;
 
 function buildCurrentLevelShapes(
@@ -178,8 +178,8 @@ function buildCurrentLevelShapes(
       y1: currentPrice,
       line: {
         color: CHART_THEME.livePrice,
-        width: 1.1,
-        dash: "solid",
+        width: 1,
+        dash: "dot",
       },
     });
   }
@@ -1086,51 +1086,53 @@ function ChartContent(): JSX.Element {
               </label>
             </div>
 
-            <div className="chart-toolbar-group chart-toolbar-group-nav">
-              <button
-                type="button"
-                className="dialog-user-btn chart-toolbar-btn"
-                onClick={() => {
-                  const stepMs = parsePeriodMs(period);
-                  setEndCursorMs((prev) => (prev === null ? Date.now() - stepMs : prev - stepMs));
-                }}
-              >
-                Earlier
-              </button>
+            <div className="chart-toolbar-rail">
+              <div className="chart-toolbar-group chart-toolbar-group-nav">
+                <button
+                  type="button"
+                  className="dialog-user-btn chart-toolbar-btn"
+                  onClick={() => {
+                    const stepMs = parsePeriodMs(period);
+                    setEndCursorMs((prev) => (prev === null ? Date.now() - stepMs : prev - stepMs));
+                  }}
+                >
+                  Earlier
+                </button>
 
-              <button
-                type="button"
-                className="dialog-user-btn chart-toolbar-btn"
-                onClick={() => {
-                  const stepMs = parsePeriodMs(period);
-                  setEndCursorMs((prev) => {
-                    if (prev === null) {
-                      return null;
-                    }
-                    const next = prev + stepMs;
-                    return next >= Date.now() ? null : next;
-                  });
-                }}
-                disabled={endCursorMs === null}
-              >
-                Later
-              </button>
+                <button
+                  type="button"
+                  className="dialog-user-btn chart-toolbar-btn"
+                  onClick={() => {
+                    const stepMs = parsePeriodMs(period);
+                    setEndCursorMs((prev) => {
+                      if (prev === null) {
+                        return null;
+                      }
+                      const next = prev + stepMs;
+                      return next >= Date.now() ? null : next;
+                    });
+                  }}
+                  disabled={endCursorMs === null}
+                >
+                  Later
+                </button>
 
-              <button
-                type="button"
-                className="dialog-user-btn chart-toolbar-btn"
-                onClick={() => setEndCursorMs(null)}
-                disabled={endCursorMs === null}
-              >
-                Now
-              </button>
-            </div>
+                <button
+                  type="button"
+                  className="dialog-user-btn chart-toolbar-btn"
+                  onClick={() => setEndCursorMs(null)}
+                  disabled={endCursorMs === null}
+                >
+                  Now
+                </button>
+              </div>
 
-            <div className="chart-toolbar-group chart-toolbar-group-primary">
-              <button type="button" className="dialog-user-btn chart-toolbar-btn" onClick={() => void loadChart(false)}>
-                Scout Now
-              </button>
-              {loading ? <span className="dialog-scrooge dialog-scrooge-compact chart-toolbar-status">Loading...</span> : null}
+              <div className="chart-toolbar-group chart-toolbar-group-primary">
+                <button type="button" className="dialog-user-btn chart-toolbar-btn" onClick={() => void loadChart(false)}>
+                  Scout Now
+                </button>
+                {loading ? <span className="dialog-scrooge dialog-scrooge-compact chart-toolbar-status">Loading...</span> : null}
+              </div>
             </div>
           </div>
         </div>
