@@ -1032,6 +1032,218 @@ pre {
   gap: 0.62rem;
 }
 
+.trade-progress-card {
+  gap: 0.72rem;
+  padding-block: 0.72rem 0.78rem;
+  background:
+    radial-gradient(circle at top right, rgba(212, 169, 81, 0.08), transparent 36%),
+    linear-gradient(180deg, rgba(18, 21, 28, 0.9) 0%, rgba(12, 15, 21, 0.95) 100%);
+  border-color: rgba(135, 118, 72, 0.4);
+}
+
+.trade-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.trade-progress-now {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #546072;
+  border-radius: 999px;
+  padding: 0.14rem 0.48rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 0.78rem;
+  line-height: 1.2;
+  color: #dfe7f3;
+  background: rgba(84, 96, 114, 0.18);
+}
+
+.trade-progress-now-positive {
+  border-color: rgba(45, 139, 102, 0.65);
+  background: rgba(45, 139, 102, 0.18);
+  color: #d8f2e6;
+}
+
+.trade-progress-now-negative {
+  border-color: rgba(177, 61, 76, 0.7);
+  background: rgba(177, 61, 76, 0.18);
+  color: #ffe1e5;
+}
+
+.trade-progress-track-shell {
+  padding-top: 1.05rem;
+}
+
+.trade-progress-track {
+  position: relative;
+  height: 1rem;
+  border: 1px solid rgba(95, 104, 121, 0.44);
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, rgba(177, 61, 76, 0.42) 0%, rgba(114, 95, 59, 0.18) 45%, rgba(67, 146, 109, 0.44) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(231, 238, 249, 0.03),
+    inset 0 1px 8px rgba(0, 0, 0, 0.32);
+  overflow: visible;
+}
+
+.trade-progress-endcap,
+.trade-progress-entry-marker,
+.trade-progress-current-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.trade-progress-endcap {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 999px;
+}
+
+.trade-progress-endcap-sl {
+  left: 0;
+  background: #ff8e9c;
+  box-shadow: 0 0 0 3px rgba(177, 61, 76, 0.15);
+}
+
+.trade-progress-endcap-tp {
+  left: 100%;
+  background: #8de1b6;
+  box-shadow: 0 0 0 3px rgba(45, 139, 102, 0.15);
+}
+
+.trade-progress-entry-marker {
+  width: 0.08rem;
+  height: 1.6rem;
+  border-radius: 999px;
+  background: rgba(232, 240, 250, 0.66);
+  box-shadow: 0 0 0 1px rgba(18, 22, 30, 0.75);
+}
+
+.trade-progress-entry-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0.5rem;
+  height: 0.5rem;
+  border: 2px solid rgba(232, 240, 250, 0.9);
+  border-radius: 999px;
+  background: rgba(19, 23, 31, 0.96);
+  transform: translate(-50%, -50%);
+}
+
+.trade-progress-current-label {
+  position: absolute;
+  top: -1.35rem;
+  transform: translateX(-50%);
+  border: 1px solid rgba(168, 135, 65, 0.72);
+  border-radius: 999px;
+  padding: 0.08rem 0.34rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 0.7rem;
+  line-height: 1.1;
+  background: rgba(50, 38, 17, 0.92);
+  color: #ffe2a2;
+  white-space: nowrap;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.22);
+}
+
+.trade-progress-current-label-positive {
+  border-color: rgba(57, 151, 113, 0.72);
+  background: rgba(20, 53, 41, 0.92);
+  color: #ddf4e9;
+}
+
+.trade-progress-current-label-negative {
+  border-color: rgba(196, 81, 96, 0.74);
+  background: rgba(62, 22, 31, 0.92);
+  color: #ffe2e7;
+}
+
+.trade-progress-current-marker {
+  width: 0.11rem;
+  height: 1.95rem;
+  border-radius: 999px;
+  background: rgba(255, 226, 147, 0.92);
+  color: #ffe2a2;
+  box-shadow:
+    0 0 0 1px rgba(60, 43, 11, 0.65),
+    0 0 10px rgba(240, 193, 84, 0.22);
+}
+
+.trade-progress-current-marker-positive {
+  background: rgba(111, 211, 162, 0.94);
+  color: #ddf4e9;
+  box-shadow:
+    0 0 0 1px rgba(20, 58, 42, 0.72),
+    0 0 10px rgba(111, 211, 162, 0.18);
+}
+
+.trade-progress-current-marker-negative {
+  background: rgba(255, 115, 132, 0.94);
+  color: #ffe2e7;
+  box-shadow:
+    0 0 0 1px rgba(81, 20, 29, 0.75),
+    0 0 10px rgba(255, 115, 132, 0.16);
+}
+
+.trade-progress-current-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0.6rem;
+  height: 0.6rem;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  background: #0f131a;
+  transform: translate(-50%, -50%);
+}
+
+.trade-progress-legend {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.trade-progress-legend-item {
+  display: grid;
+  gap: 0.14rem;
+  min-width: 0;
+}
+
+.trade-progress-legend-item-sl {
+  justify-items: start;
+  text-align: left;
+}
+
+.trade-progress-legend-item-entry {
+  justify-items: center;
+  text-align: center;
+}
+
+.trade-progress-legend-item-tp {
+  justify-items: end;
+  text-align: right;
+}
+
+.trade-progress-legend-name {
+  color: #aeb8ca;
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.trade-progress-legend-value {
+  color: #eef2fa;
+  font-size: 0.84rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
 .trade-manage-card {
   gap: 0.44rem;
 }
@@ -1599,6 +1811,19 @@ pre {
   .trade-edit-row {
     grid-template-columns: 1fr;
     gap: 0.42rem;
+  }
+
+  .trade-progress-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .trade-progress-track-shell {
+    padding-top: 1.2rem;
+  }
+
+  .trade-progress-legend-value {
+    font-size: 0.78rem;
   }
 
   .chart-controls-accordion {

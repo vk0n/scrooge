@@ -289,6 +289,57 @@ function formatLeverage(value: number | null | undefined): string {
   return formatted === "N/A" ? "N/A" : `x${formatted}`;
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+type TradeProgressSnapshot = {
+  entryPercent: number;
+  currentPercent: number | null;
+  currentLabelPercent: number | null;
+  currentTone: "positive" | "negative" | "neutral";
+};
+
+function computeTradeProgress(
+  sl: number | null,
+  entry: number | null,
+  tp: number | null,
+  current: number | null
+): TradeProgressSnapshot | null {
+  if (!isFiniteNumber(sl) || !isFiniteNumber(entry) || !isFiniteNumber(tp) || sl === tp) {
+    return null;
+  }
+
+  const span = tp - sl;
+  if (!Number.isFinite(span) || span === 0) {
+    return null;
+  }
+
+  const entryRaw = ((entry - sl) / span) * 100;
+  const currentRaw = isFiniteNumber(current) ? ((current - sl) / span) * 100 : null;
+  const currentPercent = currentRaw === null ? null : clampPercent(currentRaw);
+
+  let currentTone: TradeProgressSnapshot["currentTone"] = "neutral";
+  if (currentRaw !== null) {
+    if (currentRaw > entryRaw + 0.2) {
+      currentTone = "positive";
+    } else if (currentRaw < entryRaw - 0.2) {
+      currentTone = "negative";
+    }
+  }
+
+  return {
+    entryPercent: clampPercent(entryRaw),
+    currentPercent,
+    currentLabelPercent: currentPercent === null ? null : Math.max(8, Math.min(92, currentPercent)),
+    currentTone
+  };
+}
+
 function resolveBaseAsset(symbol: string | null | undefined): string | null {
   if (!symbol) {
     return null;
@@ -661,6 +712,7 @@ function DashboardContent(): JSX.Element {
   const positionUpnlBadgeClass = positionSummaryBadgeClass(hasOpenPosition, roiPercent);
   const statusIntentText = statusIntentBadgeText(botStatus);
   const statusIntentClass = statusIntentBadgeClass(botStatus);
+  const tradeProgress = computeTradeProgress(sl, entryPrice, tp, lastPrice);
 
   useEffect(() => {
     if (!hasOpenPosition) {
@@ -778,6 +830,61 @@ function DashboardContent(): JSX.Element {
                     </span>
                   </div>
                 </div>
+
+                {tradeProgress ? (
+                  <div className="kv-item trade-progress-card">
+                    <div className="trade-progress-header">
+                      <span className="kv-label">Trade Progress</span>
+                      <span className={`trade-progress-now trade-progress-now-${tradeProgress.currentTone}`}>
+                        Now {formatPrice(lastPrice)}
+                      </span>
+                    </div>
+                    <div className="trade-progress-track-shell">
+                      <div className="trade-progress-track" aria-label="Trade progress from stop loss to take profit">
+                        <span className="trade-progress-endcap trade-progress-endcap-sl" aria-hidden="true" />
+                        <span className="trade-progress-endcap trade-progress-endcap-tp" aria-hidden="true" />
+                        <span
+                          className="trade-progress-entry-marker"
+                          style={{ left: `${tradeProgress.entryPercent}%` }}
+                          aria-hidden="true"
+                        >
+                          <span className="trade-progress-entry-dot" />
+                        </span>
+                        {tradeProgress.currentPercent !== null && tradeProgress.currentLabelPercent !== null ? (
+                          <>
+                            <span
+                              className={`trade-progress-current-label trade-progress-current-label-${tradeProgress.currentTone}`}
+                              style={{ left: `${tradeProgress.currentLabelPercent}%` }}
+                            >
+                              Now
+                            </span>
+                            <span
+                              className={`trade-progress-current-marker trade-progress-current-marker-${tradeProgress.currentTone}`}
+                              style={{ left: `${tradeProgress.currentPercent}%` }}
+                              aria-hidden="true"
+                            >
+                              <span className="trade-progress-current-dot" />
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="trade-progress-legend">
+                      <div className="trade-progress-legend-item trade-progress-legend-item-sl">
+                        <span className="trade-progress-legend-name">SL</span>
+                        <span className="trade-progress-legend-value">{formatPrice(sl)}</span>
+                      </div>
+                      <div className="trade-progress-legend-item trade-progress-legend-item-entry">
+                        <span className="trade-progress-legend-name">Entry</span>
+                        <span className="trade-progress-legend-value">{formatPrice(entryPrice)}</span>
+                      </div>
+                      <div className="trade-progress-legend-item trade-progress-legend-item-tp">
+                        <span className="trade-progress-legend-name">TP</span>
+                        <span className="trade-progress-legend-value">{formatPrice(tp)}</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="trade-manage-grid">
                   <div className="kv-item trade-manage-card">
