@@ -533,7 +533,7 @@ if __name__ == "__main__":
 
                     if latest_candle_open_time == last_strategy_candle_open_time:
                         if debug_strategy_ticks:
-                            technical_logger.debug(
+                            technical_logger.info(
                                 "live_strategy_tick_duplicate_skipped candle_open_time=%s",
                                 latest_candle_open_time,
                             )
@@ -567,7 +567,7 @@ if __name__ == "__main__":
                         technical_logger.debug("live_no_open_positions symbol=%s", symbol)
 
                     if debug_strategy_ticks:
-                        technical_logger.debug(
+                        technical_logger.info(
                             "live_strategy_tick candle_open_time=%s trading_enabled=%s has_position=%s rows=%s",
                             latest_candle_open_time,
                             trading_enabled,
