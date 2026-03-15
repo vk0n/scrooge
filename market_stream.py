@@ -9,7 +9,13 @@ from typing import Any, Callable
 import pandas as pd
 
 from event_log import get_technical_logger
+from state import update_balance, update_position
 from strategy import refresh_runtime_state_from_price_tick
+from trade import (
+    clear_runtime_account_cache,
+    set_cached_balance,
+    set_cached_position,
+)
 
 try:
     from binance import ThreadedWebsocketManager
@@ -141,6 +147,8 @@ class LiveMarketStream:
         save_state_fn: Callable[[dict[str, Any]], None],
         fetch_historical_fn: Callable[[str, str, int], pd.DataFrame],
         prepare_multi_tf_fn: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame],
+        get_balance_fn: Callable[[], float],
+        get_open_position_fn: Callable[[str], dict[str, Any] | None],
     ) -> None:
         self._api_key = api_key or None
         self._api_secret = api_secret or None
@@ -151,6 +159,8 @@ class LiveMarketStream:
         self._save_state_fn = save_state_fn
         self._fetch_historical_fn = fetch_historical_fn
         self._prepare_multi_tf_fn = prepare_multi_tf_fn
+        self._get_balance_fn = get_balance_fn
+        self._get_open_position_fn = get_open_position_fn
 
         self._intervals = {
             "small": str(intervals["small"]),
@@ -177,7 +187,8 @@ class LiveMarketStream:
         self._last_emitted_small_open_time_ms: int | None = None
 
         self._twm: ThreadedWebsocketManager | None = None
-        self._stream_name: str | None = None
+        self._market_stream_name: str | None = None
+        self._user_stream_name: str | None = None
         self._last_ticker_price: float | None = None
         self._last_mark_price: float | None = None
         self._last_persist_monotonic: float | None = None
@@ -195,6 +206,8 @@ class LiveMarketStream:
             technical_logger.warning("market_stream_unavailable reason=python_binance_missing")
             return False
 
+        clear_runtime_account_cache()
+        self._bootstrap_account_cache()
         self._bootstrap_candle_caches()
 
         streams = list(
@@ -213,11 +226,19 @@ class LiveMarketStream:
         try:
             twm = ThreadedWebsocketManager(api_key=self._api_key, api_secret=self._api_secret)
             twm.start()
-            stream_name = twm.start_futures_multiplex_socket(
+            market_stream_name = twm.start_futures_multiplex_socket(
                 callback=self._handle_message,
                 streams=streams,
                 futures_type=FuturesType.USD_M,
             )
+            user_stream_name = None
+            if hasattr(twm, "start_futures_socket"):
+                try:
+                    user_stream_name = twm.start_futures_socket(callback=self._handle_user_message)
+                except Exception as exc:  # noqa: BLE001
+                    technical_logger.warning("user_stream_start_failed symbol=%s error=%s", self._symbol, exc)
+            else:
+                technical_logger.warning("user_stream_unavailable reason=start_futures_socket_missing")
         except Exception as exc:  # noqa: BLE001
             technical_logger.exception("market_stream_start_failed symbol=%s error=%s", self._symbol, exc)
             if twm is not None:
@@ -228,13 +249,15 @@ class LiveMarketStream:
             return False
 
         self._twm = twm
-        self._stream_name = stream_name
+        self._market_stream_name = market_stream_name
+        self._user_stream_name = user_stream_name
         self._last_persist_monotonic = None
         self._running = True
         technical_logger.info(
-            "market_stream_started symbol=%s streams=%s persist_interval=%s settle=%s",
+            "market_stream_started symbol=%s streams=%s user_stream=%s persist_interval=%s settle=%s",
             self._symbol,
             ",".join(streams),
+            bool(user_stream_name),
             MARKET_STREAM_PERSIST_INTERVAL_SECONDS,
             MARKET_STREAM_SETTLE_SECONDS,
         )
@@ -245,18 +268,22 @@ class LiveMarketStream:
 
     def stop(self) -> None:
         twm = self._twm
-        stream_name = self._stream_name
+        market_stream_name = self._market_stream_name
+        user_stream_name = self._user_stream_name
         self._running = False
         self._twm = None
-        self._stream_name = None
+        self._market_stream_name = None
+        self._user_stream_name = None
         self._last_persist_monotonic = None
 
         if twm is None:
             return
 
         try:
-            if stream_name:
-                twm.stop_socket(stream_name)
+            if market_stream_name:
+                twm.stop_socket(market_stream_name)
+            if user_stream_name:
+                twm.stop_socket(user_stream_name)
         except Exception as exc:  # noqa: BLE001
             technical_logger.warning("market_stream_socket_stop_failed symbol=%s error=%s", self._symbol, exc)
 
@@ -355,6 +382,21 @@ class LiveMarketStream:
 
         return self._prepare_multi_tf_fn(df_small, df_medium, df_big)
 
+    def _bootstrap_account_cache(self) -> None:
+        try:
+            balance = self._get_balance_fn()
+        except Exception as exc:  # noqa: BLE001
+            technical_logger.warning("user_stream_balance_bootstrap_failed symbol=%s error=%s", self._symbol, exc)
+        else:
+            set_cached_balance(balance)
+
+        try:
+            position = self._get_open_position_fn(self._symbol)
+        except Exception as exc:  # noqa: BLE001
+            technical_logger.warning("user_stream_position_bootstrap_failed symbol=%s error=%s", self._symbol, exc)
+        else:
+            set_cached_position(self._symbol, position)
+
     def _bootstrap_candle_caches(self) -> None:
         technical_logger.info(
             "market_stream_bootstrap_started symbol=%s small=%s medium=%s big=%s",
@@ -389,6 +431,153 @@ class LiveMarketStream:
             len(df_medium),
             len(df_big),
         )
+
+    def _handle_user_message(self, message: Any) -> None:
+        if not isinstance(message, dict):
+            return
+
+        if message.get("e") == "error":
+            technical_logger.warning("user_stream_error symbol=%s payload=%s", self._symbol, message)
+            return
+
+        event_type = str(message.get("e", "")).strip()
+        event_ts = message.get("E") or message.get("T") or int(time.time() * 1000)
+
+        if event_type == "ACCOUNT_UPDATE":
+            self._handle_account_update(message.get("a"), event_ts)
+            return
+
+        if event_type == "ORDER_TRADE_UPDATE":
+            self._handle_order_trade_update(message.get("o"), event_ts)
+            return
+
+        if event_type == "listenKeyExpired":
+            technical_logger.warning("user_stream_listen_key_expired symbol=%s", self._symbol)
+
+    def _handle_account_update(self, account_data: Any, event_ts: Any) -> None:
+        if not isinstance(account_data, dict):
+            return
+
+        balance_entry = None
+        for candidate in account_data.get("B", []) or []:
+            if str(candidate.get("a", "")).upper() == "USDT":
+                balance_entry = candidate
+                break
+
+        balance_value = None
+        if isinstance(balance_entry, dict):
+            balance_value = _to_float(balance_entry.get("wb"))
+            if balance_value is None:
+                balance_value = _to_float(balance_entry.get("cw"))
+        if balance_value is not None:
+            set_cached_balance(balance_value)
+
+        position_update = None
+        for candidate in account_data.get("P", []) or []:
+            if str(candidate.get("s", "")).upper() == self._symbol:
+                position_update = candidate
+                break
+
+        if position_update is not None:
+            self._apply_account_position_update(position_update, event_ts)
+
+        if balance_value is not None:
+            with self._state_lock:
+                state = self._state_getter()
+                if isinstance(state, dict):
+                    previous_balance = _to_float(state.get("balance"))
+                    if previous_balance is None or abs(previous_balance - balance_value) > 1e-9:
+                        update_balance(state, balance_value)
+
+    def _handle_order_trade_update(self, order_data: Any, event_ts: Any) -> None:
+        if not isinstance(order_data, dict):
+            return
+
+        symbol = str(order_data.get("s", "")).upper()
+        if symbol and symbol != self._symbol:
+            return
+
+        execution_type = str(order_data.get("x", "")).strip().upper()
+        order_status = str(order_data.get("X", "")).strip().upper()
+        order_type = str(order_data.get("o", "")).strip().upper()
+        technical_logger.debug(
+            "user_stream_order_update symbol=%s execution_type=%s status=%s order_type=%s event_time=%s",
+            self._symbol,
+            execution_type,
+            order_status,
+            order_type,
+            _format_event_timestamp_ms(event_ts),
+        )
+
+    def _apply_account_position_update(self, position_update: dict[str, Any], event_ts: Any) -> None:
+        position_amt = _to_float(position_update.get("pa"))
+        entry_price = _to_float(position_update.get("ep"))
+        if position_amt is None:
+            return
+
+        if abs(position_amt) <= 1e-12:
+            set_cached_position(self._symbol, None)
+        else:
+            cached_position = {
+                "symbol": self._symbol,
+                "positionAmt": position_amt,
+                "entryPrice": entry_price,
+                "unRealizedProfit": _to_float(position_update.get("up")),
+                "positionSide": position_update.get("ps"),
+            }
+            set_cached_position(self._symbol, cached_position)
+
+        ts_label = _format_event_timestamp_ms(event_ts)
+
+        with self._state_lock:
+            state = self._state_getter()
+            if not isinstance(state, dict):
+                return
+
+            current_position = state.get("position")
+            if not isinstance(current_position, dict):
+                if abs(position_amt) > 1e-12:
+                    technical_logger.warning(
+                        "user_stream_unmanaged_position_detected symbol=%s position_amt=%s entry=%s",
+                        self._symbol,
+                        position_amt,
+                        entry_price,
+                    )
+                return
+
+            if abs(position_amt) <= 1e-12:
+                update_position(state, None)
+                return
+
+            side = "short" if position_amt < 0 else "long"
+            next_position = dict(current_position)
+            next_position["side"] = side
+            next_position["size"] = abs(position_amt)
+            if entry_price is not None and entry_price > 0:
+                next_position["entry"] = entry_price
+            next_position.setdefault("time", next_position.get("entry_time") or ts_label)
+            next_position.setdefault("entry_time", next_position.get("time") or ts_label)
+
+            snapshot_price = (
+                self._last_mark_price
+                if self._last_mark_price is not None
+                else self._last_ticker_price
+            )
+            if snapshot_price is None and entry_price is not None:
+                snapshot_price = entry_price
+
+            if snapshot_price is not None:
+                state["position"] = next_position
+                refresh_runtime_state_from_price_tick(
+                    state,
+                    last_price=self._last_ticker_price if self._last_ticker_price is not None else snapshot_price,
+                    position_price=snapshot_price,
+                    leverage=self._leverage,
+                    ts_label=ts_label,
+                )
+                next_position = state.get("position")
+
+            update_position(state, next_position if isinstance(next_position, dict) else current_position)
 
     def _handle_message(self, message: Any) -> None:
         if not isinstance(message, dict):

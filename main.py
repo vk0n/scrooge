@@ -32,7 +32,14 @@ from report import (
 )
 from state import add_closed_trade, load_state, save_state, update_balance, update_position
 from strategy import run_strategy
-from trade import close_position, get_balance, get_open_position, set_leverage
+from trade import (
+    close_position,
+    get_balance,
+    get_cached_balance,
+    get_cached_open_position,
+    get_open_position,
+    set_leverage,
+)
 
 RLockType = type(threading.RLock())
 
@@ -454,6 +461,8 @@ if __name__ == "__main__":
             save_state_fn=save_state,
             fetch_historical_fn=fetch_historical,
             prepare_multi_tf_fn=prepare_multi_tf,
+            get_balance_fn=get_balance,
+            get_open_position_fn=get_open_position,
         )
         if not live_market_stream.start():
             raise RuntimeError("Live market stream failed to start.")
@@ -512,7 +521,9 @@ if __name__ == "__main__":
 
                     now_monotonic = time.monotonic()
                     if (now_monotonic - last_balance_refresh_monotonic) >= live_poll_seconds:
-                        current_balance = get_balance()
+                        current_balance = get_cached_balance()
+                        if current_balance is None:
+                            current_balance = get_balance()
                         with state_lock:
                             update_balance(state, current_balance)
                             runtime_context["state"] = state
@@ -539,7 +550,9 @@ if __name__ == "__main__":
                             )
                         continue
 
-                    current_balance = get_balance()
+                    current_balance = get_cached_balance()
+                    if current_balance is None:
+                        current_balance = get_balance()
                     with state_lock:
                         update_balance(state, current_balance)
                         runtime_context["state"] = state
@@ -552,7 +565,9 @@ if __name__ == "__main__":
                         technical_logger.debug("live_skip_strategy_on_closed_candle trading_enabled=false has_position=false")
                         continue
 
-                    pos = get_open_position(symbol)
+                    pos = get_cached_open_position(symbol)
+                    if pos is None and has_position:
+                        pos = get_open_position(symbol)
                     if pos:
                         with state_lock:
                             position = state.get("position") if isinstance(state.get("position"), dict) else {}

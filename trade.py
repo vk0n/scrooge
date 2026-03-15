@@ -1,9 +1,17 @@
+import threading
+import time
+from typing import Any
+
 from binance.helpers import round_step_size
 import numpy as np
 from event_log import get_technical_logger
 
 _client = None
 technical_logger = get_technical_logger()
+_account_cache_lock = threading.RLock()
+_cached_balance = None
+_cached_balance_updated_at = None
+_cached_positions = None
 
 def set_client(client):
     global _client
@@ -14,6 +22,74 @@ def _get_client():
     if _client is None:
         raise ValueError("Binance client not initialized. Call set_client().")
     return _client
+
+
+def clear_runtime_account_cache():
+    global _cached_balance, _cached_balance_updated_at, _cached_positions
+    with _account_cache_lock:
+        _cached_balance = None
+        _cached_balance_updated_at = None
+        _cached_positions = None
+
+
+def set_cached_balance(balance):
+    global _cached_balance, _cached_balance_updated_at
+    try:
+        normalized = float(balance)
+    except (TypeError, ValueError):
+        return
+
+    with _account_cache_lock:
+        _cached_balance = normalized
+        _cached_balance_updated_at = time.time()
+
+
+def get_cached_balance():
+    with _account_cache_lock:
+        return _cached_balance
+
+
+def set_cached_position(symbol, position):
+    global _cached_positions
+
+    symbol_key = str(symbol or "").upper().strip()
+    if not symbol_key:
+        return
+
+    normalized = None
+    if isinstance(position, dict):
+        normalized = dict(position)
+        normalized["symbol"] = symbol_key
+
+    with _account_cache_lock:
+        if _cached_positions is None:
+            _cached_positions = {}
+
+        if normalized is None:
+            _cached_positions.pop(symbol_key, None)
+        else:
+            _cached_positions[symbol_key] = normalized
+
+
+def get_cached_open_position(symbol):
+    symbol_key = str(symbol or "").upper().strip()
+    if not symbol_key:
+        return None
+
+    with _account_cache_lock:
+        if _cached_positions is None:
+            return None
+        pos = _cached_positions.get(symbol_key)
+
+    if not isinstance(pos, dict):
+        return None
+
+    try:
+        if float(pos.get("positionAmt", 0.0)) == 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return dict(pos)
 
 # --- Utility functions --- #
 def set_leverage(symbol, leverage):
@@ -118,11 +194,16 @@ def check_balance():
     return balances
 
 
-def get_balance():
+def get_balance(*, prefer_cached=False):
     """
     Fetch USDT balance from Binance Futures account.
     Returns float balance in USDT.
     """
+    if prefer_cached:
+        cached = get_cached_balance()
+        if cached is not None:
+            return cached
+
     client = _get_client()
     balances = client.futures_account_balance()
     for b in balances:
@@ -140,8 +221,13 @@ def can_open_trade(symbol, qty, leverage=10, live=False):
     return usdt_balance >= required_margin and qty > 0
 
 
-def get_open_position(symbol):
+def get_open_position(symbol, *, prefer_cached=False):
     """Return open position info, or None if no position"""
+    if prefer_cached:
+        cached = get_cached_open_position(symbol)
+        if cached is not None:
+            return cached
+
     client = _get_client()
     positions = client.futures_position_information(symbol=symbol)
     if len(positions) > 0:
