@@ -34,8 +34,10 @@ from state import add_closed_trade, load_state, save_state, update_balance, upda
 from strategy import run_strategy
 from trade import close_position, get_balance, get_open_position, set_leverage
 
+RLockType = type(threading.RLock())
+
 state: dict[str, Any] | None = None
-state_lock: threading.RLock | None = None
+state_lock: RLockType | None = None
 live_market_stream: LiveMarketStream | None = None
 technical_logger = get_technical_logger()
 
@@ -88,7 +90,7 @@ def _sleep_with_command_poll(
     wait_seconds: int,
     poll_slice_seconds: int,
     command_kwargs: dict[str, Any] | None = None,
-    state_lock_obj: threading.RLock | None = None,
+    state_lock_obj: RLockType | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if wait_seconds <= 0:
         return current_state, False
