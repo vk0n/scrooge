@@ -14,25 +14,79 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  detect-changes:
+    name: Detect changed images
+    runs-on: ubuntu-latest
+    outputs:
+      any_changed: ${{ steps.matrix.outputs.any_changed }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect path changes
+        id: filter
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            bot:
+              - '.dockerignore'
+              - 'docker/bot.Dockerfile'
+              - 'docker/backtest_entrypoint.sh'
+              - 'requirements.txt'
+              - '*.py'
+              - 'data/**'
+              - 'shared/**'
+            api:
+              - '.dockerignore'
+              - 'docker/api.Dockerfile'
+              - 'api/**'
+            frontend:
+              - '.dockerignore'
+              - 'docker/frontend.Dockerfile'
+              - 'frontend/**'
+
+      - name: Build service matrix
+        id: matrix
+        shell: bash
+        run: |
+          include=()
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ steps.filter.outputs.bot }}" == "true" ]]; then
+            include+=('{"service":"bot","image_name":"scrooge-bot","dockerfile":"docker/bot.Dockerfile","build_args":""}')
+          fi
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ steps.filter.outputs.api }}" == "true" ]]; then
+            include+=('{"service":"api","image_name":"scrooge-api","dockerfile":"docker/api.Dockerfile","build_args":""}')
+          fi
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ steps.filter.outputs.frontend }}" == "true" ]]; then
+            include+=('{"service":"frontend","image_name":"scrooge-frontend","dockerfile":"docker/frontend.Dockerfile","build_args":"INTERNAL_API_BASE_URL=http://api:8000"}')
+          fi
+
+          if [[ ${#include[@]} -eq 0 ]]; then
+            echo 'any_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf -v joined '%s,' "${include[@]}"
+          joined="[${joined%,}]"
+
+          echo 'any_changed=true' >> "$GITHUB_OUTPUT"
+          echo "matrix={\"include\":${joined}}" >> "$GITHUB_OUTPUT"
+
   build-and-push:
     name: Build and push (${{ matrix.service }})
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.any_changed == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - service: bot
-            image_name: scrooge-bot
-            dockerfile: docker/bot.Dockerfile
-            build_args: ""
-          - service: api
-            image_name: scrooge-api
-            dockerfile: docker/api.Dockerfile
-            build_args: ""
-          - service: frontend
-            image_name: scrooge-frontend
-            dockerfile: docker/frontend.Dockerfile
-            build_args: INTERNAL_API_BASE_URL=http://api:8000
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
 
     env:
       DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
@@ -90,3 +144,12 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           provenance: false
+
+  no-changes:
+    name: No image changes
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.any_changed != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip publish
+        run: echo "No Docker image changes detected. Skipping publish."

@@ -299,12 +299,18 @@ function clampPercent(value: number): number {
 
 function buildTradeProgressTrackBackground(entryPercent: number): string {
   const stop = clampPercent(entryPercent);
+  const leftMid = clampPercent(stop * 0.52);
+  const leftNear = clampPercent(Math.max(0, stop - 12));
+  const rightNear = clampPercent(Math.min(100, stop + 12));
+  const rightMid = clampPercent(stop + (100 - stop) * 0.52);
   return `linear-gradient(90deg,
-    rgba(177, 61, 76, 0.42) 0%,
-    rgba(177, 61, 76, 0.42) ${stop}%,
-    rgba(213, 176, 95, 0.2) ${stop}%,
-    rgba(67, 146, 109, 0.44) ${stop}%,
-    rgba(67, 146, 109, 0.44) 100%)`;
+    rgba(177, 61, 76, 0.48) 0%,
+    rgba(166, 73, 84, 0.42) ${leftMid}%,
+    rgba(151, 95, 74, 0.32) ${leftNear}%,
+    rgba(213, 176, 95, 0.24) ${stop}%,
+    rgba(141, 124, 82, 0.24) ${rightNear}%,
+    rgba(86, 142, 104, 0.34) ${rightMid}%,
+    rgba(67, 146, 109, 0.46) 100%)`;
 }
 
 type TradeProgressSnapshot = {
