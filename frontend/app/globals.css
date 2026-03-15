@@ -1107,7 +1107,7 @@ pre {
   overflow: visible;
 }
 
-.trade-progress-endcap,
+.trade-progress-level-marker,
 .trade-progress-entry-marker,
 .trade-progress-current-marker {
   position: absolute;
@@ -1115,22 +1115,32 @@ pre {
   transform: translate(-50%, -50%);
 }
 
-.trade-progress-endcap {
-  width: 0.42rem;
-  height: 0.42rem;
+.trade-progress-level-marker {
+  width: 0.09rem;
+  height: 1.35rem;
   border-radius: 999px;
 }
 
-.trade-progress-endcap-sl {
-  left: 0;
-  background: #ff8e9c;
-  box-shadow: 0 0 0 3px rgba(177, 61, 76, 0.15);
+.trade-progress-level-marker-sl {
+  background: rgba(255, 142, 156, 0.78);
+  box-shadow: 0 0 0 1px rgba(66, 21, 29, 0.6);
 }
 
-.trade-progress-endcap-tp {
-  left: 100%;
-  background: #8de1b6;
-  box-shadow: 0 0 0 3px rgba(45, 139, 102, 0.15);
+.trade-progress-level-marker-tp {
+  background: rgba(141, 225, 182, 0.84);
+  box-shadow: 0 0 0 1px rgba(17, 56, 39, 0.62);
+}
+
+.trade-progress-level-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0.48rem;
+  height: 0.48rem;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  background: #0f131a;
+  transform: translate(-50%, -50%);
 }
 
 .trade-progress-entry-marker {
@@ -1232,17 +1242,17 @@ pre {
   min-width: 0;
 }
 
-.trade-progress-legend-item-sl {
+.trade-progress-legend-item-start {
   justify-items: start;
   text-align: left;
 }
 
-.trade-progress-legend-item-entry {
+.trade-progress-legend-item-center {
   justify-items: center;
   text-align: center;
 }
 
-.trade-progress-legend-item-tp {
+.trade-progress-legend-item-end {
   justify-items: end;
   text-align: right;
 }

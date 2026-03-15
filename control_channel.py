@@ -71,24 +71,32 @@ def _ratio_to_percent(numerator: Any, denominator: Any) -> float | None:
 def _validate_level_update(action: str, new_value: float, position: dict[str, Any]) -> None:
     side = str(position.get("side", "")).lower()
     entry = _as_float(position.get("entry"))
+    sl = _as_float(position.get("sl"))
+    tp = _as_float(position.get("tp"))
     liq_price = _as_float(position.get("liq_price"))
 
     if action == "update_sl":
         if side == "long":
-            if entry is not None and new_value >= entry:
-                raise ValueError("SL for long position must be below entry price")
             if liq_price is not None and new_value <= liq_price:
                 raise ValueError("SL for long position must stay above liquidation price")
+            if tp is not None and new_value >= tp:
+                raise ValueError("Safety Net for long position must stay below Treasure Mark")
         elif side == "short":
-            if entry is not None and new_value <= entry:
-                raise ValueError("SL for short position must be above entry price")
             if liq_price is not None and new_value >= liq_price:
                 raise ValueError("SL for short position must stay below liquidation price")
+            if tp is not None and new_value <= tp:
+                raise ValueError("Safety Net for short position must stay above Treasure Mark")
     elif action == "update_tp":
-        if side == "long" and entry is not None and new_value <= entry:
-            raise ValueError("TP for long position must be above entry price")
-        if side == "short" and entry is not None and new_value >= entry:
-            raise ValueError("TP for short position must be below entry price")
+        if side == "long":
+            if entry is not None and new_value <= entry:
+                raise ValueError("TP for long position must be above entry price")
+            if sl is not None and new_value <= sl:
+                raise ValueError("Treasure Mark for long position must stay above Safety Net")
+        if side == "short":
+            if entry is not None and new_value >= entry:
+                raise ValueError("TP for short position must be below entry price")
+            if sl is not None and new_value >= sl:
+                raise ValueError("Treasure Mark for short position must stay below Safety Net")
 
 
 def _normalize_suggested_side(value: Any) -> str | None:

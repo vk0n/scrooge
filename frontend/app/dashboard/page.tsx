@@ -297,27 +297,55 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-function buildTradeProgressTrackBackground(entryPercent: number): string {
-  const stop = clampPercent(entryPercent);
-  const leftMid = clampPercent(stop * 0.52);
-  const leftNear = clampPercent(Math.max(0, stop - 12));
-  const rightNear = clampPercent(Math.min(100, stop + 12));
-  const rightMid = clampPercent(stop + (100 - stop) * 0.52);
+function buildTradeProgressTrackBackground(entryPercent: number, slPercent: number): string {
+  const entry = clampPercent(entryPercent);
+  const safetyNet = clampPercent(slPercent);
+
+  if (safetyNet >= entry - 0.2) {
+    const entryNear = clampPercent(entry + 5);
+    const stopNear = clampPercent(Math.max(entryNear, safetyNet - 7));
+    const stopMid = clampPercent(safetyNet + (100 - safetyNet) * 0.42);
+    return `linear-gradient(90deg,
+      rgba(166, 132, 63, 0.24) 0%,
+      rgba(185, 152, 75, 0.22) ${entry}%,
+      rgba(136, 160, 98, 0.24) ${entryNear}%,
+      rgba(92, 151, 107, 0.34) ${stopNear}%,
+      rgba(67, 146, 109, 0.42) ${safetyNet}%,
+      rgba(70, 162, 116, 0.5) ${stopMid}%,
+      rgba(82, 188, 130, 0.58) 100%)`;
+  }
+
+  const leftMid = clampPercent(entry * 0.52);
+  const leftNear = clampPercent(Math.max(0, entry - 12));
+  const rightNear = clampPercent(Math.min(100, entry + 12));
+  const rightMid = clampPercent(entry + (100 - entry) * 0.52);
   return `linear-gradient(90deg,
     rgba(177, 61, 76, 0.48) 0%,
     rgba(166, 73, 84, 0.42) ${leftMid}%,
     rgba(151, 95, 74, 0.32) ${leftNear}%,
-    rgba(213, 176, 95, 0.24) ${stop}%,
+    rgba(213, 176, 95, 0.24) ${entry}%,
     rgba(141, 124, 82, 0.24) ${rightNear}%,
     rgba(86, 142, 104, 0.34) ${rightMid}%,
     rgba(67, 146, 109, 0.46) 100%)`;
 }
 
+type TradeProgressMarkerKey = "sl" | "entry" | "tp";
+
+type TradeProgressMarker = {
+  key: TradeProgressMarkerKey;
+  label: "SN" | "Entry" | "TM";
+  value: number;
+  percent: number;
+};
+
 type TradeProgressSnapshot = {
+  slPercent: number;
   entryPercent: number;
+  tpPercent: number;
   currentPercent: number | null;
   currentLabelPercent: number | null;
   currentTone: "positive" | "negative" | "neutral";
+  markers: TradeProgressMarker[];
 };
 
 function computeTradeProgress(
@@ -330,13 +358,29 @@ function computeTradeProgress(
     return null;
   }
 
-  const span = tp - sl;
+  const isLong = tp > entry;
+  const markers = [
+    { key: "sl" as const, label: "SN" as const, value: sl },
+    { key: "entry" as const, label: "Entry" as const, value: entry },
+    { key: "tp" as const, label: "TM" as const, value: tp }
+  ].sort((left, right) => (isLong ? left.value - right.value : right.value - left.value));
+
+  const leftValue = markers[0]?.value;
+  const rightValue = markers[markers.length - 1]?.value;
+  const span = rightValue - leftValue;
   if (!Number.isFinite(span) || span === 0) {
     return null;
   }
 
-  const entryRaw = ((entry - sl) / span) * 100;
-  const currentRaw = isFiniteNumber(current) ? ((current - sl) / span) * 100 : null;
+  const toPercent = (value: number): number => ((value - leftValue) / span) * 100;
+  const normalizedMarkers = markers.map((marker) => ({
+    ...marker,
+    percent: clampPercent(toPercent(marker.value))
+  }));
+  const entryRaw = toPercent(entry);
+  const slRaw = toPercent(sl);
+  const tpRaw = toPercent(tp);
+  const currentRaw = isFiniteNumber(current) ? toPercent(current) : null;
   const currentPercent = currentRaw === null ? null : clampPercent(currentRaw);
 
   let currentTone: TradeProgressSnapshot["currentTone"] = "neutral";
@@ -349,10 +393,13 @@ function computeTradeProgress(
   }
 
   return {
+    slPercent: clampPercent(slRaw),
     entryPercent: clampPercent(entryRaw),
+    tpPercent: clampPercent(tpRaw),
     currentPercent,
     currentLabelPercent: currentPercent === null ? null : Math.max(8, Math.min(92, currentPercent)),
-    currentTone
+    currentTone,
+    markers: normalizedMarkers
   };
 }
 
@@ -859,10 +906,31 @@ function DashboardContent(): JSX.Element {
                       <div
                         className="trade-progress-track"
                         aria-label="Trade progress from safety net to treasure mark"
-                        style={{ background: buildTradeProgressTrackBackground(tradeProgress.entryPercent) }}
+                        style={{
+                          background: buildTradeProgressTrackBackground(
+                            tradeProgress.entryPercent,
+                            tradeProgress.slPercent
+                          )
+                        }}
                       >
-                        <span className="trade-progress-endcap trade-progress-endcap-sl" aria-hidden="true" />
-                        <span className="trade-progress-endcap trade-progress-endcap-tp" aria-hidden="true" />
+                        {Math.abs(tradeProgress.slPercent - tradeProgress.entryPercent) > 0.6 ? (
+                          <span
+                            className="trade-progress-level-marker trade-progress-level-marker-sl"
+                            style={{ left: `${tradeProgress.slPercent}%` }}
+                            aria-hidden="true"
+                          >
+                            <span className="trade-progress-level-dot" />
+                          </span>
+                        ) : null}
+                        {Math.abs(tradeProgress.tpPercent - tradeProgress.entryPercent) > 0.6 ? (
+                          <span
+                            className="trade-progress-level-marker trade-progress-level-marker-tp"
+                            style={{ left: `${tradeProgress.tpPercent}%` }}
+                            aria-hidden="true"
+                          >
+                            <span className="trade-progress-level-dot" />
+                          </span>
+                        ) : null}
                         <span
                           className="trade-progress-entry-marker"
                           style={{ left: `${tradeProgress.entryPercent}%` }}
@@ -890,18 +958,17 @@ function DashboardContent(): JSX.Element {
                       </div>
                     </div>
                     <div className="trade-progress-legend">
-                      <div className="trade-progress-legend-item trade-progress-legend-item-sl">
-                        <span className="trade-progress-legend-name">SN</span>
-                        <span className="trade-progress-legend-value">{formatPrice(sl)}</span>
-                      </div>
-                      <div className="trade-progress-legend-item trade-progress-legend-item-entry">
-                        <span className="trade-progress-legend-name">Entry</span>
-                        <span className="trade-progress-legend-value">{formatPrice(entryPrice)}</span>
-                      </div>
-                      <div className="trade-progress-legend-item trade-progress-legend-item-tp">
-                        <span className="trade-progress-legend-name">TM</span>
-                        <span className="trade-progress-legend-value">{formatPrice(tp)}</span>
-                      </div>
+                      {tradeProgress.markers.map((marker, index) => (
+                        <div
+                          key={marker.key}
+                          className={`trade-progress-legend-item trade-progress-legend-item-${marker.key} trade-progress-legend-item-${
+                            index === 0 ? "start" : index === tradeProgress.markers.length - 1 ? "end" : "center"
+                          }`}
+                        >
+                          <span className="trade-progress-legend-name">{marker.label}</span>
+                          <span className="trade-progress-legend-value">{formatPrice(marker.value)}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ) : null}
