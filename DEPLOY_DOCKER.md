@@ -80,6 +80,25 @@ Control plane + live bot + Watchtower auto-update:
 docker compose --profile live --profile watchtower up -d
 ```
 
+Optional live socket knobs:
+
+```env
+SCROOGE_MARKET_STREAM_ENABLED=1
+SCROOGE_MARKET_STREAM_PERSIST_INTERVAL_SECONDS=1
+SCROOGE_MARKET_STREAM_SETTLE_SECONDS=1.5
+SCROOGE_USER_STREAM_ENABLED=1
+SCROOGE_USER_STREAM_KEEPALIVE_SECONDS=1800
+SCROOGE_USER_STREAM_RECONNECT_SECONDS=5
+SCROOGE_USER_STREAM_STALE_AFTER_SECONDS=120
+SCROOGE_FUTURES_REST_BASE_URL=https://fapi.binance.com
+SCROOGE_FUTURES_WS_BASE_URL=wss://fstream.binance.com/ws
+```
+
+Notes:
+- market sockets drive live price and closed-candle triggers
+- user stream drives faster balance/position updates
+- if the user stream goes stale beyond `SCROOGE_USER_STREAM_STALE_AFTER_SECONDS`, the bot falls back to REST reads until freshness is restored
+
 Important for Watchtower:
 - it watches only services labeled with `com.centurylinklabs.watchtower.enable=true`
 - it is scoped by `SCROOGE_WATCHTOWER_SCOPE`

@@ -12,6 +12,7 @@ _account_cache_lock = threading.RLock()
 _cached_balance = None
 _cached_balance_updated_at = None
 _cached_positions = None
+_cached_positions_updated_at = None
 
 def set_client(client):
     global _client
@@ -25,11 +26,12 @@ def _get_client():
 
 
 def clear_runtime_account_cache():
-    global _cached_balance, _cached_balance_updated_at, _cached_positions
+    global _cached_balance, _cached_balance_updated_at, _cached_positions, _cached_positions_updated_at
     with _account_cache_lock:
         _cached_balance = None
         _cached_balance_updated_at = None
         _cached_positions = None
+        _cached_positions_updated_at = None
 
 
 def set_cached_balance(balance):
@@ -49,8 +51,16 @@ def get_cached_balance():
         return _cached_balance
 
 
+def get_cached_balance_age_seconds():
+    with _account_cache_lock:
+        updated_at = _cached_balance_updated_at
+    if updated_at is None:
+        return None
+    return max(0.0, time.time() - updated_at)
+
+
 def set_cached_position(symbol, position):
-    global _cached_positions
+    global _cached_positions, _cached_positions_updated_at
 
     symbol_key = str(symbol or "").upper().strip()
     if not symbol_key:
@@ -64,11 +74,15 @@ def set_cached_position(symbol, position):
     with _account_cache_lock:
         if _cached_positions is None:
             _cached_positions = {}
+        if _cached_positions_updated_at is None:
+            _cached_positions_updated_at = {}
 
         if normalized is None:
             _cached_positions.pop(symbol_key, None)
+            _cached_positions_updated_at.pop(symbol_key, None)
         else:
             _cached_positions[symbol_key] = normalized
+            _cached_positions_updated_at[symbol_key] = time.time()
 
 
 def get_cached_open_position(symbol):
@@ -90,6 +104,20 @@ def get_cached_open_position(symbol):
     except (TypeError, ValueError):
         return None
     return dict(pos)
+
+
+def get_cached_position_age_seconds(symbol):
+    symbol_key = str(symbol or "").upper().strip()
+    if not symbol_key:
+        return None
+
+    with _account_cache_lock:
+        if _cached_positions_updated_at is None:
+            return None
+        updated_at = _cached_positions_updated_at.get(symbol_key)
+    if updated_at is None:
+        return None
+    return max(0.0, time.time() - updated_at)
 
 # --- Utility functions --- #
 def set_leverage(symbol, leverage):

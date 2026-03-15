@@ -35,8 +35,10 @@ from strategy import run_strategy
 from trade import (
     close_position,
     get_balance,
+    get_cached_balance_age_seconds,
     get_cached_balance,
     get_cached_open_position,
+    get_cached_position_age_seconds,
     get_open_position,
     set_leverage,
 )
@@ -56,6 +58,16 @@ def _env_int(name: str, default: int) -> int:
         return value if value > 0 else default
     except ValueError:
         technical_logger.warning("invalid_env_integer name=%s raw=%s fallback=%s", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = float(raw)
+        return value if value > 0 else default
+    except ValueError:
+        technical_logger.warning("invalid_env_float name=%s raw=%s fallback=%s", name, raw, default)
         return default
 
 
@@ -418,6 +430,7 @@ if __name__ == "__main__":
 
     live_poll_seconds = _env_int("SCROOGE_LIVE_POLL_SECONDS", 60)
     control_poll_slice_seconds = _env_int("SCROOGE_CONTROL_POLL_SLICE_SECONDS", 1)
+    user_stream_stale_after_seconds = _env_float("SCROOGE_USER_STREAM_STALE_AFTER_SECONDS", 120.0)
     debug_strategy_ticks = _env_flag("SCROOGE_DEBUG_STRATEGY_TICKS", False)
     chart_dataset_path = Path(os.getenv("SCROOGE_RUNTIME_CHART_DATASET_PATH", "chart_dataset.csv")).expanduser()
 
@@ -441,6 +454,10 @@ if __name__ == "__main__":
         control_client = get_control_client()
         restart_requested = False
         last_trading_enabled: bool | None = None
+        cache_health_flags = {
+            "balance_cache_stale_logged": False,
+            "position_cache_stale_logged": False,
+        }
         last_balance_refresh_monotonic = 0.0
         last_strategy_candle_open_time: str | None = None
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
@@ -466,6 +483,74 @@ if __name__ == "__main__":
         )
         if not live_market_stream.start():
             raise RuntimeError("Live market stream failed to start.")
+
+        def resolve_live_balance() -> float:
+            cached_balance = get_cached_balance()
+            cache_age = get_cached_balance_age_seconds()
+            if (
+                cached_balance is not None
+                and cache_age is not None
+                and cache_age <= user_stream_stale_after_seconds
+            ):
+                if cache_health_flags["balance_cache_stale_logged"]:
+                    technical_logger.info(
+                        "user_stream_balance_cache_restored age=%.2f threshold=%.2f",
+                        cache_age,
+                        user_stream_stale_after_seconds,
+                    )
+                    cache_health_flags["balance_cache_stale_logged"] = False
+                return cached_balance
+
+            if (
+                cached_balance is not None
+                and cache_age is not None
+                and not cache_health_flags["balance_cache_stale_logged"]
+            ):
+                technical_logger.warning(
+                    "user_stream_balance_cache_stale age=%.2f threshold=%.2f fallback=rest",
+                    cache_age,
+                    user_stream_stale_after_seconds,
+                )
+                cache_health_flags["balance_cache_stale_logged"] = True
+
+            return get_balance()
+
+        def resolve_live_position(current_symbol: str, expect_position: bool) -> dict[str, Any] | None:
+            cached_position = get_cached_open_position(current_symbol)
+            cache_age = get_cached_position_age_seconds(current_symbol)
+            if (
+                cached_position is not None
+                and cache_age is not None
+                and cache_age <= user_stream_stale_after_seconds
+            ):
+                if cache_health_flags["position_cache_stale_logged"]:
+                    technical_logger.info(
+                        "user_stream_position_cache_restored symbol=%s age=%.2f threshold=%.2f",
+                        current_symbol,
+                        cache_age,
+                        user_stream_stale_after_seconds,
+                    )
+                    cache_health_flags["position_cache_stale_logged"] = False
+                return cached_position
+
+            if (
+                cached_position is not None
+                and cache_age is not None
+                and expect_position
+                and not cache_health_flags["position_cache_stale_logged"]
+            ):
+                technical_logger.warning(
+                    "user_stream_position_cache_stale symbol=%s age=%.2f threshold=%.2f fallback=rest",
+                    current_symbol,
+                    cache_age,
+                    user_stream_stale_after_seconds,
+                )
+                cache_health_flags["position_cache_stale_logged"] = True
+
+            pos = get_open_position(current_symbol) if expect_position else get_cached_open_position(current_symbol)
+            if pos is not None:
+                cache_health_flags["position_cache_stale_logged"] = False
+            return pos
 
         try:
             while True:
@@ -504,6 +589,8 @@ if __name__ == "__main__":
                             if not live_market_stream.is_running():
                                 raise RuntimeError("Live market stream failed to restart after config reload.")
                         restart_requested = False
+                        cache_health_flags["balance_cache_stale_logged"] = False
+                        cache_health_flags["position_cache_stale_logged"] = False
                         last_balance_refresh_monotonic = 0.0
                         last_strategy_candle_open_time = None
                         technical_logger.info("config_restart_applied symbol=%s leverage=%s", symbol, lvrg)
@@ -521,9 +608,7 @@ if __name__ == "__main__":
 
                     now_monotonic = time.monotonic()
                     if (now_monotonic - last_balance_refresh_monotonic) >= live_poll_seconds:
-                        current_balance = get_cached_balance()
-                        if current_balance is None:
-                            current_balance = get_balance()
+                        current_balance = resolve_live_balance()
                         with state_lock:
                             update_balance(state, current_balance)
                             runtime_context["state"] = state
@@ -550,9 +635,7 @@ if __name__ == "__main__":
                             )
                         continue
 
-                    current_balance = get_cached_balance()
-                    if current_balance is None:
-                        current_balance = get_balance()
+                    current_balance = resolve_live_balance()
                     with state_lock:
                         update_balance(state, current_balance)
                         runtime_context["state"] = state
@@ -565,9 +648,7 @@ if __name__ == "__main__":
                         technical_logger.debug("live_skip_strategy_on_closed_candle trading_enabled=false has_position=false")
                         continue
 
-                    pos = get_cached_open_position(symbol)
-                    if pos is None and has_position:
-                        pos = get_open_position(symbol)
+                    pos = resolve_live_position(symbol, has_position)
                     if pos:
                         with state_lock:
                             position = state.get("position") if isinstance(state.get("position"), dict) else {}
