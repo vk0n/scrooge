@@ -1374,6 +1374,13 @@ pre {
   padding: 0.28rem 0.48rem;
 }
 
+.trade-edit-preview {
+  margin: -0.04rem 0 0;
+  font-size: 0.76rem;
+  line-height: 1.3;
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+}
+
 .trade-danger-line {
   margin-top: -0.2rem;
   color: #ffcf95;
@@ -1943,6 +1950,10 @@ pre {
 
   .trade-progress-track-shell {
     padding-top: 1.2rem;
+  }
+
+  .trade-edit-preview {
+    font-size: 0.72rem;
   }
 
   .trade-progress-legend-value {

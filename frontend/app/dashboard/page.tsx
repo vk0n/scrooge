@@ -447,6 +447,33 @@ function formatPercent(value: number | null): string {
   return "0.00%";
 }
 
+type TargetPnlPreview = {
+  pnlUsd: number;
+  tone: "positive" | "negative" | "neutral";
+};
+
+function computeTargetPnlPreview(
+  side: "long" | "short" | null,
+  entryPrice: number | null,
+  positionSize: number | null,
+  rawValue: string
+): TargetPnlPreview | null {
+  const targetPrice = Number(rawValue);
+  if (
+    !side ||
+    !Number.isFinite(targetPrice) ||
+    targetPrice <= 0 ||
+    !isFiniteNumber(entryPrice) ||
+    !isFiniteNumber(positionSize)
+  ) {
+    return null;
+  }
+
+  const pnlUsd = side === "long" ? (targetPrice - entryPrice) * positionSize : (entryPrice - targetPrice) * positionSize;
+  const tone = pnlUsd > 0 ? "positive" : pnlUsd < 0 ? "negative" : "neutral";
+  return { pnlUsd, tone };
+}
+
 function tailGuardValueClass(trailingState: TrailingState | null): string {
   if (!trailingState) {
     return "metric-value value-neutral";
@@ -791,6 +818,8 @@ function DashboardContent(): JSX.Element {
   const statusIntentText = statusIntentBadgeText(botStatus);
   const statusIntentClass = statusIntentBadgeClass(botStatus);
   const tradeProgress = computeTradeProgress(sl, entryPrice, tp, lastPrice);
+  const slDraftPreview = computeTargetPnlPreview(openTradeSide, entryPrice, positionSize, slValue);
+  const tpDraftPreview = computeTargetPnlPreview(openTradeSide, entryPrice, positionSize, tpValue);
   const alreadyAtBreakEvenOrBetter =
     !isFiniteNumber(entryPrice) ||
     (openTradeSide === "long" && isFiniteNumber(sl) && sl >= entryPrice) ||
@@ -1039,6 +1068,11 @@ function DashboardContent(): JSX.Element {
                         Apply Net
                       </button>
                     </div>
+                    {slDraftPreview ? (
+                      <p className={`trade-edit-preview value-${slDraftPreview.tone}`}>
+                        If hit: {formatUnrealizedPnlUsd(slDraftPreview.pnlUsd)}
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className="kv-item trade-manage-card">
@@ -1065,6 +1099,11 @@ function DashboardContent(): JSX.Element {
                         Mark Treasure
                       </button>
                     </div>
+                    {tpDraftPreview ? (
+                      <p className={`trade-edit-preview value-${tpDraftPreview.tone}`}>
+                        If hit: {formatUnrealizedPnlUsd(tpDraftPreview.pnlUsd)}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
 
