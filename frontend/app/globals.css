@@ -912,12 +912,6 @@ pre {
   gap: 0.58rem;
 }
 
-.chart-secondary-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.58rem;
-}
-
 .chart-panel {
   display: grid;
   gap: 0.34rem;
@@ -1675,11 +1669,11 @@ pre {
 }
 
 .chart-surface-md {
-  min-height: 280px;
+  min-height: 220px;
 }
 
 .chart-surface-sm {
-  min-height: 240px;
+  min-height: 180px;
 }
 
 .top-nav {
@@ -2167,10 +2161,6 @@ pre {
     flex-direction: column;
   }
 
-  .chart-secondary-grid {
-    grid-template-columns: 1fr;
-  }
-
   .chart-panel-head-simple {
     align-items: flex-start;
   }
@@ -2194,7 +2184,7 @@ pre {
 
   .chart-surface-md,
   .chart-surface-sm {
-    min-height: 204px;
+    min-height: 176px;
   }
 
   .chart-surface .modebar-container,
@@ -2339,10 +2329,6 @@ pre {
     gap: 0.28rem;
   }
 
-  .chart-secondary-grid {
-    gap: 0.48rem;
-  }
-
   .chart-panel-title {
     font-size: 0.9rem;
   }
@@ -2361,6 +2347,6 @@ pre {
 
   .chart-surface-md,
   .chart-surface-sm {
-    min-height: 184px;
+    min-height: 164px;
   }
 }

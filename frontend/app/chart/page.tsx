@@ -1185,28 +1185,26 @@ function ChartContent(): JSX.Element {
           </header>
           <div ref={priceChartRef} className="chart-surface chart-surface-lg" />
         </section>
-        <div className="chart-secondary-grid">
-          <section className="chart-panel">
-            <header className="chart-panel-head chart-panel-head-simple">
-              <h3 className="chart-panel-title">Equity Curve</h3>
-            </header>
-            <div ref={equityChartRef} className="chart-surface chart-surface-md" />
-          </section>
-          <section className="chart-panel">
-            <header className="chart-panel-head chart-panel-head-simple">
-              <h3 className="chart-panel-title">
-                {includeIndicators && data?.indicators?.rsi?.length
-                  ? (() => {
-                      const rsiPeriod = data.indicator_spec?.rsi?.period ?? 11;
-                      const rsiInterval = data.indicator_spec?.rsi?.interval;
-                      return rsiInterval ? `RSI (${rsiPeriod}, ${rsiInterval})` : `RSI (${rsiPeriod})`;
-                    })()
-                  : "RSI"}
-              </h3>
-            </header>
-            <div ref={rsiChartRef} className="chart-surface chart-surface-sm" />
-          </section>
-        </div>
+        <section className="chart-panel">
+          <header className="chart-panel-head chart-panel-head-simple">
+            <h3 className="chart-panel-title">Equity Curve</h3>
+          </header>
+          <div ref={equityChartRef} className="chart-surface chart-surface-md" />
+        </section>
+        <section className="chart-panel">
+          <header className="chart-panel-head chart-panel-head-simple">
+            <h3 className="chart-panel-title">
+              {includeIndicators && data?.indicators?.rsi?.length
+                ? (() => {
+                    const rsiPeriod = data.indicator_spec?.rsi?.period ?? 11;
+                    const rsiInterval = data.indicator_spec?.rsi?.interval;
+                    return rsiInterval ? `RSI (${rsiPeriod}, ${rsiInterval})` : `RSI (${rsiPeriod})`;
+                  })()
+                : "RSI"}
+            </h3>
+          </header>
+          <div ref={rsiChartRef} className="chart-surface chart-surface-sm" />
+        </section>
       </div>
 
       {data?.warnings.length ? (
