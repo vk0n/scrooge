@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from typing import Any, Callable
 
@@ -24,6 +27,11 @@ except ImportError:  # pragma: no cover - dependency installed in bot image
     ThreadedWebsocketManager = None
     FuturesType = None
 
+try:
+    import websocket
+except ImportError:  # pragma: no cover - dependency installed in bot image
+    websocket = None
+
 
 technical_logger = get_technical_logger()
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -41,6 +49,22 @@ MARKET_STREAM_SETTLE_SECONDS = max(
     0.25,
     float(os.getenv("SCROOGE_MARKET_STREAM_SETTLE_SECONDS", "1.5")),
 )
+USER_STREAM_ENABLED = os.getenv("SCROOGE_USER_STREAM_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+USER_STREAM_KEEPALIVE_SECONDS = max(
+    60,
+    int(float(os.getenv("SCROOGE_USER_STREAM_KEEPALIVE_SECONDS", "1800"))),
+)
+USER_STREAM_RECONNECT_SECONDS = max(
+    1.0,
+    float(os.getenv("SCROOGE_USER_STREAM_RECONNECT_SECONDS", "5")),
+)
+FUTURES_REST_BASE_URL = os.getenv("SCROOGE_FUTURES_REST_BASE_URL", "https://fapi.binance.com").rstrip("/")
+FUTURES_WS_BASE_URL = os.getenv("SCROOGE_FUTURES_WS_BASE_URL", "wss://fstream.binance.com/ws").rstrip("/")
 
 
 def _to_float(value: Any) -> float | None:
@@ -189,6 +213,11 @@ class LiveMarketStream:
         self._twm: ThreadedWebsocketManager | None = None
         self._market_stream_name: str | None = None
         self._user_stream_name: str | None = None
+        self._user_listen_key: str | None = None
+        self._user_socket_app: Any = None
+        self._user_socket_thread: threading.Thread | None = None
+        self._user_keepalive_thread: threading.Thread | None = None
+        self._user_stop_event = threading.Event()
         self._last_ticker_price: float | None = None
         self._last_mark_price: float | None = None
         self._last_persist_monotonic: float | None = None
@@ -231,14 +260,7 @@ class LiveMarketStream:
                 streams=streams,
                 futures_type=FuturesType.USD_M,
             )
-            user_stream_name = None
-            if hasattr(twm, "start_futures_socket"):
-                try:
-                    user_stream_name = twm.start_futures_socket(callback=self._handle_user_message)
-                except Exception as exc:  # noqa: BLE001
-                    technical_logger.warning("user_stream_start_failed symbol=%s error=%s", self._symbol, exc)
-            else:
-                technical_logger.warning("user_stream_unavailable reason=start_futures_socket_missing")
+            user_stream_name = "raw_listen_key_socket" if self._start_user_stream() else None
         except Exception as exc:  # noqa: BLE001
             technical_logger.exception("market_stream_start_failed symbol=%s error=%s", self._symbol, exc)
             if twm is not None:
@@ -275,6 +297,7 @@ class LiveMarketStream:
         self._market_stream_name = None
         self._user_stream_name = None
         self._last_persist_monotonic = None
+        self._stop_user_stream()
 
         if twm is None:
             return
@@ -397,6 +420,202 @@ class LiveMarketStream:
         else:
             set_cached_position(self._symbol, position)
 
+    def _start_user_stream(self) -> bool:
+        if not USER_STREAM_ENABLED:
+            technical_logger.info("user_stream_disabled_by_env symbol=%s", self._symbol)
+            return False
+
+        if websocket is None:
+            technical_logger.warning("user_stream_unavailable reason=websocket_client_missing")
+            return False
+
+        if not self._api_key:
+            technical_logger.warning("user_stream_unavailable reason=missing_api_key")
+            return False
+
+        self._user_stop_event.clear()
+        self._user_socket_thread = threading.Thread(
+            target=self._run_user_socket_loop,
+            name=f"scrooge-user-stream-{self._symbol.lower()}",
+            daemon=True,
+        )
+        self._user_keepalive_thread = threading.Thread(
+            target=self._run_user_keepalive_loop,
+            name=f"scrooge-user-keepalive-{self._symbol.lower()}",
+            daemon=True,
+        )
+        self._user_socket_thread.start()
+        self._user_keepalive_thread.start()
+        return True
+
+    def _stop_user_stream(self) -> None:
+        self._user_stop_event.set()
+
+        socket_app = self._user_socket_app
+        self._user_socket_app = None
+        if socket_app is not None:
+            try:
+                socket_app.close()
+            except Exception as exc:  # noqa: BLE001
+                technical_logger.warning("user_stream_socket_close_failed symbol=%s error=%s", self._symbol, exc)
+
+        for thread_obj in (self._user_socket_thread, self._user_keepalive_thread):
+            if thread_obj is not None and thread_obj.is_alive():
+                thread_obj.join(timeout=2.0)
+
+        self._user_socket_thread = None
+        self._user_keepalive_thread = None
+
+        listen_key = self._user_listen_key
+        self._user_listen_key = None
+        if listen_key:
+            self._close_listen_key(listen_key)
+
+    def _request_listen_key(self, method: str, *, listen_key: str | None = None) -> dict[str, Any] | None:
+        url = f"{FUTURES_REST_BASE_URL}/fapi/v1/listenKey"
+        headers = {"X-MBX-APIKEY": self._api_key or ""}
+        request = urllib.request.Request(url, method=method.upper(), headers=headers)
+        if listen_key:
+            request.add_header("Content-Type", "application/x-www-form-urlencoded")
+            payload = f"listenKey={listen_key}".encode("utf-8")
+        else:
+            payload = b""
+
+        try:
+            with urllib.request.urlopen(request, data=payload, timeout=10) as response:
+                body = response.read().decode("utf-8").strip()
+        except urllib.error.HTTPError as exc:
+            technical_logger.warning(
+                "user_stream_listen_key_request_failed symbol=%s method=%s status=%s error=%s",
+                self._symbol,
+                method.upper(),
+                exc.code,
+                exc.reason,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001
+            technical_logger.warning(
+                "user_stream_listen_key_request_failed symbol=%s method=%s error=%s",
+                self._symbol,
+                method.upper(),
+                exc,
+            )
+            return None
+
+        if not body:
+            return {}
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            technical_logger.warning(
+                "user_stream_listen_key_invalid_response symbol=%s method=%s body=%s",
+                self._symbol,
+                method.upper(),
+                body,
+            )
+            return None
+        if isinstance(data, dict):
+            return data
+        technical_logger.warning(
+            "user_stream_listen_key_invalid_payload symbol=%s method=%s payload=%s",
+            self._symbol,
+            method.upper(),
+            data,
+        )
+        return None
+
+    def _create_listen_key(self) -> str | None:
+        payload = self._request_listen_key("POST")
+        if not isinstance(payload, dict):
+            return None
+        listen_key = str(payload.get("listenKey", "")).strip()
+        if not listen_key:
+            technical_logger.warning("user_stream_listen_key_missing symbol=%s", self._symbol)
+            return None
+        return listen_key
+
+    def _keepalive_listen_key(self, listen_key: str) -> bool:
+        payload = self._request_listen_key("PUT", listen_key=listen_key)
+        return payload is not None
+
+    def _close_listen_key(self, listen_key: str) -> None:
+        self._request_listen_key("DELETE", listen_key=listen_key)
+
+    def _run_user_socket_loop(self) -> None:
+        while not self._user_stop_event.is_set():
+            listen_key = self._user_listen_key
+            if not listen_key:
+                listen_key = self._create_listen_key()
+                if not listen_key:
+                    if self._user_stop_event.wait(USER_STREAM_RECONNECT_SECONDS):
+                        return
+                    continue
+                self._user_listen_key = listen_key
+
+            ws_url = f"{FUTURES_WS_BASE_URL}/{listen_key}"
+            socket_app = websocket.WebSocketApp(
+                ws_url,
+                on_open=self._handle_user_socket_open,
+                on_message=self._handle_user_socket_message,
+                on_error=self._handle_user_socket_error,
+                on_close=self._handle_user_socket_close,
+            )
+            self._user_socket_app = socket_app
+
+            try:
+                socket_app.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as exc:  # noqa: BLE001
+                technical_logger.warning("user_stream_run_failed symbol=%s error=%s", self._symbol, exc)
+            finally:
+                self._user_socket_app = None
+
+            if self._user_stop_event.is_set():
+                break
+
+            technical_logger.warning("user_stream_reconnecting symbol=%s delay=%s", self._symbol, USER_STREAM_RECONNECT_SECONDS)
+            if self._user_stop_event.wait(USER_STREAM_RECONNECT_SECONDS):
+                break
+
+    def _run_user_keepalive_loop(self) -> None:
+        while not self._user_stop_event.wait(USER_STREAM_KEEPALIVE_SECONDS):
+            listen_key = self._user_listen_key
+            if not listen_key:
+                continue
+            if not self._keepalive_listen_key(listen_key):
+                technical_logger.warning("user_stream_keepalive_failed symbol=%s", self._symbol)
+                self._user_listen_key = None
+                if self._user_socket_app is not None:
+                    try:
+                        self._user_socket_app.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+    def _handle_user_socket_open(self, ws_app: Any) -> None:  # noqa: ARG002
+        technical_logger.info("user_stream_connected symbol=%s", self._symbol)
+
+    def _handle_user_socket_message(self, ws_app: Any, raw_message: Any) -> None:  # noqa: ARG002
+        try:
+            message = json.loads(raw_message) if isinstance(raw_message, str) else raw_message
+        except json.JSONDecodeError:
+            technical_logger.warning("user_stream_message_invalid_json symbol=%s raw=%s", self._symbol, raw_message)
+            return
+        self._handle_user_message(message)
+
+    def _handle_user_socket_error(self, ws_app: Any, error: Any) -> None:  # noqa: ARG002
+        if self._user_stop_event.is_set():
+            return
+        technical_logger.warning("user_stream_socket_error symbol=%s error=%s", self._symbol, error)
+
+    def _handle_user_socket_close(self, ws_app: Any, status_code: Any, message: Any) -> None:  # noqa: ARG002
+        if self._user_stop_event.is_set():
+            return
+        technical_logger.warning(
+            "user_stream_disconnected symbol=%s status=%s message=%s",
+            self._symbol,
+            status_code,
+            message,
+        )
+
     def _bootstrap_candle_caches(self) -> None:
         technical_logger.info(
             "market_stream_bootstrap_started symbol=%s small=%s medium=%s big=%s",
@@ -453,6 +672,15 @@ class LiveMarketStream:
 
         if event_type == "listenKeyExpired":
             technical_logger.warning("user_stream_listen_key_expired symbol=%s", self._symbol)
+            expired_key = self._user_listen_key
+            self._user_listen_key = None
+            if expired_key:
+                self._close_listen_key(expired_key)
+            if self._user_socket_app is not None:
+                try:
+                    self._user_socket_app.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _handle_account_update(self, account_data: Any, event_ts: Any) -> None:
         if not isinstance(account_data, dict):
