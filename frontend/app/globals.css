@@ -776,6 +776,23 @@ pre {
   color: #ffe6ee;
 }
 
+.contract-term {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0.08rem;
+  padding: 0.04rem 0.38rem;
+  border: 1px solid rgba(180, 142, 62, 0.44);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(70, 52, 18, 0.3), rgba(49, 37, 15, 0.42));
+  color: #ffe0a5;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.35;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 232, 185, 0.03),
+    0 0 10px rgba(214, 168, 66, 0.05);
+}
+
 .contract-editor {
   display: grid;
   gap: 0.62rem;

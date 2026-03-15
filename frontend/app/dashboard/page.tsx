@@ -1069,6 +1069,10 @@ function DashboardContent(): JSX.Element {
                         >
                           {segment.display}
                         </span>
+                      ) : segment.kind === "term" ? (
+                        <span key={`contract-segment-${paragraphIndex}-${segmentIndex}`} className="contract-term">
+                          {segment.text}
+                        </span>
                       ) : (
                         <span key={`contract-segment-${paragraphIndex}-${segmentIndex}`}>{segment.text}</span>
                       )
