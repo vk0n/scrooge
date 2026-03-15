@@ -912,6 +912,12 @@ pre {
   gap: 0.58rem;
 }
 
+.chart-secondary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.58rem;
+}
+
 .chart-panel {
   display: grid;
   gap: 0.34rem;
@@ -2161,6 +2167,10 @@ pre {
     flex-direction: column;
   }
 
+  .chart-secondary-grid {
+    grid-template-columns: 1fr;
+  }
+
   .chart-panel-head-simple {
     align-items: flex-start;
   }
@@ -2327,6 +2337,10 @@ pre {
 
   .chart-panel {
     gap: 0.28rem;
+  }
+
+  .chart-secondary-grid {
+    gap: 0.48rem;
   }
 
   .chart-panel-title {
