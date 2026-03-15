@@ -116,6 +116,12 @@ type LiveStatusPayload = {
   trailing_state: LiveTrailingState | null;
 };
 
+type ChartLegendItem = {
+  key: string;
+  label: string;
+  swatchClassName: string;
+};
+
 const PERIOD_OPTIONS = ["15m", "30m", "1h", "2h", "3h", "4h", "6h", "12h", "1d", "3d", "1w", "2w", "4w", "12w", "26w", "52w"];
 const INTERVAL_OPTIONS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"];
 const SOURCE_OPTIONS = ["auto", "dataset", "binance"] as const;
@@ -306,6 +312,41 @@ function parseRelayoutXRange(eventData: PlotlyRelayoutEvent): [number, number] |
   return [arrayStart, arrayEnd];
 }
 
+function buildPriceLegendItems(
+  data: ChartPayload | null,
+  includeIndicators: boolean
+): ChartLegendItem[] {
+  if (!data) {
+    return [];
+  }
+
+  const items: ChartLegendItem[] = [{ key: "price", label: "Price", swatchClassName: "chart-legend-swatch-price" }];
+
+  if (data.open_position?.entry !== null && data.open_position?.entry !== undefined && data.open_position?.time) {
+    items.push({ key: "open-trade", label: "Open Trade", swatchClassName: "chart-legend-swatch-open-trade" });
+  }
+
+  if (includeIndicators && data.indicators?.ema?.length) {
+    const emaPeriod = data.indicator_spec?.ema?.period ?? 50;
+    const emaInterval = data.indicator_spec?.ema?.interval;
+    items.push({
+      key: "ema",
+      label: emaInterval ? `EMA(${emaPeriod}, ${emaInterval})` : `EMA(${emaPeriod})`,
+      swatchClassName: "chart-legend-swatch-ema",
+    });
+  }
+
+  if (includeIndicators && data.indicators?.bollinger) {
+    items.push(
+      { key: "bb-upper", label: "BB Upper", swatchClassName: "chart-legend-swatch-bb-upper" },
+      { key: "bb-middle", label: "BB Middle", swatchClassName: "chart-legend-swatch-bb-middle" },
+      { key: "bb-lower", label: "BB Lower", swatchClassName: "chart-legend-swatch-bb-lower" }
+    );
+  }
+
+  return items;
+}
+
 function ChartContent(): JSX.Element {
   const priceChartRef = useRef<HTMLDivElement | null>(null);
   const equityChartRef = useRef<HTMLDivElement | null>(null);
@@ -331,6 +372,7 @@ function ChartContent(): JSX.Element {
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const priceLegendItems = buildPriceLegendItems(data, includeIndicators);
 
   async function ensurePlotly(): Promise<any> {
     if (plotlyRef.current) {
@@ -691,14 +733,6 @@ function ChartContent(): JSX.Element {
           priceChartRef.current,
           traces,
           {
-            title: {
-              text: `${data.symbol} Price`,
-              x: 0.5,
-              xanchor: "center",
-              y: 0.975,
-              yanchor: "top",
-              font: { size: compactChartUi ? 12 : 15 },
-            },
             paper_bgcolor: CHART_THEME.bg,
             plot_bgcolor: CHART_THEME.bg,
             font: { color: CHART_THEME.text },
@@ -710,16 +744,9 @@ function ChartContent(): JSX.Element {
               range: initialXRange,
             },
             yaxis: { title: "Price" },
-            margin: { t: compactChartUi ? 74 : 92, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
+            showlegend: false,
+            margin: { t: compactChartUi ? 16 : 18, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
             shapes: priceShapes,
-            legend: {
-              orientation: "h",
-              x: 0,
-              xanchor: "left",
-              y: compactChartUi ? 1.1 : 1.14,
-              yanchor: "bottom",
-              font: { size: compactChartUi ? 10 : 11 },
-            },
           },
           plotConfig
         );
@@ -832,7 +859,6 @@ function ChartContent(): JSX.Element {
             },
           ],
           {
-            title: "Equity Curve",
             paper_bgcolor: CHART_THEME.bg,
             plot_bgcolor: CHART_THEME.bg,
             font: { color: CHART_THEME.text },
@@ -843,7 +869,7 @@ function ChartContent(): JSX.Element {
               range: initialXRange,
             },
             yaxis: { title: "Vault" },
-            margin: { t: compactChartUi ? 34 : 40, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
+            margin: { t: compactChartUi ? 16 : 18, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
           },
           plotConfig
         );
@@ -896,7 +922,6 @@ function ChartContent(): JSX.Element {
               },
             ],
             {
-              title: rsiLabel,
               paper_bgcolor: CHART_THEME.bg,
               plot_bgcolor: CHART_THEME.bg,
               font: { color: CHART_THEME.text },
@@ -907,7 +932,7 @@ function ChartContent(): JSX.Element {
                 range: initialXRange,
               },
               yaxis: { title: "RSI", range: [0, 100] },
-              margin: { t: compactChartUi ? 34 : 40, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
+              margin: { t: compactChartUi ? 16 : 18, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
               shapes: rsiShapes,
             },
             plotConfig
@@ -917,12 +942,11 @@ function ChartContent(): JSX.Element {
             rsiChartRef.current,
             [],
             {
-              title: "RSI (not available)",
               paper_bgcolor: CHART_THEME.bg,
               plot_bgcolor: CHART_THEME.bg,
               font: { color: CHART_THEME.mutedText },
               uirevision: `${chartRevisionKey}:rsi-empty`,
-              margin: { t: compactChartUi ? 34 : 40, r: compactChartUi ? 12 : 16, b: compactChartUi ? 24 : 30, l: compactChartUi ? 36 : 40 },
+              margin: { t: compactChartUi ? 16 : 18, r: compactChartUi ? 12 : 16, b: compactChartUi ? 24 : 30, l: compactChartUi ? 36 : 40 },
             },
             plotConfig
           );
@@ -1141,9 +1165,44 @@ function ChartContent(): JSX.Element {
             Exit Fullscreen
           </button>
         ) : null}
-        <div ref={priceChartRef} className="chart-surface chart-surface-lg" />
-        <div ref={equityChartRef} className="chart-surface chart-surface-md" />
-        <div ref={rsiChartRef} className="chart-surface chart-surface-sm" />
+        <section className="chart-panel chart-panel-price">
+          <header className="chart-panel-head">
+            <div className="chart-panel-title-wrap">
+              <h3 className="chart-panel-title">{data?.symbol ?? symbol} Price</h3>
+            </div>
+            {priceLegendItems.length ? (
+              <div className="chart-panel-legend" aria-label="Price chart legend">
+                {priceLegendItems.map((item) => (
+                  <span key={item.key} className="chart-legend-item">
+                    <span className={`chart-legend-swatch ${item.swatchClassName}`} aria-hidden="true" />
+                    <span className="chart-legend-label">{item.label}</span>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </header>
+          <div ref={priceChartRef} className="chart-surface chart-surface-lg" />
+        </section>
+        <section className="chart-panel">
+          <header className="chart-panel-head chart-panel-head-simple">
+            <h3 className="chart-panel-title">Equity Curve</h3>
+          </header>
+          <div ref={equityChartRef} className="chart-surface chart-surface-md" />
+        </section>
+        <section className="chart-panel">
+          <header className="chart-panel-head chart-panel-head-simple">
+            <h3 className="chart-panel-title">
+              {includeIndicators && data?.indicators?.rsi?.length
+                ? (() => {
+                    const rsiPeriod = data.indicator_spec?.rsi?.period ?? 11;
+                    const rsiInterval = data.indicator_spec?.rsi?.interval;
+                    return rsiInterval ? `RSI (${rsiPeriod}, ${rsiInterval})` : `RSI (${rsiPeriod})`;
+                  })()
+                : "RSI"}
+            </h3>
+          </header>
+          <div ref={rsiChartRef} className="chart-surface chart-surface-sm" />
+        </section>
       </div>
 
       {data?.warnings.length ? (

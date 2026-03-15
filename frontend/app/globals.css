@@ -896,6 +896,105 @@ pre {
   gap: 0.58rem;
 }
 
+.chart-panel {
+  display: grid;
+  gap: 0.34rem;
+}
+
+.chart-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.chart-panel-head-simple {
+  align-items: center;
+}
+
+.chart-panel-title-wrap {
+  min-width: 0;
+}
+
+.chart-panel-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.98rem;
+  line-height: 1.2;
+}
+
+.chart-panel-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.32rem 0.58rem;
+  min-width: 0;
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.34rem;
+  color: #cdd6e4;
+  font-size: 0.76rem;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.chart-legend-swatch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.chart-legend-swatch-price {
+  width: 1rem;
+  height: 0.7rem;
+  border-radius: 0.22rem;
+  background: linear-gradient(135deg, rgba(52, 211, 153, 0.9) 0 48%, rgba(248, 113, 113, 0.9) 52% 100%);
+  box-shadow: inset 0 0 0 1px rgba(238, 241, 248, 0.22);
+}
+
+.chart-legend-swatch-open-trade {
+  width: 0.64rem;
+  height: 0.64rem;
+  background: #f59e0b;
+  transform: rotate(45deg);
+  border-radius: 0.14rem;
+  box-shadow: 0 0 0 1px rgba(255, 243, 222, 0.22);
+}
+
+.chart-legend-swatch-ema,
+.chart-legend-swatch-bb-upper,
+.chart-legend-swatch-bb-middle,
+.chart-legend-swatch-bb-lower {
+  width: 1.1rem;
+  height: 0;
+  border-top-width: 2px;
+  border-top-style: solid;
+}
+
+.chart-legend-swatch-ema {
+  border-top-color: #38bdf8;
+}
+
+.chart-legend-swatch-bb-upper,
+.chart-legend-swatch-bb-lower {
+  border-top-color: #a78bfa;
+  border-top-style: dotted;
+}
+
+.chart-legend-swatch-bb-middle {
+  border-top-color: #c4b5fd;
+  border-top-style: dashed;
+}
+
+.chart-legend-label {
+  min-width: 0;
+}
+
 .chart-stack-fullscreen {
   position: fixed;
   inset: 0;
@@ -2035,6 +2134,19 @@ pre {
     justify-content: stretch;
   }
 
+  .chart-panel-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .chart-panel-head-simple {
+    align-items: flex-start;
+  }
+
+  .chart-panel-legend {
+    justify-content: flex-start;
+  }
+
   .chart-view-btn {
     width: 100%;
   }
@@ -2177,6 +2289,22 @@ pre {
 
   .chart-toolbar-status {
     margin-left: 0;
+  }
+
+  .chart-panel {
+    gap: 0.28rem;
+  }
+
+  .chart-panel-title {
+    font-size: 0.9rem;
+  }
+
+  .chart-panel-legend {
+    gap: 0.28rem 0.5rem;
+  }
+
+  .chart-legend-item {
+    font-size: 0.72rem;
   }
 
   .chart-surface-lg {
