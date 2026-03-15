@@ -8,6 +8,7 @@ import { SWIPE_ROUTE_ORDER } from "../lib/navigation";
 const SWIPE_THRESHOLD_PX = 72;
 const SWIPE_MAX_DURATION_MS = 600;
 const SWIPE_AXIS_RATIO = 1.25;
+const SWIPE_NAV_COOLDOWN_MS = 900;
 const SWIPE_IGNORE_SELECTOR =
   "input, select, textarea, button, a, summary, label, [role='button'], [data-no-swipe], [data-swipe-lock]";
 
@@ -16,6 +17,8 @@ type SwipeState = {
   ignore: boolean;
   startX: number;
   startY: number;
+  lastX: number;
+  lastY: number;
   startedAt: number;
 };
 
@@ -40,8 +43,11 @@ export default function SwipeNavigator(): null {
     ignore: false,
     startX: 0,
     startY: 0,
+    lastX: 0,
+    lastY: 0,
     startedAt: 0
   });
+  const lastNavigationAtRef = useRef<number>(0);
 
   useEffect(() => {
     const onTouchStart = (event: TouchEvent): void => {
@@ -57,8 +63,27 @@ export default function SwipeNavigator(): null {
         ignore: shouldIgnoreSwipeTarget(event.target),
         startX: touch.clientX,
         startY: touch.clientY,
+        lastX: touch.clientX,
+        lastY: touch.clientY,
         startedAt: Date.now()
       };
+    };
+
+    const onTouchMove = (event: TouchEvent): void => {
+      const swipe = swipeRef.current;
+      if (!swipe.active || swipe.ignore) {
+        return;
+      }
+
+      const touch = event.touches[0];
+      if (!touch || event.touches.length !== 1) {
+        swipeRef.current.active = false;
+        swipeRef.current.ignore = false;
+        return;
+      }
+
+      swipe.lastX = touch.clientX;
+      swipe.lastY = touch.clientY;
     };
 
     const onTouchEnd = (event: TouchEvent): void => {
@@ -74,13 +99,15 @@ export default function SwipeNavigator(): null {
         return;
       }
 
-      const touch = event.changedTouches[0];
-      if (!touch) {
+      if (Date.now() - lastNavigationAtRef.current < SWIPE_NAV_COOLDOWN_MS) {
         return;
       }
 
-      const dx = touch.clientX - swipe.startX;
-      const dy = touch.clientY - swipe.startY;
+      const touch = event.changedTouches[0];
+      const endX = touch?.clientX ?? swipe.lastX;
+      const endY = touch?.clientY ?? swipe.lastY;
+      const dx = endX - swipe.startX;
+      const dy = endY - swipe.startY;
       const elapsedMs = Date.now() - swipe.startedAt;
       const absDx = Math.abs(dx);
       const absDy = Math.abs(dy);
@@ -94,6 +121,7 @@ export default function SwipeNavigator(): null {
         return;
       }
 
+      lastNavigationAtRef.current = Date.now();
       router.push(SWIPE_ROUTE_ORDER[targetIndex]);
     };
 
@@ -103,11 +131,13 @@ export default function SwipeNavigator(): null {
     };
 
     window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
     window.addEventListener("touchend", onTouchEnd, { passive: true });
     window.addEventListener("touchcancel", onTouchCancel, { passive: true });
 
     return () => {
       window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("touchend", onTouchEnd);
       window.removeEventListener("touchcancel", onTouchCancel);
     };
