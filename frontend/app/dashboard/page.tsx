@@ -461,17 +461,19 @@ function computeTargetPnlPreview(
 ): TargetPnlPreview | null {
   const trimmed = rawValue.trim();
   const targetPrice = trimmed ? Number(trimmed) : fallbackTargetPrice;
+  const safeTargetPrice = typeof targetPrice === "number" && Number.isFinite(targetPrice) ? targetPrice : null;
   if (
     !side ||
-    !Number.isFinite(targetPrice) ||
-    targetPrice <= 0 ||
+    safeTargetPrice === null ||
+    safeTargetPrice <= 0 ||
     !isFiniteNumber(entryPrice) ||
     !isFiniteNumber(positionSize)
   ) {
     return null;
   }
 
-  const pnlUsd = side === "long" ? (targetPrice - entryPrice) * positionSize : (entryPrice - targetPrice) * positionSize;
+  const pnlUsd =
+    side === "long" ? (safeTargetPrice - entryPrice) * positionSize : (entryPrice - safeTargetPrice) * positionSize;
   const tone = pnlUsd > 0 ? "positive" : pnlUsd < 0 ? "negative" : "neutral";
   return { pnlUsd, tone };
 }
