@@ -302,31 +302,33 @@ function buildTradeProgressTrackBackground(entryPercent: number, slPercent: numb
   const safetyNet = clampPercent(slPercent);
 
   if (safetyNet >= entry - 0.2) {
-    const entryNear = clampPercent(entry + 5);
-    const stopNear = clampPercent(Math.max(entryNear, safetyNet - 7));
-    const stopMid = clampPercent(safetyNet + (100 - safetyNet) * 0.42);
+    const warmApproach = clampPercent(Math.max(0, entry - 6));
+    const entryBlend = clampPercent(entry + Math.max(6, (safetyNet - entry) * 0.18));
+    const greenRise = clampPercent(safetyNet + Math.max(8, (100 - safetyNet) * 0.18));
+    const greenMid = clampPercent(safetyNet + (100 - safetyNet) * 0.46);
     return `linear-gradient(90deg,
-      rgba(166, 132, 63, 0.24) 0%,
-      rgba(185, 152, 75, 0.22) ${entry}%,
-      rgba(136, 160, 98, 0.24) ${entryNear}%,
-      rgba(92, 151, 107, 0.34) ${stopNear}%,
-      rgba(67, 146, 109, 0.42) ${safetyNet}%,
-      rgba(70, 162, 116, 0.5) ${stopMid}%,
-      rgba(82, 188, 130, 0.58) 100%)`;
+      rgba(104, 100, 74, 0.22) 0%,
+      rgba(128, 122, 84, 0.24) ${warmApproach}%,
+      rgba(212, 179, 98, 0.28) ${entry}%,
+      rgba(167, 172, 111, 0.28) ${entryBlend}%,
+      rgba(94, 152, 108, 0.4) ${safetyNet}%,
+      rgba(78, 173, 121, 0.54) ${greenRise}%,
+      rgba(103, 214, 148, 0.68) ${greenMid}%,
+      rgba(123, 233, 163, 0.74) 100%)`;
   }
 
-  const leftMid = clampPercent(entry * 0.52);
-  const leftNear = clampPercent(Math.max(0, entry - 12));
-  const rightNear = clampPercent(Math.min(100, entry + 12));
-  const rightMid = clampPercent(entry + (100 - entry) * 0.52);
+  const leftMid = clampPercent(entry * 0.42);
+  const leftNear = clampPercent(Math.max(0, entry - 11));
+  const rightNear = clampPercent(Math.min(100, entry + 8));
+  const rightMid = clampPercent(entry + (100 - entry) * 0.4);
   return `linear-gradient(90deg,
-    rgba(177, 61, 76, 0.48) 0%,
-    rgba(166, 73, 84, 0.42) ${leftMid}%,
-    rgba(151, 95, 74, 0.32) ${leftNear}%,
-    rgba(213, 176, 95, 0.24) ${entry}%,
-    rgba(141, 124, 82, 0.24) ${rightNear}%,
-    rgba(86, 142, 104, 0.34) ${rightMid}%,
-    rgba(67, 146, 109, 0.46) 100%)`;
+    rgba(177, 61, 76, 0.52) 0%,
+    rgba(173, 71, 83, 0.46) ${leftMid}%,
+    rgba(150, 93, 79, 0.34) ${leftNear}%,
+    rgba(212, 178, 98, 0.26) ${entry}%,
+    rgba(160, 151, 100, 0.24) ${rightNear}%,
+    rgba(91, 145, 105, 0.36) ${rightMid}%,
+    rgba(67, 146, 109, 0.48) 100%)`;
 }
 
 type TradeProgressMarkerKey = "sl" | "entry" | "tp";
@@ -576,6 +578,18 @@ function DashboardContent(): JSX.Element {
     });
   }
 
+  async function runBreakEvenSafetyNet(): Promise<void> {
+    if (!isFiniteNumber(entryPrice) || entryPrice <= 0) {
+      setControlError("Entry price is not available.");
+      return;
+    }
+
+    await runControlAction("update-sl", {
+      body: { value: entryPrice },
+      confirmMessage: `Move the Safety Net to break even at ${entryPrice}?`
+    });
+  }
+
   async function runSuggestedTrade(side: TradeSuggestionSide): Promise<void> {
     const actionLabel = side === "buy" ? "buy" : "sell";
     await runControlAction("suggest-trade", {
@@ -764,6 +778,7 @@ function DashboardContent(): JSX.Element {
   const lastPrice = data?.last_price ?? null;
   const openTime = formatDateTimeEu(openTradeInfo?.entry_time ?? null);
   const hasOpenPosition = openTradeInfo !== null;
+  const openTradeSide = openTradeInfo?.side ?? null;
   const tradingEnabled = data?.trading_enabled ?? true;
   const botStatus = data?.bot_status ?? null;
   const tradeStatus = data?.trade_status ?? null;
@@ -776,6 +791,16 @@ function DashboardContent(): JSX.Element {
   const statusIntentText = statusIntentBadgeText(botStatus);
   const statusIntentClass = statusIntentBadgeClass(botStatus);
   const tradeProgress = computeTradeProgress(sl, entryPrice, tp, lastPrice);
+  const alreadyAtBreakEvenOrBetter =
+    !isFiniteNumber(entryPrice) ||
+    (openTradeSide === "long" && isFiniteNumber(sl) && sl >= entryPrice) ||
+    (openTradeSide === "short" && isFiniteNumber(sl) && sl <= entryPrice);
+  const showBreakEvenSafetyNetAction =
+    hasOpenPosition &&
+    isFiniteNumber(entryPrice) &&
+    isFiniteNumber(unrealizedPnl) &&
+    unrealizedPnl > 0 &&
+    !alreadyAtBreakEvenOrBetter;
 
   useEffect(() => {
     if (!hasOpenPosition) {
@@ -975,7 +1000,19 @@ function DashboardContent(): JSX.Element {
 
                 <div className="trade-manage-grid">
                   <div className="kv-item trade-manage-card">
-                    <span className="kv-label">Safety Net</span>
+                    <div className="trade-manage-card-head">
+                      <span className="kv-label">Safety Net</span>
+                      {showBreakEvenSafetyNetAction ? (
+                        <button
+                          type="button"
+                          className="dialog-user-btn trade-manage-quick-btn"
+                          onClick={() => void runBreakEvenSafetyNet()}
+                          disabled={busyAction !== null}
+                        >
+                          Bring the Net to Even
+                        </button>
+                      ) : null}
+                    </div>
                     <span className="metric-value">{formatPrice(sl)}</span>
                     <div className="trade-edit-row">
                       <label className="field-stack dialog-user-field trade-edit-field">
