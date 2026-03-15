@@ -297,6 +297,16 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
+function buildTradeProgressTrackBackground(entryPercent: number): string {
+  const stop = clampPercent(entryPercent);
+  return `linear-gradient(90deg,
+    rgba(177, 61, 76, 0.42) 0%,
+    rgba(177, 61, 76, 0.42) ${stop}%,
+    rgba(213, 176, 95, 0.2) ${stop}%,
+    rgba(67, 146, 109, 0.44) ${stop}%,
+    rgba(67, 146, 109, 0.44) 100%)`;
+}
+
 type TradeProgressSnapshot = {
   entryPercent: number;
   currentPercent: number | null;
@@ -840,7 +850,11 @@ function DashboardContent(): JSX.Element {
                       </span>
                     </div>
                     <div className="trade-progress-track-shell">
-                      <div className="trade-progress-track" aria-label="Trade progress from stop loss to take profit">
+                      <div
+                        className="trade-progress-track"
+                        aria-label="Trade progress from safety net to treasure mark"
+                        style={{ background: buildTradeProgressTrackBackground(tradeProgress.entryPercent) }}
+                      >
                         <span className="trade-progress-endcap trade-progress-endcap-sl" aria-hidden="true" />
                         <span className="trade-progress-endcap trade-progress-endcap-tp" aria-hidden="true" />
                         <span
@@ -871,7 +885,7 @@ function DashboardContent(): JSX.Element {
                     </div>
                     <div className="trade-progress-legend">
                       <div className="trade-progress-legend-item trade-progress-legend-item-sl">
-                        <span className="trade-progress-legend-name">SL</span>
+                        <span className="trade-progress-legend-name">SN</span>
                         <span className="trade-progress-legend-value">{formatPrice(sl)}</span>
                       </div>
                       <div className="trade-progress-legend-item trade-progress-legend-item-entry">
@@ -879,7 +893,7 @@ function DashboardContent(): JSX.Element {
                         <span className="trade-progress-legend-value">{formatPrice(entryPrice)}</span>
                       </div>
                       <div className="trade-progress-legend-item trade-progress-legend-item-tp">
-                        <span className="trade-progress-legend-name">TP</span>
+                        <span className="trade-progress-legend-name">TM</span>
                         <span className="trade-progress-legend-value">{formatPrice(tp)}</span>
                       </div>
                     </div>
