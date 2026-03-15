@@ -428,6 +428,7 @@ if __name__ == "__main__":
         control_client = get_control_client()
         restart_requested = False
         last_trading_enabled: bool | None = None
+        last_balance_refresh_monotonic = 0.0
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
         command_kwargs = _build_command_kwargs(symbol)
         runtime_context: dict[str, Any] = {"state": state}
@@ -439,11 +440,16 @@ if __name__ == "__main__":
             api_secret=api_secret,
             symbol=symbol,
             leverage=lvrg,
+            intervals=intervals,
+            limits=limits,
             state_getter=lambda: runtime_context["state"],
             state_lock=state_lock,
             save_state_fn=save_state,
+            fetch_historical_fn=fetch_historical,
+            prepare_multi_tf_fn=prepare_multi_tf,
         )
-        live_market_stream.start()
+        if not live_market_stream.start():
+            raise RuntimeError("Live market stream failed to start.")
 
         try:
             while True:
@@ -473,17 +479,21 @@ if __name__ == "__main__":
                         set_leverage(symbol, lvrg)
                         command_kwargs = _build_command_kwargs(symbol)
                         if live_market_stream is not None:
-                            live_market_stream.update_config(symbol=symbol, leverage=lvrg)
+                            live_market_stream.update_config(
+                                symbol=symbol,
+                                leverage=lvrg,
+                                intervals=intervals,
+                                limits=limits,
+                            )
+                            if not live_market_stream.is_running():
+                                raise RuntimeError("Live market stream failed to restart after config reload.")
                         restart_requested = False
+                        last_balance_refresh_monotonic = 0.0
                         technical_logger.info("config_restart_applied symbol=%s leverage=%s", symbol, lvrg)
 
-                    current_balance = get_balance()
                     with state_lock:
-                        update_balance(state, current_balance)
-                        runtime_context["state"] = state
                         trading_enabled = bool(state.get("trading_enabled", True))
                         has_position = isinstance(state.get("position"), dict)
-                    technical_logger.debug("live_balance balance=%.2f", current_balance)
 
                     if trading_enabled != last_trading_enabled:
                         technical_logger.info(
@@ -492,21 +502,33 @@ if __name__ == "__main__":
                         )
                         last_trading_enabled = trading_enabled
 
-                    if not trading_enabled and not has_position:
-                        technical_logger.debug("live_idle_wait trading_enabled=false has_position=false")
-                        state, restart_now = _sleep_with_command_poll(
-                            state,
-                            control_client,
-                            live_poll_seconds,
-                            control_poll_slice_seconds,
-                            command_kwargs=command_kwargs,
-                            state_lock_obj=state_lock,
-                        )
-                        runtime_context["state"] = state
-                        restart_requested = restart_requested or restart_now
+                    now_monotonic = time.monotonic()
+                    if (now_monotonic - last_balance_refresh_monotonic) >= live_poll_seconds:
+                        current_balance = get_balance()
+                        with state_lock:
+                            update_balance(state, current_balance)
+                            runtime_context["state"] = state
+                        last_balance_refresh_monotonic = now_monotonic
+                        technical_logger.debug("live_balance balance=%.2f", current_balance)
+
+                    df = live_market_stream.take_ready_strategy_frame() if live_market_stream is not None else None
+                    if df is None:
+                        time.sleep(control_poll_slice_seconds)
                         continue
 
-                    # Log current position
+                    current_balance = get_balance()
+                    with state_lock:
+                        update_balance(state, current_balance)
+                        runtime_context["state"] = state
+                        trading_enabled = bool(state.get("trading_enabled", True))
+                        has_position = isinstance(state.get("position"), dict)
+                    last_balance_refresh_monotonic = time.monotonic()
+                    technical_logger.debug("live_balance balance=%.2f", current_balance)
+
+                    if not trading_enabled and not has_position:
+                        technical_logger.debug("live_skip_strategy_on_closed_candle trading_enabled=false has_position=false")
+                        continue
+
                     pos = get_open_position(symbol)
                     if pos:
                         with state_lock:
@@ -521,13 +543,6 @@ if __name__ == "__main__":
                     else:
                         technical_logger.debug("live_no_open_positions symbol=%s", symbol)
 
-                    # Fetch recent historical data
-                    df_small = fetch_historical(symbol, intervals["small"], limits["small"])
-                    df_medium = fetch_historical(symbol, intervals["medium"], limits["medium"])
-                    df_big = fetch_historical(symbol, intervals["big"], limits["big"])
-                    df = prepare_multi_tf(df_small, df_medium, df_big)
-
-                    # Run strategy on the latest closed 1m candle.
                     with state_lock:
                         balance, trades, balance_history, state = run_strategy(
                             df,
@@ -550,31 +565,9 @@ if __name__ == "__main__":
                         balance=float(balance),
                     )
 
-                    # Wait until next candle while still polling control commands.
-                    technical_logger.debug("live_wait_for_next_check seconds=%s", live_poll_seconds)
-                    state, restart_now = _sleep_with_command_poll(
-                        state,
-                        control_client,
-                        live_poll_seconds,
-                        control_poll_slice_seconds,
-                        command_kwargs=command_kwargs,
-                        state_lock_obj=state_lock,
-                    )
-                    runtime_context["state"] = state
-                    restart_requested = restart_requested or restart_now
-
                 except Exception as e:  # noqa: BLE001
                     technical_logger.exception("live_loop_error error=%s", e)
-                    state, restart_now = _sleep_with_command_poll(
-                        state,
-                        control_client,
-                        10,
-                        control_poll_slice_seconds,
-                        command_kwargs=command_kwargs,
-                        state_lock_obj=state_lock,
-                    )
-                    runtime_context["state"] = state
-                    restart_requested = restart_requested or restart_now
+                    time.sleep(max(1, control_poll_slice_seconds))
         finally:
             if live_market_stream is not None:
                 live_market_stream.stop()
