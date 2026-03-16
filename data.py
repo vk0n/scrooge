@@ -3,7 +3,7 @@ import time
 import pandas as pd
 import pandas_ta as ta
 from datetime import datetime, timedelta
-from event_log import get_technical_logger
+from bot.event_log import get_technical_logger
 
 
 REQUIRED_INDICATOR_COLUMNS = ("BBL", "BBM", "BBU", "ATR", "RSI", "EMA")

@@ -43,12 +43,11 @@ scrooge/
 │   ├── event_log.py
 │   ├── state.py
 │   ├── trade.py
-│   └── strategy.py          # Transitional runtime-facing shim
+│   └── runtime.py
 ├── core/                    # Shared engine and canonical event storage
 │   ├── engine.py
 │   └── event_store.py
 ├── main.py                  # Thin entry shim; keeps the Scrooge greeting
-├── strategy.py              # Backward-compatible shim
 ├── data.py                  # Multi-timeframe data fetching and preparation
 ├── replay.py                # Canonical event-log replay and trade reconstruction
 ├── optimize.py              # Automated parameter optimization script
@@ -195,7 +194,7 @@ trading_log.txt
    - Calculated dynamically based on balance, leverage, and asset price.
 
 4. **State Persistence**
-   - Every open position and balance update is stored via `state.py` to resume interrupted sessions.
+   - Every open position and balance update is stored via `bot/state.py` to resume interrupted sessions.
 
 ---
 

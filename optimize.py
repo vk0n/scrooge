@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from binance.client import Client
 from pathlib import Path
 from typing import Any
-from strategy import run_strategy
+from core.engine import run_strategy
 from report import compute_stats
 from data import build_dataset
 import data as data_module

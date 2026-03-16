@@ -9,13 +9,13 @@ from plotly.subplots import make_subplots
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from data import fetch_historical_paginated, prepare_multi_tf
-from event_log import get_technical_logger
-from state import (
+from bot.event_log import get_technical_logger
+from bot.state import (
     load_balance_history,
     load_state as load_runtime_state,
     load_trade_history,
 )
-from strategy import run_strategy
+from core.engine import run_strategy
 
 _client = None
 _rw_df = None
