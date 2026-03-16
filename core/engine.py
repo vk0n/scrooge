@@ -20,6 +20,7 @@ from core.market_events import (
     OrderTradeUpdateEvent,
     PositionSnapshotEvent,
     PriceTickEvent,
+    market_event_to_dict,
 )
 
 
@@ -50,6 +51,7 @@ class StrategyRuntime:
     enable_logs: bool
     execution_mode: str
     execution_sync: ExecutionSyncContext
+    execution_events: list[MarketEvent]
 
 
 @dataclass(slots=True)
@@ -820,6 +822,136 @@ def initialize_strategy_runtime(
         enable_logs=True,
         execution_mode=execution_mode,
         execution_sync=ExecutionSyncContext(),
+        execution_events=[],
+    )
+
+
+def _append_execution_event(runtime: StrategyRuntime, event: MarketEvent) -> None:
+    runtime.execution_events.append(event)
+
+
+def _simulated_position_amt(position: dict[str, Any]) -> float:
+    size = float(position.get("size") or 0.0)
+    side = str(position.get("side", "")).strip().lower()
+    return size if side == "long" else -size
+
+
+def emit_simulated_entry_execution_events(
+    runtime: StrategyRuntime,
+    config: StrategyConfig,
+    position: dict[str, Any],
+    *,
+    ts: str,
+    balance_after: float,
+) -> None:
+    size = float(position.get("size") or 0.0)
+    entry_price = float(position.get("entry") or 0.0)
+    open_fee = size * entry_price * config.fee_rate
+    order_side = "BUY" if str(position.get("side", "")).strip().lower() == "long" else "SELL"
+
+    _append_execution_event(
+        runtime,
+        OrderTradeUpdateEvent(
+            symbol=config.symbol,
+            ts=ts,
+            order_side=order_side,
+            order_type="MARKET",
+            execution_type="TRADE",
+            order_status="FILLED",
+            last_filled_qty=size,
+            accumulated_filled_qty=size,
+            last_filled_price=entry_price,
+            average_price=entry_price,
+            realized_pnl=0.0,
+            commission_asset="USDT",
+            commission=open_fee,
+            reduce_only=False,
+            source="simulated_execution",
+        ),
+    )
+    _append_execution_event(
+        runtime,
+        PositionSnapshotEvent(
+            symbol=config.symbol,
+            ts=ts,
+            position_amt=_simulated_position_amt(position),
+            entry_price=entry_price,
+            unrealized_pnl=0.0,
+            position_side=str(position.get("side", "")).strip().upper(),
+            source="simulated_execution",
+        ),
+    )
+    _append_execution_event(
+        runtime,
+        AccountBalanceEvent(
+            asset="USDT",
+            ts=ts,
+            wallet_balance=balance_after,
+            cross_wallet_balance=balance_after,
+            balance_delta=-open_fee,
+            source="simulated_execution",
+        ),
+    )
+
+
+def emit_simulated_exit_execution_events(
+    runtime: StrategyRuntime,
+    config: StrategyConfig,
+    position: dict[str, Any],
+    decision: ExitDecision,
+    *,
+    ts: str,
+    balance_after: float,
+) -> None:
+    size = float(position.get("size") or 0.0)
+    entry_price = float(position.get("entry") or 0.0)
+    exit_price = float(decision.exit)
+    exit_fee = (size * entry_price * config.fee_rate) if config.fee_rate > 0 else 0.0
+    order_side = "SELL" if str(position.get("side", "")).strip().lower() == "long" else "BUY"
+    realized_pnl = decision.gross_pnl if decision.gross_pnl is not None else decision.net_pnl
+
+    _append_execution_event(
+        runtime,
+        OrderTradeUpdateEvent(
+            symbol=config.symbol,
+            ts=ts,
+            order_side=order_side,
+            order_type="MARKET",
+            execution_type="TRADE",
+            order_status="FILLED",
+            last_filled_qty=size,
+            accumulated_filled_qty=size,
+            last_filled_price=exit_price,
+            average_price=exit_price,
+            realized_pnl=realized_pnl,
+            commission_asset="USDT",
+            commission=exit_fee,
+            reduce_only=True,
+            source="simulated_execution",
+        ),
+    )
+    _append_execution_event(
+        runtime,
+        PositionSnapshotEvent(
+            symbol=config.symbol,
+            ts=ts,
+            position_amt=0.0,
+            entry_price=None,
+            unrealized_pnl=0.0,
+            position_side=None,
+            source="simulated_execution",
+        ),
+    )
+    _append_execution_event(
+        runtime,
+        AccountBalanceEvent(
+            asset="USDT",
+            ts=ts,
+            wallet_balance=balance_after,
+            cross_wallet_balance=balance_after,
+            balance_delta=decision.net_pnl,
+            source="simulated_execution",
+        ),
     )
 
 
@@ -1375,6 +1507,7 @@ def resolve_management_decision(
 
 def apply_exit_decision(
     *,
+    runtime: StrategyRuntime,
     decision: ExitDecision,
     position: dict[str, Any],
     state: dict[str, Any],
@@ -1406,6 +1539,15 @@ def apply_exit_decision(
             row_ts=row_ts,
         )
         emit_exit_event(log_buffer, config, log_ts, decision, decision.net_pnl)
+        if runtime.execution_mode == "simulated":
+            emit_simulated_exit_execution_events(
+                runtime,
+                config,
+                position,
+                decision,
+                ts=row_ts,
+                balance_after=balance,
+            )
 
     return balance, None
 
@@ -1514,6 +1656,14 @@ def process_discrete_row(
                     log_buffer=log_buffer,
                     **event_kwargs,
                 )
+                if runtime.execution_mode == "simulated":
+                    emit_simulated_entry_execution_events(
+                        runtime,
+                        config,
+                        position,
+                        ts=row_ts,
+                        balance_after=balance,
+                    )
 
     else:
         if observed_execution_mode and bool(position.get("observed_execution_only")):
@@ -1549,6 +1699,7 @@ def process_discrete_row(
             )
         elif isinstance(management_decision, ExitDecision):
             balance, position = apply_exit_decision(
+                runtime=runtime,
                 decision=management_decision,
                 position=position,
                 state=state,
@@ -1787,6 +1938,9 @@ def finalize_strategy_runtime(
     if runtime.execution_sync.total_events > 0:
         _sync_execution_context_state(runtime)
 
+    serialized_execution_events = [market_event_to_dict(event) for event in runtime.execution_events]
+    runtime.state.pop("simulated_execution_events", None)
+
     if runtime.live:
         save_state_fn(runtime.state)
     elif runtime.use_state:
@@ -1797,6 +1951,9 @@ def finalize_strategy_runtime(
         save_state_fn(runtime.state)
         runtime.state["trade_history"] = runtime.trade_history
         runtime.state["balance_history"] = runtime.balance_history
+
+    if serialized_execution_events:
+        runtime.state["simulated_execution_events"] = serialized_execution_events
 
     return (
         runtime.balance,

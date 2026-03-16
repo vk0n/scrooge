@@ -139,6 +139,10 @@ def market_event_to_dict(event: MarketEvent) -> dict[str, Any]:
     return asdict(event)
 
 
+def market_event_from_dict(payload: dict[str, Any]) -> MarketEvent:
+    return _build_market_event(payload)
+
+
 class JsonlMarketEventStore:
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = resolve_market_event_stream_path(path)

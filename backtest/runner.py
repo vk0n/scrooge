@@ -35,7 +35,7 @@ from backtest.trade_alignment import TradeAlignmentSummary, write_trade_alignmen
 from bot.event_log import get_technical_logger
 from bot.state import save_state
 from core.engine import run_strategy_on_market_events, run_strategy_on_tape
-from core.market_events import MarketEvent
+from core.market_events import MarketEvent, market_event_from_dict
 
 
 @dataclass(slots=True)
@@ -396,8 +396,17 @@ def run_discrete_backtest(
         replay_summary.net_pnl,
         config.event_log_path,
     )
+    execution_artifact_events = market_events
+    if config.execution_mode == "simulated":
+        raw_simulated_execution_events = state.get("simulated_execution_events")
+        if isinstance(raw_simulated_execution_events, list):
+            execution_artifact_events = [
+                market_event_from_dict(payload)
+                for payload in raw_simulated_execution_events
+                if isinstance(payload, dict)
+            ]
     market_event_execution_summary = market_event_execution_writer(
-        market_events,
+        execution_artifact_events,
         symbol=config.symbol,
         summary_path=config.event_log_path.with_name("market_event_execution_summary.json"),
         events_path=config.event_log_path.with_name("market_event_execution_events.jsonl"),
@@ -419,7 +428,7 @@ def run_discrete_backtest(
     if market_event_execution_summary.observed_total_trades > 0:
         trade_alignment_summary = trade_alignment_writer(
             trades,
-            market_events,
+            execution_artifact_events,
             symbol=config.symbol,
             summary_path=config.event_log_path.with_name("market_event_trade_alignment_summary.json"),
             pairs_path=config.event_log_path.with_name("market_event_trade_alignment_pairs.jsonl"),

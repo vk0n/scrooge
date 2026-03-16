@@ -157,7 +157,11 @@ Backtest outputs include:
 - `replay_summary.json`
 - `replay_trades.jsonl`
 
-The execution artifacts are derived from `market_events.jsonl` and summarize/filter:
+The execution artifacts are derived from the active execution path:
+- from replayed `market_events.jsonl` when `execution_mode: observed`
+- from synthetic execution events emitted by the engine when `execution_mode: simulated`
+
+They summarize/filter:
 - account balance snapshots
 - position snapshots
 - order trade updates
