@@ -149,6 +149,10 @@ Backtest outputs include:
 - `market_events.jsonl`
 - `market_event_execution_summary.json`
 - `market_event_execution_events.jsonl`
+- `market_event_execution_fills.jsonl`
+- `market_event_execution_trades.jsonl`
+- `market_event_trade_alignment_summary.json`
+- `market_event_trade_alignment_pairs.jsonl`
 - canonical `event_history.jsonl`
 - `replay_summary.json`
 - `replay_trades.jsonl`
@@ -157,6 +161,9 @@ The execution artifacts are derived from `market_events.jsonl` and summarize/fil
 - account balance snapshots
 - position snapshots
 - order trade updates
+- observed fills reconstructed from `order_trade_update`
+- observed execution trades reconstructed from those fills
+- alignment between strategy trades and observed execution trades
 
 The backtest execution path is now owned by:
 - `backtest/runner.py`

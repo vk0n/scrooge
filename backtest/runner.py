@@ -31,6 +31,7 @@ from backtest.market_event_replay import (
     write_market_event_execution_artifacts,
 )
 from backtest.replay import ReplaySummary, write_replay_artifacts
+from backtest.trade_alignment import TradeAlignmentSummary, write_trade_alignment_artifacts
 from bot.event_log import get_technical_logger
 from bot.state import save_state
 from core.engine import run_strategy_on_market_events, run_strategy_on_tape
@@ -73,6 +74,7 @@ class DiscreteBacktestResult:
     market_events: list[MarketEvent]
     market_event_projection: DiscreteTapeProjectionSummary | None
     market_event_execution_summary: MarketExecutionSummary | None
+    trade_alignment_summary: TradeAlignmentSummary | None
     final_balance: float
     trades: pd.DataFrame
     balance_history: list[float]
@@ -255,6 +257,7 @@ def run_discrete_backtest(
     market_event_strategy_runner: Callable[..., tuple[float, pd.DataFrame, list[float], dict[str, Any]]] = run_strategy_on_market_events,
     replay_writer: Callable[..., ReplaySummary] = write_replay_artifacts,
     market_event_execution_writer: Callable[..., MarketExecutionSummary] = write_market_event_execution_artifacts,
+    trade_alignment_writer: Callable[..., TradeAlignmentSummary] = write_trade_alignment_artifacts,
 ) -> DiscreteBacktestResult:
     logger = technical_logger or get_technical_logger()
     market_event_projection: DiscreteTapeProjectionSummary | None = None
@@ -390,16 +393,38 @@ def run_discrete_backtest(
         symbol=config.symbol,
         summary_path=config.event_log_path.with_name("market_event_execution_summary.json"),
         events_path=config.event_log_path.with_name("market_event_execution_events.jsonl"),
+        fills_path=config.event_log_path.with_name("market_event_execution_fills.jsonl"),
+        trades_path=config.event_log_path.with_name("market_event_execution_trades.jsonl"),
     )
     logger.info(
-        "backtest_market_event_execution_artifacts_written execution_events=%s order_updates=%s filled_orders=%s realized_pnl=%.8f commission=%.8f path=%s",
+        "backtest_market_event_execution_artifacts_written execution_events=%s order_updates=%s filled_orders=%s observed_fills=%s observed_trades=%s realized_pnl=%.8f commission=%.8f path=%s",
         market_event_execution_summary.execution_events,
         market_event_execution_summary.order_trade_update_events,
         market_event_execution_summary.filled_order_events,
+        market_event_execution_summary.observed_fill_events,
+        market_event_execution_summary.observed_total_trades,
         market_event_execution_summary.realized_pnl_total,
         market_event_execution_summary.commission_total,
         config.event_log_path.with_name("market_event_execution_summary.json"),
     )
+    trade_alignment_summary: TradeAlignmentSummary | None = None
+    if market_event_execution_summary.observed_total_trades > 0:
+        trade_alignment_summary = trade_alignment_writer(
+            trades,
+            market_events,
+            symbol=config.symbol,
+            summary_path=config.event_log_path.with_name("market_event_trade_alignment_summary.json"),
+            pairs_path=config.event_log_path.with_name("market_event_trade_alignment_pairs.jsonl"),
+        )
+        logger.info(
+            "backtest_market_event_trade_alignment_written paired=%s strategy_closed=%s observed_closed=%s side_mismatches=%s pnl_delta=%.8f path=%s",
+            trade_alignment_summary.paired_trades,
+            trade_alignment_summary.strategy_closed_trades,
+            trade_alignment_summary.observed_closed_trades,
+            trade_alignment_summary.side_mismatches,
+            trade_alignment_summary.pnl_delta,
+            config.event_log_path.with_name("market_event_trade_alignment_summary.json"),
+        )
     execution_sync = state.get("execution_sync")
     if isinstance(execution_sync, dict) and execution_sync:
         logger.info(
@@ -443,6 +468,7 @@ def run_discrete_backtest(
         market_events=market_events,
         market_event_projection=market_event_projection,
         market_event_execution_summary=market_event_execution_summary,
+        trade_alignment_summary=trade_alignment_summary,
         final_balance=float(final_balance),
         trades=trades,
         balance_history=balance_history,
