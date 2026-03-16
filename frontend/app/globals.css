@@ -14,8 +14,10 @@
   --danger: #ff5d72;
   --ok: #6fd3a2;
   --warn: #ffb36b;
-  --value-positive: #9de6c0;
-  --value-negative: #ffb1bb;
+  --value-positive: #0ecb81;
+  --value-negative: #f6465d;
+  --value-positive-surface: #43dba3;
+  --value-negative-surface: #ff7186;
   --value-neutral: #c6cfdd;
   --button-bg: #131924;
   --button-hover: #1a2231;
@@ -473,15 +475,17 @@ pre {
 }
 
 .floating-pnl-value.value-positive {
-  color: #b9f6d5;
-  text-shadow: 0 0 10px rgba(69, 199, 137, 0.22);
+  color: #0ecb81;
+  text-shadow:
+    0 0 12px rgba(14, 203, 129, 0.22),
+    0 0 2px rgba(11, 158, 100, 0.32);
 }
 
 .floating-pnl-value.value-negative {
-  color: #ff8e9f;
+  color: #f6465d;
   text-shadow:
-    0 0 12px rgba(232, 79, 110, 0.24),
-    0 0 2px rgba(255, 150, 170, 0.3);
+    0 0 12px rgba(246, 70, 93, 0.24),
+    0 0 2px rgba(246, 70, 93, 0.34);
 }
 
 .value-positive {
@@ -1134,13 +1138,13 @@ pre {
 .position-upnl-badge-positive {
   border-color: #2d8b66;
   background: rgba(45, 139, 102, 0.2);
-  color: #bfe9d4;
+  color: var(--value-positive-surface);
 }
 
 .position-upnl-badge-negative {
   border-color: #b13d4c;
   background: rgba(177, 61, 76, 0.2);
-  color: #ffd4da;
+  color: var(--value-negative-surface);
 }
 
 .position-upnl-badge-neutral {
@@ -1170,11 +1174,13 @@ pre {
 .position-accordion-status.value-positive {
   border-color: #2d8b66;
   background: rgba(45, 139, 102, 0.2);
+  color: var(--value-positive-surface);
 }
 
 .position-accordion-status.value-negative {
   border-color: #b13d4c;
   background: rgba(177, 61, 76, 0.2);
+  color: var(--value-negative-surface);
 }
 
 .position-accordion-status.value-neutral {
@@ -1250,13 +1256,13 @@ pre {
 .trade-progress-now-positive {
   border-color: rgba(45, 139, 102, 0.65);
   background: rgba(45, 139, 102, 0.18);
-  color: #d8f2e6;
+  color: var(--value-positive-surface);
 }
 
 .trade-progress-now-negative {
   border-color: rgba(177, 61, 76, 0.7);
   background: rgba(177, 61, 76, 0.18);
-  color: #ffe1e5;
+  color: var(--value-negative-surface);
 }
 
 .trade-progress-track-shell {
@@ -1351,13 +1357,13 @@ pre {
 .trade-progress-current-label-positive {
   border-color: rgba(57, 151, 113, 0.72);
   background: rgba(20, 53, 41, 0.92);
-  color: #ddf4e9;
+  color: var(--value-positive-surface);
 }
 
 .trade-progress-current-label-negative {
   border-color: rgba(196, 81, 96, 0.74);
   background: rgba(62, 22, 31, 0.92);
-  color: #ffe2e7;
+  color: var(--value-negative-surface);
 }
 
 .trade-progress-current-marker {
@@ -1373,7 +1379,7 @@ pre {
 
 .trade-progress-current-marker-positive {
   background: rgba(111, 211, 162, 0.94);
-  color: #ddf4e9;
+  color: var(--value-positive-surface);
   box-shadow:
     0 0 0 1px rgba(20, 58, 42, 0.72),
     0 0 10px rgba(111, 211, 162, 0.18);
@@ -1381,7 +1387,7 @@ pre {
 
 .trade-progress-current-marker-negative {
   background: rgba(255, 115, 132, 0.94);
-  color: #ffe2e7;
+  color: var(--value-negative-surface);
   box-shadow:
     0 0 0 1px rgba(81, 20, 29, 0.75),
     0 0 10px rgba(255, 115, 132, 0.16);
@@ -1579,13 +1585,13 @@ pre {
 .button-success {
   border-color: #1d6a4d;
   background: rgba(59, 156, 114, 0.28);
-  color: #bdecd5;
+  color: var(--value-positive-surface);
 }
 
 .button-danger {
   border-color: #8a1f2c;
   background: rgba(214, 25, 38, 0.3);
-  color: #ffd4da;
+  color: var(--value-negative-surface);
 }
 
 .button-success:hover:not(:disabled) {
@@ -1632,13 +1638,13 @@ pre {
 .badge-good {
   border-color: #1d6a4d;
   background: rgba(55, 142, 104, 0.24);
-  color: #bfe9d4;
+  color: var(--value-positive-surface);
 }
 
 .badge-bad {
   border-color: #8a1f2c;
   background: rgba(214, 25, 38, 0.24);
-  color: #ffc7cf;
+  color: var(--value-negative-surface);
 }
 
 .badge-warn {
