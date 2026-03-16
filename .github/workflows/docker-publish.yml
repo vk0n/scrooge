@@ -35,8 +35,17 @@ jobs:
             bot:
               - '.dockerignore'
               - 'docker/bot.Dockerfile'
+              - 'requirements.bot.txt'
               - 'docker/backtest_entrypoint.sh'
-              - 'requirements.txt'
+              - '*.py'
+              - 'data/**'
+              - 'shared/**'
+            backtest:
+              - '.dockerignore'
+              - 'docker/backtest.Dockerfile'
+              - 'docker/backtest_entrypoint.sh'
+              - 'requirements.bot.txt'
+              - 'requirements.backtest.txt'
               - '*.py'
               - 'data/**'
               - 'shared/**'
@@ -57,6 +66,10 @@ jobs:
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ steps.filter.outputs.bot }}" == "true" ]]; then
             include+=('{"service":"bot","image_name":"scrooge-bot","dockerfile":"docker/bot.Dockerfile","build_args":""}')
+          fi
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ steps.filter.outputs.backtest }}" == "true" ]]; then
+            include+=('{"service":"backtest","image_name":"scrooge-backtest","dockerfile":"docker/backtest.Dockerfile","build_args":""}')
           fi
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ steps.filter.outputs.api }}" == "true" ]]; then

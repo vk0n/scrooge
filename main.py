@@ -18,18 +18,11 @@ from binance.client import Client
 from dotenv import load_dotenv
 
 import data as data_module
-import report as report_module
 import trade as trade_module
 from control_channel import get_control_client, process_pending_commands
 from data import build_dataset, fetch_historical, prepare_multi_tf
 from event_log import get_technical_logger
 from market_stream import LiveMarketStream
-from report import (
-    compute_stats,
-    monte_carlo_from_equity,
-    plot_results_interactive,
-    rolling_window_backtest_distribution,
-)
 from state import add_closed_trade, load_state, save_state, update_balance, update_position
 from strategy import run_strategy
 from trade import (
@@ -440,7 +433,6 @@ if __name__ == "__main__":
     client = Client(api_key, api_secret)
     data_module.set_client(client)
     trade_module.set_client(client)
-    report_module.set_client(client)
 
     # Load or create state
     state = load_state()
@@ -703,6 +695,16 @@ if __name__ == "__main__":
                 live_market_stream = None
 
     else:
+        import report as report_module
+        from report import (
+            compute_stats,
+            monte_carlo_from_equity,
+            plot_results_interactive,
+            rolling_window_backtest_distribution,
+        )
+
+        report_module.set_client(client)
+
         if initial_balance is None:
             raise ValueError("Backtest config must include initial_balance.")
 

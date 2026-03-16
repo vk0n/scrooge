@@ -46,7 +46,9 @@ scrooge/
 ├── report.py                # Plotting and performance visualization
 ├── main.py                  # Entry point for backtesting or live trading
 ├── results/                 # Historical charts and configuration snapshots
-└── requirements.txt         # Python dependencies
+├── requirements.bot.txt     # Slim live-runtime dependencies
+├── requirements.backtest.txt# Backtest/report extras
+└── requirements.txt         # Full local install (includes backtest extras)
 ```
 ---
 
@@ -68,6 +70,10 @@ source scrooge-env/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+
+`requirements.txt` installs the full local toolchain. Docker uses a slimmer dependency split internally:
+- `docker/bot.Dockerfile` -> `requirements.bot.txt`
+- `docker/backtest.Dockerfile` -> `requirements.backtest.txt`
 
 ### 4. Set Up Environment Variables
 Create a `.env` file in the project root:

@@ -58,10 +58,10 @@ services:
 
   backtest:
     profiles: ["backtest"]
-    image: "${SCROOGE_BACKTEST_IMAGE:-vk0n/scrooge-bot:latest}"
+    image: "${SCROOGE_BACKTEST_IMAGE:-vk0n/scrooge-backtest:latest}"
     build:
       context: .
-      dockerfile: docker/bot.Dockerfile
+      dockerfile: docker/backtest.Dockerfile
     depends_on:
       - redis
     command: ["sh", "/app/docker/backtest_entrypoint.sh"]

@@ -37,7 +37,7 @@ For registry-based deploys with Watchtower, also set image refs:
 
 ```env
 SCROOGE_BOT_IMAGE=vk0n/scrooge-bot:latest
-SCROOGE_BACKTEST_IMAGE=vk0n/scrooge-bot:latest
+SCROOGE_BACKTEST_IMAGE=vk0n/scrooge-backtest:latest
 SCROOGE_API_IMAGE=vk0n/scrooge-api:latest
 SCROOGE_FRONTEND_IMAGE=vk0n/scrooge-frontend:latest
 SCROOGE_PROXY_IMAGE=nginx:1.27-alpine
@@ -52,7 +52,8 @@ docker login
 ```
 
 Note:
-- there is no separate Docker Hub image for `backtest` yet, so it can reuse `vk0n/scrooge-bot:latest`
+- `bot` uses a slim live-runtime image
+- `backtest` uses a separate image with plotting/report dependencies
 
 ## 3. Run modes
 
