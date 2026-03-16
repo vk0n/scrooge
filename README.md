@@ -34,6 +34,7 @@ scrooge/
 │   ├── dataset.py
 │   ├── discrete_event_stream.py
 │   ├── discrete_tape.py
+│   ├── market_event_projection.py
 │   ├── runner.py
 │   ├── replay.py
 │   ├── reporting.py
@@ -127,6 +128,7 @@ Local runtime artifacts will appear under:
 - `runtime/trade_history.jsonl`
 - `runtime/balance_history.jsonl`
 - `runtime/event_history.jsonl`
+- `runtime/market_events.jsonl`
 - `runtime/chart_dataset.csv`
 
 ### Local backtest
@@ -148,6 +150,7 @@ Backtest outputs include:
 The backtest execution path is now owned by:
 - `backtest/runner.py`
 - `backtest/discrete_tape.py`
+- `backtest/market_event_projection.py`
 
 The future realtime-grade stream boundary is reserved in:
 - `core/market_events.py`
@@ -155,7 +158,7 @@ The future realtime-grade stream boundary is reserved in:
 Backtest input modes:
 - `backtest_input_mode: build` — fetch/build dataset, then derive `market_tape.jsonl`
 - `backtest_input_mode: discrete_tape` — start directly from an existing `market_tape.jsonl`
-- `backtest_input_mode: discrete_event_stream` — start directly from an existing `market_events.jsonl`
+- `backtest_input_mode: market_event_stream` — project a discrete tape from an existing `market_events.jsonl`
 
 To replay from an existing tape, set in `config/backtest.yaml`:
 
@@ -164,12 +167,16 @@ backtest_input_mode: discrete_tape
 market_tape_input_path: /path/to/market_tape.jsonl
 ```
 
-To replay from an existing discrete event stream:
+To replay from an existing market event stream:
 
 ```yaml
-backtest_input_mode: discrete_event_stream
+backtest_input_mode: market_event_stream
 market_event_input_path: /path/to/market_events.jsonl
 ```
+
+That `market_events.jsonl` can come either from:
+- a backtest-generated event stream
+- or a live bot runtime captured at `runtime/market_events.jsonl`
 
 ### Replay a canonical event log
 

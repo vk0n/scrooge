@@ -12,8 +12,11 @@ import backtest.dataset as dataset_module
 from backtest.discrete_event_stream import (
     build_discrete_market_event_stream,
     read_discrete_market_event_stream,
-    rebuild_discrete_tape_from_market_events,
     write_discrete_market_event_stream,
+)
+from backtest.market_event_projection import (
+    DiscreteTapeProjectionSummary,
+    read_projected_discrete_tape_from_market_event_stream,
 )
 from backtest.discrete_tape import (
     DiscreteMarketTapeRow,
@@ -64,6 +67,7 @@ class DiscreteBacktestResult:
     dataset: pd.DataFrame
     tape: list[DiscreteMarketTapeRow]
     market_events: list[MarketEvent]
+    market_event_projection: DiscreteTapeProjectionSummary | None
     final_balance: float
     trades: pd.DataFrame
     balance_history: list[float]
@@ -92,9 +96,11 @@ def build_discrete_backtest_config(
     if input_mode == "tape":
         input_mode = "discrete_tape"
     if input_mode == "event_stream":
-        input_mode = "discrete_event_stream"
-    if input_mode not in {"build", "discrete_tape", "discrete_event_stream"}:
-        raise ValueError("backtest_input_mode must be one of: build, discrete_tape, discrete_event_stream")
+        input_mode = "market_event_stream"
+    if input_mode == "discrete_event_stream":
+        input_mode = "market_event_stream"
+    if input_mode not in {"build", "discrete_tape", "market_event_stream"}:
+        raise ValueError("backtest_input_mode must be one of: build, discrete_tape, market_event_stream")
 
     raw_input_path = str(cfg.get("market_tape_input_path", "") or "").strip()
     market_tape_input_path = Path(raw_input_path).expanduser() if raw_input_path else None
@@ -239,6 +245,7 @@ def run_discrete_backtest(
     replay_writer: Callable[..., ReplaySummary] = write_replay_artifacts,
 ) -> DiscreteBacktestResult:
     logger = technical_logger or get_technical_logger()
+    market_event_projection: DiscreteTapeProjectionSummary | None = None
 
     import backtest.reporting as report_module
     from backtest.reporting import (
@@ -268,16 +275,28 @@ def run_discrete_backtest(
         market_events = build_discrete_market_event_stream(tape, candle_interval=str(config.intervals["small"]))
         write_discrete_market_event_stream(config.market_event_stream_path, market_events)
         logger.info("backtest_market_event_stream_written events=%s path=%s", len(market_events), config.market_event_stream_path)
-    elif config.backtest_input_mode == "discrete_event_stream":
+    elif config.backtest_input_mode == "market_event_stream":
         source_path = config.market_event_input_path or config.market_event_stream_path
         market_events = read_discrete_market_event_stream(source_path)
         if not market_events:
-            raise ValueError(f"No discrete market events found at {source_path}")
-        tape = rebuild_discrete_tape_from_market_events(market_events)
+            raise ValueError(f"No market events found at {source_path}")
+        tape, market_event_projection = read_projected_discrete_tape_from_market_event_stream(
+            source_path,
+            candle_interval=str(config.intervals["small"]),
+            symbol=config.symbol,
+        )
         if not tape:
-            raise ValueError(f"Discrete market event stream produced no tape rows at {source_path}")
+            raise ValueError(f"Market event stream produced no discrete tape rows at {source_path}")
         df = discrete_market_tape_to_frame(tape)
         logger.info("backtest_market_event_stream_loaded events=%s path=%s", len(market_events), source_path)
+        if market_event_projection is not None:
+            logger.info(
+                "backtest_market_event_projection rows=%s candles=%s indicator_snapshots=%s ignored=%s",
+                market_event_projection.projected_rows,
+                market_event_projection.matched_candles,
+                market_event_projection.matched_indicator_snapshots,
+                market_event_projection.ignored_events,
+            )
         if source_path != config.market_event_stream_path:
             write_discrete_market_event_stream(config.market_event_stream_path, market_events)
             logger.info(
@@ -367,6 +386,7 @@ def run_discrete_backtest(
         dataset=df,
         tape=tape,
         market_events=market_events,
+        market_event_projection=market_event_projection,
         final_balance=float(final_balance),
         trades=trades,
         balance_history=balance_history,

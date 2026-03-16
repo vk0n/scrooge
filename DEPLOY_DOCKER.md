@@ -172,6 +172,7 @@ Live runtime writes into `/runtime`:
 - `balance_history.jsonl`
 - `trading_log.txt`
 - `event_history.jsonl`
+- `market_events.jsonl`
 - `chart_dataset.csv`
 
 Notes:
@@ -208,7 +209,7 @@ Each backtest run emits:
 Backtest input modes:
 - `backtest_input_mode: build` builds fresh dataset/tape from Binance history
 - `backtest_input_mode: discrete_tape` starts directly from an existing `market_tape.jsonl`
-- `backtest_input_mode: discrete_event_stream` starts directly from an existing `market_events.jsonl`
+- `backtest_input_mode: market_event_stream` projects a discrete tape from an existing `market_events.jsonl`
 - use `market_tape_input_path` or `market_event_input_path` in `config/backtest.yaml` when replaying from stored input artifacts
 
 ## Control Behavior
