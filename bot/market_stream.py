@@ -19,6 +19,13 @@ from bot.trade import (
     set_cached_position,
 )
 from core.engine import refresh_runtime_state_from_price_tick
+from core.market_events import (
+    CandleClosedEvent,
+    IndicatorSnapshotEvent,
+    JsonlMarketEventStore,
+    MarkPriceEvent,
+    PriceTickEvent,
+)
 
 try:
     from binance import ThreadedWebsocketManager
@@ -49,6 +56,13 @@ MARKET_STREAM_SETTLE_SECONDS = max(
     0.25,
     float(os.getenv("SCROOGE_MARKET_STREAM_SETTLE_SECONDS", "1.5")),
 )
+MARKET_EVENT_STREAM_ENABLED = os.getenv("SCROOGE_MARKET_EVENT_STREAM_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+MARKET_EVENT_STREAM_FILE = os.getenv("SCROOGE_MARKET_EVENT_STREAM_FILE", "runtime/market_events.jsonl").strip()
 USER_STREAM_ENABLED = os.getenv("SCROOGE_USER_STREAM_ENABLED", "1").strip().lower() not in {
     "0",
     "false",
@@ -200,6 +214,12 @@ class LiveMarketStream:
             key: _interval_to_timedelta(value)
             for key, value in self._intervals.items()
         }
+        self._market_event_lock = threading.RLock()
+        self._market_event_store = (
+            JsonlMarketEventStore(MARKET_EVENT_STREAM_FILE)
+            if MARKET_EVENT_STREAM_ENABLED and MARKET_EVENT_STREAM_FILE
+            else None
+        )
 
         self._cache_lock = threading.RLock()
         self._small_df = _empty_candle_frame()
@@ -403,7 +423,49 @@ class LiveMarketStream:
             self._pending_small_open_time_ms = None
             self._pending_emit_after_monotonic = None
 
-        return self._prepare_multi_tf_fn(df_small, df_medium, df_big)
+        prepared_frame = self._prepare_multi_tf_fn(df_small, df_medium, df_big)
+        self._emit_indicator_snapshot_for_frame(prepared_frame)
+        return prepared_frame
+
+    def _append_market_event(self, event: PriceTickEvent | MarkPriceEvent | CandleClosedEvent | IndicatorSnapshotEvent) -> None:
+        if self._market_event_store is None:
+            return
+        try:
+            with self._market_event_lock:
+                self._market_event_store.append(event)
+        except Exception as exc:  # noqa: BLE001
+            technical_logger.warning("market_event_append_failed symbol=%s type=%s error=%s", self._symbol, event.event_type, exc)
+
+    def _emit_indicator_snapshot_for_frame(self, frame: pd.DataFrame | None) -> None:
+        if frame is None or frame.empty:
+            return
+
+        latest = frame.iloc[-1]
+        open_time = latest.get("open_time")
+        if open_time is None or pd.isna(open_time):
+            return
+
+        open_dt = pd.Timestamp(open_time)
+        if open_dt.tzinfo is not None:
+            open_dt = open_dt.tz_convert(None)
+
+        close_dt = open_dt + self._interval_deltas["small"] - pd.Timedelta(seconds=1)
+        values = {
+            "EMA": _to_float(latest.get("EMA")),
+            "RSI": _to_float(latest.get("RSI")),
+            "BBL": _to_float(latest.get("BBL")),
+            "BBM": _to_float(latest.get("BBM")),
+            "BBU": _to_float(latest.get("BBU")),
+            "ATR": _to_float(latest.get("ATR")),
+        }
+        self._append_market_event(
+            IndicatorSnapshotEvent(
+                symbol=self._symbol,
+                ts=close_dt.strftime(TIMESTAMP_FORMAT),
+                interval="discrete_snapshot",
+                values=values,
+            )
+        )
 
     def _bootstrap_account_cache(self) -> None:
         try:
@@ -833,11 +895,28 @@ class LiveMarketStream:
                 ticker_price = _to_float(payload.get("p"))
             if ticker_price is not None:
                 self._last_ticker_price = ticker_price
+                self._append_market_event(
+                    PriceTickEvent(
+                        symbol=self._symbol,
+                        ts=_format_event_timestamp_ms(event_ts),
+                        price=ticker_price,
+                        source="ticker",
+                    )
+                )
                 updated = True
         elif event_type == "markPriceUpdate":
             mark_price = _to_float(payload.get("p"))
             if mark_price is not None:
                 self._last_mark_price = mark_price
+                self._append_market_event(
+                    MarkPriceEvent(
+                        symbol=self._symbol,
+                        ts=_format_event_timestamp_ms(event_ts),
+                        mark_price=mark_price,
+                        funding_rate=_to_float(payload.get("r")),
+                        next_funding_time=_format_event_timestamp_ms(payload.get("T")) if payload.get("T") is not None else None,
+                    )
+                )
                 updated = True
         elif event_type == "kline":
             self._handle_kline_event(payload.get("k"))
@@ -853,6 +932,22 @@ class LiveMarketStream:
         candle = _candle_row_from_kline(kline)
         if candle is None:
             return
+        close_time_ms = kline.get("T")
+        close_time = _format_event_timestamp_ms(close_time_ms)
+        self._append_market_event(
+            CandleClosedEvent(
+                symbol=self._symbol,
+                ts=close_time,
+                interval=interval,
+                open_time=pd.Timestamp(candle["open_time"]).strftime(TIMESTAMP_FORMAT),
+                close_time=close_time,
+                open=float(candle["open"]),
+                high=float(candle["high"]),
+                low=float(candle["low"]),
+                close=float(candle["close"]),
+                volume=float(candle["volume"]),
+            )
+        )
 
         if interval == self._intervals["small"]:
             self._upsert_closed_candle("small", candle)
