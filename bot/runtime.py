@@ -13,10 +13,10 @@ import yaml
 from binance.client import Client
 from dotenv import load_dotenv
 
-import data as data_module
 import bot.trade as trade_module
+import backtest.dataset as data_module
 from bot.control_channel import get_control_client, process_pending_commands
-from data import build_dataset, fetch_historical, prepare_multi_tf
+from backtest.dataset import build_dataset, fetch_historical, prepare_multi_tf
 from bot.event_log import get_technical_logger
 from bot.market_stream import LiveMarketStream
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
@@ -691,9 +691,9 @@ if __name__ == "__main__":
                 live_market_stream = None
 
     else:
-        import report as report_module
-        from replay import write_replay_artifacts
-        from report import (
+        import backtest.reporting as report_module
+        from backtest.replay import write_replay_artifacts
+        from backtest.reporting import (
             compute_stats,
             monte_carlo_from_equity,
             plot_results_interactive,

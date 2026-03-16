@@ -43,15 +43,15 @@ scrooge/
 │   ├── event_log.py
 │   ├── state.py
 │   ├── trade.py
-│   └── runtime.py
+├── backtest/                # Research, replay, optimization, reporting
+│   ├── dataset.py
+│   ├── replay.py
+│   ├── reporting.py
+│   └── optimize.py
 ├── core/                    # Shared engine and canonical event storage
 │   ├── engine.py
 │   └── event_store.py
 ├── main.py                  # Thin entry shim; keeps the Scrooge greeting
-├── data.py                  # Multi-timeframe data fetching and preparation
-├── replay.py                # Canonical event-log replay and trade reconstruction
-├── optimize.py              # Automated parameter optimization script
-├── report.py                # Plotting and performance visualization
 ├── config.yaml              # Main live configuration file
 ├── config.backtest.yaml     # Backtest configuration file
 ├── param_grid.yaml          # Optimization parameter grid
@@ -87,7 +87,7 @@ pip install -r requirements.txt
 
 Canonical event replay summary:
 ```bash
-python replay.py /path/to/event_history.jsonl --runtime-mode backtest --strategy-mode discrete
+python -m backtest.replay /path/to/event_history.jsonl --runtime-mode backtest --strategy-mode discrete
 ```
 
 ### 4. Set Up Environment Variables
@@ -127,7 +127,7 @@ enable_logs: true
 Fetch and prepare synchronized multi-timeframe data:
 
 ```bash
-python data.py
+python -m backtest.dataset
 ```
 This will output a merged file named after your intervals:
 ```
@@ -154,7 +154,7 @@ Results will include:
 
 Explore optimal values for stop-loss, take-profit, and RSI thresholds:
 ```bash
-python optimize.py
+python -m backtest.optimize
 ```
 
 Results are automatically stored in YAML format (e.g., `best_metrics.yaml`), with visual summaries in `results/`.

@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from data import fetch_historical_paginated, prepare_multi_tf
+from backtest.dataset import fetch_historical_paginated, prepare_multi_tf
 from bot.event_log import get_technical_logger
 from bot.state import (
     load_balance_history,
