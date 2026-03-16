@@ -20,11 +20,14 @@ from bot.trade import (
 )
 from core.engine import refresh_runtime_state_from_price_tick
 from core.market_events import (
+    AccountBalanceEvent,
     CandleClosedEvent,
     IndicatorSnapshotEvent,
     JsonlMarketEventStore,
     MarkPriceEvent,
+    OrderTradeUpdateEvent,
     PriceTickEvent,
+    PositionSnapshotEvent,
 )
 
 try:
@@ -97,6 +100,14 @@ def _to_int(value: Any, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return numeric if numeric > 0 else fallback
+
+
+def _to_optional_int(value: Any) -> int | None:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if numeric >= 0 else None
 
 
 def _format_event_timestamp_ms(value: Any) -> str:
@@ -427,7 +438,18 @@ class LiveMarketStream:
         self._emit_indicator_snapshot_for_frame(prepared_frame)
         return prepared_frame
 
-    def _append_market_event(self, event: PriceTickEvent | MarkPriceEvent | CandleClosedEvent | IndicatorSnapshotEvent) -> None:
+    def _append_market_event(
+        self,
+        event: (
+            PriceTickEvent
+            | MarkPriceEvent
+            | CandleClosedEvent
+            | IndicatorSnapshotEvent
+            | AccountBalanceEvent
+            | PositionSnapshotEvent
+            | OrderTradeUpdateEvent
+        ),
+    ) -> None:
         if self._market_event_store is None:
             return
         try:
@@ -747,6 +769,7 @@ class LiveMarketStream:
     def _handle_account_update(self, account_data: Any, event_ts: Any) -> None:
         if not isinstance(account_data, dict):
             return
+        ts_label = _format_event_timestamp_ms(event_ts)
 
         balance_entry = None
         for candidate in account_data.get("B", []) or []:
@@ -759,6 +782,16 @@ class LiveMarketStream:
             balance_value = _to_float(balance_entry.get("wb"))
             if balance_value is None:
                 balance_value = _to_float(balance_entry.get("cw"))
+            if balance_value is not None:
+                self._append_market_event(
+                    AccountBalanceEvent(
+                        asset=str(balance_entry.get("a", "USDT")).strip().upper() or "USDT",
+                        ts=ts_label,
+                        wallet_balance=balance_value,
+                        cross_wallet_balance=_to_float(balance_entry.get("cw")),
+                        balance_delta=_to_float(balance_entry.get("bc")),
+                    )
+                )
         if balance_value is not None:
             set_cached_balance(balance_value)
 
@@ -769,6 +802,18 @@ class LiveMarketStream:
                 break
 
         if position_update is not None:
+            position_amt = _to_float(position_update.get("pa"))
+            if position_amt is not None:
+                self._append_market_event(
+                    PositionSnapshotEvent(
+                        symbol=self._symbol,
+                        ts=ts_label,
+                        position_amt=position_amt,
+                        entry_price=_to_float(position_update.get("ep")),
+                        unrealized_pnl=_to_float(position_update.get("up")),
+                        position_side=(str(position_update.get("ps")).strip() if position_update.get("ps") else None),
+                    )
+                )
             self._apply_account_position_update(position_update, event_ts)
 
         if balance_value is not None:
@@ -790,6 +835,26 @@ class LiveMarketStream:
         execution_type = str(order_data.get("x", "")).strip().upper()
         order_status = str(order_data.get("X", "")).strip().upper()
         order_type = str(order_data.get("o", "")).strip().upper()
+        self._append_market_event(
+            OrderTradeUpdateEvent(
+                symbol=self._symbol,
+                ts=_format_event_timestamp_ms(event_ts),
+                order_side=(str(order_data.get("S")).strip().upper() if order_data.get("S") else None),
+                order_type=(order_type or None),
+                execution_type=(execution_type or None),
+                order_status=(order_status or None),
+                order_id=_to_optional_int(order_data.get("i")),
+                trade_id=_to_optional_int(order_data.get("t")),
+                last_filled_qty=_to_float(order_data.get("l")),
+                accumulated_filled_qty=_to_float(order_data.get("z")),
+                last_filled_price=_to_float(order_data.get("L")),
+                average_price=_to_float(order_data.get("ap")),
+                realized_pnl=_to_float(order_data.get("rp")),
+                commission_asset=(str(order_data.get("N")).strip().upper() if order_data.get("N") else None),
+                commission=_to_float(order_data.get("n")),
+                reduce_only=bool(order_data.get("R", False)),
+            )
+        )
         technical_logger.debug(
             "user_stream_order_update symbol=%s execution_type=%s status=%s order_type=%s event_time=%s",
             self._symbol,

@@ -177,6 +177,7 @@ Live runtime writes into `/runtime`:
 
 Notes:
 - `event_history.jsonl` is the canonical append-only event log
+- `market_events.jsonl` now carries both market data and account/execution events for future replay paths
 - existing runtime artifacts remain compatible across normal upgrades as long as the `scrooge_runtime` volume is preserved
 
 ## Backtest Artifacts

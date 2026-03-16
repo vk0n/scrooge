@@ -60,7 +60,63 @@ class IndicatorSnapshotEvent:
     event_type: str = field(init=False, default="indicator_snapshot")
 
 
-MarketEvent = PriceTickEvent | MarkPriceEvent | CandleClosedEvent | IndicatorSnapshotEvent
+@dataclass(slots=True)
+class AccountBalanceEvent:
+    asset: str
+    ts: str
+    wallet_balance: float
+    cross_wallet_balance: float | None = None
+    balance_delta: float | None = None
+    source: str = "account_update"
+    schema_version: int = field(init=False, default=MARKET_EVENT_SCHEMA_VERSION)
+    event_type: str = field(init=False, default="account_balance")
+
+
+@dataclass(slots=True)
+class PositionSnapshotEvent:
+    symbol: str
+    ts: str
+    position_amt: float
+    entry_price: float | None = None
+    unrealized_pnl: float | None = None
+    position_side: str | None = None
+    source: str = "account_update"
+    schema_version: int = field(init=False, default=MARKET_EVENT_SCHEMA_VERSION)
+    event_type: str = field(init=False, default="position_snapshot")
+
+
+@dataclass(slots=True)
+class OrderTradeUpdateEvent:
+    symbol: str
+    ts: str
+    order_side: str | None = None
+    order_type: str | None = None
+    execution_type: str | None = None
+    order_status: str | None = None
+    order_id: int | None = None
+    trade_id: int | None = None
+    last_filled_qty: float | None = None
+    accumulated_filled_qty: float | None = None
+    last_filled_price: float | None = None
+    average_price: float | None = None
+    realized_pnl: float | None = None
+    commission_asset: str | None = None
+    commission: float | None = None
+    reduce_only: bool = False
+    source: str = "order_trade_update"
+    schema_version: int = field(init=False, default=MARKET_EVENT_SCHEMA_VERSION)
+    event_type: str = field(init=False, default="order_trade_update")
+
+
+MarketEvent = (
+    PriceTickEvent
+    | MarkPriceEvent
+    | CandleClosedEvent
+    | IndicatorSnapshotEvent
+    | AccountBalanceEvent
+    | PositionSnapshotEvent
+    | OrderTradeUpdateEvent
+)
 
 
 class MarketEventStore(Protocol):
@@ -167,6 +223,45 @@ def _build_market_event(payload: dict[str, Any]) -> MarketEvent:
             ts=str(payload["ts"]),
             interval=str(payload["interval"]),
             values=values,
+        )
+    if event_type == "account_balance":
+        return AccountBalanceEvent(
+            asset=str(payload["asset"]),
+            ts=str(payload["ts"]),
+            wallet_balance=float(payload["wallet_balance"]),
+            cross_wallet_balance=(float(payload["cross_wallet_balance"]) if payload.get("cross_wallet_balance") is not None else None),
+            balance_delta=(float(payload["balance_delta"]) if payload.get("balance_delta") is not None else None),
+            source=str(payload.get("source", "account_update")),
+        )
+    if event_type == "position_snapshot":
+        return PositionSnapshotEvent(
+            symbol=str(payload["symbol"]),
+            ts=str(payload["ts"]),
+            position_amt=float(payload["position_amt"]),
+            entry_price=(float(payload["entry_price"]) if payload.get("entry_price") is not None else None),
+            unrealized_pnl=(float(payload["unrealized_pnl"]) if payload.get("unrealized_pnl") is not None else None),
+            position_side=(str(payload["position_side"]) if payload.get("position_side") else None),
+            source=str(payload.get("source", "account_update")),
+        )
+    if event_type == "order_trade_update":
+        return OrderTradeUpdateEvent(
+            symbol=str(payload["symbol"]),
+            ts=str(payload["ts"]),
+            order_side=(str(payload["order_side"]) if payload.get("order_side") else None),
+            order_type=(str(payload["order_type"]) if payload.get("order_type") else None),
+            execution_type=(str(payload["execution_type"]) if payload.get("execution_type") else None),
+            order_status=(str(payload["order_status"]) if payload.get("order_status") else None),
+            order_id=(int(payload["order_id"]) if payload.get("order_id") is not None else None),
+            trade_id=(int(payload["trade_id"]) if payload.get("trade_id") is not None else None),
+            last_filled_qty=(float(payload["last_filled_qty"]) if payload.get("last_filled_qty") is not None else None),
+            accumulated_filled_qty=(float(payload["accumulated_filled_qty"]) if payload.get("accumulated_filled_qty") is not None else None),
+            last_filled_price=(float(payload["last_filled_price"]) if payload.get("last_filled_price") is not None else None),
+            average_price=(float(payload["average_price"]) if payload.get("average_price") is not None else None),
+            realized_pnl=(float(payload["realized_pnl"]) if payload.get("realized_pnl") is not None else None),
+            commission_asset=(str(payload["commission_asset"]) if payload.get("commission_asset") else None),
+            commission=(float(payload["commission"]) if payload.get("commission") is not None else None),
+            reduce_only=bool(payload.get("reduce_only", False)),
+            source=str(payload.get("source", "order_trade_update")),
         )
     raise ValueError(f"Unknown market event type: {event_type or '<empty>'}")
 

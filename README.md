@@ -131,6 +131,10 @@ Local runtime artifacts will appear under:
 - `runtime/market_events.jsonl`
 - `runtime/chart_dataset.csv`
 
+`runtime/market_events.jsonl` now carries:
+- market data events (`price_tick`, `mark_price`, `candle_closed`, `indicator_snapshot`)
+- account/execution events (`account_balance`, `position_snapshot`, `order_trade_update`)
+
 ### Local backtest
 
 Run against `config/backtest.yaml`:
