@@ -51,6 +51,8 @@ class DiscreteBacktestConfig:
     agg_trade_tick_interval: str
     agg_trade_archive_base_url: str
     agg_trade_rest_base_url: str
+    agg_trade_cache_enabled: bool
+    agg_trade_cache_dir: Path
     symbol: str
     leverage: float
     initial_balance: float
@@ -135,6 +137,8 @@ def build_discrete_backtest_config(
         raise ValueError("agg_trade_tick_interval must be one of: 1s, raw")
     agg_trade_archive_base_url = str(cfg.get("agg_trade_archive_base_url", "") or "").strip()
     agg_trade_rest_base_url = str(cfg.get("agg_trade_rest_base_url", "") or "").strip()
+    agg_trade_cache_enabled = bool(cfg.get("agg_trade_cache_enabled", True))
+    agg_trade_cache_dir = Path(str(cfg.get("agg_trade_cache_dir", "data/agg_trades") or "data/agg_trades")).expanduser()
 
     raw_input_path = str(cfg.get("market_tape_input_path", "") or "").strip()
     market_tape_input_path = Path(raw_input_path).expanduser() if raw_input_path else None
@@ -148,6 +152,8 @@ def build_discrete_backtest_config(
         agg_trade_tick_interval=agg_trade_tick_interval,
         agg_trade_archive_base_url=agg_trade_archive_base_url,
         agg_trade_rest_base_url=agg_trade_rest_base_url,
+        agg_trade_cache_enabled=agg_trade_cache_enabled,
+        agg_trade_cache_dir=agg_trade_cache_dir,
         symbol=str(cfg["symbol"]),
         leverage=float(cfg["leverage"]),
         initial_balance=float(initial_balance),
@@ -366,13 +372,17 @@ def run_discrete_backtest(
             tick_interval=config.agg_trade_tick_interval,
             archive_base_url=config.agg_trade_archive_base_url,
             rest_base_url=config.agg_trade_rest_base_url,
+            cache_enabled=config.agg_trade_cache_enabled,
+            cache_dir=config.agg_trade_cache_dir,
         )
         if not market_events:
             raise ValueError("No market events were built from historical aggTrades.")
         write_discrete_market_event_stream(config.market_event_stream_path, market_events)
         logger.info(
-            "backtest_agg_trade_market_event_stream_written source=%s raw_trades=%s price_ticks=%s small_candles=%s medium_candles=%s big_candles=%s indicator_snapshots=%s total_events=%s path=%s",
+            "backtest_agg_trade_market_event_stream_written source=%s cache_hit=%s cache_path=%s raw_trades=%s price_ticks=%s small_candles=%s medium_candles=%s big_candles=%s indicator_snapshots=%s total_events=%s path=%s",
             agg_trade_stream_summary.source,
+            agg_trade_stream_summary.cache_hit,
+            agg_trade_stream_summary.cache_path,
             agg_trade_stream_summary.raw_agg_trades,
             agg_trade_stream_summary.price_ticks,
             agg_trade_stream_summary.candle_events_small,

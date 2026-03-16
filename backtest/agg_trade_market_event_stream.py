@@ -17,6 +17,7 @@ import zipfile
 import pandas as pd
 import pandas_ta as ta
 
+from bot.event_log import get_technical_logger
 from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent
 
 
@@ -28,13 +29,20 @@ DEFAULT_AGG_TRADE_REST_BASE_URL = os.getenv(
     "SCROOGE_FUTURES_REST_BASE_URL",
     "https://fapi.binance.com",
 ).rstrip("/")
+DEFAULT_AGG_TRADE_CACHE_DIR = os.getenv(
+    "SCROOGE_AGG_TRADE_CACHE_DIR",
+    "data/agg_trades",
+)
 MARKET_EVENT_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+technical_logger = get_technical_logger()
 
 
 @dataclass(slots=True)
 class AggTradeMarketEventStreamSummary:
     source: str
     symbol: str
+    cache_hit: bool
+    cache_path: str | None
     raw_agg_trades: int
     price_ticks: int
     candle_events_small: int
@@ -60,6 +68,47 @@ def _resolve_time_range(*, backtest_period_days: int, backtest_period_end_time: 
         end_time = datetime.now()
     start_time = end_time - timedelta(days=int(backtest_period_days))
     return start_time, end_time
+
+
+def _resolve_agg_trade_cache_path(
+    *,
+    cache_dir: str | Path | None,
+    symbol: str,
+    source: str,
+    start_time: datetime,
+    end_time: datetime,
+) -> Path | None:
+    if cache_dir is None:
+        return None
+    normalized = str(cache_dir).strip()
+    if not normalized:
+        return None
+    target_dir = Path(normalized).expanduser()
+    return target_dir / (
+        f"{symbol}_aggTrades_{source}_"
+        f"{int(start_time.timestamp() * 1000)}_{int(end_time.timestamp() * 1000)}.pkl"
+    )
+
+
+def _read_agg_trade_cache(path: Path) -> pd.DataFrame:
+    cached = pd.read_pickle(path)
+    if not isinstance(cached, pd.DataFrame):
+        raise ValueError(f"Agg trade cache is not a DataFrame: {path}")
+    expected_columns = {"ts", "price", "qty", "source"}
+    if not expected_columns.issubset(set(cached.columns)):
+        raise ValueError(f"Agg trade cache is missing columns: {path}")
+    out = cached.copy()
+    out["ts"] = pd.to_datetime(out["ts"], errors="coerce")
+    out["price"] = pd.to_numeric(out["price"], errors="coerce")
+    out["qty"] = pd.to_numeric(out["qty"], errors="coerce")
+    out["source"] = out["source"].astype(str)
+    out = out.dropna(subset=["ts", "price", "qty"]).sort_values("ts").reset_index(drop=True)
+    return out[["ts", "price", "qty", "source"]]
+
+
+def _write_agg_trade_cache(path: Path, df: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_pickle(path)
 
 
 def _archive_day_urls(
@@ -213,12 +262,25 @@ def fetch_historical_agg_trades(
     source: str = "archive",
     archive_base_url: str = DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL,
     rest_base_url: str = DEFAULT_AGG_TRADE_REST_BASE_URL,
-) -> pd.DataFrame:
+    cache_enabled: bool = True,
+    cache_dir: str | Path | None = DEFAULT_AGG_TRADE_CACHE_DIR,
+) -> tuple[pd.DataFrame, bool, Path | None]:
     normalized_source = str(source or "archive").strip().lower() or "archive"
     archive_base_url = str(archive_base_url or DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL).strip().rstrip("/")
     rest_base_url = str(rest_base_url or DEFAULT_AGG_TRADE_REST_BASE_URL).strip().rstrip("/")
     if normalized_source not in {"archive", "rest", "auto"}:
         raise ValueError("agg_trade_source must be one of: archive, rest, auto")
+
+    cache_path = _resolve_agg_trade_cache_path(
+        cache_dir=cache_dir if cache_enabled else None,
+        symbol=symbol,
+        source=normalized_source,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    if cache_enabled and cache_path is not None and cache_path.exists():
+        technical_logger.info("agg_trade_cache_found path=%s", cache_path)
+        return _read_agg_trade_cache(cache_path), True, cache_path
 
     rows: list[tuple[int, float, float]] = []
     resolved_source = normalized_source
@@ -258,13 +320,17 @@ def fetch_historical_agg_trades(
         resolved_source = "rest"
 
     if not rows:
-        return pd.DataFrame(columns=["ts", "price", "qty", "source"])
+        return pd.DataFrame(columns=["ts", "price", "qty", "source"]), False, cache_path
 
     df = pd.DataFrame(rows, columns=["ts", "price", "qty"])
     df = df.sort_values("ts").drop_duplicates(subset=["ts", "price", "qty"], keep="last")
     df["ts"] = pd.to_datetime(df["ts"], unit="ms")
     df["source"] = resolved_source
-    return df.reset_index(drop=True)
+    output = df.reset_index(drop=True)
+    if cache_enabled and cache_path is not None:
+        _write_agg_trade_cache(cache_path, output)
+        technical_logger.info("agg_trade_cache_written path=%s rows=%s", cache_path, len(output))
+    return output, False, cache_path
 
 
 def _resample_trade_frame_to_candles(trades: pd.DataFrame, *, interval: str) -> pd.DataFrame:
@@ -448,6 +514,8 @@ def build_market_events_from_agg_trade_frame(
         return [], AggTradeMarketEventStreamSummary(
             source=source_label,
             symbol=symbol,
+            cache_hit=False,
+            cache_path=None,
             raw_agg_trades=0,
             price_ticks=0,
             candle_events_small=0,
@@ -472,6 +540,8 @@ def build_market_events_from_agg_trade_frame(
         return [], AggTradeMarketEventStreamSummary(
             source=source_label,
             symbol=symbol,
+            cache_hit=False,
+            cache_path=None,
             raw_agg_trades=0,
             price_ticks=0,
             candle_events_small=0,
@@ -524,6 +594,8 @@ def build_market_events_from_agg_trade_frame(
     return events, AggTradeMarketEventStreamSummary(
         source=source_label,
         symbol=symbol,
+        cache_hit=False,
+        cache_path=None,
         raw_agg_trades=len(normalized),
         price_ticks=len(price_tick_events),
         candle_events_small=len(small_candle_events),
@@ -546,6 +618,8 @@ def build_historical_agg_trade_market_event_stream(
     tick_interval: str = "1s",
     archive_base_url: str = DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL,
     rest_base_url: str = DEFAULT_AGG_TRADE_REST_BASE_URL,
+    cache_enabled: bool = True,
+    cache_dir: str | Path | None = DEFAULT_AGG_TRADE_CACHE_DIR,
 ) -> tuple[list[MarketEvent], AggTradeMarketEventStreamSummary]:
     archive_base_url = str(archive_base_url or DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL).strip().rstrip("/")
     rest_base_url = str(rest_base_url or DEFAULT_AGG_TRADE_REST_BASE_URL).strip().rstrip("/")
@@ -553,18 +627,23 @@ def build_historical_agg_trade_market_event_stream(
         backtest_period_days=backtest_period_days,
         backtest_period_end_time=backtest_period_end_time,
     )
-    trades = fetch_historical_agg_trades(
+    trades, cache_hit, cache_path = fetch_historical_agg_trades(
         symbol=symbol,
         start_time=start_time,
         end_time=end_time,
         source=source,
         archive_base_url=archive_base_url,
         rest_base_url=rest_base_url,
+        cache_enabled=cache_enabled,
+        cache_dir=cache_dir,
     )
-    return build_market_events_from_agg_trade_frame(
+    events, summary = build_market_events_from_agg_trade_frame(
         trades,
         symbol=symbol,
         intervals=intervals,
         tick_interval=tick_interval,
         source_label=("historical_agg_trade" if trades.empty else f"historical_agg_trade_{str(trades['source'].iloc[0])}"),
     )
+    summary.cache_hit = cache_hit
+    summary.cache_path = str(cache_path) if cache_path is not None else None
+    return events, summary

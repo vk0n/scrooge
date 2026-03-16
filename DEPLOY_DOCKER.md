@@ -232,6 +232,7 @@ Backtest input modes:
 - `execution_mode: observed` is available only with `backtest_input_mode: market_event_stream`
 - use `market_tape_input_path` or `market_event_input_path` in `config/backtest.yaml` when replaying from stored input artifacts
 - use `agg_trade_source` and `agg_trade_tick_interval` in `config/backtest.yaml` when building from Binance historical `aggTrades`
+- raw `aggTrades` are cached by default under `data/agg_trades`; tune with `agg_trade_cache_enabled` and `agg_trade_cache_dir`
 - `state.json` will also capture `execution_sync`, `exchange_balance`, `exchange_position`, and `last_order_trade_update` when those events exist in the replay stream
 
 ## Control Behavior
