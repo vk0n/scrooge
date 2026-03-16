@@ -12,12 +12,15 @@ from core_engine import (
     StrategyRuntime,
     StrategyConfig,
     TrailDecision,
+    apply_backtest_exit_transition,
     build_position_metrics,
     build_position_from_entry,
+    build_exit_trade,
     initialize_strategy_runtime,
     resolve_management_decision,
     resolve_entry_decision,
     run_discrete_engine,
+    sanitize_trade_for_history,
 )
 from event_log import emit_event, get_technical_logger
 from trade import compute_qty, can_open_trade, open_position, close_position, get_balance
@@ -182,20 +185,6 @@ def _refresh_position_snapshot(position, price, leverage, ts_label):
     position["distance_to_tp_pct"] = distance_to_tp_pct
 
 
-_TRANSIENT_POSITION_FIELDS = {
-    "last_price",
-    "last_price_updated_at",
-    "unrealized_pnl",
-    "unrealized_pnl_pct",
-    "position_notional",
-    "margin_used",
-    "roi_pct",
-    "distance_to_sl_pct",
-    "distance_to_tp_pct",
-    "updated_at",
-}
-
-
 def _refresh_market_snapshot(state, price, ts_label):
     market_price = _to_float(price)
     if market_price is None:
@@ -218,16 +207,6 @@ def refresh_runtime_state_from_price_tick(state, last_price, position_price, lev
         snapshot_price = _to_float(position_price)
         if snapshot_price is not None:
             _refresh_position_snapshot(position, snapshot_price, leverage, ts_label)
-
-
-def _sanitize_trade_for_history(trade):
-    sanitized = {}
-    for key, value in trade.items():
-        if key in _TRANSIENT_POSITION_FIELDS:
-            continue
-        sanitized[key] = value
-    return sanitized
-
 def _consume_manual_trade_suggestion(state, live):
     suggestion = _normalize_manual_trade_suggestion(state.get("manual_trade_suggestion"))
     if suggestion is None:
@@ -296,18 +275,8 @@ def _apply_exit_decision(
     row_ts,
     log_ts,
 ):
-    trade = {
-        **position,
-        "exit": decision.exit,
-        "exit_time": row_ts,
-        "exit_reason": decision.reason,
-    }
-    if decision.gross_pnl is not None:
-        trade["gross_pnl"] = decision.gross_pnl
-    if decision.fee_total is not None:
-        trade["fee"] = decision.fee_total
-
     if live:
+        trade = build_exit_trade(position, decision, row_ts=row_ts)
         if decision.reason != "liquidation":
             close_position(config.symbol)
         current_balance = get_balance()
@@ -315,12 +284,16 @@ def _apply_exit_decision(
         balance = current_balance
         update_position(state, None)
         update_balance(state, balance)
-        add_closed_trade(state, _sanitize_trade_for_history(trade))
+        add_closed_trade(state, sanitize_trade_for_history(trade))
         _emit_exit_event(log_buffer, config, log_ts, decision, trade["net_pnl"])
     else:
-        trade["net_pnl"] = decision.net_pnl
-        balance += decision.net_pnl
-        trade_history.append(_sanitize_trade_for_history(trade))
+        balance, _ = apply_backtest_exit_transition(
+            balance,
+            trade_history,
+            position,
+            decision,
+            row_ts=row_ts,
+        )
         _emit_exit_event(log_buffer, config, log_ts, decision, decision.net_pnl)
 
     return balance, None

@@ -120,6 +120,20 @@ class ExitDecision:
     threshold: float | None = None
 
 
+_TRANSIENT_POSITION_FIELDS = {
+    "last_price",
+    "last_price_updated_at",
+    "unrealized_pnl",
+    "unrealized_pnl_pct",
+    "position_notional",
+    "margin_used",
+    "roi_pct",
+    "distance_to_sl_pct",
+    "distance_to_tp_pct",
+    "updated_at",
+}
+
+
 def initialize_strategy_runtime(
     *,
     live: bool,
@@ -276,6 +290,50 @@ def build_position_from_entry(decision: EntryDecision, *, row_ts: str) -> dict[s
         "time": row_ts,
         "entry_time": row_ts,
     }
+
+
+def sanitize_trade_for_history(trade: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in trade.items():
+        if key in _TRANSIENT_POSITION_FIELDS:
+            continue
+        sanitized[key] = value
+    return sanitized
+
+
+def build_exit_trade(
+    position: dict[str, Any],
+    decision: ExitDecision,
+    *,
+    row_ts: str,
+) -> dict[str, Any]:
+    trade = {
+        **position,
+        "exit": decision.exit,
+        "exit_time": row_ts,
+        "exit_reason": decision.reason,
+        "net_pnl": decision.net_pnl,
+    }
+    if decision.gross_pnl is not None:
+        trade["gross_pnl"] = decision.gross_pnl
+    if decision.fee_total is not None:
+        trade["fee"] = decision.fee_total
+    return trade
+
+
+def apply_backtest_exit_transition(
+    balance: float,
+    trade_history: list[dict[str, Any]],
+    position: dict[str, Any],
+    decision: ExitDecision,
+    *,
+    row_ts: str,
+) -> tuple[float, dict[str, Any]]:
+    trade = build_exit_trade(position, decision, row_ts=row_ts)
+    updated_balance = balance + decision.net_pnl
+    sanitized_trade = sanitize_trade_for_history(trade)
+    trade_history.append(sanitized_trade)
+    return updated_balance, sanitized_trade
 
 
 def build_position_metrics(
