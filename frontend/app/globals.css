@@ -668,7 +668,26 @@ pre {
 }
 
 .logs-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 0.42rem;
+}
+
+.logs-toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.42rem;
+  min-width: 0;
+}
+
+.logs-toolbar-rail {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.42rem;
+  min-width: 0;
 }
 
 .logs-toolbar .line-count-inline {
@@ -1690,6 +1709,14 @@ pre {
 .log-box {
   white-space: pre-wrap;
   word-break: break-word;
+  scrollbar-gutter: stable;
+}
+
+.log-box-newest-first {
+  border-top-color: rgba(57, 151, 113, 0.44);
+  box-shadow:
+    inset 0 1px 0 rgba(95, 214, 156, 0.08),
+    inset 0 0 0 1px rgba(118, 128, 146, 0.14);
 }
 
 .chart-surface {
@@ -2276,6 +2303,22 @@ pre {
 
   .toolbar > * {
     width: 100%;
+  }
+
+  .logs-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .logs-toolbar-group,
+  .logs-toolbar-rail {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .logs-toolbar-rail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
   }
 
   .office-runtime-toolbar {

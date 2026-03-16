@@ -24,6 +24,7 @@ function LogsContent(): JSX.Element {
   const [loading, setLoading] = useState<boolean>(true);
   const [lineCount, setLineCount] = useState<number>(DEFAULT_LINES);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
+  const [newestFirst, setNewestFirst] = useState<boolean>(true);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
 
   async function loadLogs(lines: number, silent = false): Promise<void> {
@@ -126,51 +127,71 @@ function LogsContent(): JSX.Element {
     };
   }, [autoRefresh, lineCount, wsConnected]);
 
+  const displayedLines = data ? (newestFirst ? [...data.lines].reverse() : data.lines) : [];
+
   return (
     <section className="panel page-shell">
       <p className="dialog-scrooge">
         {autoRefresh
           ? wsConnected
-            ? "Live quill: entries stream in real time."
+            ? newestFirst
+              ? "Live quill: freshest entries arrive at the top."
+              : "Live quill: entries stream in real time."
             : `Courier mode: polling every ${POLL_MS / 1000}s.`
           : "Manual reading mode: auto updates disabled."}
       </p>
       <div className="toolbar logs-toolbar">
-        <label htmlFor="lineCount" className="line-count-inline dialog-user-field">
-          <span>Rows</span>
-          <input
-            id="lineCount"
-            type="number"
-            min={1}
-            max={5000}
-            value={lineCount}
-            onChange={(event) => {
-              const value = Number(event.target.value);
-              if (Number.isFinite(value) && value >= 1 && value <= 5000) {
-                setLineCount(value);
-              }
-            }}
-          />
-        </label>
-        <label htmlFor="autoRefresh" className="field-inline dialog-user-toggle logs-toolbar-toggle">
-          <input
-            id="autoRefresh"
-            type="checkbox"
-            className="dialog-user-check"
-            checked={autoRefresh}
-            onChange={(event) => setAutoRefresh(event.target.checked)}
-          />
-          Auto tail
-        </label>
-        <button type="button" className="dialog-user-btn logs-toolbar-btn" onClick={() => void loadLogs(lineCount, false)}>
-          Read Again
-        </button>
-        {loading ? <span className="dialog-scrooge dialog-scrooge-compact">Loading...</span> : null}
+        <div className="logs-toolbar-group">
+          <label htmlFor="lineCount" className="line-count-inline dialog-user-field">
+            <span>Rows</span>
+            <input
+              id="lineCount"
+              type="number"
+              min={1}
+              max={5000}
+              value={lineCount}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value) && value >= 1 && value <= 5000) {
+                  setLineCount(value);
+                }
+              }}
+            />
+          </label>
+          <label htmlFor="autoRefresh" className="field-inline dialog-user-toggle logs-toolbar-toggle">
+            <input
+              id="autoRefresh"
+              type="checkbox"
+              className="dialog-user-check"
+              checked={autoRefresh}
+              onChange={(event) => setAutoRefresh(event.target.checked)}
+            />
+            Auto Tail
+          </label>
+          <label htmlFor="newestFirst" className="field-inline dialog-user-toggle logs-toolbar-toggle">
+            <input
+              id="newestFirst"
+              type="checkbox"
+              className="dialog-user-check"
+              checked={newestFirst}
+              onChange={(event) => setNewestFirst(event.target.checked)}
+            />
+            Newest First
+          </label>
+        </div>
+        <div className="logs-toolbar-rail">
+          {loading ? <span className="dialog-scrooge dialog-scrooge-compact">Loading...</span> : null}
+          <button type="button" className="dialog-user-btn logs-toolbar-btn" onClick={() => void loadLogs(lineCount, false)}>
+            Read Again
+          </button>
+        </div>
       </div>
       {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
       {data ? (
         <>
-          <p className="dialog-scrooge">Pulled: {data.returned_lines} / {data.requested_lines}</p>
+          <p className="dialog-scrooge">
+            Showing {newestFirst ? "newest" : "oldest"} visible order: {data.returned_lines} / {data.requested_lines}
+          </p>
           {data.warnings?.length ? (
             <ul className="warning-list">
               {data.warnings.map((warning) => (
@@ -178,7 +199,7 @@ function LogsContent(): JSX.Element {
               ))}
             </ul>
           ) : null}
-          <pre className="log-box">{data.lines.join("\n")}</pre>
+          <pre className={`log-box${newestFirst ? " log-box-newest-first" : ""}`}>{displayedLines.join("\n")}</pre>
         </>
       ) : null}
     </section>
