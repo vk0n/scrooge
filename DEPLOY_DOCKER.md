@@ -204,6 +204,11 @@ Each backtest run emits:
 - `replay_summary.json`
 - `replay_trades.jsonl`
 
+Backtest input modes:
+- `backtest_input_mode: build` builds fresh dataset/tape from Binance history
+- `backtest_input_mode: tape` starts directly from an existing `market_tape.jsonl`
+- use `market_tape_input_path` in `config/backtest.yaml` when replaying from tape
+
 ## Control Behavior
 
 `/api/control/*` commands are queued through Redis.

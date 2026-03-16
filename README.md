@@ -144,6 +144,17 @@ The backtest execution path is now owned by:
 - `backtest/runner.py`
 - `backtest/tape.py`
 
+Backtest input modes:
+- `backtest_input_mode: build` — fetch/build dataset, then derive `market_tape.jsonl`
+- `backtest_input_mode: tape` — start directly from an existing `market_tape.jsonl`
+
+To replay from an existing tape, set in `config/backtest.yaml`:
+
+```yaml
+backtest_input_mode: tape
+market_tape_input_path: /path/to/market_tape.jsonl
+```
+
 ### Replay a canonical event log
 
 ```bash

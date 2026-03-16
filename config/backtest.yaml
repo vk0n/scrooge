@@ -1,4 +1,6 @@
 live: false
+backtest_input_mode: build
+market_tape_input_path: ''
 symbol: BTCUSDT
 leverage: 3
 initial_balance: 10000

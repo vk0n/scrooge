@@ -11,7 +11,13 @@ import pandas as pd
 import backtest.dataset as dataset_module
 from backtest.dataset import build_dataset
 from backtest.replay import ReplaySummary, write_replay_artifacts
-from backtest.tape import DiscreteMarketTapeRow, build_discrete_market_tape, write_discrete_market_tape
+from backtest.tape import (
+    DiscreteMarketTapeRow,
+    build_discrete_market_tape,
+    discrete_market_tape_to_frame,
+    read_discrete_market_tape,
+    write_discrete_market_tape,
+)
 from bot.event_log import get_technical_logger
 from bot.state import save_state
 from core.engine import run_strategy_on_tape
@@ -19,6 +25,7 @@ from core.engine import run_strategy_on_tape
 
 @dataclass(slots=True)
 class DiscreteBacktestConfig:
+    backtest_input_mode: str
     symbol: str
     leverage: float
     initial_balance: float
@@ -37,6 +44,7 @@ class DiscreteBacktestConfig:
     chart_dataset_path: Path
     event_log_path: Path
     market_tape_path: Path
+    market_tape_input_path: Path | None
     runtime_mode: str
     strategy_mode: str
     client: Any | None = None
@@ -70,7 +78,15 @@ def build_discrete_backtest_config(
     if initial_balance is None:
         raise ValueError("Backtest config must include initial_balance.")
 
+    input_mode = str(cfg.get("backtest_input_mode", "build")).strip().lower() or "build"
+    if input_mode not in {"build", "tape"}:
+        raise ValueError("backtest_input_mode must be one of: build, tape")
+
+    raw_input_path = str(cfg.get("market_tape_input_path", "") or "").strip()
+    market_tape_input_path = Path(raw_input_path).expanduser() if raw_input_path else None
+
     return DiscreteBacktestConfig(
+        backtest_input_mode=input_mode,
         symbol=str(cfg["symbol"]),
         leverage=float(cfg["leverage"]),
         initial_balance=float(initial_balance),
@@ -89,6 +105,7 @@ def build_discrete_backtest_config(
         chart_dataset_path=Path(chart_dataset_path).expanduser(),
         event_log_path=Path(event_log_path).expanduser(),
         market_tape_path=Path(event_log_path).expanduser().with_name("market_tape.jsonl"),
+        market_tape_input_path=market_tape_input_path,
         runtime_mode=runtime_mode,
         strategy_mode=strategy_mode,
         client=client,
@@ -218,15 +235,28 @@ def run_discrete_backtest(
         report_module.set_client(config.client)
 
     logger.info("bot_mode_backtest_started symbol=%s leverage=%s", config.symbol, config.leverage)
-    df = dataset_builder(
-        symbol=config.symbol,
-        intervals=config.intervals,
-        backtest_period_days=config.backtest_period_days,
-        backtest_period_end_time=config.backtest_period_end_time,
-    )
-    tape = build_discrete_market_tape(df, symbol=config.symbol)
-    write_discrete_market_tape(config.market_tape_path, tape)
-    logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
+    if config.backtest_input_mode == "tape":
+        source_path = config.market_tape_input_path or config.market_tape_path
+        tape = read_discrete_market_tape(source_path)
+        if not tape:
+            raise ValueError(f"No market tape rows found at {source_path}")
+        df = discrete_market_tape_to_frame(tape)
+        if df.empty:
+            raise ValueError(f"Market tape frame is empty at {source_path}")
+        logger.info("backtest_market_tape_loaded rows=%s path=%s", len(tape), source_path)
+        if source_path != config.market_tape_path:
+            write_discrete_market_tape(config.market_tape_path, tape)
+            logger.info("backtest_market_tape_copied rows=%s path=%s", len(tape), config.market_tape_path)
+    else:
+        df = dataset_builder(
+            symbol=config.symbol,
+            intervals=config.intervals,
+            backtest_period_days=config.backtest_period_days,
+            backtest_period_end_time=config.backtest_period_end_time,
+        )
+        tape = build_discrete_market_tape(df, symbol=config.symbol)
+        write_discrete_market_tape(config.market_tape_path, tape)
+        logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
 
     final_balance, trades, balance_history, state = strategy_runner(
         tape,

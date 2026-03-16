@@ -88,6 +88,32 @@ def write_discrete_market_tape(path: str | Path, tape: Iterable[DiscreteMarketTa
     return target_path
 
 
+def discrete_market_tape_to_frame(tape: Iterable[DiscreteMarketTapeRow]) -> pd.DataFrame:
+    rows = [asdict(row) for row in tape]
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "open_time",
+                "symbol",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "EMA",
+                "RSI",
+                "BBL",
+                "BBM",
+                "BBU",
+                "ATR",
+            ]
+        )
+
+    df = pd.DataFrame(rows)
+    df["open_time"] = pd.to_datetime(df["open_time"], format=TAPE_TIMESTAMP_FORMAT, errors="coerce")
+    return df
+
+
 def read_discrete_market_tape(path: str | Path) -> list[DiscreteMarketTapeRow]:
     target_path = Path(path).expanduser()
     if not target_path.exists():
@@ -102,3 +128,7 @@ def read_discrete_market_tape(path: str | Path) -> list[DiscreteMarketTapeRow]:
             payload = json.loads(text)
             rows.append(DiscreteMarketTapeRow(**payload))
     return rows
+
+
+def read_discrete_market_tape_frame(path: str | Path) -> pd.DataFrame:
+    return discrete_market_tape_to_frame(read_discrete_market_tape(path))
