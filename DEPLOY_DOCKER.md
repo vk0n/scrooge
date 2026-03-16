@@ -128,6 +128,10 @@ Optional host export for backtest artifacts:
 Backtest artifacts are written into:
 - `/runtime/backtests/<run_id>/...`
 - symlink `/runtime/backtests/latest` points to last run
+- each run now also emits:
+  - `event_history.jsonl` (canonical append-only event log)
+  - `replay_summary.json` (summary reconstructed from canonical events)
+  - `replay_trades.jsonl` (trade timeline reconstructed from canonical events)
 
 Open UI:
 - `http://<host>:3000`

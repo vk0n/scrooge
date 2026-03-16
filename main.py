@@ -696,6 +696,7 @@ if __name__ == "__main__":
 
     else:
         import report as report_module
+        from replay import write_replay_artifacts
         from report import (
             compute_stats,
             monte_carlo_from_equity,
@@ -750,6 +751,18 @@ if __name__ == "__main__":
             symbol=symbol,
             path=chart_dataset_path,
             balance_history=balance_history,
+        )
+        replay_summary = write_replay_artifacts(
+            os.getenv("SCROOGE_EVENT_LOG_FILE", "event_history.jsonl"),
+            runtime_mode=os.getenv("SCROOGE_RUNTIME_MODE", "backtest"),
+            strategy_mode=os.getenv("SCROOGE_STRATEGY_MODE", "discrete"),
+            symbol=symbol,
+        )
+        technical_logger.info(
+            "backtest_replay_artifacts_written trades=%s net_pnl=%.8f path=%s",
+            replay_summary.closed_trades,
+            replay_summary.net_pnl,
+            os.getenv("SCROOGE_EVENT_LOG_FILE", "event_history.jsonl"),
         )
         stats = compute_stats(initial_balance, final_balance, trades, balance_history)
 

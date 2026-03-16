@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import json
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -306,9 +307,49 @@ def replay_trades_as_dicts(
     return [asdict(trade) for trade in replay_discrete_trades(events)]
 
 
+def write_replay_artifacts(
+    path: str | Path | None = None,
+    *,
+    runtime_mode: str | None = None,
+    strategy_mode: str | None = None,
+    symbol: str | None = None,
+    summary_path: str | Path | None = None,
+    trades_path: str | Path | None = None,
+) -> ReplaySummary:
+    resolved_event_path = resolve_event_log_path(path)
+    summary = summarize_replay(
+        resolved_event_path,
+        runtime_mode=runtime_mode,
+        strategy_mode=strategy_mode,
+        symbol=symbol,
+    )
+    trades = replay_trades_as_dicts(
+        resolved_event_path,
+        runtime_mode=runtime_mode,
+        strategy_mode=strategy_mode,
+        symbol=symbol,
+    )
+
+    resolved_summary_path = Path(summary_path) if summary_path is not None else resolved_event_path.with_name("replay_summary.json")
+    resolved_trades_path = Path(trades_path) if trades_path is not None else resolved_event_path.with_name("replay_trades.jsonl")
+
+    resolved_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_trades_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with resolved_summary_path.open("w", encoding="utf-8") as file_obj:
+        json.dump(asdict(summary), file_obj, ensure_ascii=True, indent=2, sort_keys=True)
+        file_obj.write("\n")
+
+    with resolved_trades_path.open("w", encoding="utf-8") as file_obj:
+        for trade in trades:
+            file_obj.write(json.dumps(trade, ensure_ascii=True, sort_keys=True, default=str))
+            file_obj.write("\n")
+
+    return summary
+
+
 if __name__ == "__main__":
     import argparse
-    import json
 
     parser = argparse.ArgumentParser(description="Summarize Scrooge canonical event history.")
     parser.add_argument("path", nargs="?", default=None, help="Path to event_history.jsonl")
