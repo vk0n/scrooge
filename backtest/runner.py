@@ -29,7 +29,7 @@ from backtest.dataset import build_dataset
 from backtest.replay import ReplaySummary, write_replay_artifacts
 from bot.event_log import get_technical_logger
 from bot.state import save_state
-from core.engine import run_strategy_on_tape
+from core.engine import run_strategy_on_market_events, run_strategy_on_tape
 from core.market_events import MarketEvent
 
 
@@ -242,6 +242,7 @@ def run_discrete_backtest(
     technical_logger: Any | None = None,
     dataset_builder: Callable[..., pd.DataFrame] = build_dataset,
     strategy_runner: Callable[..., tuple[float, pd.DataFrame, list[float], dict[str, Any]]] = run_strategy_on_tape,
+    market_event_strategy_runner: Callable[..., tuple[float, pd.DataFrame, list[float], dict[str, Any]]] = run_strategy_on_market_events,
     replay_writer: Callable[..., ReplaySummary] = write_replay_artifacts,
 ) -> DiscreteBacktestResult:
     logger = technical_logger or get_technical_logger()
@@ -320,17 +321,28 @@ def run_discrete_backtest(
         write_discrete_market_event_stream(config.market_event_stream_path, market_events)
         logger.info("backtest_market_event_stream_written events=%s path=%s", len(market_events), config.market_event_stream_path)
 
-    final_balance, trades, balance_history, state = strategy_runner(
-        tape,
-        live=False,
-        initial_balance=config.initial_balance,
-        qty=config.qty,
-        symbol=config.symbol,
-        leverage=config.leverage,
-        use_full_balance=config.use_full_balance,
-        use_state=False,
+    strategy_kwargs = {
+        "live": False,
+        "initial_balance": config.initial_balance,
+        "qty": config.qty,
+        "symbol": config.symbol,
+        "leverage": config.leverage,
+        "use_full_balance": config.use_full_balance,
+        "use_state": False,
         **config.params,
-    )
+    }
+    if config.backtest_input_mode == "market_event_stream":
+        final_balance, trades, balance_history, state = market_event_strategy_runner(
+            market_events,
+            candle_interval=str(config.intervals["small"]),
+            strict_indicator_alignment=False,
+            **strategy_kwargs,
+        )
+    else:
+        final_balance, trades, balance_history, state = strategy_runner(
+            tape,
+            **strategy_kwargs,
+        )
 
     state["balance_history"] = _compress_balance_history_for_state(balance_history)
     state["balance"] = float(final_balance)

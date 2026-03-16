@@ -11,6 +11,7 @@ from tqdm import tqdm
 from bot.event_log import emit_event, get_technical_logger
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.trade import can_open_trade, close_position, compute_qty, get_balance, open_position
+from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent
 
 
 @dataclass(slots=True)
@@ -1202,6 +1203,85 @@ def run_strategy_on_tape(
     return run_strategy(tape_rows, **kwargs)
 
 
+def run_strategy_on_market_events(
+    market_events: list[MarketEvent] | tuple[MarketEvent, ...],
+    *,
+    candle_interval: str,
+    strict_indicator_alignment: bool = False,
+    live: bool = False,
+    initial_balance: float = 1000,
+    qty: float | None = None,
+    sl_mult: float = 1.5,
+    tp_mult: float = 3.0,
+    symbol: str = "BTCUSDT",
+    leverage: float = 1,
+    use_full_balance: bool = True,
+    fee_rate: float = 0.0005,
+    state=None,
+    use_state: bool = True,
+    enable_logs: bool = True,
+    show_progress: bool = True,
+    rsi_extreme_long: float = 75,
+    rsi_extreme_short: float = 25,
+    rsi_long_open_threshold: float = 50,
+    rsi_long_qty_threshold: float = 30,
+    rsi_long_tp_threshold: float = 58,
+    rsi_long_close_threshold: float = 70,
+    rsi_short_open_threshold: float = 50,
+    rsi_short_qty_threshold: float = 70,
+    rsi_short_tp_threshold: float = 42,
+    rsi_short_close_threshold: float = 30,
+    trail_atr_mult: float = 0.5,
+    allow_entries: bool = True,
+):
+    runtime = initialize_strategy_runtime(
+        live=live,
+        initial_balance=initial_balance,
+        use_state=use_state,
+        load_state_fn=load_state,
+    )
+    runtime.enable_logs = enable_logs
+    technical_logger = get_technical_logger()
+    config = StrategyConfig(
+        qty=qty,
+        sl_mult=sl_mult,
+        tp_mult=tp_mult,
+        symbol=symbol,
+        leverage=leverage,
+        use_full_balance=use_full_balance,
+        fee_rate=fee_rate,
+        rsi_extreme_long=rsi_extreme_long,
+        rsi_extreme_short=rsi_extreme_short,
+        rsi_long_open_threshold=rsi_long_open_threshold,
+        rsi_long_qty_threshold=rsi_long_qty_threshold,
+        rsi_long_tp_threshold=rsi_long_tp_threshold,
+        rsi_long_close_threshold=rsi_long_close_threshold,
+        rsi_short_open_threshold=rsi_short_open_threshold,
+        rsi_short_qty_threshold=rsi_short_qty_threshold,
+        rsi_short_tp_threshold=rsi_short_tp_threshold,
+        rsi_short_close_threshold=rsi_short_close_threshold,
+        trail_atr_mult=trail_atr_mult,
+        allow_entries=allow_entries,
+    )
+
+    def on_row(snapshot, row_runtime):
+        process_discrete_row(snapshot, row_runtime, config, technical_logger)
+
+    return run_market_event_engine(
+        market_events,
+        runtime=runtime,
+        candle_interval=candle_interval,
+        show_progress=show_progress,
+        timestamp_format=TIMESTAMP_FORMAT,
+        timestamp_formatter=format_event_timestamp,
+        on_row=on_row,
+        save_log_fn=save_log,
+        save_state_fn=save_state,
+        symbol=symbol,
+        strict_indicator_alignment=strict_indicator_alignment,
+    )
+
+
 def finalize_strategy_runtime(
     runtime: StrategyRuntime,
     *,
@@ -1250,6 +1330,89 @@ def run_discrete_engine(
         )
         on_row(snapshot, runtime)
         runtime.balance_history.append(runtime.balance)
+
+    return finalize_strategy_runtime(
+        runtime,
+        save_log_fn=save_log_fn,
+        save_state_fn=save_state_fn,
+    )
+
+
+def run_market_event_engine(
+    market_events: Any,
+    *,
+    runtime: StrategyRuntime,
+    candle_interval: str,
+    show_progress: bool,
+    timestamp_format: str,
+    timestamp_formatter: Callable[[Any], str],
+    on_row: Callable[[DiscreteRowSnapshot, StrategyRuntime], None],
+    save_log_fn: Callable[[list[str]], None],
+    save_state_fn: Callable[[dict[str, Any]], None],
+    symbol: str | None = None,
+    strict_indicator_alignment: bool = False,
+) -> tuple[float, pd.DataFrame, list[float], dict[str, Any]]:
+    target_symbol = str(symbol or "").strip().upper() or None
+    pending_candles: dict[tuple[str, str], CandleClosedEvent] = {}
+    pending_indicators: dict[tuple[str, str], IndicatorSnapshotEvent] = {}
+    iterator = tqdm(market_events, desc="Backtest Event Replay", disable=not show_progress)
+
+    def try_emit(symbol_key: str, ts: str) -> None:
+        key = (symbol_key, ts)
+        candle = pending_candles.get(key)
+        indicator = pending_indicators.get(key)
+        if candle is None or indicator is None:
+            return
+
+        pending_candles.pop(key, None)
+        pending_indicators.pop(key, None)
+        row_payload = {
+            "open_time": candle.open_time,
+            "open": candle.open,
+            "high": candle.high,
+            "low": candle.low,
+            "close": candle.close,
+            "volume": candle.volume,
+            "EMA": indicator.values.get("EMA"),
+            "RSI": indicator.values.get("RSI"),
+            "BBL": indicator.values.get("BBL"),
+            "BBM": indicator.values.get("BBM"),
+            "BBU": indicator.values.get("BBU"),
+            "ATR": indicator.values.get("ATR"),
+        }
+        snapshot = build_row_snapshot(
+            row_payload,
+            live=runtime.live,
+            timestamp_format=timestamp_format,
+            timestamp_formatter=timestamp_formatter,
+        )
+        on_row(snapshot, runtime)
+        runtime.balance_history.append(runtime.balance)
+
+    for event in iterator:
+        event_symbol = getattr(event, "symbol", None)
+        if target_symbol and str(event_symbol or "").strip().upper() != target_symbol:
+            continue
+
+        if isinstance(event, CandleClosedEvent):
+            if event.interval != candle_interval:
+                continue
+            key = (event.symbol, event.ts)
+            pending_candles[key] = event
+            try_emit(event.symbol, event.ts)
+            continue
+
+        if isinstance(event, IndicatorSnapshotEvent) and event.interval == "discrete_snapshot":
+            key = (event.symbol, event.ts)
+            pending_indicators[key] = event
+            try_emit(event.symbol, event.ts)
+
+    if strict_indicator_alignment and pending_candles:
+        missing = next(iter(pending_candles.values()))
+        raise ValueError(
+            "Market event replay is missing indicator snapshot "
+            f"for symbol={missing.symbol} ts={missing.ts} interval={missing.interval}"
+        )
 
     return finalize_strategy_runtime(
         runtime,
