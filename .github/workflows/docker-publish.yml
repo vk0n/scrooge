@@ -38,6 +38,8 @@ jobs:
               - 'requirements.bot.txt'
               - 'docker/backtest_entrypoint.sh'
               - '*.py'
+              - 'bot/**'
+              - 'core/**'
               - 'data/**'
               - 'shared/**'
             backtest:
@@ -47,6 +49,8 @@ jobs:
               - 'requirements.bot.txt'
               - 'requirements.backtest.txt'
               - '*.py'
+              - 'bot/**'
+              - 'core/**'
               - 'data/**'
               - 'shared/**'
             api:

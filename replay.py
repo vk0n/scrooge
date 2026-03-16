@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from event_store import EventRecord, read_event_records, resolve_event_log_path
+from core.event_store import EventRecord, read_event_records, resolve_event_log_path
 
 
 OPEN_TRADE_CODE = "trade_opened"

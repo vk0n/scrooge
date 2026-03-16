@@ -1,0 +1,1231 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Callable
+
+import pandas as pd
+from tqdm import tqdm
+
+from bot.event_log import emit_event, get_technical_logger
+from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
+from bot.trade import can_open_trade, close_position, compute_qty, get_balance, open_position
+
+
+@dataclass(slots=True)
+class DiscreteRowSnapshot:
+    raw_row: Any
+    price: Any
+    lower: Any
+    upper: Any
+    mid: Any
+    atr: Any
+    rsi: Any
+    ema: Any
+    row_ts: str
+    log_ts: str
+
+
+@dataclass(slots=True)
+class StrategyRuntime:
+    state: dict[str, Any]
+    balance: float
+    position: dict[str, Any] | None
+    trade_history: list[dict[str, Any]]
+    balance_history: list[float]
+    log_buffer: list[str]
+    live: bool
+    use_state: bool
+    enable_logs: bool
+
+
+@dataclass(slots=True)
+class StrategyConfig:
+    qty: float | None
+    sl_mult: float
+    tp_mult: float
+    symbol: str
+    leverage: float
+    use_full_balance: bool
+    fee_rate: float
+    rsi_extreme_long: float
+    rsi_extreme_short: float
+    rsi_long_open_threshold: float
+    rsi_long_qty_threshold: float
+    rsi_long_tp_threshold: float
+    rsi_long_close_threshold: float
+    rsi_short_open_threshold: float
+    rsi_short_qty_threshold: float
+    rsi_short_tp_threshold: float
+    rsi_short_close_threshold: float
+    trail_atr_mult: float
+    allow_entries: bool
+
+
+@dataclass(slots=True)
+class EntryDecision:
+    side: str
+    size: float
+    entry: float
+    sl: float
+    tp: float
+    liq_price: float
+    stake_mode: str
+    trigger: str
+
+
+@dataclass(slots=True)
+class EntryGuardRejection:
+    side: str
+    entry: float
+    sl: float
+    liq_price: float
+    trigger: str
+
+
+@dataclass(slots=True)
+class PositionMetrics:
+    side: str
+    price: float
+    entry_price: float
+    position_value: float
+    fee_close: float
+    gross_pnl: float
+    margin_used: float | None
+    base_sl: float
+    base_tp: float
+    liquidation_price: float
+
+
+@dataclass(slots=True)
+class TrailDecision:
+    event_code: str
+    level: str
+    side: str
+    position_updates: dict[str, Any]
+    event_context: dict[str, Any]
+
+
+@dataclass(slots=True)
+class ExitDecision:
+    event_code: str
+    category: str
+    level: str
+    reason: str
+    side: str
+    exit: float
+    net_pnl: float
+    margin_used: float | None
+    gross_pnl: float | None = None
+    fee_total: float | None = None
+    via_tail_guard: bool = False
+    liq_price: float | None = None
+    rsi: float | None = None
+    threshold: float | None = None
+
+
+_TRANSIENT_POSITION_FIELDS = {
+    "last_price",
+    "last_price_updated_at",
+    "unrealized_pnl",
+    "unrealized_pnl_pct",
+    "position_notional",
+    "margin_used",
+    "roi_pct",
+    "distance_to_sl_pct",
+    "distance_to_tp_pct",
+    "updated_at",
+}
+
+
+LOG_FILE = os.getenv("SCROOGE_LOG_FILE", "trading_log.txt")
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+SEARCH_STATUS_LABELS = {
+    "looking_for_buy_opportunity": "Looking for a buy opportunity...",
+    "looking_for_sell_opportunity": "Looking for a sell opportunity...",
+}
+
+
+def save_log(log_buffer: list[str]) -> None:
+    with open(LOG_FILE, "a") as f:
+        f.write("\n".join(log_buffer) + "\n")
+
+
+def format_event_timestamp(value: Any) -> str:
+    if isinstance(value, pd.Timestamp):
+        dt_value = value.tz_convert(None) if value.tzinfo is not None else value
+        return dt_value.strftime(TIMESTAMP_FORMAT)
+
+    if isinstance(value, datetime):
+        dt_value = value.replace(tzinfo=None) if value.tzinfo is not None else value
+        return dt_value.strftime(TIMESTAMP_FORMAT)
+
+    if isinstance(value, (int, float)):
+        numeric_value = float(value)
+        if numeric_value > 10_000_000_000:
+            numeric_value /= 1000.0
+        try:
+            return datetime.fromtimestamp(numeric_value).strftime(TIMESTAMP_FORMAT)
+        except (OSError, OverflowError, ValueError):
+            return datetime.now().strftime(TIMESTAMP_FORMAT)
+
+    text_value = str(value).strip()
+    return text_value or datetime.now().strftime(TIMESTAMP_FORMAT)
+
+
+def to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def ratio_to_percent(numerator: Any, denominator: Any) -> float | None:
+    if denominator is None or denominator == 0:
+        return None
+    return (numerator / denominator) * 100.0
+
+
+def status_from_code(code: str | None, labels: dict[str, str]) -> dict[str, str] | None:
+    label = labels.get(code or "")
+    if label is None:
+        return None
+    return {"code": code or "", "label": label}
+
+
+def resolve_search_status(price: Any, ema: Any, previous_status: Any) -> dict[str, str] | None:
+    price_value = to_float(price)
+    ema_value = to_float(ema)
+    previous_code = None
+    if isinstance(previous_status, dict):
+        raw_code = str(previous_status.get("code", "")).strip()
+        if raw_code in SEARCH_STATUS_LABELS:
+            previous_code = raw_code
+
+    if price_value is None or ema_value is None:
+        return status_from_code(previous_code, SEARCH_STATUS_LABELS) if previous_code else None
+
+    if price_value > ema_value:
+        return status_from_code("looking_for_buy_opportunity", SEARCH_STATUS_LABELS)
+    if price_value < ema_value:
+        return status_from_code("looking_for_sell_opportunity", SEARCH_STATUS_LABELS)
+    if previous_code:
+        return status_from_code(previous_code, SEARCH_STATUS_LABELS)
+    return status_from_code("looking_for_buy_opportunity", SEARCH_STATUS_LABELS)
+
+
+def normalize_manual_trade_suggestion(value: Any) -> dict[str, str | None] | None:
+    if not isinstance(value, dict):
+        return None
+
+    side = str(value.get("side", "")).strip().lower()
+    if side not in {"buy", "sell"}:
+        return None
+
+    return {
+        "side": side,
+        "requested_at": str(value.get("requested_at", "")).strip() or None,
+        "requested_by": str(value.get("requested_by", "")).strip() or None,
+    }
+
+
+def refresh_position_snapshot(position: dict[str, Any], price: Any, leverage: Any, ts_label: str) -> None:
+    position.pop("last_price", None)
+    position.pop("last_price_updated_at", None)
+
+    if position.get("entry_time") is None and position.get("time") is not None:
+        position["entry_time"] = position.get("time")
+    if position.get("time") is None and position.get("entry_time") is not None:
+        position["time"] = position.get("entry_time")
+
+    side = str(position.get("side", "")).strip().lower()
+    size = to_float(position.get("size")) or 0.0
+    entry_price = to_float(position.get("entry"))
+    mark_price = to_float(price)
+    sl_price = to_float(position.get("sl"))
+    tp_price = to_float(position.get("tp"))
+
+    if mark_price is None:
+        return
+
+    position["updated_at"] = ts_label
+    position["unrealized_pnl"] = None
+    position["unrealized_pnl_pct"] = None
+    position["position_notional"] = None
+    position["margin_used"] = None
+    position["roi_pct"] = None
+    position["distance_to_sl_pct"] = None
+    position["distance_to_tp_pct"] = None
+
+    if entry_price is None or entry_price <= 0 or size <= 0:
+        return
+
+    notional = abs(size) * entry_price
+    if side == "short":
+        unrealized_pnl = (entry_price - mark_price) * size
+    else:
+        unrealized_pnl = (mark_price - entry_price) * size
+
+    unrealized_pnl_pct = ratio_to_percent(unrealized_pnl, notional)
+    leverage_value = to_float(leverage)
+    margin_used = (notional / leverage_value) if leverage_value and leverage_value > 0 else None
+    roi_pct = ratio_to_percent(unrealized_pnl, margin_used) if margin_used else None
+
+    if side == "short":
+        distance_to_sl_pct = ratio_to_percent((sl_price - mark_price), mark_price) if sl_price is not None else None
+        distance_to_tp_pct = ratio_to_percent((mark_price - tp_price), mark_price) if tp_price is not None else None
+    else:
+        distance_to_sl_pct = ratio_to_percent((mark_price - sl_price), mark_price) if sl_price is not None else None
+        distance_to_tp_pct = ratio_to_percent((tp_price - mark_price), mark_price) if tp_price is not None else None
+
+    position["unrealized_pnl"] = unrealized_pnl
+    position["unrealized_pnl_pct"] = unrealized_pnl_pct
+    position["position_notional"] = notional
+    position["margin_used"] = margin_used
+    position["roi_pct"] = roi_pct
+    position["distance_to_sl_pct"] = distance_to_sl_pct
+    position["distance_to_tp_pct"] = distance_to_tp_pct
+
+
+def refresh_market_snapshot(state: dict[str, Any], price: Any, ts_label: str) -> None:
+    market_price = to_float(price)
+    if market_price is None:
+        return
+    state["last_price"] = market_price
+    state["last_price_updated_at"] = ts_label
+    state["updated_at"] = ts_label
+
+
+def refresh_runtime_state_from_price_tick(state, last_price, position_price, leverage, ts_label):
+    refresh_market_snapshot(state, last_price, ts_label)
+
+    position = state.get("position")
+    if isinstance(position, dict):
+        snapshot_price = to_float(position_price)
+        if snapshot_price is not None:
+            refresh_position_snapshot(position, snapshot_price, leverage, ts_label)
+
+
+def consume_manual_trade_suggestion(state: dict[str, Any], live: bool) -> dict[str, str | None] | None:
+    suggestion = normalize_manual_trade_suggestion(state.get("manual_trade_suggestion"))
+    if suggestion is None:
+        return None
+    state["manual_trade_suggestion"] = None
+    if live:
+        save_state(state)
+    return suggestion
+
+
+def initialize_strategy_runtime(
+    *,
+    live: bool,
+    initial_balance: float,
+    use_state: bool,
+    load_state_fn: Callable[..., dict[str, Any]],
+) -> StrategyRuntime:
+    if use_state:
+        state = load_state_fn(include_history=not live)
+    else:
+        state = {
+            "position": None,
+            "trade_history": [],
+            "balance_history": [],
+            "manual_trade_suggestion": None,
+            "updated_at": None,
+            "search_status": None,
+            "bot_status": None,
+            "trade_status": None,
+            "session_start": None,
+            "session_end": None,
+        }
+
+    return StrategyRuntime(
+        state=state,
+        balance=initial_balance,
+        position=state["position"],
+        trade_history=state.get("trade_history", []),
+        balance_history=state.get("balance_history", []),
+        log_buffer=[],
+        live=live,
+        use_state=use_state,
+        enable_logs=True,
+    )
+
+
+def iter_discrete_rows(df: pd.DataFrame, *, live: bool, show_progress: bool) -> Any:
+    if live:
+        return [df.iloc[-1]]
+
+    df_iter = [df.iloc[i] for i in range(1, len(df))]
+    return tqdm(df_iter, desc="Backtest Progress", disable=not show_progress)
+
+
+def build_row_snapshot(
+    row: Any,
+    *,
+    live: bool,
+    timestamp_format: str,
+    timestamp_formatter: Callable[[Any], str],
+) -> DiscreteRowSnapshot:
+    row_ts = timestamp_formatter(row.get("open_time"))
+    log_ts = datetime.now().strftime(timestamp_format) if live else row_ts
+    return DiscreteRowSnapshot(
+        raw_row=row,
+        price=row["close"],
+        lower=row["BBL"],
+        upper=row["BBU"],
+        mid=row["BBM"],
+        atr=row["ATR"],
+        rsi=row["RSI"],
+        ema=row["EMA"],
+        row_ts=row_ts,
+        log_ts=log_ts,
+    )
+
+
+def calc_liquidation_price(entry: float, leverage_value: float, side: str) -> float:
+    if side == "long":
+        return entry * (1 - 1 / leverage_value)
+    return entry * (1 + 1 / leverage_value)
+
+
+def resolve_entry_decision(
+    snapshot: DiscreteRowSnapshot,
+    *,
+    config: StrategyConfig,
+    qty_local: float,
+    manual_side: str | None,
+) -> EntryDecision | EntryGuardRejection | None:
+    price = snapshot.price
+    lower = snapshot.lower
+    upper = snapshot.upper
+    atr = snapshot.atr
+    rsi = snapshot.rsi
+    ema = snapshot.ema
+
+    manual_long = manual_side == "buy"
+    manual_short = manual_side == "sell"
+
+    if (price < lower and rsi < config.rsi_long_open_threshold and price > ema) or manual_long:
+        size = qty_local * 0.5 if rsi > config.rsi_long_qty_threshold else qty_local
+        sl = price - atr * config.sl_mult
+        tp = price + atr * config.tp_mult
+        liq_price = calc_liquidation_price(price, config.leverage, "long")
+        trigger = "manual_suggestion" if manual_long else "strategy_rules"
+        if sl < liq_price:
+            return EntryGuardRejection(
+                side="long",
+                entry=price,
+                sl=sl,
+                liq_price=liq_price,
+                trigger=trigger,
+            )
+        return EntryDecision(
+            side="long",
+            size=size,
+            entry=price,
+            sl=sl,
+            tp=tp,
+            liq_price=liq_price,
+            stake_mode="half" if rsi > config.rsi_long_qty_threshold else "full",
+            trigger=trigger,
+        )
+
+    if (price > upper and rsi > config.rsi_short_open_threshold and price < ema) or manual_short:
+        size = qty_local * 0.5 if rsi < config.rsi_short_qty_threshold else qty_local
+        sl = price + atr * config.sl_mult
+        tp = price - atr * config.tp_mult
+        liq_price = calc_liquidation_price(price, config.leverage, "short")
+        trigger = "manual_suggestion" if manual_short else "strategy_rules"
+        if sl > liq_price:
+            return EntryGuardRejection(
+                side="short",
+                entry=price,
+                sl=sl,
+                liq_price=liq_price,
+                trigger=trigger,
+            )
+        return EntryDecision(
+            side="short",
+            size=size,
+            entry=price,
+            sl=sl,
+            tp=tp,
+            liq_price=liq_price,
+            stake_mode="half" if rsi < config.rsi_short_qty_threshold else "full",
+            trigger=trigger,
+        )
+
+    return None
+
+
+def build_position_from_entry(decision: EntryDecision, *, row_ts: str) -> dict[str, Any]:
+    return {
+        "side": decision.side,
+        "size": decision.size,
+        "entry": decision.entry,
+        "sl": decision.sl,
+        "tp": decision.tp,
+        "liq_price": decision.liq_price,
+        "trail_active": False,
+        "trail_price": None,
+        "time": row_ts,
+        "entry_time": row_ts,
+    }
+
+
+def sanitize_trade_for_history(trade: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in trade.items():
+        if key in _TRANSIENT_POSITION_FIELDS:
+            continue
+        sanitized[key] = value
+    return sanitized
+
+
+def build_exit_trade(
+    position: dict[str, Any],
+    decision: ExitDecision,
+    *,
+    row_ts: str,
+) -> dict[str, Any]:
+    trade = {
+        **position,
+        "exit": decision.exit,
+        "exit_time": row_ts,
+        "exit_reason": decision.reason,
+        "net_pnl": decision.net_pnl,
+    }
+    if decision.gross_pnl is not None:
+        trade["gross_pnl"] = decision.gross_pnl
+    if decision.fee_total is not None:
+        trade["fee"] = decision.fee_total
+    return trade
+
+
+def apply_backtest_exit_transition(
+    balance: float,
+    trade_history: list[dict[str, Any]],
+    position: dict[str, Any],
+    decision: ExitDecision,
+    *,
+    row_ts: str,
+) -> tuple[float, dict[str, Any]]:
+    trade = build_exit_trade(position, decision, row_ts=row_ts)
+    updated_balance = balance + decision.net_pnl
+    sanitized_trade = sanitize_trade_for_history(trade)
+    trade_history.append(sanitized_trade)
+    return updated_balance, sanitized_trade
+
+
+def build_entry_guard_event_payload(
+    rejection: EntryGuardRejection,
+    *,
+    symbol: str,
+) -> dict[str, Any]:
+    return {
+        "code": "entry_skipped_liquidation_guard",
+        "category": "risk",
+        "level": "warning",
+        "symbol": symbol,
+        "side": rejection.side,
+        "entry": rejection.entry,
+        "sl": rejection.sl,
+        "liq_price": rejection.liq_price,
+        "trigger": rejection.trigger,
+    }
+
+
+def build_trade_opened_event_payload(
+    decision: EntryDecision,
+    *,
+    symbol: str,
+    leverage: float,
+    fee: float,
+    rsi: float,
+) -> dict[str, Any]:
+    return {
+        "code": "trade_opened",
+        "category": "trade",
+        "level": "info",
+        "notify": True,
+        "symbol": symbol,
+        "side": decision.side,
+        "entry": decision.entry,
+        "sl": decision.sl,
+        "tp": decision.tp,
+        "size": decision.size,
+        "leverage": leverage,
+        "fee": fee,
+        "rsi": rsi,
+        "stake_mode": decision.stake_mode,
+        "trigger": decision.trigger,
+    }
+
+
+def build_trail_event_payload(
+    decision: TrailDecision,
+    *,
+    symbol: str,
+) -> dict[str, Any]:
+    return {
+        "code": decision.event_code,
+        "category": "trade",
+        "level": decision.level,
+        "symbol": symbol,
+        "side": decision.side,
+        **decision.event_context,
+    }
+
+
+def build_exit_event_payload(
+    decision: ExitDecision,
+    *,
+    symbol: str,
+    net_pnl: float,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "code": decision.event_code,
+        "category": decision.category,
+        "level": decision.level,
+        "notify": True,
+        "symbol": symbol,
+        "side": decision.side,
+        "exit": decision.exit,
+        "net_pnl": net_pnl,
+    }
+    if decision.margin_used:
+        payload["roi_pct"] = (net_pnl / decision.margin_used) * 100.0
+    if decision.via_tail_guard:
+        payload["via_tail_guard"] = True
+    if decision.liq_price is not None:
+        payload["liq_price"] = decision.liq_price
+    if decision.rsi is not None:
+        payload["rsi"] = decision.rsi
+    if decision.threshold is not None:
+        payload["threshold"] = decision.threshold
+    return payload
+
+
+def emit_exit_event(log_buffer, config: StrategyConfig, log_ts: str, decision: ExitDecision, net_pnl: float) -> None:
+    event_kwargs = build_exit_event_payload(
+        decision,
+        symbol=config.symbol,
+        net_pnl=net_pnl,
+    )
+    emit_event(
+        ts=log_ts,
+        log_buffer=log_buffer,
+        **event_kwargs,
+    )
+
+
+def apply_trail_decision(
+    position: dict[str, Any],
+    state: dict[str, Any],
+    live: bool,
+    log_buffer: list[str],
+    config: StrategyConfig,
+    log_ts: str,
+    decision: TrailDecision,
+) -> None:
+    position.update(decision.position_updates)
+    if live:
+        update_position(state, position)
+    event_kwargs = build_trail_event_payload(decision, symbol=config.symbol)
+    emit_event(
+        ts=log_ts,
+        log_buffer=log_buffer,
+        **event_kwargs,
+    )
+
+
+def build_position_metrics(
+    position: dict[str, Any],
+    snapshot: DiscreteRowSnapshot,
+    *,
+    leverage: float,
+    fee_rate: float,
+) -> PositionMetrics:
+    side = str(position["side"]).strip().lower()
+    size = float(position["size"])
+    entry_price = float(position["entry"])
+    price = float(snapshot.price)
+    position_value = size * entry_price
+    fee_close = position_value * fee_rate
+    gross_pnl = (
+        (price - entry_price) / entry_price * position_value
+        if side == "long"
+        else (entry_price - price) / entry_price * position_value
+    )
+    margin_used = position_value / leverage if leverage > 0 else None
+    return PositionMetrics(
+        side=side,
+        price=price,
+        entry_price=entry_price,
+        position_value=position_value,
+        fee_close=fee_close,
+        gross_pnl=gross_pnl,
+        margin_used=margin_used,
+        base_sl=float(position["sl"]),
+        base_tp=float(position["tp"]),
+        liquidation_price=float(position["liq_price"]),
+    )
+
+
+def resolve_management_decision(
+    position: dict[str, Any],
+    snapshot: DiscreteRowSnapshot,
+    *,
+    config: StrategyConfig,
+    metrics: PositionMetrics,
+) -> TrailDecision | ExitDecision | None:
+    side = metrics.side
+    price = metrics.price
+    atr = float(snapshot.atr)
+    rsi = float(snapshot.rsi)
+
+    if side == "long" and price < metrics.liquidation_price:
+        return ExitDecision(
+            event_code="trade_liquidated",
+            category="risk",
+            level="error",
+            reason="liquidation",
+            side="long",
+            exit=price,
+            net_pnl=-(metrics.margin_used or 0.0),
+            margin_used=metrics.margin_used,
+            liq_price=metrics.liquidation_price,
+        )
+
+    if side == "short" and price > metrics.liquidation_price:
+        return ExitDecision(
+            event_code="trade_liquidated",
+            category="risk",
+            level="error",
+            reason="liquidation",
+            side="short",
+            exit=price,
+            net_pnl=-(metrics.margin_used or 0.0),
+            margin_used=metrics.margin_used,
+            liq_price=metrics.liquidation_price,
+        )
+
+    if side == "long":
+        if rsi > config.rsi_extreme_long:
+            fee_total = metrics.fee_close * 2
+            net_pnl = metrics.gross_pnl - fee_total
+            return ExitDecision(
+                event_code="trade_closed_rsi_extreme",
+                category="trade",
+                level="info",
+                reason="rsi_extreme",
+                side="long",
+                exit=price,
+                net_pnl=net_pnl,
+                margin_used=metrics.margin_used,
+                gross_pnl=metrics.gross_pnl,
+                fee_total=fee_total,
+                rsi=rsi,
+                threshold=config.rsi_extreme_long,
+            )
+
+        if not position["trail_active"]:
+            if price > metrics.base_tp and rsi < config.rsi_long_tp_threshold:
+                trail_price = price - atr * config.trail_atr_mult
+                return TrailDecision(
+                    event_code="trail_activated",
+                    level="info",
+                    side="long",
+                    position_updates={
+                        "trail_active": True,
+                        "trail_max": price,
+                        "trail_price": trail_price,
+                    },
+                    event_context={
+                        "market_price": price,
+                        "base_tp": metrics.base_tp,
+                        "trail_price": trail_price,
+                    },
+                )
+        else:
+            trail_max = float(position["trail_max"])
+            if price > trail_max:
+                previous_trail = position.get("trail_price")
+                current_trail_tp = price - atr * config.trail_atr_mult
+                return TrailDecision(
+                    event_code="trail_moved",
+                    level="info",
+                    side="long",
+                    position_updates={
+                        "trail_max": price,
+                        "tp": current_trail_tp,
+                        "trail_price": current_trail_tp,
+                    },
+                    event_context={
+                        "previous_trail": previous_trail,
+                        "trail_price": current_trail_tp,
+                        "anchor_price": price,
+                    },
+                )
+            if price < trail_max - atr * config.trail_atr_mult or rsi > config.rsi_long_close_threshold:
+                fee_total = metrics.fee_close * 2
+                net_pnl = metrics.gross_pnl - fee_total
+                return ExitDecision(
+                    event_code="trade_closed_take_profit",
+                    category="trade",
+                    level="info",
+                    reason="take_profit",
+                    side="long",
+                    exit=price,
+                    net_pnl=net_pnl,
+                    margin_used=metrics.margin_used,
+                    gross_pnl=metrics.gross_pnl,
+                    fee_total=fee_total,
+                    via_tail_guard=True,
+                )
+
+        if price < metrics.base_sl:
+            fee_total = metrics.fee_close * 2
+            net_pnl = metrics.gross_pnl - fee_total
+            return ExitDecision(
+                event_code="trade_closed_stop_loss",
+                category="trade",
+                level="warning",
+                reason="stop_loss",
+                side="long",
+                exit=price,
+                net_pnl=net_pnl,
+                margin_used=metrics.margin_used,
+                gross_pnl=metrics.gross_pnl,
+                fee_total=fee_total,
+            )
+
+        return None
+
+    if rsi < config.rsi_extreme_short:
+        fee_total = metrics.fee_close * 2
+        net_pnl = metrics.gross_pnl - fee_total
+        return ExitDecision(
+            event_code="trade_closed_rsi_extreme",
+            category="trade",
+            level="info",
+            reason="rsi_extreme",
+            side="short",
+            exit=price,
+            net_pnl=net_pnl,
+            margin_used=metrics.margin_used,
+            gross_pnl=metrics.gross_pnl,
+            fee_total=fee_total,
+            rsi=rsi,
+            threshold=config.rsi_extreme_short,
+        )
+
+    if not position["trail_active"]:
+        if price < metrics.base_tp and rsi > config.rsi_short_tp_threshold:
+            trail_price = price + atr * config.trail_atr_mult
+            return TrailDecision(
+                event_code="trail_activated",
+                level="info",
+                side="short",
+                position_updates={
+                    "trail_active": True,
+                    "trail_min": price,
+                    "trail_price": trail_price,
+                },
+                event_context={
+                    "market_price": price,
+                    "base_tp": metrics.base_tp,
+                    "trail_price": trail_price,
+                },
+            )
+    else:
+        trail_min = float(position["trail_min"])
+        if price < trail_min:
+            previous_trail = position.get("trail_price")
+            current_trail_tp = price + atr * config.trail_atr_mult
+            return TrailDecision(
+                event_code="trail_moved",
+                level="info",
+                side="short",
+                position_updates={
+                    "trail_min": price,
+                    "tp": current_trail_tp,
+                    "trail_price": current_trail_tp,
+                },
+                event_context={
+                    "previous_trail": previous_trail,
+                    "trail_price": current_trail_tp,
+                    "anchor_price": price,
+                },
+            )
+        if price > trail_min + atr * config.trail_atr_mult or rsi < config.rsi_short_close_threshold:
+            fee_total = metrics.fee_close * 2
+            net_pnl = metrics.gross_pnl - fee_total
+            return ExitDecision(
+                event_code="trade_closed_take_profit",
+                category="trade",
+                level="info",
+                reason="take_profit",
+                side="short",
+                exit=price,
+                net_pnl=net_pnl,
+                margin_used=metrics.margin_used,
+                gross_pnl=metrics.gross_pnl,
+                fee_total=fee_total,
+                via_tail_guard=True,
+            )
+
+    if price > metrics.base_sl:
+        fee_total = metrics.fee_close * 2
+        net_pnl = metrics.gross_pnl - fee_total
+        return ExitDecision(
+            event_code="trade_closed_stop_loss",
+            category="trade",
+            level="warning",
+            reason="stop_loss",
+            side="short",
+            exit=price,
+            net_pnl=net_pnl,
+            margin_used=metrics.margin_used,
+            gross_pnl=metrics.gross_pnl,
+            fee_total=fee_total,
+        )
+
+    return None
+
+
+def apply_exit_decision(
+    *,
+    decision: ExitDecision,
+    position: dict[str, Any],
+    state: dict[str, Any],
+    live: bool,
+    balance: float,
+    trade_history: list[dict[str, Any]],
+    log_buffer: list[str],
+    config: StrategyConfig,
+    row_ts: str,
+    log_ts: str,
+) -> tuple[float, None]:
+    if live:
+        trade = build_exit_trade(position, decision, row_ts=row_ts)
+        if decision.reason != "liquidation":
+            close_position(config.symbol)
+        current_balance = get_balance()
+        trade["net_pnl"] = current_balance - balance
+        balance = current_balance
+        update_position(state, None)
+        update_balance(state, balance)
+        add_closed_trade(state, sanitize_trade_for_history(trade))
+        emit_exit_event(log_buffer, config, log_ts, decision, trade["net_pnl"])
+    else:
+        balance, _ = apply_backtest_exit_transition(
+            balance,
+            trade_history,
+            position,
+            decision,
+            row_ts=row_ts,
+        )
+        emit_exit_event(log_buffer, config, log_ts, decision, decision.net_pnl)
+
+    return balance, None
+
+
+def process_discrete_row(
+    snapshot: DiscreteRowSnapshot,
+    runtime: StrategyRuntime,
+    config: StrategyConfig,
+    technical_logger,
+) -> None:
+    state = runtime.state
+    balance = runtime.balance
+    position = runtime.position
+    trade_history = runtime.trade_history
+    log_buffer = runtime.log_buffer
+    live = runtime.live
+
+    price = snapshot.price
+    lower = snapshot.lower
+    upper = snapshot.upper
+    mid = snapshot.mid
+    atr = snapshot.atr
+    rsi = snapshot.rsi
+    ema = snapshot.ema
+    row_ts = snapshot.row_ts
+    log_ts = snapshot.log_ts
+
+    if live:
+        refresh_market_snapshot(state, price, row_ts)
+    state["search_status"] = resolve_search_status(price, ema, state.get("search_status"))
+
+    if position is None:
+        if not config.allow_entries:
+            runtime.balance = balance
+            runtime.position = position
+            return
+
+        manual_trade_suggestion = consume_manual_trade_suggestion(state, live) if live else None
+        manual_side = manual_trade_suggestion["side"] if manual_trade_suggestion else None
+
+        qty_local = compute_qty(
+            config.symbol,
+            balance,
+            config.leverage,
+            price,
+            config.qty,
+            config.use_full_balance,
+            live,
+        )
+        entry_decision = resolve_entry_decision(
+            snapshot,
+            config=config,
+            qty_local=qty_local,
+            manual_side=manual_side,
+        )
+
+        if isinstance(entry_decision, EntryGuardRejection):
+            event_kwargs = build_entry_guard_event_payload(
+                entry_decision,
+                symbol=config.symbol,
+            )
+            emit_event(
+                ts=log_ts,
+                log_buffer=log_buffer,
+                **event_kwargs,
+            )
+        elif isinstance(entry_decision, EntryDecision):
+            position = build_position_from_entry(entry_decision, row_ts=row_ts)
+            refresh_position_snapshot(position, price, config.leverage, row_ts)
+            event_kwargs = build_trade_opened_event_payload(
+                entry_decision,
+                symbol=config.symbol,
+                leverage=config.leverage,
+                fee=entry_decision.size * price * config.fee_rate,
+                rsi=rsi,
+            )
+
+            if live:
+                if can_open_trade(config.symbol, entry_decision.size, config.leverage):
+                    side_command = "BUY" if entry_decision.side == "long" else "SELL"
+                    open_position(
+                        config.symbol,
+                        side_command,
+                        entry_decision.size,
+                        entry_decision.sl,
+                        entry_decision.tp,
+                        config.leverage,
+                    )
+                    balance = get_balance()
+                    update_position(state, position)
+                    update_balance(state, balance)
+                emit_event(
+                    ts=log_ts,
+                    log_buffer=log_buffer,
+                    **event_kwargs,
+                )
+            else:
+                balance -= entry_decision.size * price * config.fee_rate
+                emit_event(
+                    ts=log_ts,
+                    log_buffer=log_buffer,
+                    **event_kwargs,
+                )
+
+    else:
+        side = position["side"]
+        refresh_position_snapshot(position, price, config.leverage, row_ts)
+        if live:
+            update_position(state, position)
+        metrics = build_position_metrics(
+            position,
+            snapshot,
+            leverage=config.leverage,
+            fee_rate=config.fee_rate,
+        )
+        management_decision = resolve_management_decision(
+            position,
+            snapshot,
+            config=config,
+            metrics=metrics,
+        )
+
+        if isinstance(management_decision, TrailDecision):
+            apply_trail_decision(
+                position,
+                state,
+                live,
+                log_buffer,
+                config,
+                log_ts,
+                management_decision,
+            )
+        elif isinstance(management_decision, ExitDecision):
+            balance, position = apply_exit_decision(
+                decision=management_decision,
+                position=position,
+                state=state,
+                live=live,
+                balance=balance,
+                trade_history=trade_history,
+                log_buffer=log_buffer,
+                config=config,
+                row_ts=row_ts,
+                log_ts=log_ts,
+            )
+            runtime.balance = balance
+            runtime.position = position
+            return
+
+        if live and position is not None:
+            technical_logger.debug(
+                "runtime_open_position_pnl side=%s symbol=%s gross_pnl=%.2f",
+                side,
+                config.symbol,
+                metrics.gross_pnl,
+            )
+
+    if live:
+        technical_logger.debug(
+            "runtime_indicator_snapshot symbol=%s price=%.2f bbl=%.2f bbm=%.2f bbu=%.2f rsi=%.2f ema=%.2f",
+            config.symbol,
+            price,
+            lower,
+            mid,
+            upper,
+            rsi,
+            ema,
+        )
+
+    runtime.balance = balance
+    runtime.position = position
+
+
+def run_strategy(
+    df,
+    live: bool = False,
+    initial_balance: float = 1000,
+    qty: float | None = None,
+    sl_mult: float = 1.5,
+    tp_mult: float = 3.0,
+    symbol: str = "BTCUSDT",
+    leverage: float = 1,
+    use_full_balance: bool = True,
+    fee_rate: float = 0.0005,
+    state=None,
+    use_state: bool = True,
+    enable_logs: bool = True,
+    show_progress: bool = True,
+    rsi_extreme_long: float = 75,
+    rsi_extreme_short: float = 25,
+    rsi_long_open_threshold: float = 50,
+    rsi_long_qty_threshold: float = 30,
+    rsi_long_tp_threshold: float = 58,
+    rsi_long_close_threshold: float = 70,
+    rsi_short_open_threshold: float = 50,
+    rsi_short_qty_threshold: float = 70,
+    rsi_short_tp_threshold: float = 42,
+    rsi_short_close_threshold: float = 30,
+    trail_atr_mult: float = 0.5,
+    allow_entries: bool = True,
+):
+    runtime = initialize_strategy_runtime(
+        live=live,
+        initial_balance=initial_balance,
+        use_state=use_state,
+        load_state_fn=load_state,
+    )
+    runtime.enable_logs = enable_logs
+    technical_logger = get_technical_logger()
+    config = StrategyConfig(
+        qty=qty,
+        sl_mult=sl_mult,
+        tp_mult=tp_mult,
+        symbol=symbol,
+        leverage=leverage,
+        use_full_balance=use_full_balance,
+        fee_rate=fee_rate,
+        rsi_extreme_long=rsi_extreme_long,
+        rsi_extreme_short=rsi_extreme_short,
+        rsi_long_open_threshold=rsi_long_open_threshold,
+        rsi_long_qty_threshold=rsi_long_qty_threshold,
+        rsi_long_tp_threshold=rsi_long_tp_threshold,
+        rsi_long_close_threshold=rsi_long_close_threshold,
+        rsi_short_open_threshold=rsi_short_open_threshold,
+        rsi_short_qty_threshold=rsi_short_qty_threshold,
+        rsi_short_tp_threshold=rsi_short_tp_threshold,
+        rsi_short_close_threshold=rsi_short_close_threshold,
+        trail_atr_mult=trail_atr_mult,
+        allow_entries=allow_entries,
+    )
+
+    def on_row(snapshot, row_runtime):
+        process_discrete_row(snapshot, row_runtime, config, technical_logger)
+
+    return run_discrete_engine(
+        df,
+        runtime=runtime,
+        show_progress=show_progress,
+        timestamp_format=TIMESTAMP_FORMAT,
+        timestamp_formatter=format_event_timestamp,
+        on_row=on_row,
+        save_log_fn=save_log,
+        save_state_fn=save_state,
+    )
+
+
+def finalize_strategy_runtime(
+    runtime: StrategyRuntime,
+    *,
+    save_log_fn: Callable[[list[str]], None],
+    save_state_fn: Callable[[dict[str, Any]], None],
+) -> tuple[float, pd.DataFrame, list[float], dict[str, Any]]:
+    if runtime.log_buffer and runtime.enable_logs:
+        save_log_fn(runtime.log_buffer)
+
+    if runtime.live:
+        save_state_fn(runtime.state)
+    elif runtime.use_state:
+        runtime.state["position"] = runtime.position
+        runtime.state["balance"] = runtime.balance
+        runtime.state["trade_history"] = runtime.trade_history
+        runtime.state["balance_history"] = runtime.balance_history
+        save_state_fn(runtime.state)
+        runtime.state["trade_history"] = runtime.trade_history
+        runtime.state["balance_history"] = runtime.balance_history
+
+    return (
+        runtime.balance,
+        pd.DataFrame(runtime.state.get("trade_history", [])),
+        runtime.state.get("balance_history", []),
+        runtime.state,
+    )
+
+
+def run_discrete_engine(
+    df: pd.DataFrame,
+    *,
+    runtime: StrategyRuntime,
+    show_progress: bool,
+    timestamp_format: str,
+    timestamp_formatter: Callable[[Any], str],
+    on_row: Callable[[DiscreteRowSnapshot, StrategyRuntime], None],
+    save_log_fn: Callable[[list[str]], None],
+    save_state_fn: Callable[[dict[str, Any]], None],
+) -> tuple[float, pd.DataFrame, list[float], dict[str, Any]]:
+    for row in iter_discrete_rows(df, live=runtime.live, show_progress=show_progress):
+        snapshot = build_row_snapshot(
+            row,
+            live=runtime.live,
+            timestamp_format=timestamp_format,
+            timestamp_formatter=timestamp_formatter,
+        )
+        on_row(snapshot, runtime)
+        runtime.balance_history.append(runtime.balance)
+
+    return finalize_strategy_runtime(
+        runtime,
+        save_log_fn=save_log_fn,
+        save_state_fn=save_state_fn,
+    )

@@ -36,16 +36,26 @@ Scrooge is a fully automated **algorithmic trading system** for **Binance Future
 
 ```
 scrooge/
-├── config.yaml              # Main configuration file
-├── param_grid.yaml          # Optimization parameter grid
+├── bot/                     # Live/backtest runtime adapters and side effects
+│   ├── runtime.py
+│   ├── market_stream.py
+│   ├── control_channel.py
+│   ├── event_log.py
+│   ├── state.py
+│   ├── trade.py
+│   └── strategy.py          # Transitional runtime-facing shim
+├── core/                    # Shared engine and canonical event storage
+│   ├── engine.py
+│   └── event_store.py
+├── main.py                  # Thin entry shim; keeps the Scrooge greeting
+├── strategy.py              # Backward-compatible shim
 ├── data.py                  # Multi-timeframe data fetching and preparation
-├── strategy.py              # Core trading logic (RSI/EMA/Bollinger)
-├── trade.py                 # Binance Futures order management
-├── state.py                 # Persistent storage for open positions
 ├── replay.py                # Canonical event-log replay and trade reconstruction
 ├── optimize.py              # Automated parameter optimization script
 ├── report.py                # Plotting and performance visualization
-├── main.py                  # Entry point for backtesting or live trading
+├── config.yaml              # Main live configuration file
+├── config.backtest.yaml     # Backtest configuration file
+├── param_grid.yaml          # Optimization parameter grid
 ├── results/                 # Historical charts and configuration snapshots
 ├── requirements.bot.txt     # Slim live-runtime dependencies
 ├── requirements.backtest.txt# Backtest/report extras
