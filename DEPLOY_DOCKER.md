@@ -222,10 +222,11 @@ Notes:
 - `market_event_trade_alignment_pairs.jsonl` stores per-trade alignment rows
 
 Backtest input modes:
-- `backtest_input_mode: build` builds fresh dataset/tape from Binance history
-- `backtest_input_mode: discrete_tape` starts directly from an existing `market_tape.jsonl`
-- `backtest_input_mode: market_event_stream` runs the discrete engine directly on an existing `market_events.jsonl` and also writes a projected `market_tape.jsonl`
-- `strategy_mode: realtime` is available only with `backtest_input_mode: market_event_stream`
+- `backtest_input_mode: build` builds fresh dataset/tape from Binance history and also synthesizes a historical realtime-grade `market_events.jsonl`
+- `backtest_input_mode: discrete_tape` starts directly from an existing `market_tape.jsonl` and also synthesizes a historical realtime-grade `market_events.jsonl`
+- `backtest_input_mode: market_event_stream` starts directly from an existing `market_events.jsonl` and also writes a projected `market_tape.jsonl`
+- synthetic historical `market_events.jsonl` includes intrabar `price_tick`, `1m/1h/4h candle_closed`, and `indicator_snapshot` events
+- `strategy_mode: realtime` can run either on those historical synthetic streams or on live-captured `market_events.jsonl`
 - `execution_mode: observed` is available only with `backtest_input_mode: market_event_stream`
 - use `market_tape_input_path` or `market_event_input_path` in `config/backtest.yaml` when replaying from stored input artifacts
 - `state.json` will also capture `execution_sync`, `exchange_balance`, `exchange_position`, and `last_order_trade_update` when those events exist in the replay stream

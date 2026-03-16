@@ -10,7 +10,6 @@ import pandas as pd
 
 import backtest.dataset as dataset_module
 from backtest.discrete_event_stream import (
-    build_discrete_market_event_stream,
     read_discrete_market_event_stream,
     write_discrete_market_event_stream,
 )
@@ -18,6 +17,7 @@ from backtest.market_event_projection import (
     DiscreteTapeProjectionSummary,
     read_projected_discrete_tape_from_market_event_stream,
 )
+from backtest.historical_market_event_stream import build_historical_market_event_stream
 from backtest.discrete_tape import (
     DiscreteMarketTapeRow,
     build_discrete_market_tape,
@@ -112,8 +112,6 @@ def build_discrete_backtest_config(
     normalized_strategy_mode = str(cfg.get("strategy_mode", strategy_mode)).strip().lower() or strategy_mode
     if normalized_strategy_mode not in {"discrete", "realtime"}:
         raise ValueError("strategy_mode must be one of: discrete, realtime")
-    if normalized_strategy_mode == "realtime" and input_mode != "market_event_stream":
-        raise ValueError("strategy_mode=realtime requires backtest_input_mode=market_event_stream")
     execution_mode = str(cfg.get("execution_mode", "simulated")).strip().lower() or "simulated"
     if execution_mode not in {"simulated", "observed"}:
         raise ValueError("execution_mode must be one of: simulated, observed")
@@ -294,9 +292,16 @@ def run_discrete_backtest(
         if source_path != config.market_tape_path:
             write_discrete_market_tape(config.market_tape_path, tape)
             logger.info("backtest_market_tape_copied rows=%s path=%s", len(tape), config.market_tape_path)
-        market_events = build_discrete_market_event_stream(tape, candle_interval=str(config.intervals["small"]))
+        market_events = build_historical_market_event_stream(
+            tape,
+            intervals={key: str(value) for key, value in config.intervals.items()},
+        )
         write_discrete_market_event_stream(config.market_event_stream_path, market_events)
-        logger.info("backtest_market_event_stream_written events=%s path=%s", len(market_events), config.market_event_stream_path)
+        logger.info(
+            "backtest_historical_market_event_stream_written events=%s path=%s",
+            len(market_events),
+            config.market_event_stream_path,
+        )
     elif config.backtest_input_mode == "market_event_stream":
         source_path = config.market_event_input_path or config.market_event_stream_path
         market_events = read_discrete_market_event_stream(source_path)
@@ -338,9 +343,16 @@ def run_discrete_backtest(
         tape = build_discrete_market_tape(df, symbol=config.symbol)
         write_discrete_market_tape(config.market_tape_path, tape)
         logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
-        market_events = build_discrete_market_event_stream(tape, candle_interval=str(config.intervals["small"]))
+        market_events = build_historical_market_event_stream(
+            tape,
+            intervals={key: str(value) for key, value in config.intervals.items()},
+        )
         write_discrete_market_event_stream(config.market_event_stream_path, market_events)
-        logger.info("backtest_market_event_stream_written events=%s path=%s", len(market_events), config.market_event_stream_path)
+        logger.info(
+            "backtest_historical_market_event_stream_written events=%s path=%s",
+            len(market_events),
+            config.market_event_stream_path,
+        )
 
     strategy_kwargs = {
         "live": False,
@@ -352,7 +364,7 @@ def run_discrete_backtest(
         "use_state": False,
         **config.params,
     }
-    if config.backtest_input_mode == "market_event_stream":
+    if config.strategy_mode == "realtime" or config.backtest_input_mode == "market_event_stream":
         final_balance, trades, balance_history, state = market_event_strategy_runner(
             market_events,
             candle_interval=str(config.intervals["small"]),

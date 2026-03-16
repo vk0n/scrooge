@@ -11,7 +11,7 @@ It currently supports:
 - discrete backtests
 - canonical event logging and replay artifacts
 - a canonical discrete market tape for backtest runs
-- a separate shared schema boundary for future realtime-grade market events
+- a realtime-grade market event stream path for both historical and live replay
 
 ## Project Structure
 
@@ -34,6 +34,7 @@ scrooge/
 │   ├── dataset.py
 │   ├── discrete_event_stream.py
 │   ├── discrete_tape.py
+│   ├── historical_market_event_stream.py
 │   ├── market_event_projection.py
 │   ├── runner.py
 │   ├── replay.py
@@ -174,13 +175,19 @@ The backtest execution path is now owned by:
 - `backtest/discrete_tape.py`
 - `backtest/market_event_projection.py`
 
-The future realtime-grade stream boundary is reserved in:
+The realtime-grade stream path is owned by:
+- `backtest/historical_market_event_stream.py`
 - `core/market_events.py`
 
 Backtest input modes:
-- `backtest_input_mode: build` — fetch/build dataset, then derive `market_tape.jsonl`
-- `backtest_input_mode: discrete_tape` — start directly from an existing `market_tape.jsonl`
-- `backtest_input_mode: market_event_stream` — run the discrete engine directly on an existing `market_events.jsonl`, while also projecting `market_tape.jsonl` as an artifact
+- `backtest_input_mode: build` — fetch/build dataset, derive `market_tape.jsonl`, and synthesize a historical `market_events.jsonl`
+- `backtest_input_mode: discrete_tape` — start from an existing `market_tape.jsonl` and synthesize a historical `market_events.jsonl`
+- `backtest_input_mode: market_event_stream` — start directly from an existing `market_events.jsonl`, while also projecting `market_tape.jsonl` as an artifact
+
+Historical `market_events.jsonl` synthesized from candles includes:
+- intrabar `price_tick` events derived from the `1m` OHLC path
+- `candle_closed` events for `1m`, `1h`, and `4h`
+- `indicator_snapshot` events for discrete replay compatibility
 
 When replaying from `market_event_stream`, the resulting `state.json` also carries execution-sync context when available:
 - `execution_sync`
@@ -190,7 +197,7 @@ When replaying from `market_event_stream`, the resulting `state.json` also carri
 
 Strategy modes:
 - `strategy_mode: discrete` — canonical baseline
-- `strategy_mode: realtime` — event-driven evaluation on live-grade `market_events.jsonl`; requires `backtest_input_mode: market_event_stream`
+- `strategy_mode: realtime` — event-driven evaluation on a realtime-grade `market_events.jsonl` built from history or captured live
 
 Execution modes:
 - `execution_mode: simulated` — strategy fills/balance are simulated by the engine
@@ -212,7 +219,7 @@ market_event_input_path: /path/to/market_events.jsonl
 ```
 
 That `market_events.jsonl` can come either from:
-- a backtest-generated event stream
+- a backtest-generated historical realtime stream
 - or a live bot runtime captured at `runtime/market_events.jsonl`
 
 ### Replay a canonical event log
