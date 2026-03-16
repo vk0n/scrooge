@@ -2,9 +2,15 @@
 # pip install python-binance pandas pandas_ta matplotlib
 
 import os
+from dataclasses import dataclass
 import pandas as pd
-from tqdm import tqdm
 from datetime import datetime
+from core_engine import (
+    DiscreteRowSnapshot,
+    StrategyRuntime,
+    initialize_strategy_runtime,
+    run_discrete_engine,
+)
 from event_log import emit_event, get_technical_logger
 from trade import compute_qty, can_open_trade, open_position, close_position, get_balance
 from state import (
@@ -222,6 +228,815 @@ def _trade_margin_used(position_value, leverage_value):
     return position_value / leverage_numeric
 
 
+@dataclass(slots=True)
+class StrategyConfig:
+    qty: float | None
+    sl_mult: float
+    tp_mult: float
+    symbol: str
+    leverage: float
+    use_full_balance: bool
+    fee_rate: float
+    rsi_extreme_long: float
+    rsi_extreme_short: float
+    rsi_long_open_threshold: float
+    rsi_long_qty_threshold: float
+    rsi_long_tp_threshold: float
+    rsi_long_close_threshold: float
+    rsi_short_open_threshold: float
+    rsi_short_qty_threshold: float
+    rsi_short_tp_threshold: float
+    rsi_short_close_threshold: float
+    trail_atr_mult: float
+    allow_entries: bool
+
+
+def _calc_liquidation_price(entry, leverage_value, side):
+    if side == "long":
+        return entry * (1 - 1 / leverage_value)
+    return entry * (1 + 1 / leverage_value)
+
+
+def _consume_manual_trade_suggestion(state, live):
+    suggestion = _normalize_manual_trade_suggestion(state.get("manual_trade_suggestion"))
+    if suggestion is None:
+        return None
+    state["manual_trade_suggestion"] = None
+    if live:
+        save_state(state)
+    return suggestion
+
+
+def _process_discrete_row(
+    snapshot: DiscreteRowSnapshot,
+    runtime: StrategyRuntime,
+    config: StrategyConfig,
+    technical_logger,
+):
+    state = runtime.state
+    balance = runtime.balance
+    position = runtime.position
+    trade_history = runtime.trade_history
+    log_buffer = runtime.log_buffer
+    live = runtime.live
+
+    price = snapshot.price
+    lower = snapshot.lower
+    upper = snapshot.upper
+    mid = snapshot.mid
+    atr = snapshot.atr
+    rsi = snapshot.rsi
+    ema = snapshot.ema
+    row_ts = snapshot.row_ts
+    log_ts = snapshot.log_ts
+
+    if live:
+        _refresh_market_snapshot(state, price, row_ts)
+    state["search_status"] = _resolve_search_status(price, ema, state.get("search_status"))
+
+    if position is None:
+        if not config.allow_entries:
+            runtime.balance = balance
+            runtime.position = position
+            return
+
+        manual_trade_suggestion = _consume_manual_trade_suggestion(state, live) if live else None
+        manual_side = manual_trade_suggestion["side"] if manual_trade_suggestion else None
+        manual_long = manual_side == "buy"
+        manual_short = manual_side == "sell"
+
+        qty_local = compute_qty(
+            config.symbol,
+            balance,
+            config.leverage,
+            price,
+            config.qty,
+            config.use_full_balance,
+            live,
+        )
+
+        if (price < lower and rsi < config.rsi_long_open_threshold and price > ema) or manual_long:
+            qty_open = qty_local * 0.5 if rsi > config.rsi_long_qty_threshold else qty_local
+            full_balance_stake = rsi <= config.rsi_long_qty_threshold
+            sl = price - atr * config.sl_mult
+            tp = price + atr * config.tp_mult
+            liquidation_price = _calc_liquidation_price(price, config.leverage, "long")
+
+            if sl < liquidation_price:
+                emit_event(
+                    code="entry_skipped_liquidation_guard",
+                    category="risk",
+                    ts=log_ts,
+                    level="warning",
+                    log_buffer=log_buffer,
+                    symbol=config.symbol,
+                    side="long",
+                    entry=price,
+                    sl=sl,
+                    liq_price=liquidation_price,
+                    trigger="manual_suggestion" if manual_long else "strategy_rules",
+                )
+            else:
+                position = {
+                    "side": "long",
+                    "size": qty_open,
+                    "entry": price,
+                    "sl": sl,
+                    "tp": tp,
+                    "liq_price": liquidation_price,
+                    "trail_active": False,
+                    "trail_price": None,
+                    "time": row_ts,
+                    "entry_time": row_ts,
+                }
+                _refresh_position_snapshot(position, price, config.leverage, row_ts)
+
+                if live:
+                    if can_open_trade(config.symbol, qty_open, config.leverage):
+                        open_position(config.symbol, "BUY", qty_open, sl, tp, config.leverage)
+                        balance = get_balance()
+                        update_position(state, position)
+                        update_balance(state, balance)
+                    emit_event(
+                        code="trade_opened",
+                        category="trade",
+                        ts=log_ts,
+                        level="info",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=config.symbol,
+                        side="long",
+                        entry=price,
+                        sl=sl,
+                        tp=tp,
+                        size=qty_open,
+                        leverage=config.leverage,
+                        fee=qty_open * price * config.fee_rate,
+                        rsi=rsi,
+                        stake_mode="full" if full_balance_stake else "half",
+                        trigger="manual_suggestion" if manual_long else "strategy_rules",
+                    )
+                else:
+                    balance -= qty_open * price * config.fee_rate
+                    emit_event(
+                        code="trade_opened",
+                        category="trade",
+                        ts=log_ts,
+                        level="info",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=config.symbol,
+                        side="long",
+                        entry=price,
+                        sl=sl,
+                        tp=tp,
+                        size=qty_open,
+                        leverage=config.leverage,
+                        fee=qty_open * price * config.fee_rate,
+                        rsi=rsi,
+                        stake_mode="full" if full_balance_stake else "half",
+                        trigger="manual_suggestion" if manual_long else "strategy_rules",
+                    )
+
+        elif (price > upper and rsi > config.rsi_short_open_threshold and price < ema) or manual_short:
+            qty_open = qty_local * 0.5 if rsi < config.rsi_short_qty_threshold else qty_local
+            full_balance_stake = rsi >= config.rsi_short_qty_threshold
+            sl = price + atr * config.sl_mult
+            tp = price - atr * config.tp_mult
+            liquidation_price = _calc_liquidation_price(price, config.leverage, "short")
+
+            if sl > liquidation_price:
+                emit_event(
+                    code="entry_skipped_liquidation_guard",
+                    category="risk",
+                    ts=log_ts,
+                    level="warning",
+                    log_buffer=log_buffer,
+                    symbol=config.symbol,
+                    side="short",
+                    entry=price,
+                    sl=sl,
+                    liq_price=liquidation_price,
+                    trigger="manual_suggestion" if manual_short else "strategy_rules",
+                )
+            else:
+                position = {
+                    "side": "short",
+                    "size": qty_open,
+                    "entry": price,
+                    "sl": sl,
+                    "tp": tp,
+                    "liq_price": liquidation_price,
+                    "trail_active": False,
+                    "trail_price": None,
+                    "time": row_ts,
+                    "entry_time": row_ts,
+                }
+                _refresh_position_snapshot(position, price, config.leverage, row_ts)
+
+                if live:
+                    if can_open_trade(config.symbol, qty_open, config.leverage):
+                        open_position(config.symbol, "SELL", qty_open, sl, tp, config.leverage)
+                        balance = get_balance()
+                        update_position(state, position)
+                        update_balance(state, balance)
+                    emit_event(
+                        code="trade_opened",
+                        category="trade",
+                        ts=log_ts,
+                        level="info",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=config.symbol,
+                        side="short",
+                        entry=price,
+                        sl=sl,
+                        tp=tp,
+                        size=qty_open,
+                        leverage=config.leverage,
+                        fee=qty_open * price * config.fee_rate,
+                        rsi=rsi,
+                        stake_mode="full" if full_balance_stake else "half",
+                        trigger="manual_suggestion" if manual_short else "strategy_rules",
+                    )
+                else:
+                    balance -= qty_open * price * config.fee_rate
+                    emit_event(
+                        code="trade_opened",
+                        category="trade",
+                        ts=log_ts,
+                        level="info",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=config.symbol,
+                        side="short",
+                        entry=price,
+                        sl=sl,
+                        tp=tp,
+                        size=qty_open,
+                        leverage=config.leverage,
+                        fee=qty_open * price * config.fee_rate,
+                        rsi=rsi,
+                        stake_mode="full" if full_balance_stake else "half",
+                        trigger="manual_suggestion" if manual_short else "strategy_rules",
+                    )
+
+    else:
+        size = position["size"]
+        entry_price = position["entry"]
+        position_value = size * entry_price
+        fee_close = position_value * config.fee_rate
+        side = position["side"]
+        base_sl = position["sl"]
+        base_tp = position["tp"]
+        liquidation_price = position["liq_price"]
+        _refresh_position_snapshot(position, price, config.leverage, row_ts)
+        if live:
+            update_position(state, position)
+        trade = {
+            **position,
+            "exit": price,
+            "exit_time": row_ts,
+        }
+
+        if side == "long" and price < liquidation_price:
+            if live:
+                current_balance = get_balance()
+                loss = current_balance - balance
+                trade["net_pnl"] = loss
+                trade["exit_reason"] = "liquidation"
+                balance = current_balance
+                update_position(state, None)
+                update_balance(state, balance)
+                add_closed_trade(state, _sanitize_trade_for_history(trade))
+                emit_event(
+                    code="trade_liquidated",
+                    category="risk",
+                    ts=log_ts,
+                    level="error",
+                    notify=True,
+                    log_buffer=log_buffer,
+                    symbol=config.symbol,
+                    side="long",
+                    liq_price=liquidation_price,
+                    exit=price,
+                    net_pnl=loss,
+                )
+            else:
+                margin_used = position_value / config.leverage
+                balance -= margin_used
+                trade["net_pnl"] = -margin_used
+                trade["exit_reason"] = "liquidation"
+                trade_history.append(_sanitize_trade_for_history(trade))
+                emit_event(
+                    code="trade_liquidated",
+                    category="risk",
+                    ts=log_ts,
+                    level="error",
+                    notify=True,
+                    log_buffer=log_buffer,
+                    symbol=config.symbol,
+                    side="long",
+                    liq_price=liquidation_price,
+                    exit=price,
+                    net_pnl=-margin_used,
+                )
+
+            position = None
+            runtime.balance = balance
+            runtime.position = position
+            return
+
+        if side == "short" and price > liquidation_price:
+            if live:
+                current_balance = get_balance()
+                loss = current_balance - balance
+                trade["net_pnl"] = loss
+                trade["exit_reason"] = "liquidation"
+                balance = current_balance
+                update_position(state, None)
+                update_balance(state, balance)
+                add_closed_trade(state, _sanitize_trade_for_history(trade))
+                emit_event(
+                    code="trade_liquidated",
+                    category="risk",
+                    ts=log_ts,
+                    level="error",
+                    notify=True,
+                    log_buffer=log_buffer,
+                    symbol=config.symbol,
+                    side="short",
+                    liq_price=liquidation_price,
+                    exit=price,
+                    net_pnl=loss,
+                )
+            else:
+                margin_used = position_value / config.leverage
+                balance -= margin_used
+                trade["net_pnl"] = -margin_used
+                trade["exit_reason"] = "liquidation"
+                trade_history.append(_sanitize_trade_for_history(trade))
+                emit_event(
+                    code="trade_liquidated",
+                    category="risk",
+                    ts=log_ts,
+                    level="error",
+                    notify=True,
+                    log_buffer=log_buffer,
+                    symbol=config.symbol,
+                    side="short",
+                    liq_price=liquidation_price,
+                    exit=price,
+                    net_pnl=-margin_used,
+                )
+
+            position = None
+            runtime.balance = balance
+            runtime.position = position
+            return
+
+        if side == "long":
+            gross_pnl = (price - entry_price) / entry_price * position_value
+            margin_used = _trade_margin_used(position_value, config.leverage)
+            if rsi > config.rsi_extreme_long:
+                fee_total = fee_close * 2
+                net_pnl = gross_pnl - fee_total
+                trade = {
+                    **position,
+                    "exit": price,
+                    "exit_time": row_ts,
+                    "gross_pnl": gross_pnl,
+                    "fee": fee_total,
+                    "net_pnl": net_pnl,
+                    "exit_reason": "rsi_extreme",
+                }
+
+                if live:
+                    close_position(config.symbol)
+                    current_balance = get_balance()
+                    trade["net_pnl"] = current_balance - balance
+                    balance = current_balance
+                    update_position(state, None)
+                    update_balance(state, balance)
+                    add_closed_trade(state, _sanitize_trade_for_history(trade))
+                    emit_event(
+                        code="trade_closed_rsi_extreme",
+                        category="trade",
+                        ts=log_ts,
+                        level="info",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=config.symbol,
+                        side="long",
+                        exit=price,
+                        net_pnl=trade["net_pnl"],
+                        roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                        rsi=rsi,
+                        threshold=config.rsi_extreme_long,
+                    )
+                else:
+                    balance += net_pnl
+                    trade_history.append(_sanitize_trade_for_history(trade))
+                    emit_event(
+                        code="trade_closed_rsi_extreme",
+                        category="trade",
+                        ts=log_ts,
+                        level="info",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=config.symbol,
+                        side="long",
+                        exit=price,
+                        net_pnl=net_pnl,
+                        roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                        rsi=rsi,
+                        threshold=config.rsi_extreme_long,
+                    )
+
+                position = None
+
+            elif position is not None:
+                if not position["trail_active"]:
+                    if price > base_tp and rsi < config.rsi_long_tp_threshold:
+                        position["trail_active"] = True
+                        position["trail_max"] = price
+                        position["trail_price"] = price - atr * config.trail_atr_mult
+                        if live:
+                            update_position(state, position)
+                        emit_event(
+                            code="trail_activated",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            log_buffer=log_buffer,
+                            symbol=config.symbol,
+                            side="long",
+                            market_price=price,
+                            base_tp=base_tp,
+                            trail_price=position["trail_price"],
+                        )
+                else:
+                    if price > position["trail_max"]:
+                        previous_trail = position.get("trail_price")
+                        position["trail_max"] = price
+                        current_trail_tp = position["trail_max"] - atr * config.trail_atr_mult
+                        position["tp"] = current_trail_tp
+                        position["trail_price"] = current_trail_tp
+                        if live:
+                            update_position(state, position)
+                        emit_event(
+                            code="trail_moved",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            log_buffer=log_buffer,
+                            symbol=config.symbol,
+                            side="long",
+                            previous_trail=previous_trail,
+                            trail_price=current_trail_tp,
+                            anchor_price=position["trail_max"],
+                        )
+                    elif price < position["trail_max"] - atr * config.trail_atr_mult or rsi > config.rsi_long_close_threshold:
+                        fee_total = fee_close * 2
+                        net_pnl = gross_pnl - fee_total
+                        trade = {
+                            **position,
+                            "exit": price,
+                            "exit_time": row_ts,
+                            "gross_pnl": gross_pnl,
+                            "fee": fee_total,
+                            "net_pnl": net_pnl,
+                            "exit_reason": "take_profit",
+                        }
+
+                        if live:
+                            close_position(config.symbol)
+                            current_balance = get_balance()
+                            trade["net_pnl"] = current_balance - balance
+                            balance = current_balance
+                            update_position(state, None)
+                            update_balance(state, balance)
+                            add_closed_trade(state, _sanitize_trade_for_history(trade))
+                            emit_event(
+                                code="trade_closed_take_profit",
+                                category="trade",
+                                ts=log_ts,
+                                level="info",
+                                notify=True,
+                                log_buffer=log_buffer,
+                                symbol=config.symbol,
+                                side="long",
+                                exit=price,
+                                net_pnl=trade["net_pnl"],
+                                roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                                via_tail_guard=True,
+                            )
+                        else:
+                            balance += net_pnl
+                            trade_history.append(_sanitize_trade_for_history(trade))
+                            emit_event(
+                                code="trade_closed_take_profit",
+                                category="trade",
+                                ts=log_ts,
+                                level="info",
+                                notify=True,
+                                log_buffer=log_buffer,
+                                symbol=config.symbol,
+                                side="long",
+                                exit=price,
+                                net_pnl=net_pnl,
+                                roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                                via_tail_guard=True,
+                            )
+
+                        position = None
+
+                if position is not None and price < base_sl:
+                    fee_total = fee_close * 2
+                    net_pnl = gross_pnl - fee_total
+                    trade = {
+                        **position,
+                        "exit": price,
+                        "exit_time": row_ts,
+                        "gross_pnl": gross_pnl,
+                        "fee": fee_total,
+                        "net_pnl": net_pnl,
+                        "exit_reason": "stop_loss",
+                    }
+
+                    if live:
+                        close_position(config.symbol)
+                        current_balance = get_balance()
+                        trade["net_pnl"] = current_balance - balance
+                        balance = current_balance
+                        update_position(state, None)
+                        update_balance(state, balance)
+                        add_closed_trade(state, _sanitize_trade_for_history(trade))
+                        emit_event(
+                            code="trade_closed_stop_loss",
+                            category="trade",
+                            ts=log_ts,
+                            level="warning",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=config.symbol,
+                            side="long",
+                            exit=price,
+                            net_pnl=trade["net_pnl"],
+                            roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                        )
+                    else:
+                        balance += net_pnl
+                        trade_history.append(_sanitize_trade_for_history(trade))
+                        emit_event(
+                            code="trade_closed_stop_loss",
+                            category="trade",
+                            ts=log_ts,
+                            level="warning",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=config.symbol,
+                            side="long",
+                            exit=price,
+                            net_pnl=net_pnl,
+                            roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                        )
+
+                    position = None
+
+        elif side == "short":
+            gross_pnl = (entry_price - price) / entry_price * position_value
+            margin_used = _trade_margin_used(position_value, config.leverage)
+            if rsi < config.rsi_extreme_short:
+                fee_total = fee_close * 2
+                net_pnl = gross_pnl - fee_total
+                trade = {
+                    **position,
+                    "exit": price,
+                    "exit_time": row_ts,
+                    "gross_pnl": gross_pnl,
+                    "fee": fee_total,
+                    "net_pnl": net_pnl,
+                    "exit_reason": "rsi_extreme",
+                }
+
+                if live:
+                    close_position(config.symbol)
+                    current_balance = get_balance()
+                    trade["net_pnl"] = current_balance - balance
+                    balance = current_balance
+                    update_position(state, None)
+                    update_balance(state, balance)
+                    add_closed_trade(state, _sanitize_trade_for_history(trade))
+                    emit_event(
+                        code="trade_closed_rsi_extreme",
+                        category="trade",
+                        ts=log_ts,
+                        level="info",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=config.symbol,
+                        side="short",
+                        exit=price,
+                        net_pnl=trade["net_pnl"],
+                        roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                        rsi=rsi,
+                        threshold=config.rsi_extreme_short,
+                    )
+                else:
+                    balance += net_pnl
+                    trade_history.append(_sanitize_trade_for_history(trade))
+                    emit_event(
+                        code="trade_closed_rsi_extreme",
+                        category="trade",
+                        ts=log_ts,
+                        level="info",
+                        notify=True,
+                        log_buffer=log_buffer,
+                        symbol=config.symbol,
+                        side="short",
+                        exit=price,
+                        net_pnl=net_pnl,
+                        roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                        rsi=rsi,
+                        threshold=config.rsi_extreme_short,
+                    )
+
+                position = None
+
+            elif position is not None:
+                if not position["trail_active"]:
+                    if price < base_tp and rsi > config.rsi_short_tp_threshold:
+                        position["trail_active"] = True
+                        position["trail_min"] = price
+                        position["trail_price"] = price + atr * config.trail_atr_mult
+                        if live:
+                            update_position(state, position)
+                        emit_event(
+                            code="trail_activated",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            log_buffer=log_buffer,
+                            symbol=config.symbol,
+                            side="short",
+                            market_price=price,
+                            base_tp=base_tp,
+                            trail_price=position["trail_price"],
+                        )
+                else:
+                    if price < position["trail_min"]:
+                        previous_trail = position.get("trail_price")
+                        position["trail_min"] = price
+                        current_trail_tp = position["trail_min"] + atr * config.trail_atr_mult
+                        position["tp"] = current_trail_tp
+                        position["trail_price"] = current_trail_tp
+                        if live:
+                            update_position(state, position)
+                        emit_event(
+                            code="trail_moved",
+                            category="trade",
+                            ts=log_ts,
+                            level="info",
+                            log_buffer=log_buffer,
+                            symbol=config.symbol,
+                            side="short",
+                            previous_trail=previous_trail,
+                            trail_price=current_trail_tp,
+                            anchor_price=position["trail_min"],
+                        )
+                    elif price > position["trail_min"] + atr * config.trail_atr_mult or rsi < config.rsi_short_close_threshold:
+                        fee_total = fee_close * 2
+                        net_pnl = gross_pnl - fee_total
+                        trade = {
+                            **position,
+                            "exit": price,
+                            "exit_time": row_ts,
+                            "gross_pnl": gross_pnl,
+                            "fee": fee_total,
+                            "net_pnl": net_pnl,
+                            "exit_reason": "take_profit",
+                        }
+
+                        if live:
+                            close_position(config.symbol)
+                            current_balance = get_balance()
+                            trade["net_pnl"] = current_balance - balance
+                            balance = current_balance
+                            update_position(state, None)
+                            update_balance(state, balance)
+                            add_closed_trade(state, _sanitize_trade_for_history(trade))
+                            emit_event(
+                                code="trade_closed_take_profit",
+                                category="trade",
+                                ts=log_ts,
+                                level="info",
+                                notify=True,
+                                log_buffer=log_buffer,
+                                symbol=config.symbol,
+                                side="short",
+                                exit=price,
+                                net_pnl=trade["net_pnl"],
+                                roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                                via_tail_guard=True,
+                            )
+                        else:
+                            balance += net_pnl
+                            trade_history.append(_sanitize_trade_for_history(trade))
+                            emit_event(
+                                code="trade_closed_take_profit",
+                                category="trade",
+                                ts=log_ts,
+                                level="info",
+                                notify=True,
+                                log_buffer=log_buffer,
+                                symbol=config.symbol,
+                                side="short",
+                                exit=price,
+                                net_pnl=net_pnl,
+                                roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                                via_tail_guard=True,
+                            )
+
+                        position = None
+
+                if position is not None and price > base_sl:
+                    fee_total = fee_close * 2
+                    net_pnl = gross_pnl - fee_total
+                    trade = {
+                        **position,
+                        "exit": price,
+                        "exit_time": row_ts,
+                        "gross_pnl": gross_pnl,
+                        "fee": fee_total,
+                        "net_pnl": net_pnl,
+                        "exit_reason": "stop_loss",
+                    }
+
+                    if live:
+                        close_position(config.symbol)
+                        current_balance = get_balance()
+                        trade["net_pnl"] = current_balance - balance
+                        balance = current_balance
+                        update_position(state, None)
+                        update_balance(state, balance)
+                        add_closed_trade(state, _sanitize_trade_for_history(trade))
+                        emit_event(
+                            code="trade_closed_stop_loss",
+                            category="trade",
+                            ts=log_ts,
+                            level="warning",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=config.symbol,
+                            side="short",
+                            exit=price,
+                            net_pnl=trade["net_pnl"],
+                            roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
+                        )
+                    else:
+                        balance += net_pnl
+                        trade_history.append(_sanitize_trade_for_history(trade))
+                        emit_event(
+                            code="trade_closed_stop_loss",
+                            category="trade",
+                            ts=log_ts,
+                            level="warning",
+                            notify=True,
+                            log_buffer=log_buffer,
+                            symbol=config.symbol,
+                            side="short",
+                            exit=price,
+                            net_pnl=net_pnl,
+                            roi_pct=_ratio_to_percent(net_pnl, margin_used),
+                        )
+
+                    position = None
+
+        if live and position is not None:
+            technical_logger.debug(
+                "runtime_open_position_pnl side=%s symbol=%s gross_pnl=%.2f",
+                side,
+                config.symbol,
+                gross_pnl,
+            )
+
+    if live:
+        technical_logger.debug(
+            "runtime_indicator_snapshot symbol=%s price=%.2f bbl=%.2f bbm=%.2f bbu=%.2f rsi=%.2f ema=%.2f",
+            config.symbol,
+            price,
+            lower,
+            mid,
+            upper,
+            rsi,
+            ema,
+        )
+
+    runtime.balance = balance
+    runtime.position = position
+
+
 def run_strategy(df, live=False, initial_balance=1000,
                  qty=None, sl_mult = 1.5, tp_mult = 3.0,
                  symbol="BTCUSDT", leverage=1, use_full_balance=True, fee_rate=0.0005,
@@ -233,829 +1048,46 @@ def run_strategy(df, live=False, initial_balance=1000,
     """
     Bollinger Bands strategy with SL/TP, dynamic stop, state persistence, and logging.
     """
-    if use_state:
-        state = load_state(include_history=not live)
-    else:
-        state = {
-            "position": None,
-            "trade_history": [],
-            "balance_history": [],
-            "manual_trade_suggestion": None,
-            "updated_at": None,
-            "search_status": None,
-            "bot_status": None,
-            "trade_status": None,
-            "session_start": None,
-            "session_end": None
-        }
-    balance = initial_balance
-    position = state["position"]
-    trade_history = state.get("trade_history", [])
-    balance_history = state.get("balance_history", [])
-    log_buffer = []
+    runtime = initialize_strategy_runtime(
+        live=live,
+        initial_balance=initial_balance,
+        use_state=use_state,
+        load_state_fn=load_state,
+    )
+    runtime.enable_logs = enable_logs
     technical_logger = get_technical_logger()
+    config = StrategyConfig(
+        qty=qty,
+        sl_mult=sl_mult,
+        tp_mult=tp_mult,
+        symbol=symbol,
+        leverage=leverage,
+        use_full_balance=use_full_balance,
+        fee_rate=fee_rate,
+        rsi_extreme_long=rsi_extreme_long,
+        rsi_extreme_short=rsi_extreme_short,
+        rsi_long_open_threshold=rsi_long_open_threshold,
+        rsi_long_qty_threshold=rsi_long_qty_threshold,
+        rsi_long_tp_threshold=rsi_long_tp_threshold,
+        rsi_long_close_threshold=rsi_long_close_threshold,
+        rsi_short_open_threshold=rsi_short_open_threshold,
+        rsi_short_qty_threshold=rsi_short_qty_threshold,
+        rsi_short_tp_threshold=rsi_short_tp_threshold,
+        rsi_short_close_threshold=rsi_short_close_threshold,
+        trail_atr_mult=trail_atr_mult,
+        allow_entries=allow_entries,
+    )
 
-    def calc_liquidation_price(entry, leverage_value, side):
-        # Binance Futures isolated margin formula approximation
-        if side == "long":
-            return entry * (1 - 1 / leverage_value)
-        return entry * (1 + 1 / leverage_value)
+    def on_row(snapshot, row_runtime):
+        _process_discrete_row(snapshot, row_runtime, config, technical_logger)
 
-    def consume_manual_trade_suggestion():
-        suggestion = _normalize_manual_trade_suggestion(state.get("manual_trade_suggestion"))
-        if suggestion is None:
-            return None
-        state["manual_trade_suggestion"] = None
-        if live:
-            save_state(state)
-        return suggestion
-
-    if live:
-        df_iter = [df.iloc[-1]]
-        iterator = df_iter
-    else:
-        df_iter = [df.iloc[i] for i in range(1, len(df))]
-        iterator = tqdm(df_iter, desc="Backtest Progress", disable=not show_progress)
-
-    for row in iterator:
-        price = row["close"]
-        lower = row["BBL"]
-        upper = row["BBU"]
-        mid   = row["BBM"]
-        atr   = row["ATR"]
-        rsi   = row["RSI"]
-        ema   = row["EMA"]
-        row_ts = _format_event_timestamp(row.get("open_time"))
-        log_ts = datetime.now().strftime(TIMESTAMP_FORMAT) if live else row_ts
-
-        if live:
-            _refresh_market_snapshot(state, price, row_ts)
-        state["search_status"] = _resolve_search_status(price, ema, state.get("search_status"))
-        
-        if position is None:
-            if not allow_entries:
-                continue
-
-            manual_trade_suggestion = consume_manual_trade_suggestion() if live else None
-            manual_side = manual_trade_suggestion["side"] if manual_trade_suggestion else None
-            manual_long = manual_side == "buy"
-            manual_short = manual_side == "sell"
-            
-            # determine position size
-            qty_local = compute_qty(symbol, balance, leverage, price, qty, use_full_balance, live)
-
-            # OPEN LOGIC
-            if (price < lower and rsi < rsi_long_open_threshold and price > ema) or manual_long:
-                qty_open = qty_local * 0.5 if rsi > rsi_long_qty_threshold else qty_local
-                fb = False if rsi > rsi_long_qty_threshold else True 
-                sl = price - atr * sl_mult
-                tp = price + atr * tp_mult
-                liquidation_price = calc_liquidation_price(price, leverage, "long")
-
-                # skip if SL is beyond liquidation
-                if sl < liquidation_price:
-                    emit_event(
-                        code="entry_skipped_liquidation_guard",
-                        category="risk",
-                        ts=log_ts,
-                        level="warning",
-                        log_buffer=log_buffer,
-                        symbol=symbol,
-                        side="long",
-                        entry=price,
-                        sl=sl,
-                        liq_price=liquidation_price,
-                        trigger="manual_suggestion" if manual_long else "strategy_rules",
-                    )
-                else:
-                    position = {
-                        "side": "long",
-                        "size": qty_open,
-                        "entry": price,
-                        "sl": sl,
-                        "tp": tp,
-                        "liq_price": liquidation_price,
-                        "trail_active": False,
-                        "trail_price": None,
-                        "time": row_ts,
-                        "entry_time": row_ts,
-                    }
-                    _refresh_position_snapshot(position, price, leverage, row_ts)
-
-                    if live:
-                        if can_open_trade(symbol, qty_open, leverage):
-                            open_position(symbol, "BUY", qty_open, sl, tp, leverage)
-                            balance = get_balance()
-                            update_position(state, position)
-                            update_balance(state, balance)
-                        emit_event(
-                            code="trade_opened",
-                            category="trade",
-                            ts=log_ts,
-                            level="info",
-                            notify=True,
-                            log_buffer=log_buffer,
-                            symbol=symbol,
-                            side="long",
-                            entry=price,
-                            sl=sl,
-                            tp=tp,
-                            size=qty_open,
-                            leverage=leverage,
-                            fee=qty_open * price * fee_rate,
-                            rsi=rsi,
-                            stake_mode="half" if not fb else "full",
-                            trigger="manual_suggestion" if manual_long else "strategy_rules",
-                        )
-                    else:
-                        balance -= qty_open * price * fee_rate
-                        emit_event(
-                            code="trade_opened",
-                            category="trade",
-                            ts=log_ts,
-                            level="info",
-                            notify=True,
-                            log_buffer=log_buffer,
-                            symbol=symbol,
-                            side="long",
-                            entry=price,
-                            sl=sl,
-                            tp=tp,
-                            size=qty_open,
-                            leverage=leverage,
-                            fee=qty_open * price * fee_rate,
-                            rsi=rsi,
-                            stake_mode="half" if not fb else "full",
-                            trigger="manual_suggestion" if manual_long else "strategy_rules",
-                        )
-
-            elif (price > upper and rsi > rsi_short_open_threshold and price < ema) or manual_short:
-                qty_open = qty_local * 0.5 if rsi < rsi_short_qty_threshold else qty_local
-                fb = False if rsi < rsi_short_qty_threshold else True 
-                sl = price + atr * sl_mult
-                tp = price - atr * tp_mult
-                liquidation_price = calc_liquidation_price(price, leverage, "short")
-
-                # skip if SL is beyond liquidation
-                if sl > liquidation_price:
-                    emit_event(
-                        code="entry_skipped_liquidation_guard",
-                        category="risk",
-                        ts=log_ts,
-                        level="warning",
-                        log_buffer=log_buffer,
-                        symbol=symbol,
-                        side="short",
-                        entry=price,
-                        sl=sl,
-                        liq_price=liquidation_price,
-                        trigger="manual_suggestion" if manual_short else "strategy_rules",
-                    )
-                else:
-                    position = {
-                        "side": "short",
-                        "size": qty_open,
-                        "entry": price,
-                        "sl": sl,
-                        "tp": tp,
-                        "liq_price": liquidation_price,
-                        "trail_active": False,
-                        "trail_price": None,
-                        "time": row_ts,
-                        "entry_time": row_ts,
-                    }
-                    _refresh_position_snapshot(position, price, leverage, row_ts)
-                    
-                    if live:
-                        if can_open_trade(symbol, qty_open, leverage):
-                            open_position(symbol, "SELL", qty_open, sl, tp, leverage)
-                            balance = get_balance()
-                            update_position(state, position)
-                            update_balance(state, balance)
-                        emit_event(
-                            code="trade_opened",
-                            category="trade",
-                            ts=log_ts,
-                            level="info",
-                            notify=True,
-                            log_buffer=log_buffer,
-                            symbol=symbol,
-                            side="short",
-                            entry=price,
-                            sl=sl,
-                            tp=tp,
-                            size=qty_open,
-                            leverage=leverage,
-                            fee=qty_open * price * fee_rate,
-                            rsi=rsi,
-                            stake_mode="half" if not fb else "full",
-                            trigger="manual_suggestion" if manual_short else "strategy_rules",
-                        )
-                    else:
-                        balance -= qty_open * price * fee_rate
-                        emit_event(
-                            code="trade_opened",
-                            category="trade",
-                            ts=log_ts,
-                            level="info",
-                            notify=True,
-                            log_buffer=log_buffer,
-                            symbol=symbol,
-                            side="short",
-                            entry=price,
-                            sl=sl,
-                            tp=tp,
-                            size=qty_open,
-                            leverage=leverage,
-                            fee=qty_open * price * fee_rate,
-                            rsi=rsi,
-                            stake_mode="half" if not fb else "full",
-                            trigger="manual_suggestion" if manual_short else "strategy_rules",
-                        )
-
-        else:
-            # MANAGEMENT for open position
-            size = position["size"]
-            entry_price = position["entry"]
-            position_value = size * entry_price
-            fee_close = position_value * fee_rate
-            side = position["side"]
-            base_sl = position["sl"]
-            base_tp = position["tp"]
-            liquidation_price = position["liq_price"]
-            _refresh_position_snapshot(position, price, leverage, row_ts)
-            if live:
-                update_position(state, position)
-            trade = {
-                **position,
-                "exit": price,
-                "exit_time": row_ts,
-            }
-
-            # --- Liquidation Check ---
-            if side == "long" and price < liquidation_price:
-                if live:
-                    current_balance = get_balance()
-                    loss = current_balance - balance
-                    trade["net_pnl"] = loss
-                    trade["exit_reason"] = "liquidation"
-                    balance = current_balance
-                    update_position(state, None)
-                    update_balance(state, balance)
-                    add_closed_trade(state, _sanitize_trade_for_history(trade))
-                    emit_event(
-                        code="trade_liquidated",
-                        category="risk",
-                        ts=log_ts,
-                        level="error",
-                        notify=True,
-                        log_buffer=log_buffer,
-                        symbol=symbol,
-                        side="long",
-                        liq_price=liquidation_price,
-                        exit=price,
-                        net_pnl=loss,
-                    )
-                else:
-                    # Margin used for this trade (portion of balance at risk)
-                    margin_used = position_value / leverage
-                    # Deduct the loss from account balance
-                    balance -= margin_used
-                    trade["net_pnl"] = -margin_used
-                    trade["exit_reason"] = "liquidation"
-                    trade_history.append(_sanitize_trade_for_history(trade)) # Long LIQUIDATED
-                    emit_event(
-                        code="trade_liquidated",
-                        category="risk",
-                        ts=log_ts,
-                        level="error",
-                        notify=True,
-                        log_buffer=log_buffer,
-                        symbol=symbol,
-                        side="long",
-                        liq_price=liquidation_price,
-                        exit=price,
-                        net_pnl=-margin_used,
-                    )
-                
-                # Close position and continue
-                position = None
-                continue
-
-            if side == "short" and price > liquidation_price:
-                if live:
-                    current_balance = get_balance()
-                    loss = current_balance - balance
-                    trade["net_pnl"] = loss
-                    trade["exit_reason"] = "liquidation"
-                    balance = current_balance
-                    update_position(state, None)
-                    update_balance(state, balance)
-                    add_closed_trade(state, _sanitize_trade_for_history(trade))
-                    emit_event(
-                        code="trade_liquidated",
-                        category="risk",
-                        ts=log_ts,
-                        level="error",
-                        notify=True,
-                        log_buffer=log_buffer,
-                        symbol=symbol,
-                        side="short",
-                        liq_price=liquidation_price,
-                        exit=price,
-                        net_pnl=loss,
-                    )
-                else:
-                    # Margin used for this trade
-                    margin_used = position_value / leverage
-                    # Deduct the loss from account balance
-                    balance -= margin_used
-                    trade["net_pnl"] = -margin_used
-                    trade["exit_reason"] = "liquidation"
-                    trade_history.append(_sanitize_trade_for_history(trade)) # Short LIQUIDATED
-                    emit_event(
-                        code="trade_liquidated",
-                        category="risk",
-                        ts=log_ts,
-                        level="error",
-                        notify=True,
-                        log_buffer=log_buffer,
-                        symbol=symbol,
-                        side="short",
-                        liq_price=liquidation_price,
-                        exit=price,
-                        net_pnl=-margin_used,
-                    )
-
-                # Close position and continue
-                position = None
-                continue
-
-            # --- LONG SIDE LOGIC ---
-            if side == "long":
-                # Emergency RSI exit (extreme overbought)
-                gross_pnl = (price - entry_price) / entry_price * position_value
-                margin_used = _trade_margin_used(position_value, leverage)
-                if rsi > rsi_extreme_long:
-                    fee_total = fee_close * 2
-                    net_pnl = gross_pnl - fee_total
-                    trade = {
-                        **position,
-                        "exit": price,
-                        "exit_time": row_ts,
-                        "gross_pnl": gross_pnl,
-                        "fee": fee_total,
-                        "net_pnl": net_pnl,
-                        "exit_reason": "rsi_extreme"
-                    }
-
-                    if live:
-                        close_position(symbol)
-                        current_balance = get_balance()
-                        trade["net_pnl"] = current_balance - balance
-                        balance = current_balance
-                        update_position(state, None)
-                        update_balance(state, balance)
-                        add_closed_trade(state, _sanitize_trade_for_history(trade))
-                        emit_event(
-                            code="trade_closed_rsi_extreme",
-                            category="trade",
-                            ts=log_ts,
-                            level="info",
-                            notify=True,
-                            log_buffer=log_buffer,
-                            symbol=symbol,
-                            side="long",
-                            exit=price,
-                            net_pnl=trade["net_pnl"],
-                            roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
-                            rsi=rsi,
-                            threshold=rsi_extreme_long,
-                        )
-                    else:
-                        balance += net_pnl
-                        trade_history.append(_sanitize_trade_for_history(trade)) # Long RSI
-                        emit_event(
-                            code="trade_closed_rsi_extreme",
-                            category="trade",
-                            ts=log_ts,
-                            level="info",
-                            notify=True,
-                            log_buffer=log_buffer,
-                            symbol=symbol,
-                            side="long",
-                            exit=price,
-                            net_pnl=net_pnl,
-                            roi_pct=_ratio_to_percent(net_pnl, margin_used),
-                            rsi=rsi,
-                            threshold=rsi_extreme_long,
-                        )
-                    
-                    position = None
-
-                elif position is not None:
-                    # Activate trailing TP once base TP reached (but RSI not overbought yet)
-                    if not position["trail_active"]:
-                        if price > base_tp and rsi < rsi_long_tp_threshold:
-                            position["trail_active"] = True
-                            position["trail_max"] = price
-                            position["trail_price"] = price - atr * trail_atr_mult
-                            if live:
-                                update_position(state, position)
-                            emit_event(
-                                code="trail_activated",
-                                category="trade",
-                                ts=log_ts,
-                                level="info",
-                                log_buffer=log_buffer,
-                                symbol=symbol,
-                                side="long",
-                                market_price=price,
-                                base_tp=base_tp,
-                                trail_price=position["trail_price"],
-                            )
-                    else:
-                        # Update or close trailing TP
-                        if price > position["trail_max"]:
-                            previous_trail = position.get("trail_price")
-                            position["trail_max"] = price
-                            current_trail_tp = position["trail_max"] - atr * trail_atr_mult
-                            position["tp"] = current_trail_tp
-                            position["trail_price"] = current_trail_tp
-                            if live:
-                                update_position(state, position)
-                            emit_event(
-                                code="trail_moved",
-                                category="trade",
-                                ts=log_ts,
-                                level="info",
-                                log_buffer=log_buffer,
-                                symbol=symbol,
-                                side="long",
-                                previous_trail=previous_trail,
-                                trail_price=current_trail_tp,
-                                anchor_price=position["trail_max"],
-                            )
-                        elif price < position["trail_max"] - atr * trail_atr_mult or rsi > rsi_long_close_threshold:
-                            fee_total = fee_close * 2
-                            net_pnl = gross_pnl - fee_total
-                            trade = {
-                                **position,
-                                "exit": price,
-                                "exit_time": row_ts,
-                                "gross_pnl": gross_pnl,
-                                "fee": fee_total,
-                                "net_pnl": net_pnl,
-                                "exit_reason": "take_profit"
-                            }
-
-                            if live:
-                                close_position(symbol)
-                                current_balance = get_balance()
-                                trade["net_pnl"] = current_balance - balance
-                                balance = current_balance
-                                update_position(state, None)
-                                update_balance(state, balance)
-                                add_closed_trade(state, _sanitize_trade_for_history(trade))
-                                emit_event(
-                                    code="trade_closed_take_profit",
-                                    category="trade",
-                                    ts=log_ts,
-                                    level="info",
-                                    notify=True,
-                                    log_buffer=log_buffer,
-                                    symbol=symbol,
-                                    side="long",
-                                    exit=price,
-                                    net_pnl=trade["net_pnl"],
-                                    roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
-                                    via_tail_guard=True,
-                                )
-                            else:
-                                balance += net_pnl
-                                trade_history.append(_sanitize_trade_for_history(trade)) # Long TP
-                                emit_event(
-                                    code="trade_closed_take_profit",
-                                    category="trade",
-                                    ts=log_ts,
-                                    level="info",
-                                    notify=True,
-                                    log_buffer=log_buffer,
-                                    symbol=symbol,
-                                    side="long",
-                                    exit=price,
-                                    net_pnl=net_pnl,
-                                    roi_pct=_ratio_to_percent(net_pnl, margin_used),
-                                    via_tail_guard=True,
-                                )
-                            
-                            position = None
-
-                    # Fallback to normal SL/TP logic if no trail active
-                    if position is not None:
-                        if price < base_sl:
-                            fee_total = fee_close * 2
-                            net_pnl = gross_pnl - fee_total
-                            trade = {
-                                **position,
-                                "exit": price,
-                                "exit_time": row_ts,
-                                "gross_pnl": gross_pnl,
-                                "fee": fee_total,
-                                "net_pnl": net_pnl,
-                                "exit_reason": "stop_loss"
-                            }
-
-                            if live:
-                                close_position(symbol)
-                                current_balance = get_balance()
-                                trade["net_pnl"] = current_balance - balance
-                                balance = current_balance
-                                update_position(state, None)
-                                update_balance(state, balance)
-                                add_closed_trade(state, _sanitize_trade_for_history(trade))
-                                emit_event(
-                                    code="trade_closed_stop_loss",
-                                    category="trade",
-                                    ts=log_ts,
-                                    level="warning",
-                                    notify=True,
-                                    log_buffer=log_buffer,
-                                    symbol=symbol,
-                                    side="long",
-                                    exit=price,
-                                    net_pnl=trade["net_pnl"],
-                                    roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
-                                )
-                            else:
-                                balance += net_pnl
-                                trade_history.append(_sanitize_trade_for_history(trade)) # Long SL
-                                emit_event(
-                                    code="trade_closed_stop_loss",
-                                    category="trade",
-                                    ts=log_ts,
-                                    level="warning",
-                                    notify=True,
-                                    log_buffer=log_buffer,
-                                    symbol=symbol,
-                                    side="long",
-                                    exit=price,
-                                    net_pnl=net_pnl,
-                                    roi_pct=_ratio_to_percent(net_pnl, margin_used),
-                                )
-                            
-                            position = None
-
-            # --- SHORT SIDE LOGIC ---
-            elif side == "short":
-                # Emergency RSI exit (extreme oversold)
-                gross_pnl = (entry_price - price) / entry_price * position_value
-                margin_used = _trade_margin_used(position_value, leverage)
-                if rsi < rsi_extreme_short:
-                    fee_total = fee_close * 2
-                    net_pnl = gross_pnl - fee_total
-                    trade = {
-                        **position,
-                        "exit": price,
-                        "exit_time": row_ts,
-                        "gross_pnl": gross_pnl,
-                        "fee": fee_total,
-                        "net_pnl": net_pnl,
-                        "exit_reason": "rsi_extreme"
-                    }
-
-                    if live:
-                        close_position(symbol)
-                        current_balance = get_balance()
-                        trade["net_pnl"] = current_balance - balance
-                        balance = current_balance
-                        update_position(state, None)
-                        update_balance(state, balance)
-                        add_closed_trade(state, _sanitize_trade_for_history(trade))
-                        emit_event(
-                            code="trade_closed_rsi_extreme",
-                            category="trade",
-                            ts=log_ts,
-                            level="info",
-                            notify=True,
-                            log_buffer=log_buffer,
-                            symbol=symbol,
-                            side="short",
-                            exit=price,
-                            net_pnl=trade["net_pnl"],
-                            roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
-                            rsi=rsi,
-                            threshold=rsi_extreme_short,
-                        )
-                    else:
-                        balance += net_pnl
-                        trade_history.append(_sanitize_trade_for_history(trade)) # Short RSI
-                        emit_event(
-                            code="trade_closed_rsi_extreme",
-                            category="trade",
-                            ts=log_ts,
-                            level="info",
-                            notify=True,
-                            log_buffer=log_buffer,
-                            symbol=symbol,
-                            side="short",
-                            exit=price,
-                            net_pnl=net_pnl,
-                            roi_pct=_ratio_to_percent(net_pnl, margin_used),
-                            rsi=rsi,
-                            threshold=rsi_extreme_short,
-                        )
-                    
-                    position = None
-
-                elif position is not None:
-                    # Activate trailing TP once base TP reached (but RSI not oversold yet)
-                    if not position["trail_active"]:
-                        if price < base_tp and rsi > rsi_short_tp_threshold:
-                            position["trail_active"] = True
-                            position["trail_min"] = price
-                            position["trail_price"] = price + atr * trail_atr_mult
-                            if live:
-                                update_position(state, position)
-                            emit_event(
-                                code="trail_activated",
-                                category="trade",
-                                ts=log_ts,
-                                level="info",
-                                log_buffer=log_buffer,
-                                symbol=symbol,
-                                side="short",
-                                market_price=price,
-                                base_tp=base_tp,
-                                trail_price=position["trail_price"],
-                            )
-                    else:
-                        # Update or close trailing TP
-                        if price < position["trail_min"]:
-                            previous_trail = position.get("trail_price")
-                            position["trail_min"] = price
-                            current_trail_tp = position["trail_min"] + atr * trail_atr_mult
-                            position["tp"] = current_trail_tp
-                            position["trail_price"] = current_trail_tp
-                            if live:
-                                update_position(state, position)
-                            emit_event(
-                                code="trail_moved",
-                                category="trade",
-                                ts=log_ts,
-                                level="info",
-                                log_buffer=log_buffer,
-                                symbol=symbol,
-                                side="short",
-                                previous_trail=previous_trail,
-                                trail_price=current_trail_tp,
-                                anchor_price=position["trail_min"],
-                            )
-                        elif price > position["trail_min"] + atr * trail_atr_mult or rsi < rsi_short_close_threshold:
-                            fee_total = fee_close * 2
-                            net_pnl = gross_pnl - fee_total
-                            trade = {
-                                **position,
-                                "exit": price,
-                                "exit_time": row_ts,
-                                "gross_pnl": gross_pnl,
-                                "fee": fee_total,
-                                "net_pnl": net_pnl,
-                                "exit_reason": "take_profit"
-                            }
-
-                            if live:
-                                close_position(symbol)
-                                current_balance = get_balance()
-                                trade["net_pnl"] = current_balance - balance
-                                balance = current_balance
-                                update_position(state, None)
-                                update_balance(state, balance)
-                                add_closed_trade(state, _sanitize_trade_for_history(trade))
-                                emit_event(
-                                    code="trade_closed_take_profit",
-                                    category="trade",
-                                    ts=log_ts,
-                                    level="info",
-                                    notify=True,
-                                    log_buffer=log_buffer,
-                                    symbol=symbol,
-                                    side="short",
-                                    exit=price,
-                                    net_pnl=trade["net_pnl"],
-                                    roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
-                                    via_tail_guard=True,
-                                )
-                            else:
-                                balance += net_pnl
-                                trade_history.append(_sanitize_trade_for_history(trade)) # Short TP
-                                emit_event(
-                                    code="trade_closed_take_profit",
-                                    category="trade",
-                                    ts=log_ts,
-                                    level="info",
-                                    notify=True,
-                                    log_buffer=log_buffer,
-                                    symbol=symbol,
-                                    side="short",
-                                    exit=price,
-                                    net_pnl=net_pnl,
-                                    roi_pct=_ratio_to_percent(net_pnl, margin_used),
-                                    via_tail_guard=True,
-                                )
-                            
-                            position = None
-
-                    # Fallback to normal SL/TP logic if no trail active
-                    if position is not None:
-                        if price > base_sl:
-                            fee_total = fee_close * 2
-                            net_pnl = gross_pnl - fee_total
-                            trade = {
-                                **position,
-                                "exit": price,
-                                "exit_time": row_ts,
-                                "gross_pnl": gross_pnl,
-                                "fee": fee_total,
-                                "net_pnl": net_pnl,
-                                "exit_reason": "stop_loss"
-                            }
-
-                            if live:
-                                close_position(symbol)
-                                current_balance = get_balance()
-                                trade["net_pnl"] = current_balance - balance
-                                balance = current_balance
-                                update_position(state, None)
-                                update_balance(state, balance)
-                                add_closed_trade(state, _sanitize_trade_for_history(trade))
-                                emit_event(
-                                    code="trade_closed_stop_loss",
-                                    category="trade",
-                                    ts=log_ts,
-                                    level="warning",
-                                    notify=True,
-                                    log_buffer=log_buffer,
-                                    symbol=symbol,
-                                    side="short",
-                                    exit=price,
-                                    net_pnl=trade["net_pnl"],
-                                    roi_pct=_ratio_to_percent(trade["net_pnl"], margin_used),
-                                )
-                            else:
-                                balance += net_pnl
-                                trade_history.append(_sanitize_trade_for_history(trade)) # Short SL
-                                emit_event(
-                                    code="trade_closed_stop_loss",
-                                    category="trade",
-                                    ts=log_ts,
-                                    level="warning",
-                                    notify=True,
-                                    log_buffer=log_buffer,
-                                    symbol=symbol,
-                                    side="short",
-                                    exit=price,
-                                    net_pnl=net_pnl,
-                                    roi_pct=_ratio_to_percent(net_pnl, margin_used),
-                                )
-                            
-                            position = None
-
-            if live and position is not None:
-                technical_logger.debug(
-                    "runtime_open_position_pnl side=%s symbol=%s gross_pnl=%.2f",
-                    side,
-                    symbol,
-                    gross_pnl,
-                )
-
-        if live:
-            technical_logger.debug(
-                "runtime_indicator_snapshot symbol=%s price=%.2f bbl=%.2f bbm=%.2f bbu=%.2f rsi=%.2f ema=%.2f",
-                symbol,
-                price,
-                lower,
-                mid,
-                upper,
-                rsi,
-                ema,
-            )
-
-        balance_history.append(balance)
-    
-    if log_buffer and enable_logs:
-        save_log(log_buffer)
-    
-    if live:
-        save_state(state)
-    elif use_state:
-        state["position"] = position
-        state["balance"] = balance
-        state["trade_history"] = trade_history
-        state["balance_history"] = balance_history
-        save_state(state)
-        # Keep return contract unchanged for callers that expect in-memory histories.
-        state["trade_history"] = trade_history
-        state["balance_history"] = balance_history
-
-    return balance, pd.DataFrame(state.get("trade_history", [])), state.get("balance_history", []), state
+    return run_discrete_engine(
+        df,
+        runtime=runtime,
+        show_progress=show_progress,
+        timestamp_format=TIMESTAMP_FORMAT,
+        timestamp_formatter=_format_event_timestamp,
+        on_row=on_row,
+        save_log_fn=save_log,
+        save_state_fn=save_state,
+    )
