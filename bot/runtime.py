@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 import bot.trade as trade_module
 import backtest.dataset as data_module
 from bot.control_channel import get_control_client, process_pending_commands
-from backtest.dataset import build_dataset, fetch_historical, prepare_multi_tf
+from backtest.dataset import fetch_historical, prepare_multi_tf
 from bot.event_log import get_technical_logger
 from bot.market_stream import LiveMarketStream
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
@@ -304,88 +304,6 @@ def _append_latest_chart_candle(
     except OSError as exc:
         technical_logger.warning("chart_dataset_append_failed path=%s symbol=%s error=%s", path, symbol, exc)
         return last_ts_ms
-
-
-def _write_chart_dataset_snapshot(df: Any, symbol: str, path: Path, balance_history: list[float] | None = None) -> None:
-    if df is None or len(df) == 0:  # noqa: PLR2004
-        return
-    required = {"open_time", "open", "high", "low", "close", "volume"}
-    columns = set(df.columns)
-    if not required.issubset(columns):
-        technical_logger.warning("chart_dataset_snapshot_skipped_missing_columns path=%s", path)
-        return
-
-    aligned_balance_history: list[float | str] = []
-    if balance_history:
-        clean_history: list[float] = []
-        for value in balance_history:
-            try:
-                clean_history.append(float(value))
-            except (TypeError, ValueError):
-                continue
-        if clean_history:
-            rows_count = len(df)
-            history_count = len(clean_history)
-            if history_count >= rows_count:
-                aligned_balance_history = clean_history[-rows_count:]
-            else:
-                # Right-align shorter history with candles so newest balances match newest candles.
-                aligned_balance_history = ([""] * (rows_count - history_count)) + clean_history
-
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8", newline="") as file_obj:
-            writer = csv.writer(file_obj)
-            writer.writerow(
-                ["open_time", "symbol", "open", "high", "low", "close", "volume", "balance", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"]
-            )
-            for idx, row in enumerate(df.itertuples(index=False)):
-                balance_value: float | str = ""
-                if aligned_balance_history and idx < len(aligned_balance_history):
-                    balance_value = aligned_balance_history[idx]
-                writer.writerow(
-                    [
-                        _format_open_time(getattr(row, "open_time", None)),
-                        symbol,
-                        float(getattr(row, "open")),
-                        float(getattr(row, "high")),
-                        float(getattr(row, "low")),
-                        float(getattr(row, "close")),
-                        float(getattr(row, "volume")),
-                        balance_value,
-                        _coerce_optional_float(getattr(row, "EMA", None)),
-                        _coerce_optional_float(getattr(row, "RSI", None)),
-                        _coerce_optional_float(getattr(row, "BBL", None)),
-                        _coerce_optional_float(getattr(row, "BBM", None)),
-                        _coerce_optional_float(getattr(row, "BBU", None)),
-                        _coerce_optional_float(getattr(row, "ATR", None)),
-                    ]
-                )
-    except OSError as exc:
-        technical_logger.warning("chart_dataset_snapshot_write_failed path=%s error=%s", path, exc)
-
-
-def _compress_balance_history_for_state(balance_history: list[float] | None) -> list[float]:
-    """
-    Keep only balance change points for persisted state history.
-    This keeps backtest-derived history compact while preserving step changes.
-    """
-    if not balance_history:
-        return []
-
-    compressed: list[float] = []
-    last_value: float | None = None
-    for item in balance_history:
-        try:
-            value = float(item)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(value):
-            continue
-        if last_value is None or not math.isclose(value, last_value, rel_tol=0.0, abs_tol=1e-9):
-            compressed.append(value)
-            last_value = value
-    return compressed
 
 
 def _build_command_kwargs(symbol: str) -> dict[str, Any]:
@@ -691,93 +609,17 @@ if __name__ == "__main__":
                 live_market_stream = None
 
     else:
-        import backtest.reporting as report_module
-        from backtest.replay import write_replay_artifacts
-        from backtest.reporting import (
-            compute_stats,
-            monte_carlo_from_equity,
-            plot_results_interactive,
-            rolling_window_backtest_distribution,
-        )
+        from backtest.runner import build_discrete_backtest_config, run_discrete_backtest
 
-        report_module.set_client(client)
-
-        if initial_balance is None:
-            raise ValueError("Backtest config must include initial_balance.")
-
-        backtest_period_days = cfg["backtest_period_days"]
-        backtest_period_end_time = cfg["backtest_period_end_time"]
-        enable_plot = cfg["enable_plot"]
-        plot_split_by_year = cfg.get("plot_split_by_year", True)
-        run_mc = cfg["run_monte_carlo"]
-        run_rw = cfg["run_rolling_window_backtest_distribution"]
-        rolling_window_days = cfg["rolling_window_days"]
-        rolling_window_workers = cfg.get("rolling_window_workers")
-
-        technical_logger.info("bot_mode_backtest_started symbol=%s leverage=%s", symbol, lvrg)
-        df = build_dataset(
-            symbol=symbol,
-            intervals=intervals,
-            backtest_period_days=backtest_period_days,
-            backtest_period_end_time=backtest_period_end_time,
-        )
-
-        final_balance, trades, balance_history, state = run_strategy(
-            df,
-            live,
-            initial_balance,
-            qty,
-            symbol=symbol,
-            leverage=lvrg,
-            use_full_balance=use_full_balance,
-            use_state=False,
-            **params,
-        )
-        state["balance_history"] = _compress_balance_history_for_state(balance_history)
-        state["balance"] = float(final_balance)
-        if len(state["balance_history"]) != len(balance_history):
-            technical_logger.info(
-                "backtest_balance_history_compressed original=%s persisted=%s",
-                len(balance_history),
-                len(state["balance_history"]),
-            )
-        save_state(state)
-        _write_chart_dataset_snapshot(
-            df=df,
-            symbol=symbol,
-            path=chart_dataset_path,
-            balance_history=balance_history,
-        )
-        replay_summary = write_replay_artifacts(
-            os.getenv("SCROOGE_EVENT_LOG_FILE", "runtime/event_history.jsonl"),
+        backtest_config = build_discrete_backtest_config(
+            cfg,
+            chart_dataset_path=chart_dataset_path,
+            event_log_path=os.getenv("SCROOGE_EVENT_LOG_FILE", "runtime/event_history.jsonl"),
             runtime_mode=os.getenv("SCROOGE_RUNTIME_MODE", "backtest"),
             strategy_mode=os.getenv("SCROOGE_STRATEGY_MODE", "discrete"),
-            symbol=symbol,
+            client=client,
         )
-        technical_logger.info(
-            "backtest_replay_artifacts_written trades=%s net_pnl=%.8f path=%s",
-            replay_summary.closed_trades,
-            replay_summary.net_pnl,
-            os.getenv("SCROOGE_EVENT_LOG_FILE", "runtime/event_history.jsonl"),
+        run_discrete_backtest(
+            backtest_config,
+            technical_logger=technical_logger,
         )
-        stats = compute_stats(initial_balance, final_balance, trades, balance_history)
-
-        for k, v in stats.items():
-            technical_logger.info("backtest_stat %s=%s", k, v)
-
-        if enable_plot:
-            plot_results_interactive(df, trades, balance_history, split_by_year=plot_split_by_year)
-
-        if run_mc:
-            monte_carlo_from_equity(df, balance_history, start_balance=initial_balance)
-
-        if run_rw:
-            rolling_window_backtest_distribution(
-                df,
-                k_days=rolling_window_days,
-                n_days=backtest_period_days,
-                start_balance=initial_balance,
-                max_workers=rolling_window_workers,
-                leverage=lvrg,
-                **params,
-            )

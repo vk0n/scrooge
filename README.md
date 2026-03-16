@@ -3,7 +3,7 @@
 Scrooge is an event-driven trading system for Binance Futures with three cooperating layers:
 - `bot/` for live runtime, exchange integration, and stateful execution
 - `core/` for shared strategy and event logic
-- `backtest/` for dataset building, replay, reporting, and optimization
+- `backtest/` for dataset building, discrete backtest running, replay, reporting, and optimization
 
 It currently supports:
 - live trading with websocket-driven market and account updates
@@ -27,8 +27,9 @@ scrooge/
 ├── core/                    # Shared engine and canonical event storage
 │   ├── engine.py
 │   └── event_store.py
-├── backtest/                # Dataset building, replay, reporting, optimization
+├── backtest/                # Dataset building, discrete runner, replay, reporting, optimization
 │   ├── dataset.py
+│   ├── runner.py
 │   ├── replay.py
 │   ├── reporting.py
 │   └── optimize.py
@@ -137,6 +138,9 @@ Backtest outputs include:
 - `replay_summary.json`
 - `replay_trades.jsonl`
 
+The backtest execution path is now owned by:
+- `backtest/runner.py`
+
 ### Replay a canonical event log
 
 ```bash
@@ -181,7 +185,7 @@ Use this software at your own discretion.
 MIT License
 
 
-## 🧘 Philosophy of Scrooge
+## Philosophy of Scrooge
 
 Scrooge is not human — and that’s his greatest strength.
 He does not hope, fear, hesitate, or overthink.
