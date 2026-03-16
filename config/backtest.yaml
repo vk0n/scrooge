@@ -1,5 +1,6 @@
 live: false
 strategy_mode: discrete
+execution_mode: simulated
 backtest_input_mode: build
 market_tape_input_path: ''
 market_event_input_path: ''

@@ -41,6 +41,7 @@ from core.market_events import MarketEvent
 @dataclass(slots=True)
 class DiscreteBacktestConfig:
     backtest_input_mode: str
+    execution_mode: str
     symbol: str
     leverage: float
     initial_balance: float
@@ -113,6 +114,11 @@ def build_discrete_backtest_config(
         raise ValueError("strategy_mode must be one of: discrete, realtime")
     if normalized_strategy_mode == "realtime" and input_mode != "market_event_stream":
         raise ValueError("strategy_mode=realtime requires backtest_input_mode=market_event_stream")
+    execution_mode = str(cfg.get("execution_mode", "simulated")).strip().lower() or "simulated"
+    if execution_mode not in {"simulated", "observed"}:
+        raise ValueError("execution_mode must be one of: simulated, observed")
+    if execution_mode == "observed" and input_mode != "market_event_stream":
+        raise ValueError("execution_mode=observed requires backtest_input_mode=market_event_stream")
 
     raw_input_path = str(cfg.get("market_tape_input_path", "") or "").strip()
     market_tape_input_path = Path(raw_input_path).expanduser() if raw_input_path else None
@@ -121,6 +127,7 @@ def build_discrete_backtest_config(
 
     return DiscreteBacktestConfig(
         backtest_input_mode=input_mode,
+        execution_mode=execution_mode,
         symbol=str(cfg["symbol"]),
         leverage=float(cfg["leverage"]),
         initial_balance=float(initial_balance),
@@ -351,6 +358,7 @@ def run_discrete_backtest(
             candle_interval=str(config.intervals["small"]),
             intervals={key: str(value) for key, value in config.intervals.items()},
             strategy_mode=config.strategy_mode,
+            execution_mode=config.execution_mode,
             strict_indicator_alignment=False,
             **strategy_kwargs,
         )

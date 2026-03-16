@@ -48,6 +48,7 @@ class StrategyRuntime:
     live: bool
     use_state: bool
     enable_logs: bool
+    execution_mode: str
     execution_sync: ExecutionSyncContext
 
 
@@ -90,6 +91,7 @@ class StrategyConfig:
     rsi_short_close_threshold: float
     trail_atr_mult: float
     allow_entries: bool
+    execution_mode: str
 
 
 @dataclass(slots=True)
@@ -603,6 +605,9 @@ def _apply_account_balance_market_event(runtime: StrategyRuntime, event: Account
         drift = float(event.wallet_balance) - float(runtime.balance)
         runtime.execution_sync.balance_drift = drift
         runtime.execution_sync.balance_alignment = "aligned" if abs(drift) <= 1e-6 else "drifted"
+        if runtime.execution_mode == "observed":
+            runtime.balance = float(event.wallet_balance)
+            state["balance"] = runtime.balance
 
     _sync_execution_context_state(runtime)
 
@@ -646,6 +651,34 @@ def _apply_position_snapshot_market_event(
         "source": event.source,
         "alignment": alignment,
     }
+
+    if runtime.execution_mode == "observed":
+        if abs(position_amt) <= 1e-12:
+            runtime.position = None
+            runtime.state["position"] = None
+        else:
+            observed_position = {
+                "symbol": symbol,
+                "side": ("long" if position_side == "LONG" else "short") if position_side in {"LONG", "SHORT"} else None,
+                "size": abs(position_amt),
+                "entry": (float(event.entry_price) if event.entry_price is not None else None),
+                "sl": None,
+                "tp": None,
+                "liq_price": None,
+                "trail_active": False,
+                "trail_price": None,
+                "time": event.ts,
+                "entry_time": event.ts,
+                "observed_execution_only": True,
+                "exchange_position_amt": position_amt,
+                "exchange_entry_price": (float(event.entry_price) if event.entry_price is not None else None),
+                "exchange_unrealized_pnl": (float(event.unrealized_pnl) if event.unrealized_pnl is not None else None),
+                "exchange_position_side": position_side,
+                "exchange_position_updated_at": event.ts,
+                "updated_at": event.ts,
+            }
+            runtime.position = observed_position
+            runtime.state["position"] = observed_position
 
     if isinstance(runtime.position, dict):
         runtime.position["exchange_position_amt"] = position_amt
@@ -756,6 +789,7 @@ def initialize_strategy_runtime(
     live: bool,
     initial_balance: float,
     use_state: bool,
+    execution_mode: str,
     load_state_fn: Callable[..., dict[str, Any]],
 ) -> StrategyRuntime:
     if use_state:
@@ -784,6 +818,7 @@ def initialize_strategy_runtime(
         live=live,
         use_state=use_state,
         enable_logs=True,
+        execution_mode=execution_mode,
         execution_sync=ExecutionSyncContext(),
     )
 
@@ -1387,6 +1422,7 @@ def process_discrete_row(
     trade_history = runtime.trade_history
     log_buffer = runtime.log_buffer
     live = runtime.live
+    observed_execution_mode = runtime.execution_mode == "observed"
 
     price = snapshot.price
     lower = snapshot.lower
@@ -1403,6 +1439,10 @@ def process_discrete_row(
     state["search_status"] = resolve_search_status(price, ema, state.get("search_status"))
 
     if position is None:
+        if observed_execution_mode:
+            runtime.balance = balance
+            runtime.position = position
+            return
         if not config.allow_entries:
             runtime.balance = balance
             runtime.position = position
@@ -1476,6 +1516,10 @@ def process_discrete_row(
                 )
 
     else:
+        if observed_execution_mode and bool(position.get("observed_execution_only")):
+            runtime.balance = balance
+            runtime.position = position
+            return
         side = position["side"]
         refresh_position_snapshot(position, price, config.leverage, row_ts)
         if live:
@@ -1571,11 +1615,13 @@ def run_strategy(
     rsi_short_close_threshold: float = 30,
     trail_atr_mult: float = 0.5,
     allow_entries: bool = True,
+    execution_mode: str = "simulated",
 ):
     runtime = initialize_strategy_runtime(
         live=live,
         initial_balance=initial_balance,
         use_state=use_state,
+        execution_mode=execution_mode,
         load_state_fn=load_state,
     )
     runtime.enable_logs = enable_logs
@@ -1600,6 +1646,7 @@ def run_strategy(
         rsi_short_close_threshold=rsi_short_close_threshold,
         trail_atr_mult=trail_atr_mult,
         allow_entries=allow_entries,
+        execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
     )
 
     def on_row(snapshot, row_runtime):
@@ -1656,12 +1703,14 @@ def run_strategy_on_market_events(
     rsi_short_close_threshold: float = 30,
     trail_atr_mult: float = 0.5,
     allow_entries: bool = True,
+    execution_mode: str = "simulated",
 ):
     normalized_strategy_mode = str(strategy_mode or "discrete").strip().lower() or "discrete"
     runtime = initialize_strategy_runtime(
         live=live,
         initial_balance=initial_balance,
         use_state=use_state,
+        execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
         load_state_fn=load_state,
     )
     runtime.enable_logs = enable_logs
@@ -1686,6 +1735,7 @@ def run_strategy_on_market_events(
         rsi_short_close_threshold=rsi_short_close_threshold,
         trail_atr_mult=trail_atr_mult,
         allow_entries=allow_entries,
+        execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
     )
 
     def on_row(snapshot, row_runtime):
@@ -1896,6 +1946,7 @@ def run_realtime_market_event_engine(
     iterator = tqdm(market_events, desc="Realtime Event Replay", disable=not show_progress)
     processed_price_ticks = 0
     emitted_snapshots = 0
+    tick_seen_small_open_times: set[str] = set()
 
     def resolve_timeframe(interval_value: str) -> str | None:
         for timeframe, configured in intervals.items():
@@ -1926,6 +1977,38 @@ def run_realtime_market_event_engine(
                 event_open = pd.Timestamp(event.open_time)
                 if current_open <= event_open:
                     forming_candles[timeframe] = None
+            if timeframe == "small":
+                open_key = str(event.open_time)
+                if open_key in tick_seen_small_open_times:
+                    continue
+                medium_df = _materialize_market_frame(
+                    closed_frames["medium"],
+                    forming_candles["medium"],
+                    limit=REALTIME_WARMUP_LIMITS["medium"],
+                )
+                big_df = _materialize_market_frame(
+                    closed_frames["big"],
+                    forming_candles["big"],
+                    limit=REALTIME_WARMUP_LIMITS["big"],
+                )
+                fallback_small = {
+                    "open_time": pd.Timestamp(event.open_time),
+                    "open": float(event.open),
+                    "high": float(event.high),
+                    "low": float(event.low),
+                    "close": float(event.close),
+                    "volume": float(event.volume),
+                }
+                snapshot = _build_realtime_snapshot(
+                    event_ts=format_event_timestamp(event.ts),
+                    forming_small=fallback_small,
+                    medium_df=medium_df,
+                    big_df=big_df,
+                )
+                if snapshot is not None:
+                    on_row(snapshot, runtime)
+                    runtime.balance_history.append(runtime.balance)
+                    emitted_snapshots += 1
             continue
 
         if not isinstance(event, PriceTickEvent):
@@ -1936,6 +2019,7 @@ def run_realtime_market_event_engine(
         if event_ts_value is None or price is None:
             continue
         processed_price_ticks += 1
+        tick_seen_small_open_times.add(str(event_ts_value.floor(interval_freqs["small"])))
 
         for timeframe, freq in interval_freqs.items():
             interval_open = event_ts_value.floor(freq)
@@ -1968,7 +2052,7 @@ def run_realtime_market_event_engine(
         runtime.balance_history.append(runtime.balance)
         emitted_snapshots += 1
 
-    if processed_price_ticks == 0:
+    if processed_price_ticks == 0 and emitted_snapshots == 0:
         raise ValueError("Realtime market event replay requires at least one price_tick event.")
     if emitted_snapshots == 0:
         raise ValueError("Realtime market event replay produced no valid snapshots; check warmup history and indicator coverage.")

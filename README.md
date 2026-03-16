@@ -188,6 +188,10 @@ Strategy modes:
 - `strategy_mode: discrete` — canonical baseline
 - `strategy_mode: realtime` — event-driven evaluation on live-grade `market_events.jsonl`; requires `backtest_input_mode: market_event_stream`
 
+Execution modes:
+- `execution_mode: simulated` — strategy fills/balance are simulated by the engine
+- `execution_mode: observed` — balance and position are taken from `account_balance` / `position_snapshot` events; requires `backtest_input_mode: market_event_stream`
+
 To replay from an existing tape, set in `config/backtest.yaml`:
 
 ```yaml
@@ -199,6 +203,7 @@ To replay from an existing market event stream:
 
 ```yaml
 backtest_input_mode: market_event_stream
+execution_mode: observed
 market_event_input_path: /path/to/market_events.jsonl
 ```
 
