@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Callable
 
@@ -12,7 +12,15 @@ from tqdm import tqdm
 from bot.event_log import emit_event, get_technical_logger
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.trade import can_open_trade, close_position, compute_qty, get_balance, open_position
-from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent
+from core.market_events import (
+    AccountBalanceEvent,
+    CandleClosedEvent,
+    IndicatorSnapshotEvent,
+    MarketEvent,
+    OrderTradeUpdateEvent,
+    PositionSnapshotEvent,
+    PriceTickEvent,
+)
 
 
 @dataclass(slots=True)
@@ -40,6 +48,25 @@ class StrategyRuntime:
     live: bool
     use_state: bool
     enable_logs: bool
+    execution_sync: ExecutionSyncContext
+
+
+@dataclass(slots=True)
+class ExecutionSyncContext:
+    total_events: int = 0
+    account_balance_events: int = 0
+    position_snapshot_events: int = 0
+    order_trade_update_events: int = 0
+    trade_execution_events: int = 0
+    filled_order_events: int = 0
+    divergence_events: int = 0
+    realized_pnl_total: float = 0.0
+    commission_total: float = 0.0
+    last_event_type: str | None = None
+    last_event_ts: str | None = None
+    balance_alignment: str | None = None
+    balance_drift: float | None = None
+    position_alignment: str | None = None
 
 
 @dataclass(slots=True)
@@ -138,6 +165,11 @@ _TRANSIENT_POSITION_FIELDS = {
     "distance_to_sl_pct",
     "distance_to_tp_pct",
     "updated_at",
+    "exchange_position_amt",
+    "exchange_entry_price",
+    "exchange_unrealized_pnl",
+    "exchange_position_side",
+    "exchange_position_updated_at",
 }
 
 
@@ -485,6 +517,220 @@ def refresh_market_snapshot(state: dict[str, Any], price: Any, ts_label: str) ->
     state["updated_at"] = ts_label
 
 
+def _normalized_symbol(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    return text or None
+
+
+def _normalized_position_side(value: Any, position_amt: float | None = None) -> str | None:
+    side = str(value or "").strip().upper()
+    if side in {"LONG", "SHORT"}:
+        return side
+    amount = to_float(position_amt)
+    if amount is None:
+        return None
+    if amount > 0:
+        return "LONG"
+    if amount < 0:
+        return "SHORT"
+    return None
+
+
+def _ensure_execution_sync_state(state: dict[str, Any]) -> dict[str, Any]:
+    payload = state.get("execution_sync")
+    if not isinstance(payload, dict):
+        payload = {}
+        state["execution_sync"] = payload
+    return payload
+
+
+def _sync_execution_context_state(runtime: StrategyRuntime) -> None:
+    payload = _ensure_execution_sync_state(runtime.state)
+    payload.update(asdict(runtime.execution_sync))
+
+
+def _resolve_position_alignment(
+    runtime_position: dict[str, Any] | None,
+    *,
+    symbol: str,
+    position_amt: float,
+    position_side: str | None,
+    entry_price: float | None,
+) -> str:
+    has_exchange_position = abs(position_amt) > 1e-12
+    if runtime_position is None:
+        return "exchange_only_position" if has_exchange_position else "aligned"
+
+    if not has_exchange_position:
+        return "runtime_only_position"
+
+    runtime_side = str(runtime_position.get("side", "")).strip().lower()
+    exchange_side = str(position_side or "").strip().lower()
+    if exchange_side == "long" and runtime_side != "long":
+        return "side_mismatch"
+    if exchange_side == "short" and runtime_side != "short":
+        return "side_mismatch"
+
+    runtime_entry = to_float(runtime_position.get("entry"))
+    if runtime_entry is not None and entry_price is not None:
+        allowed_drift = max(1.0, abs(runtime_entry) * 0.0005)
+        if abs(runtime_entry - entry_price) > allowed_drift:
+            return "entry_mismatch"
+
+    runtime_symbol = _normalized_symbol(runtime_position.get("symbol"))
+    if runtime_symbol and runtime_symbol != symbol:
+        return "symbol_mismatch"
+    return "aligned"
+
+
+def _apply_account_balance_market_event(runtime: StrategyRuntime, event: AccountBalanceEvent) -> None:
+    runtime.execution_sync.total_events += 1
+    runtime.execution_sync.account_balance_events += 1
+    runtime.execution_sync.last_event_type = event.event_type
+    runtime.execution_sync.last_event_ts = event.ts
+
+    state = runtime.state
+    state["exchange_balance"] = {
+        "asset": str(event.asset).strip().upper(),
+        "wallet_balance": float(event.wallet_balance),
+        "cross_wallet_balance": (float(event.cross_wallet_balance) if event.cross_wallet_balance is not None else None),
+        "balance_delta": (float(event.balance_delta) if event.balance_delta is not None else None),
+        "updated_at": event.ts,
+        "source": event.source,
+    }
+
+    if str(event.asset).strip().upper() == "USDT":
+        drift = float(event.wallet_balance) - float(runtime.balance)
+        runtime.execution_sync.balance_drift = drift
+        runtime.execution_sync.balance_alignment = "aligned" if abs(drift) <= 1e-6 else "drifted"
+
+    _sync_execution_context_state(runtime)
+
+
+def _apply_position_snapshot_market_event(
+    runtime: StrategyRuntime,
+    event: PositionSnapshotEvent,
+    *,
+    target_symbol: str | None,
+) -> None:
+    runtime.execution_sync.total_events += 1
+    runtime.execution_sync.position_snapshot_events += 1
+    runtime.execution_sync.last_event_type = event.event_type
+    runtime.execution_sync.last_event_ts = event.ts
+
+    symbol = _normalized_symbol(event.symbol)
+    if target_symbol is not None and symbol != target_symbol:
+        _sync_execution_context_state(runtime)
+        return
+
+    position_amt = float(event.position_amt)
+    position_side = _normalized_position_side(event.position_side, position_amt)
+    alignment = _resolve_position_alignment(
+        runtime.position if isinstance(runtime.position, dict) else None,
+        symbol=symbol or "",
+        position_amt=position_amt,
+        position_side=position_side,
+        entry_price=(float(event.entry_price) if event.entry_price is not None else None),
+    )
+    runtime.execution_sync.position_alignment = alignment
+    if alignment != "aligned":
+        runtime.execution_sync.divergence_events += 1
+
+    runtime.state["exchange_position"] = {
+        "symbol": symbol,
+        "position_amt": position_amt,
+        "entry_price": (float(event.entry_price) if event.entry_price is not None else None),
+        "unrealized_pnl": (float(event.unrealized_pnl) if event.unrealized_pnl is not None else None),
+        "position_side": position_side,
+        "updated_at": event.ts,
+        "source": event.source,
+        "alignment": alignment,
+    }
+
+    if isinstance(runtime.position, dict):
+        runtime.position["exchange_position_amt"] = position_amt
+        runtime.position["exchange_entry_price"] = (
+            float(event.entry_price) if event.entry_price is not None else None
+        )
+        runtime.position["exchange_unrealized_pnl"] = (
+            float(event.unrealized_pnl) if event.unrealized_pnl is not None else None
+        )
+        runtime.position["exchange_position_side"] = position_side
+        runtime.position["exchange_position_updated_at"] = event.ts
+
+    _sync_execution_context_state(runtime)
+
+
+def _apply_order_trade_update_market_event(
+    runtime: StrategyRuntime,
+    event: OrderTradeUpdateEvent,
+    *,
+    target_symbol: str | None,
+) -> None:
+    runtime.execution_sync.total_events += 1
+    runtime.execution_sync.order_trade_update_events += 1
+    runtime.execution_sync.last_event_type = event.event_type
+    runtime.execution_sync.last_event_ts = event.ts
+
+    symbol = _normalized_symbol(event.symbol)
+    if target_symbol is not None and symbol != target_symbol:
+        _sync_execution_context_state(runtime)
+        return
+
+    execution_type = str(event.execution_type or "").strip().upper() or None
+    order_status = str(event.order_status or "").strip().upper() or None
+    if execution_type == "TRADE":
+        runtime.execution_sync.trade_execution_events += 1
+    if order_status == "FILLED":
+        runtime.execution_sync.filled_order_events += 1
+    if event.realized_pnl is not None:
+        runtime.execution_sync.realized_pnl_total += float(event.realized_pnl)
+    if event.commission is not None:
+        runtime.execution_sync.commission_total += float(event.commission)
+
+    runtime.state["last_order_trade_update"] = {
+        "symbol": symbol,
+        "order_side": (str(event.order_side).strip().upper() if event.order_side else None),
+        "order_type": (str(event.order_type).strip().upper() if event.order_type else None),
+        "execution_type": execution_type,
+        "order_status": order_status,
+        "order_id": event.order_id,
+        "trade_id": event.trade_id,
+        "last_filled_qty": (float(event.last_filled_qty) if event.last_filled_qty is not None else None),
+        "accumulated_filled_qty": (
+            float(event.accumulated_filled_qty) if event.accumulated_filled_qty is not None else None
+        ),
+        "last_filled_price": (float(event.last_filled_price) if event.last_filled_price is not None else None),
+        "average_price": (float(event.average_price) if event.average_price is not None else None),
+        "realized_pnl": (float(event.realized_pnl) if event.realized_pnl is not None else None),
+        "commission_asset": (str(event.commission_asset).strip().upper() if event.commission_asset else None),
+        "commission": (float(event.commission) if event.commission is not None else None),
+        "reduce_only": bool(event.reduce_only),
+        "updated_at": event.ts,
+        "source": event.source,
+    }
+
+    _sync_execution_context_state(runtime)
+
+
+def apply_market_event_runtime_sync(
+    runtime: StrategyRuntime,
+    event: MarketEvent,
+    *,
+    target_symbol: str | None,
+) -> bool:
+    if isinstance(event, AccountBalanceEvent):
+        _apply_account_balance_market_event(runtime, event)
+        return True
+    if isinstance(event, PositionSnapshotEvent):
+        _apply_position_snapshot_market_event(runtime, event, target_symbol=target_symbol)
+        return True
+    if isinstance(event, OrderTradeUpdateEvent):
+        _apply_order_trade_update_market_event(runtime, event, target_symbol=target_symbol)
+        return True
+    return False
+
+
 def refresh_runtime_state_from_price_tick(state, last_price, position_price, leverage, ts_label):
     refresh_market_snapshot(state, last_price, ts_label)
 
@@ -538,6 +784,7 @@ def initialize_strategy_runtime(
         live=live,
         use_state=use_state,
         enable_logs=True,
+        execution_sync=ExecutionSyncContext(),
     )
 
 
@@ -1487,6 +1734,9 @@ def finalize_strategy_runtime(
     if runtime.log_buffer and runtime.enable_logs:
         save_log_fn(runtime.log_buffer)
 
+    if runtime.execution_sync.total_events > 0:
+        _sync_execution_context_state(runtime)
+
     if runtime.live:
         save_state_fn(runtime.state)
     elif runtime.use_state:
@@ -1586,6 +1836,9 @@ def run_market_event_engine(
         runtime.balance_history.append(runtime.balance)
 
     for event in iterator:
+        if apply_market_event_runtime_sync(runtime, event, target_symbol=target_symbol):
+            continue
+
         event_symbol = getattr(event, "symbol", None)
         if target_symbol and str(event_symbol or "").strip().upper() != target_symbol:
             continue
@@ -1651,6 +1904,9 @@ def run_realtime_market_event_engine(
         return None
 
     for event in iterator:
+        if apply_market_event_runtime_sync(runtime, event, target_symbol=target_symbol):
+            continue
+
         event_symbol = getattr(event, "symbol", None)
         if target_symbol and str(event_symbol or "").strip().upper() != target_symbol:
             continue

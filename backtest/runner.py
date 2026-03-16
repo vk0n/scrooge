@@ -400,6 +400,21 @@ def run_discrete_backtest(
         market_event_execution_summary.commission_total,
         config.event_log_path.with_name("market_event_execution_summary.json"),
     )
+    execution_sync = state.get("execution_sync")
+    if isinstance(execution_sync, dict) and execution_sync:
+        logger.info(
+            "backtest_market_event_runtime_sync total=%s balances=%s positions=%s orders=%s trade_updates=%s filled=%s balance_alignment=%s balance_drift=%s position_alignment=%s divergence_events=%s",
+            execution_sync.get("total_events"),
+            execution_sync.get("account_balance_events"),
+            execution_sync.get("position_snapshot_events"),
+            execution_sync.get("order_trade_update_events"),
+            execution_sync.get("trade_execution_events"),
+            execution_sync.get("filled_order_events"),
+            execution_sync.get("balance_alignment"),
+            execution_sync.get("balance_drift"),
+            execution_sync.get("position_alignment"),
+            execution_sync.get("divergence_events"),
+        )
 
     stats = compute_stats(config.initial_balance, final_balance, trades, balance_history)
     for key, value in stats.items():

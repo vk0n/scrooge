@@ -171,6 +171,12 @@ Backtest input modes:
 - `backtest_input_mode: discrete_tape` — start directly from an existing `market_tape.jsonl`
 - `backtest_input_mode: market_event_stream` — run the discrete engine directly on an existing `market_events.jsonl`, while also projecting `market_tape.jsonl` as an artifact
 
+When replaying from `market_event_stream`, the resulting `state.json` also carries execution-sync context when available:
+- `execution_sync`
+- `exchange_balance`
+- `exchange_position`
+- `last_order_trade_update`
+
 Strategy modes:
 - `strategy_mode: discrete` — canonical baseline
 - `strategy_mode: realtime` — event-driven evaluation on live-grade `market_events.jsonl`; requires `backtest_input_mode: market_event_stream`
