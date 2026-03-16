@@ -1,30 +1,43 @@
-# Scrooge Control Plane: Docker Compose profiles (live + backtest)
+# Scrooge Docker Deploy
 
-Architecture:
-- `api` container: FastAPI control plane
-- `frontend` container: Next.js UI
-- `proxy` container: Nginx entrypoint (single public port)
-- `redis` container: command queue and command status storage
-- `bot` service (`profile: live`): long-running live trading runtime
-- `backtest` service (`profile: backtest`): one-shot backtest runner job
+Scrooge uses Docker Compose profiles for three main modes:
+- control plane only
+- live trading runtime
+- one-shot backtest jobs
 
-All services use shared Docker volume `scrooge_runtime`.
+The stack is built from:
+- `api` — FastAPI control plane backend
+- `frontend` — Next.js UI
+- `proxy` — nginx public entrypoint
+- `redis` — command queue and command status storage
+- `bot` — live trading runtime (`profile: live`)
+- `backtest` — one-shot backtest runner (`profile: backtest`)
+- `watchtower` — optional auto-update service (`profile: watchtower`)
 
-## 1. Prepare configs
+All services share the Docker volume `scrooge_runtime`.
 
-Live config:
-- `config/live.yaml` (`live: true`)
+## Config Files
+
+Live trading config:
+- `config/live.yaml`
 
 Backtest config:
-- `config/backtest.yaml` (`live: false`)
+- `config/backtest.yaml`
 
-## 2. Prepare `.env`
+Optimization grid:
+- `config/param_grid.yaml`
+
+Compose mounts:
+- `config/live.yaml -> /runtime/config.yaml`
+- `config/backtest.yaml -> /runtime/config.backtest.yaml`
+
+## Prepare `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Set at least:
+At minimum set:
 
 ```env
 BINANCE_API_KEY=...
@@ -33,7 +46,7 @@ SCROOGE_GUI_USERNAME=admin
 SCROOGE_GUI_PASSWORD=strong_password_here
 ```
 
-For registry-based deploys with Watchtower, also set image refs:
+For registry-based deploys also set image refs:
 
 ```env
 SCROOGE_BOT_IMAGE=vk0n/scrooge-bot:latest
@@ -41,47 +54,95 @@ SCROOGE_BACKTEST_IMAGE=vk0n/scrooge-backtest:latest
 SCROOGE_API_IMAGE=vk0n/scrooge-api:latest
 SCROOGE_FRONTEND_IMAGE=vk0n/scrooge-frontend:latest
 SCROOGE_PROXY_IMAGE=nginx:1.27-alpine
-SCROOGE_WATCHTOWER_SCOPE=scrooge
-SCROOGE_WATCHTOWER_POLL_INTERVAL=300
 ```
 
-If your registry requires auth, make sure the deployment host is already logged in, for example:
+Optional Watchtower settings:
+
+```env
+SCROOGE_WATCHTOWER_SCOPE=scrooge
+SCROOGE_WATCHTOWER_POLL_INTERVAL=300
+SCROOGE_WATCHTOWER_HTTP_API_TOKEN=
+```
+
+If your registry requires auth, log in on the deployment host first:
 
 ```bash
 docker login
 ```
 
-Note:
-- `bot` uses a slim live-runtime image
-- `backtest` uses a separate image with plotting/report dependencies
+## Run Modes
 
-## 3. Run modes
-
-Control plane only (no bot process):
+Control plane only:
 
 ```bash
 docker compose up -d --build
 ```
 
-Control plane + Watchtower auto-update:
+Control plane with Watchtower:
 
 ```bash
 docker compose --profile watchtower up -d
 ```
 
-Control plane + live bot:
+Control plane with live bot:
 
 ```bash
 docker compose --profile live up -d --build
 ```
 
-Control plane + live bot + Watchtower auto-update:
+Control plane with live bot and Watchtower:
 
 ```bash
 docker compose --profile live --profile watchtower up -d
 ```
 
-Optional live socket knobs:
+One-shot backtest:
+
+```bash
+docker compose --profile backtest run --rm backtest
+```
+
+Open UI:
+
+```text
+http://<host>:3000
+```
+
+## Updating
+
+### Local build on host
+
+```bash
+docker compose --profile live up -d --build --force-recreate
+```
+
+### Registry-based deploy
+
+```bash
+docker compose --profile live pull
+docker compose --profile live up -d --force-recreate
+```
+
+If you also run Watchtower:
+
+```bash
+docker compose --profile live --profile watchtower pull
+docker compose --profile live --profile watchtower up -d --force-recreate
+```
+
+Notes:
+- `--force-recreate` recreates containers from the images you already have locally
+- it does not fetch newer remote images by itself
+- for registry deploys, run `pull` first
+
+## Live Runtime Notes
+
+Current live runtime is:
+- websocket-driven for market data
+- websocket-driven for user/account updates
+- still `strategy_mode=discrete` by default
+
+Useful live knobs from `.env`:
 
 ```env
 SCROOGE_MARKET_STREAM_ENABLED=1
@@ -95,78 +156,75 @@ SCROOGE_FUTURES_REST_BASE_URL=https://fapi.binance.com
 SCROOGE_FUTURES_WS_BASE_URL=wss://fstream.binance.com/ws
 SCROOGE_RUNTIME_MODE=live
 SCROOGE_STRATEGY_MODE=discrete
-SCROOGE_EVENT_LOG_FILE=/runtime/event_history.jsonl
+SCROOGE_DEBUG_STRATEGY_TICKS=0
 ```
+
+Behavior:
+- market sockets drive live price and closed-candle triggers
+- user stream drives faster balance and position updates
+- if user-stream cache goes stale, the bot falls back to REST reads until freshness is restored
+
+## Runtime Artifacts
+
+Live runtime writes into `/runtime`:
+- `state.json`
+- `trade_history.jsonl`
+- `balance_history.jsonl`
+- `trading_log.txt`
+- `event_history.jsonl`
+- `chart_dataset.csv`
 
 Notes:
-- market sockets drive live price and closed-candle triggers
-- user stream drives faster balance/position updates
-- if the user stream goes stale beyond `SCROOGE_USER_STREAM_STALE_AFTER_SECONDS`, the bot falls back to REST reads until freshness is restored
+- `event_history.jsonl` is the canonical append-only event log
+- existing runtime artifacts remain compatible across normal upgrades as long as the `scrooge_runtime` volume is preserved
 
-Important for Watchtower:
-- it watches only services labeled with `com.centurylinklabs.watchtower.enable=true`
-- it is scoped by `SCROOGE_WATCHTOWER_SCOPE`
-- it can auto-update only pullable images, so `SCROOGE_*_IMAGE` should point to registry tags, not just local-only build names
-- `backtest` is explicitly excluded from Watchtower updates
+## Backtest Artifacts
 
-One-shot backtest run:
-
-```bash
-docker compose --profile backtest run --rm backtest
-```
-
-Optional host export for backtest artifacts:
-- Set in `config/backtest.yaml`:
-  - `export_artifacts_to_host: true`
-  - `host_artifacts_dir: /host_artifacts`
-- Host bind path is controlled by `.env`:
-  - `SCROOGE_HOST_BACKTEST_ARTIFACTS_DIR=./backtest_artifacts`
-- Output appears in:
-  - `./backtest_artifacts/<run_ts>/...`
-  - symlink `./backtest_artifacts/latest`
-
-Backtest artifacts are written into:
+Backtest runs write into:
 - `/runtime/backtests/<run_id>/...`
-- symlink `/runtime/backtests/latest` points to last run
-- each run now also emits:
-  - `event_history.jsonl` (canonical append-only event log)
-  - `replay_summary.json` (summary reconstructed from canonical events)
-  - `replay_trades.jsonl` (trade timeline reconstructed from canonical events)
+- symlink `/runtime/backtests/latest`
 
-Open UI:
-- `http://<host>:3000`
+If host export is enabled:
+- set `export_artifacts_to_host: true` in `config/backtest.yaml`
+- host bind target is controlled by:
+  - `SCROOGE_HOST_BACKTEST_ARTIFACTS_DIR=./backtest_artifacts`
 
-## 4. Runtime data model (live)
+Exported output appears in:
+- `./backtest_artifacts/<run_id>/...`
+- symlink `./backtest_artifacts/latest`
 
-- API edits/reads live config from `config/live.yaml` via `/runtime/config.yaml`.
-- Live runtime writes:
-  - `/runtime/state.json` (runtime snapshot only)
-  - `/runtime/trade_history.jsonl`
-  - `/runtime/balance_history.jsonl`
-  - `/runtime/trading_log.txt`
-  - `/runtime/event_history.jsonl` (canonical append-only event log)
-  - `/runtime/chart_dataset.csv`
+Each backtest run emits:
+- `state.json`
+- `trade_history.jsonl`
+- `balance_history.jsonl`
+- `trading_log.txt`
+- `event_history.jsonl`
+- `chart_dataset.csv`
+- `replay_summary.json`
+- `replay_trades.jsonl`
 
-## 5. Control behavior
+## Control Behavior
 
-`/api/control/*` commands are queued via Redis.
+`/api/control/*` commands are queued through Redis.
 
 Important:
-- Commands are processed only when `bot` service is running (`--profile live`).
-- `start` = resume trading loop
-- `stop` = pause trading loop
-- `restart` = resume + config reload
+- commands are processed only when `bot` is running with `--profile live`
+- `start` resumes trading
+- `stop` pauses trading
+- `restart` resumes trading and reloads config
 
-## 6. Stop / cleanup
+## Stop / Cleanup
 
-Stop stack:
+Stop the stack:
 
 ```bash
 docker compose down
 ```
 
-Stop and remove runtime volume:
+Stop and remove the runtime volume:
 
 ```bash
 docker compose down -v
 ```
+
+Use `down -v` only if you intentionally want to wipe `/runtime`.

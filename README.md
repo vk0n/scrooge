@@ -1,249 +1,180 @@
-# Scrooge — Multi-Timeframe Binance Futures Trading Bot
+# Scrooge — Binance Futures Runtime, Control Plane, and Replayable Backtests
 
-Scrooge is a fully automated **algorithmic trading system** for **Binance Futures**, combining advanced **technical analysis** (Bollinger Bands, RSI, and EMA), adaptive **stop-loss/take-profit logic**, and a modular **optimization engine** for both intraday and swing trading.
+Scrooge is an event-driven trading system for Binance Futures with three cooperating layers:
+- `bot/` for live runtime, exchange integration, and stateful execution
+- `core/` for shared strategy and event logic
+- `backtest/` for dataset building, replay, reporting, and optimization
 
----
+It currently supports:
+- live trading with websocket-driven market and account updates
+- a local control plane (`api/` + `frontend/`)
+- discrete backtests
+- canonical event logging and replay artifacts
 
-## ⚙️ Key Features
+## Project Structure
 
-- **Multi-Timeframe Decision Framework**  
-  Integrates three timeframes (e.g., `1m–1h–4h` or `1h–4h–1d`) for price action, trend confirmation, and momentum detection.
-
-- **Dynamic Bollinger Band Strategy**  
-  Entry logic is based on Bollinger Band crossovers filtered by RSI and EMA trend bias.
-
-- **Adaptive RSI Filtering (Length = 11)**  
-  Extensive backtesting determined that RSI with a length of **11** provides the best balance between signal responsiveness and trend stability. Shorter RSIs produced excessive noise; longer ones lagged in volatile conditions.
-
-- **Optimized EMA Trend Baseline (Length = 50)**  
-  Comparative backtests between EMA(40–60) showed that **EMA(50)** achieves the most consistent equity growth and lowest volatility.  
-  - EMA(40): Stable, but too sensitive to minor corrections.  
-  - EMA(60): Captured large trends but increased drawdowns.  
-  - **EMA(50): Ideal midpoint** with Profit Factor ~1.5 and controlled -40% max drawdown.
-
-- **Configurable Risk Management**  
-  Adjustable Stop-Loss (`sl_mult`), Take-Profit (`tp_mult`), and Trailing ATR multiplier (`trail_atr_mult`).
-
-- **Stateful Backtesting & Live Mode**  
-  Retains open trades, balances, and equity curves between sessions for continuous operation.
-
-- **Comprehensive Analytics & Visualization**  
-  Generates detailed matplotlib charts showing Bollinger bands, RSI, and equity progression.
-
----
-
-## 🧪 Project Structure
-
-```
+```text
 scrooge/
-├── bot/                     # Live/backtest runtime adapters and side effects
+├── api/                     # FastAPI control plane backend
+├── frontend/                # Next.js control plane frontend
+├── bot/                     # Live runtime adapters and side effects
 │   ├── runtime.py
 │   ├── market_stream.py
 │   ├── control_channel.py
 │   ├── event_log.py
 │   ├── state.py
-│   ├── trade.py
-├── backtest/                # Research, replay, optimization, reporting
+│   └── trade.py
+├── core/                    # Shared engine and canonical event storage
+│   ├── engine.py
+│   └── event_store.py
+├── backtest/                # Dataset building, replay, reporting, optimization
 │   ├── dataset.py
 │   ├── replay.py
 │   ├── reporting.py
 │   └── optimize.py
-├── core/                    # Shared engine and canonical event storage
-│   ├── engine.py
-│   └── event_store.py
+├── config/
+│   ├── live.yaml
+│   ├── backtest.yaml
+│   └── param_grid.yaml
 ├── requirements/
 │   ├── bot.txt
 │   ├── backtest.txt
 │   └── full.txt
 ├── runtime/                 # Local default runtime artifacts (gitignored)
+├── docker/
 ├── main.py                  # Thin entry shim; keeps the Scrooge greeting
-├── config/
-│   ├── live.yaml            # Main live configuration file
-│   ├── backtest.yaml        # Backtest configuration file
-│   └── param_grid.yaml      # Optimization parameter grid
-└── results/                 # Historical charts and configuration snapshots
+└── docker-compose.yml
 ```
----
 
-## 📦 Installation
+## Installation
 
-### 1. Clone the Repository
+### 1. Clone
+
 ```bash
 git clone https://github.com/vk0n/scrooge.git
 cd scrooge
 ```
 
-### 2. Create a Virtual Environment
+### 2. Create a virtual environment
+
 ```bash
 python -m venv scrooge-env
 source scrooge-env/bin/activate
 ```
 
-### 3. Install Dependencies
+### 3. Install dependencies
+
 ```bash
 pip install -r requirements/full.txt
 ```
 
-`requirements/full.txt` installs the full local toolchain. Docker uses a slimmer dependency split internally:
-- `docker/bot.Dockerfile` -> `requirements/bot.txt`
-- `docker/backtest.Dockerfile` -> `requirements/backtest.txt`
+Notes:
+- `requirements/full.txt` is the full local toolchain
+- `docker/bot.Dockerfile` installs `requirements/bot.txt`
+- `docker/backtest.Dockerfile` installs `requirements/backtest.txt`
 
-Canonical event replay summary:
-```bash
-python -m backtest.replay /path/to/event_history.jsonl --runtime-mode backtest --strategy-mode discrete
-```
+### 4. Create `.env`
 
-### 4. Set Up Environment Variables
-Create a `.env` file in the project root:
-```bash
+At minimum:
+
+```env
 BINANCE_API_KEY=your_api_key
 BINANCE_API_SECRET=your_api_secret
 ```
 
----
+If you run the control plane locally, also set:
 
-## ⚙️ Configuration (`config/live.yaml`)
-
-All runtime parameters are centralized in `config/live.yaml`.
-
-Example:
-```yaml
-symbol: BTCUSDT
-leverage: 3
-initial_balance: 10000
-
-intervals:
-  small: 1m     # Price base timeframe
-  medium: 1h    # Bollinger Bands timeframe
-  big: 4h       # RSI & EMA timeframe
-
-backtest_period_days: 365
-use_state: false
-enable_logs: true
+```env
+SCROOGE_GUI_USERNAME=admin
+SCROOGE_GUI_PASSWORD=strong_password_here
 ```
 
----
+## Configuration
 
-## 🚀 Usage
+Live trading config:
+- [live.yaml](config/live.yaml)
 
-### 1. Backtesting
+Backtest config:
+- [backtest.yaml](config/backtest.yaml)
 
-Run a simulation using your `config/backtest.yaml`:
+Optimization grid:
+- [param_grid.yaml](config/param_grid.yaml)
+
+Current canonical timeframe setup is:
+- `small`: price/decision frame
+- `medium`: Bollinger Bands + ATR frame
+- `big`: RSI + EMA frame
+
+## Usage
+
+### Local live runtime
+
+Uses `config/live.yaml` by default:
+
 ```bash
 python main.py
 ```
 
-Results will include:
-- Final balance and performance metrics
-- Trade log (`runtime/trading_log.txt`)
-- Graphs in `results/{intervals}/`
+Local runtime artifacts will appear under:
+- `runtime/state.json`
+- `runtime/trading_log.txt`
+- `runtime/trade_history.jsonl`
+- `runtime/balance_history.jsonl`
+- `runtime/event_history.jsonl`
+- `runtime/chart_dataset.csv`
 
----
+### Local backtest
 
-### 2. Parameter Optimization
+Run against `config/backtest.yaml`:
 
-Explore optimal values for stop-loss, take-profit, and RSI thresholds:
+```bash
+SCROOGE_CONFIG_PATH=config/backtest.yaml python main.py
+```
+
+Backtest outputs include:
+- runtime artifacts for the run
+- canonical `event_history.jsonl`
+- `replay_summary.json`
+- `replay_trades.jsonl`
+
+### Replay a canonical event log
+
+```bash
+python -m backtest.replay /path/to/event_history.jsonl --runtime-mode backtest --strategy-mode discrete
+```
+
+### Parameter optimization
+
 ```bash
 python -m backtest.optimize
 ```
 
-Results are automatically stored from `config/param_grid.yaml`, with summaries written to `best_params.yaml` and `optimization_results.csv`.
+The optimizer reads:
+- `config/param_grid.yaml`
 
----
+### Docker / Compose
 
-### 3. Live Trading (Experimental)
+For current compose-based deploy flow, profiles, and runtime model, see:
+- [DEPLOY_DOCKER.md](DEPLOY_DOCKER.md)
 
-Ensure you have a Futures account and sufficient balance.  
-Then simply set `live: true` in `config/live.yaml` and launch manually:
+## Strategy Outline
 
-```bash
-python main.py
-```
+Scrooge currently runs a multi-timeframe discrete strategy:
+- entries are evaluated from the `small` frame with `medium` and `big` filters
+- stop loss and take profit are ATR-based
+- trailing protection can activate after price moves beyond the base target
+- state, trade history, balance history, UI log, and canonical event history are persisted
 
-Logs and states are persistently stored under:
-```
-runtime/state.json
-runtime/trading_log.txt
-```
+The longer-term direction of the project is:
+- keep `discrete` mode as the stable baseline
+- build toward shared-core replay/backtest infrastructure
+- later add a separate `realtime` strategy mode without losing the ability to compare it against the discrete baseline
 
----
+## Disclaimer
 
-## 🧠 Strategy Logic Overview
-
-1. **Entry Conditions**
-   - Long when price touches the lower Bollinger Band and RSI < `rsi_long_open_threshold`
-   - Short when price touches the upper Bollinger Band and RSI > `rsi_short_open_threshold`
-
-2. **Exit Conditions**
-   - Stop-loss: `price ± ATR × sl_mult`
-   - Take-profit: `price ± ATR × tp_mult`
-   - Optional trailing ATR stop (`trail_atr_mult`)
-   - RSI-based extreme exit (e.g. RSI > 90 or RSI < 10)
-
-3. **Position Sizing**
-   - Calculated dynamically based on balance, leverage, and asset price.
-
-4. **State Persistence**
-   - Every open position and balance update is stored via `bot/state.py` to resume interrupted sessions.
-
----
-
-## 🧠 Technical Insights
-
-### EMA Optimization Summary
-
-| EMA Length | Final Balance | Profit Factor | Max Drawdown | Observation |
-|-------------|----------------|----------------|----------------|--------------|
-| 40 | $526,754 | 1.50 | -34% | Stable but reactive to noise |
-| 45 | $485,604 | 1.47 | -40% | Slightly weaker trend capture |
-| **50** | **$601,173** | **1.50** | **-40%** | **Optimal balance point** |
-| 55 | $581,026 | 1.48 | -40% | Nearly equivalent performance |
-| 60 | $684,556 | 1.33 | -41% | Stronger trends, higher volatility |
-
-EMA(50) was thus selected as the **baseline trend filter** across all production configurations.
-
-### RSI Length Analysis
-
-| RSI Length | Final Balance | Profit Factor | Max Drawdown | Observation |
-|-------------|----------------|----------------|----------------|--------------|
-| 6 | $183,000 | 1.15 | -58% | Too reactive; many false entries |
-| 8 | $183,839 | 1.33 | -58% | Better, but still unstable |
-| 10 | $263,197 | 1.39 | -43% | Excellent trend capture |
-| **11** | **$405,207** | **1.48** | **-43%** | **Optimal signal-to-noise ratio** |
-| 12 | $361,338 | 1.42 | -43% | Minor over-smoothing |
-
-RSI(11) was adopted as the **default momentum filter**, providing strong balance between early entries and trend validation.
-
----
-
-## 📊 Example Results
-
-Scrooge demonstrates robust performance across multiple timeframes:
-
-| Period | Intervals | Return % | Profit Factor | Max Drawdown % |
-|:-------|:-----------|:----------|:---------------|:----------------|
-| 1 year | 1m–1h–4h | +62.8% | 1.35 | -36.9 |
-| 2 years | 1m–1h–4h | +120.8% | 1.22 | -42.2 |
-| 5 years | 1m–1h–4h | +1736% | 1.22 | -61.2 |
-
-See `/results/` folder for charts and configurations.
-
-With optimized stop-loss and take-profit parameters (`sl_mult=3.7`, `tp_mult=1.9`, `trail_atr_mult=0.04`), Scrooge achieved the following 5-year benchmark:
-
-> **Final Balance:** $601,173 (from $10,000 initial)  
-> **Profit Factor:** 1.5  
-> **Max Drawdown:** -40.3%  
-> **Win Rate:** 72.1%
-
----
-
-## ⚠️ Disclaimer
-
-Scrooge is provided for **educational and research purposes only**.  
+Scrooge is provided for educational and research purposes only.  
 Cryptocurrency trading involves substantial risk and may result in total capital loss.  
 Use this software at your own discretion.
-
----
 
 ## License
 
