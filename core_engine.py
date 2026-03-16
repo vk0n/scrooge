@@ -79,6 +79,47 @@ class EntryGuardRejection:
     trigger: str
 
 
+@dataclass(slots=True)
+class PositionMetrics:
+    side: str
+    price: float
+    entry_price: float
+    position_value: float
+    fee_close: float
+    gross_pnl: float
+    margin_used: float | None
+    base_sl: float
+    base_tp: float
+    liquidation_price: float
+
+
+@dataclass(slots=True)
+class TrailDecision:
+    event_code: str
+    level: str
+    side: str
+    position_updates: dict[str, Any]
+    event_context: dict[str, Any]
+
+
+@dataclass(slots=True)
+class ExitDecision:
+    event_code: str
+    category: str
+    level: str
+    reason: str
+    side: str
+    exit: float
+    net_pnl: float
+    margin_used: float | None
+    gross_pnl: float | None = None
+    fee_total: float | None = None
+    via_tail_guard: bool = False
+    liq_price: float | None = None
+    rsi: float | None = None
+    threshold: float | None = None
+
+
 def initialize_strategy_runtime(
     *,
     live: bool,
@@ -235,6 +276,261 @@ def build_position_from_entry(decision: EntryDecision, *, row_ts: str) -> dict[s
         "time": row_ts,
         "entry_time": row_ts,
     }
+
+
+def build_position_metrics(
+    position: dict[str, Any],
+    snapshot: DiscreteRowSnapshot,
+    *,
+    leverage: float,
+    fee_rate: float,
+) -> PositionMetrics:
+    side = str(position["side"]).strip().lower()
+    size = float(position["size"])
+    entry_price = float(position["entry"])
+    price = float(snapshot.price)
+    position_value = size * entry_price
+    fee_close = position_value * fee_rate
+    gross_pnl = (
+        (price - entry_price) / entry_price * position_value
+        if side == "long"
+        else (entry_price - price) / entry_price * position_value
+    )
+    margin_used = position_value / leverage if leverage > 0 else None
+    return PositionMetrics(
+        side=side,
+        price=price,
+        entry_price=entry_price,
+        position_value=position_value,
+        fee_close=fee_close,
+        gross_pnl=gross_pnl,
+        margin_used=margin_used,
+        base_sl=float(position["sl"]),
+        base_tp=float(position["tp"]),
+        liquidation_price=float(position["liq_price"]),
+    )
+
+
+def resolve_management_decision(
+    position: dict[str, Any],
+    snapshot: DiscreteRowSnapshot,
+    *,
+    config: StrategyConfig,
+    metrics: PositionMetrics,
+) -> TrailDecision | ExitDecision | None:
+    side = metrics.side
+    price = metrics.price
+    atr = float(snapshot.atr)
+    rsi = float(snapshot.rsi)
+
+    if side == "long" and price < metrics.liquidation_price:
+        return ExitDecision(
+            event_code="trade_liquidated",
+            category="risk",
+            level="error",
+            reason="liquidation",
+            side="long",
+            exit=price,
+            net_pnl=-(metrics.margin_used or 0.0),
+            margin_used=metrics.margin_used,
+            liq_price=metrics.liquidation_price,
+        )
+
+    if side == "short" and price > metrics.liquidation_price:
+        return ExitDecision(
+            event_code="trade_liquidated",
+            category="risk",
+            level="error",
+            reason="liquidation",
+            side="short",
+            exit=price,
+            net_pnl=-(metrics.margin_used or 0.0),
+            margin_used=metrics.margin_used,
+            liq_price=metrics.liquidation_price,
+        )
+
+    if side == "long":
+        if rsi > config.rsi_extreme_long:
+            fee_total = metrics.fee_close * 2
+            net_pnl = metrics.gross_pnl - fee_total
+            return ExitDecision(
+                event_code="trade_closed_rsi_extreme",
+                category="trade",
+                level="info",
+                reason="rsi_extreme",
+                side="long",
+                exit=price,
+                net_pnl=net_pnl,
+                margin_used=metrics.margin_used,
+                gross_pnl=metrics.gross_pnl,
+                fee_total=fee_total,
+                rsi=rsi,
+                threshold=config.rsi_extreme_long,
+            )
+
+        if not position["trail_active"]:
+            if price > metrics.base_tp and rsi < config.rsi_long_tp_threshold:
+                trail_price = price - atr * config.trail_atr_mult
+                return TrailDecision(
+                    event_code="trail_activated",
+                    level="info",
+                    side="long",
+                    position_updates={
+                        "trail_active": True,
+                        "trail_max": price,
+                        "trail_price": trail_price,
+                    },
+                    event_context={
+                        "market_price": price,
+                        "base_tp": metrics.base_tp,
+                        "trail_price": trail_price,
+                    },
+                )
+        else:
+            trail_max = float(position["trail_max"])
+            if price > trail_max:
+                previous_trail = position.get("trail_price")
+                current_trail_tp = price - atr * config.trail_atr_mult
+                return TrailDecision(
+                    event_code="trail_moved",
+                    level="info",
+                    side="long",
+                    position_updates={
+                        "trail_max": price,
+                        "tp": current_trail_tp,
+                        "trail_price": current_trail_tp,
+                    },
+                    event_context={
+                        "previous_trail": previous_trail,
+                        "trail_price": current_trail_tp,
+                        "anchor_price": price,
+                    },
+                )
+            if price < trail_max - atr * config.trail_atr_mult or rsi > config.rsi_long_close_threshold:
+                fee_total = metrics.fee_close * 2
+                net_pnl = metrics.gross_pnl - fee_total
+                return ExitDecision(
+                    event_code="trade_closed_take_profit",
+                    category="trade",
+                    level="info",
+                    reason="take_profit",
+                    side="long",
+                    exit=price,
+                    net_pnl=net_pnl,
+                    margin_used=metrics.margin_used,
+                    gross_pnl=metrics.gross_pnl,
+                    fee_total=fee_total,
+                    via_tail_guard=True,
+                )
+
+        if price < metrics.base_sl:
+            fee_total = metrics.fee_close * 2
+            net_pnl = metrics.gross_pnl - fee_total
+            return ExitDecision(
+                event_code="trade_closed_stop_loss",
+                category="trade",
+                level="warning",
+                reason="stop_loss",
+                side="long",
+                exit=price,
+                net_pnl=net_pnl,
+                margin_used=metrics.margin_used,
+                gross_pnl=metrics.gross_pnl,
+                fee_total=fee_total,
+            )
+
+        return None
+
+    if rsi < config.rsi_extreme_short:
+        fee_total = metrics.fee_close * 2
+        net_pnl = metrics.gross_pnl - fee_total
+        return ExitDecision(
+            event_code="trade_closed_rsi_extreme",
+            category="trade",
+            level="info",
+            reason="rsi_extreme",
+            side="short",
+            exit=price,
+            net_pnl=net_pnl,
+            margin_used=metrics.margin_used,
+            gross_pnl=metrics.gross_pnl,
+            fee_total=fee_total,
+            rsi=rsi,
+            threshold=config.rsi_extreme_short,
+        )
+
+    if not position["trail_active"]:
+        if price < metrics.base_tp and rsi > config.rsi_short_tp_threshold:
+            trail_price = price + atr * config.trail_atr_mult
+            return TrailDecision(
+                event_code="trail_activated",
+                level="info",
+                side="short",
+                position_updates={
+                    "trail_active": True,
+                    "trail_min": price,
+                    "trail_price": trail_price,
+                },
+                event_context={
+                    "market_price": price,
+                    "base_tp": metrics.base_tp,
+                    "trail_price": trail_price,
+                },
+            )
+    else:
+        trail_min = float(position["trail_min"])
+        if price < trail_min:
+            previous_trail = position.get("trail_price")
+            current_trail_tp = price + atr * config.trail_atr_mult
+            return TrailDecision(
+                event_code="trail_moved",
+                level="info",
+                side="short",
+                position_updates={
+                    "trail_min": price,
+                    "tp": current_trail_tp,
+                    "trail_price": current_trail_tp,
+                },
+                event_context={
+                    "previous_trail": previous_trail,
+                    "trail_price": current_trail_tp,
+                    "anchor_price": price,
+                },
+            )
+        if price > trail_min + atr * config.trail_atr_mult or rsi < config.rsi_short_close_threshold:
+            fee_total = metrics.fee_close * 2
+            net_pnl = metrics.gross_pnl - fee_total
+            return ExitDecision(
+                event_code="trade_closed_take_profit",
+                category="trade",
+                level="info",
+                reason="take_profit",
+                side="short",
+                exit=price,
+                net_pnl=net_pnl,
+                margin_used=metrics.margin_used,
+                gross_pnl=metrics.gross_pnl,
+                fee_total=fee_total,
+                via_tail_guard=True,
+            )
+
+    if price > metrics.base_sl:
+        fee_total = metrics.fee_close * 2
+        net_pnl = metrics.gross_pnl - fee_total
+        return ExitDecision(
+            event_code="trade_closed_stop_loss",
+            category="trade",
+            level="warning",
+            reason="stop_loss",
+            side="short",
+            exit=price,
+            net_pnl=net_pnl,
+            margin_used=metrics.margin_used,
+            gross_pnl=metrics.gross_pnl,
+            fee_total=fee_total,
+        )
+
+    return None
 
 
 def finalize_strategy_runtime(
