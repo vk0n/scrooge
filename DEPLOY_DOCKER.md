@@ -210,6 +210,7 @@ Backtest input modes:
 - `backtest_input_mode: build` builds fresh dataset/tape from Binance history
 - `backtest_input_mode: discrete_tape` starts directly from an existing `market_tape.jsonl`
 - `backtest_input_mode: market_event_stream` runs the discrete engine directly on an existing `market_events.jsonl` and also writes a projected `market_tape.jsonl`
+- `strategy_mode: realtime` is available only with `backtest_input_mode: market_event_stream`
 - use `market_tape_input_path` or `market_event_input_path` in `config/backtest.yaml` when replaying from stored input artifacts
 
 ## Control Behavior

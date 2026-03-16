@@ -6,12 +6,13 @@ from datetime import datetime
 from typing import Any, Callable
 
 import pandas as pd
+import pandas_ta as ta
 from tqdm import tqdm
 
 from bot.event_log import emit_event, get_technical_logger
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.trade import can_open_trade, close_position, compute_qty, get_balance, open_position
-from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent
+from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent
 
 
 @dataclass(slots=True)
@@ -146,6 +147,11 @@ SEARCH_STATUS_LABELS = {
     "looking_for_buy_opportunity": "Looking for a buy opportunity...",
     "looking_for_sell_opportunity": "Looking for a sell opportunity...",
 }
+REALTIME_WARMUP_LIMITS = {
+    "small": 240,
+    "medium": 240,
+    "big": 240,
+}
 
 
 def save_log(log_buffer: list[str]) -> None:
@@ -173,6 +179,174 @@ def format_event_timestamp(value: Any) -> str:
 
     text_value = str(value).strip()
     return text_value or datetime.now().strftime(TIMESTAMP_FORMAT)
+
+
+def _event_ts_to_timestamp(value: Any) -> pd.Timestamp | None:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    try:
+        ts_value = pd.Timestamp(text_value)
+    except Exception:  # noqa: BLE001
+        return None
+    if ts_value.tzinfo is not None:
+        ts_value = ts_value.tz_convert(None)
+    return ts_value
+
+
+def _interval_to_freq(interval: str) -> str:
+    normalized = str(interval or "").strip().lower()
+    if normalized.endswith("m"):
+        return f"{int(normalized[:-1])}min"
+    if normalized.endswith("h"):
+        return f"{int(normalized[:-1])}h"
+    if normalized.endswith("d"):
+        return f"{int(normalized[:-1])}d"
+    raise ValueError(f"Unsupported interval for realtime mode: {interval}")
+
+
+def _empty_market_candle_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume"])
+
+
+def _normalize_market_candle_frame(df: pd.DataFrame, limit: int) -> pd.DataFrame:
+    if df.empty:
+        return _empty_market_candle_frame()
+    out = df.copy()
+    out["open_time"] = pd.to_datetime(out["open_time"], errors="coerce")
+    for column in ("open", "high", "low", "close", "volume"):
+        out[column] = pd.to_numeric(out[column], errors="coerce")
+    out = out.dropna(subset=["open_time", "open", "high", "low", "close"])
+    out = out.sort_values("open_time").drop_duplicates(subset=["open_time"], keep="last").tail(limit)
+    out.reset_index(drop=True, inplace=True)
+    return out[["open_time", "open", "high", "low", "close", "volume"]]
+
+
+def _closed_event_to_row(event: CandleClosedEvent) -> dict[str, Any]:
+    return {
+        "open_time": pd.Timestamp(event.open_time),
+        "open": float(event.open),
+        "high": float(event.high),
+        "low": float(event.low),
+        "close": float(event.close),
+        "volume": float(event.volume),
+    }
+
+
+def _upsert_closed_market_candle(df: pd.DataFrame, event: CandleClosedEvent, *, limit: int) -> pd.DataFrame:
+    row_df = pd.DataFrame([_closed_event_to_row(event)])
+    merged = pd.concat([df, row_df], ignore_index=True)
+    return _normalize_market_candle_frame(merged, limit)
+
+
+def _build_forming_candle(open_time: pd.Timestamp, price: float) -> dict[str, Any]:
+    return {
+        "open_time": open_time,
+        "open": price,
+        "high": price,
+        "low": price,
+        "close": price,
+        "volume": 0.0,
+    }
+
+
+def _update_forming_candle(
+    candle: dict[str, Any] | None,
+    *,
+    open_time: pd.Timestamp,
+    price: float,
+) -> dict[str, Any]:
+    if candle is None or pd.Timestamp(candle["open_time"]) != open_time:
+        return _build_forming_candle(open_time, price)
+
+    candle["high"] = max(float(candle["high"]), price)
+    candle["low"] = min(float(candle["low"]), price)
+    candle["close"] = price
+    return candle
+
+
+def _materialize_market_frame(
+    closed_df: pd.DataFrame,
+    forming_candle: dict[str, Any] | None,
+    *,
+    limit: int,
+) -> pd.DataFrame:
+    if forming_candle is None:
+        return _normalize_market_candle_frame(closed_df, limit)
+    row_df = pd.DataFrame([forming_candle])
+    merged = pd.concat([closed_df, row_df], ignore_index=True)
+    return _normalize_market_candle_frame(merged, limit)
+
+
+def _compute_realtime_indicator_values(
+    medium_df: pd.DataFrame,
+    big_df: pd.DataFrame,
+) -> dict[str, float | None] | None:
+    if medium_df.empty or big_df.empty:
+        return None
+
+    medium = medium_df.copy().set_index("open_time")
+    bb = ta.bbands(medium["close"], length=20, std=2)
+    atr = ta.atr(medium["high"], medium["low"], medium["close"], length=14)
+    if bb is None or atr is None:
+        return None
+
+    big = big_df.copy().set_index("open_time")
+    rsi = ta.rsi(big["close"], length=11)
+    ema = ta.ema(big["close"], length=50)
+    if rsi is None or ema is None:
+        return None
+
+    latest_values = {
+        "BBL": to_float(bb["BBL_20_2.0_2.0"].iloc[-1]) if "BBL_20_2.0_2.0" in bb else None,
+        "BBM": to_float(bb["BBM_20_2.0_2.0"].iloc[-1]) if "BBM_20_2.0_2.0" in bb else None,
+        "BBU": to_float(bb["BBU_20_2.0_2.0"].iloc[-1]) if "BBU_20_2.0_2.0" in bb else None,
+        "ATR": to_float(atr.iloc[-1]),
+        "RSI": to_float(rsi.iloc[-1]),
+        "EMA": to_float(ema.iloc[-1]),
+    }
+    if any(value is None for value in latest_values.values()):
+        return None
+    return latest_values
+
+
+def _build_realtime_snapshot(
+    *,
+    event_ts: str,
+    forming_small: dict[str, Any] | None,
+    medium_df: pd.DataFrame,
+    big_df: pd.DataFrame,
+) -> DiscreteRowSnapshot | None:
+    if forming_small is None:
+        return None
+    indicator_values = _compute_realtime_indicator_values(medium_df, big_df)
+    if indicator_values is None:
+        return None
+    price = to_float(forming_small.get("close"))
+    if price is None:
+        return None
+    row_payload = {
+        "open_time": event_ts,
+        "close": price,
+        "BBL": indicator_values["BBL"],
+        "BBM": indicator_values["BBM"],
+        "BBU": indicator_values["BBU"],
+        "ATR": indicator_values["ATR"],
+        "RSI": indicator_values["RSI"],
+        "EMA": indicator_values["EMA"],
+    }
+    return DiscreteRowSnapshot(
+        raw_row=row_payload,
+        price=price,
+        lower=indicator_values["BBL"],
+        upper=indicator_values["BBU"],
+        mid=indicator_values["BBM"],
+        atr=indicator_values["ATR"],
+        rsi=indicator_values["RSI"],
+        ema=indicator_values["EMA"],
+        row_ts=event_ts,
+        log_ts=event_ts,
+    )
 
 
 def _row_value(row: Any, key: str) -> Any:
@@ -1206,7 +1380,9 @@ def run_strategy_on_tape(
 def run_strategy_on_market_events(
     market_events: list[MarketEvent] | tuple[MarketEvent, ...],
     *,
-    candle_interval: str,
+    candle_interval: str = "1m",
+    intervals: dict[str, str] | None = None,
+    strategy_mode: str = "discrete",
     strict_indicator_alignment: bool = False,
     live: bool = False,
     initial_balance: float = 1000,
@@ -1234,6 +1410,7 @@ def run_strategy_on_market_events(
     trail_atr_mult: float = 0.5,
     allow_entries: bool = True,
 ):
+    normalized_strategy_mode = str(strategy_mode or "discrete").strip().lower() or "discrete"
     runtime = initialize_strategy_runtime(
         live=live,
         initial_balance=initial_balance,
@@ -1266,6 +1443,25 @@ def run_strategy_on_market_events(
 
     def on_row(snapshot, row_runtime):
         process_discrete_row(snapshot, row_runtime, config, technical_logger)
+
+    if normalized_strategy_mode == "realtime":
+        resolved_intervals = {
+            "small": "1m",
+            "medium": "1h",
+            "big": "4h",
+        }
+        if intervals is not None:
+            resolved_intervals.update({key: str(value) for key, value in intervals.items()})
+        return run_realtime_market_event_engine(
+            market_events,
+            runtime=runtime,
+            intervals=resolved_intervals,
+            show_progress=show_progress,
+            on_row=on_row,
+            save_log_fn=save_log,
+            save_state_fn=save_state,
+            symbol=symbol,
+        )
 
     return run_market_event_engine(
         market_events,
@@ -1413,6 +1609,113 @@ def run_market_event_engine(
             "Market event replay is missing indicator snapshot "
             f"for symbol={missing.symbol} ts={missing.ts} interval={missing.interval}"
         )
+
+    return finalize_strategy_runtime(
+        runtime,
+        save_log_fn=save_log_fn,
+        save_state_fn=save_state_fn,
+    )
+
+
+def run_realtime_market_event_engine(
+    market_events: Any,
+    *,
+    runtime: StrategyRuntime,
+    intervals: dict[str, str],
+    show_progress: bool,
+    on_row: Callable[[DiscreteRowSnapshot, StrategyRuntime], None],
+    save_log_fn: Callable[[list[str]], None],
+    save_state_fn: Callable[[dict[str, Any]], None],
+    symbol: str | None = None,
+) -> tuple[float, pd.DataFrame, list[float], dict[str, Any]]:
+    target_symbol = str(symbol or "").strip().upper() or None
+    interval_freqs = {key: _interval_to_freq(value) for key, value in intervals.items()}
+    closed_frames = {
+        "small": _empty_market_candle_frame(),
+        "medium": _empty_market_candle_frame(),
+        "big": _empty_market_candle_frame(),
+    }
+    forming_candles: dict[str, dict[str, Any] | None] = {
+        "small": None,
+        "medium": None,
+        "big": None,
+    }
+    iterator = tqdm(market_events, desc="Realtime Event Replay", disable=not show_progress)
+    processed_price_ticks = 0
+    emitted_snapshots = 0
+
+    def resolve_timeframe(interval_value: str) -> str | None:
+        for timeframe, configured in intervals.items():
+            if configured == interval_value:
+                return timeframe
+        return None
+
+    for event in iterator:
+        event_symbol = getattr(event, "symbol", None)
+        if target_symbol and str(event_symbol or "").strip().upper() != target_symbol:
+            continue
+
+        if isinstance(event, CandleClosedEvent):
+            timeframe = resolve_timeframe(event.interval)
+            if timeframe is None:
+                continue
+            closed_frames[timeframe] = _upsert_closed_market_candle(
+                closed_frames[timeframe],
+                event,
+                limit=REALTIME_WARMUP_LIMITS[timeframe],
+            )
+            current_forming = forming_candles.get(timeframe)
+            if current_forming is not None:
+                current_open = pd.Timestamp(current_forming["open_time"])
+                event_open = pd.Timestamp(event.open_time)
+                if current_open <= event_open:
+                    forming_candles[timeframe] = None
+            continue
+
+        if not isinstance(event, PriceTickEvent):
+            continue
+
+        event_ts_value = _event_ts_to_timestamp(event.ts)
+        price = to_float(event.price)
+        if event_ts_value is None or price is None:
+            continue
+        processed_price_ticks += 1
+
+        for timeframe, freq in interval_freqs.items():
+            interval_open = event_ts_value.floor(freq)
+            forming_candles[timeframe] = _update_forming_candle(
+                forming_candles.get(timeframe),
+                open_time=interval_open,
+                price=price,
+            )
+
+        medium_df = _materialize_market_frame(
+            closed_frames["medium"],
+            forming_candles["medium"],
+            limit=REALTIME_WARMUP_LIMITS["medium"],
+        )
+        big_df = _materialize_market_frame(
+            closed_frames["big"],
+            forming_candles["big"],
+            limit=REALTIME_WARMUP_LIMITS["big"],
+        )
+        snapshot = _build_realtime_snapshot(
+            event_ts=format_event_timestamp(event.ts),
+            forming_small=forming_candles["small"],
+            medium_df=medium_df,
+            big_df=big_df,
+        )
+        if snapshot is None:
+            continue
+
+        on_row(snapshot, runtime)
+        runtime.balance_history.append(runtime.balance)
+        emitted_snapshots += 1
+
+    if processed_price_ticks == 0:
+        raise ValueError("Realtime market event replay requires at least one price_tick event.")
+    if emitted_snapshots == 0:
+        raise ValueError("Realtime market event replay produced no valid snapshots; check warmup history and indicator coverage.")
 
     return finalize_strategy_runtime(
         runtime,

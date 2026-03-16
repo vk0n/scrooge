@@ -101,6 +101,11 @@ def build_discrete_backtest_config(
         input_mode = "market_event_stream"
     if input_mode not in {"build", "discrete_tape", "market_event_stream"}:
         raise ValueError("backtest_input_mode must be one of: build, discrete_tape, market_event_stream")
+    normalized_strategy_mode = str(cfg.get("strategy_mode", strategy_mode)).strip().lower() or strategy_mode
+    if normalized_strategy_mode not in {"discrete", "realtime"}:
+        raise ValueError("strategy_mode must be one of: discrete, realtime")
+    if normalized_strategy_mode == "realtime" and input_mode != "market_event_stream":
+        raise ValueError("strategy_mode=realtime requires backtest_input_mode=market_event_stream")
 
     raw_input_path = str(cfg.get("market_tape_input_path", "") or "").strip()
     market_tape_input_path = Path(raw_input_path).expanduser() if raw_input_path else None
@@ -131,7 +136,7 @@ def build_discrete_backtest_config(
         market_tape_input_path=market_tape_input_path,
         market_event_input_path=market_event_input_path,
         runtime_mode=runtime_mode,
-        strategy_mode=strategy_mode,
+        strategy_mode=normalized_strategy_mode,
         client=client,
     )
 
@@ -335,6 +340,8 @@ def run_discrete_backtest(
         final_balance, trades, balance_history, state = market_event_strategy_runner(
             market_events,
             candle_interval=str(config.intervals["small"]),
+            intervals={key: str(value) for key, value in config.intervals.items()},
+            strategy_mode=config.strategy_mode,
             strict_indicator_alignment=False,
             **strategy_kwargs,
         )
