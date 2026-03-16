@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
+from event_store import build_event_record, get_event_store
 
 try:
     from api.services.push_service import dispatch_event_push
@@ -336,20 +337,24 @@ def emit_event(
     persist_ui: bool = False,
     ui_log_path: Path | None = None,
     ui_message: str | None = None,
+    runtime_mode: str | None = None,
+    strategy_mode: str | None = None,
     **context: Any,
 ) -> dict[str, Any]:
     event_context = dict(context)
     rendered_ui_message = (ui_message or "").strip() or _render_ui_message(code, event_context)
 
-    event = {
-        "ts": ts,
-        "level": level,
-        "code": code,
-        "category": category,
-        "ui_message": rendered_ui_message,
-        "notify": bool(notify),
-        "context": event_context,
-    }
+    event = build_event_record(
+        ts=ts,
+        level=level,
+        code=code,
+        category=category,
+        ui_message=rendered_ui_message,
+        notify=bool(notify),
+        context=event_context,
+        runtime_mode=runtime_mode,
+        strategy_mode=strategy_mode,
+    )
 
     if log_buffer is not None or persist_ui:
         append_ui_log_line(
@@ -361,6 +366,10 @@ def emit_event(
 
     logger = _ensure_technical_logger()
     log_level = getattr(logging, str(level).upper(), logging.INFO)
+    try:
+        get_event_store().append(event)
+    except OSError:
+        logger.exception("Failed to append canonical event record")
     logger.log(log_level, json.dumps(event, ensure_ascii=True, sort_keys=True, default=str))
     if dispatch_event_push is not None:
         dispatch_event_push(event)

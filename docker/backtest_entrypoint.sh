@@ -14,8 +14,11 @@ export SCROOGE_STATE_FILE="${run_dir}/state.json"
 export SCROOGE_TRADE_HISTORY_FILE="${run_dir}/trade_history.jsonl"
 export SCROOGE_BALANCE_HISTORY_FILE="${run_dir}/balance_history.jsonl"
 export SCROOGE_LOG_FILE="${run_dir}/trading_log.txt"
+export SCROOGE_EVENT_LOG_FILE="${run_dir}/event_history.jsonl"
 export SCROOGE_RUNTIME_CHART_DATASET_PATH="${run_dir}/chart_dataset.csv"
 export SCROOGE_CONFIG_PATH="${SCROOGE_CONFIG_PATH:-/runtime/config.backtest.yaml}"
+export SCROOGE_RUNTIME_MODE="${SCROOGE_RUNTIME_MODE:-backtest}"
+export SCROOGE_STRATEGY_MODE="${SCROOGE_STRATEGY_MODE:-discrete}"
 
 export_settings="$(
 python - <<'PY'

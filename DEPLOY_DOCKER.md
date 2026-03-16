@@ -92,6 +92,9 @@ SCROOGE_USER_STREAM_RECONNECT_SECONDS=5
 SCROOGE_USER_STREAM_STALE_AFTER_SECONDS=120
 SCROOGE_FUTURES_REST_BASE_URL=https://fapi.binance.com
 SCROOGE_FUTURES_WS_BASE_URL=wss://fstream.binance.com/ws
+SCROOGE_RUNTIME_MODE=live
+SCROOGE_STRATEGY_MODE=discrete
+SCROOGE_EVENT_LOG_FILE=/runtime/event_history.jsonl
 ```
 
 Notes:
@@ -136,6 +139,7 @@ Open UI:
   - `/runtime/trade_history.jsonl`
   - `/runtime/balance_history.jsonl`
   - `/runtime/trading_log.txt`
+  - `/runtime/event_history.jsonl` (canonical append-only event log)
   - `/runtime/chart_dataset.csv`
 
 ## 5. Control behavior

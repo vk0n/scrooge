@@ -110,6 +110,7 @@ state.json
 state.json.bak
 trade_history.jsonl
 balance_history.jsonl
+event_history.jsonl
 chart_dataset.csv
 trading_log.txt
 backtest_artifacts/
