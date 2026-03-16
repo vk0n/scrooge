@@ -147,9 +147,16 @@ Backtest outputs include:
 - runtime artifacts for the run
 - `market_tape.jsonl`
 - `market_events.jsonl`
+- `market_event_execution_summary.json`
+- `market_event_execution_events.jsonl`
 - canonical `event_history.jsonl`
 - `replay_summary.json`
 - `replay_trades.jsonl`
+
+The execution artifacts are derived from `market_events.jsonl` and summarize/filter:
+- account balance snapshots
+- position snapshots
+- order trade updates
 
 The backtest execution path is now owned by:
 - `backtest/runner.py`

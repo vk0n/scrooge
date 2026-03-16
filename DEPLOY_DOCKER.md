@@ -202,10 +202,16 @@ Each backtest run emits:
 - `trading_log.txt`
 - `market_tape.jsonl`
 - `market_events.jsonl`
+- `market_event_execution_summary.json`
+- `market_event_execution_events.jsonl`
 - `event_history.jsonl`
 - `chart_dataset.csv`
 - `replay_summary.json`
 - `replay_trades.jsonl`
+
+Notes:
+- `market_event_execution_summary.json` summarizes account/order execution events captured in `market_events.jsonl`
+- `market_event_execution_events.jsonl` stores the filtered account/order execution slice for replay/debugging
 
 Backtest input modes:
 - `backtest_input_mode: build` builds fresh dataset/tape from Binance history

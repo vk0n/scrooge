@@ -26,6 +26,10 @@ from backtest.discrete_tape import (
     write_discrete_market_tape,
 )
 from backtest.dataset import build_dataset
+from backtest.market_event_replay import (
+    MarketExecutionSummary,
+    write_market_event_execution_artifacts,
+)
 from backtest.replay import ReplaySummary, write_replay_artifacts
 from bot.event_log import get_technical_logger
 from bot.state import save_state
@@ -68,6 +72,7 @@ class DiscreteBacktestResult:
     tape: list[DiscreteMarketTapeRow]
     market_events: list[MarketEvent]
     market_event_projection: DiscreteTapeProjectionSummary | None
+    market_event_execution_summary: MarketExecutionSummary | None
     final_balance: float
     trades: pd.DataFrame
     balance_history: list[float]
@@ -249,6 +254,7 @@ def run_discrete_backtest(
     strategy_runner: Callable[..., tuple[float, pd.DataFrame, list[float], dict[str, Any]]] = run_strategy_on_tape,
     market_event_strategy_runner: Callable[..., tuple[float, pd.DataFrame, list[float], dict[str, Any]]] = run_strategy_on_market_events,
     replay_writer: Callable[..., ReplaySummary] = write_replay_artifacts,
+    market_event_execution_writer: Callable[..., MarketExecutionSummary] = write_market_event_execution_artifacts,
 ) -> DiscreteBacktestResult:
     logger = technical_logger or get_technical_logger()
     market_event_projection: DiscreteTapeProjectionSummary | None = None
@@ -379,6 +385,21 @@ def run_discrete_backtest(
         replay_summary.net_pnl,
         config.event_log_path,
     )
+    market_event_execution_summary = market_event_execution_writer(
+        market_events,
+        symbol=config.symbol,
+        summary_path=config.event_log_path.with_name("market_event_execution_summary.json"),
+        events_path=config.event_log_path.with_name("market_event_execution_events.jsonl"),
+    )
+    logger.info(
+        "backtest_market_event_execution_artifacts_written execution_events=%s order_updates=%s filled_orders=%s realized_pnl=%.8f commission=%.8f path=%s",
+        market_event_execution_summary.execution_events,
+        market_event_execution_summary.order_trade_update_events,
+        market_event_execution_summary.filled_order_events,
+        market_event_execution_summary.realized_pnl_total,
+        market_event_execution_summary.commission_total,
+        config.event_log_path.with_name("market_event_execution_summary.json"),
+    )
 
     stats = compute_stats(config.initial_balance, final_balance, trades, balance_history)
     for key, value in stats.items():
@@ -406,6 +427,7 @@ def run_discrete_backtest(
         tape=tape,
         market_events=market_events,
         market_event_projection=market_event_projection,
+        market_event_execution_summary=market_event_execution_summary,
         final_balance=float(final_balance),
         trades=trades,
         balance_history=balance_history,
