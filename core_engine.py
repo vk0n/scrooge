@@ -336,6 +336,95 @@ def apply_backtest_exit_transition(
     return updated_balance, sanitized_trade
 
 
+def build_entry_guard_event_payload(
+    rejection: EntryGuardRejection,
+    *,
+    symbol: str,
+) -> dict[str, Any]:
+    return {
+        "code": "entry_skipped_liquidation_guard",
+        "category": "risk",
+        "level": "warning",
+        "symbol": symbol,
+        "side": rejection.side,
+        "entry": rejection.entry,
+        "sl": rejection.sl,
+        "liq_price": rejection.liq_price,
+        "trigger": rejection.trigger,
+    }
+
+
+def build_trade_opened_event_payload(
+    decision: EntryDecision,
+    *,
+    symbol: str,
+    leverage: float,
+    fee: float,
+    rsi: float,
+) -> dict[str, Any]:
+    return {
+        "code": "trade_opened",
+        "category": "trade",
+        "level": "info",
+        "notify": True,
+        "symbol": symbol,
+        "side": decision.side,
+        "entry": decision.entry,
+        "sl": decision.sl,
+        "tp": decision.tp,
+        "size": decision.size,
+        "leverage": leverage,
+        "fee": fee,
+        "rsi": rsi,
+        "stake_mode": decision.stake_mode,
+        "trigger": decision.trigger,
+    }
+
+
+def build_trail_event_payload(
+    decision: TrailDecision,
+    *,
+    symbol: str,
+) -> dict[str, Any]:
+    return {
+        "code": decision.event_code,
+        "category": "trade",
+        "level": decision.level,
+        "symbol": symbol,
+        "side": decision.side,
+        **decision.event_context,
+    }
+
+
+def build_exit_event_payload(
+    decision: ExitDecision,
+    *,
+    symbol: str,
+    net_pnl: float,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "code": decision.event_code,
+        "category": decision.category,
+        "level": decision.level,
+        "notify": True,
+        "symbol": symbol,
+        "side": decision.side,
+        "exit": decision.exit,
+        "net_pnl": net_pnl,
+    }
+    if decision.margin_used:
+        payload["roi_pct"] = (net_pnl / decision.margin_used) * 100.0
+    if decision.via_tail_guard:
+        payload["via_tail_guard"] = True
+    if decision.liq_price is not None:
+        payload["liq_price"] = decision.liq_price
+    if decision.rsi is not None:
+        payload["rsi"] = decision.rsi
+    if decision.threshold is not None:
+        payload["threshold"] = decision.threshold
+    return payload
+
+
 def build_position_metrics(
     position: dict[str, Any],
     snapshot: DiscreteRowSnapshot,

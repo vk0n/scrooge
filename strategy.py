@@ -13,9 +13,13 @@ from core_engine import (
     StrategyConfig,
     TrailDecision,
     apply_backtest_exit_transition,
+    build_entry_guard_event_payload,
     build_position_metrics,
     build_position_from_entry,
     build_exit_trade,
+    build_exit_event_payload,
+    build_trade_opened_event_payload,
+    build_trail_event_payload,
     initialize_strategy_runtime,
     resolve_management_decision,
     resolve_entry_decision,
@@ -218,29 +222,13 @@ def _consume_manual_trade_suggestion(state, live):
 
 
 def _emit_exit_event(log_buffer, config, log_ts, decision, net_pnl):
-    event_kwargs = {
-        "symbol": config.symbol,
-        "side": decision.side,
-        "exit": decision.exit,
-        "net_pnl": net_pnl,
-    }
-    if decision.margin_used:
-        event_kwargs["roi_pct"] = _ratio_to_percent(net_pnl, decision.margin_used)
-    if decision.via_tail_guard:
-        event_kwargs["via_tail_guard"] = True
-    if decision.liq_price is not None:
-        event_kwargs["liq_price"] = decision.liq_price
-    if decision.rsi is not None:
-        event_kwargs["rsi"] = decision.rsi
-    if decision.threshold is not None:
-        event_kwargs["threshold"] = decision.threshold
-
+    event_kwargs = build_exit_event_payload(
+        decision,
+        symbol=config.symbol,
+        net_pnl=net_pnl,
+    )
     emit_event(
-        code=decision.event_code,
-        category=decision.category,
         ts=log_ts,
-        level=decision.level,
-        notify=True,
         log_buffer=log_buffer,
         **event_kwargs,
     )
@@ -250,15 +238,11 @@ def _apply_trail_decision(position, state, live, log_buffer, config, log_ts, dec
     position.update(decision.position_updates)
     if live:
         update_position(state, position)
+    event_kwargs = build_trail_event_payload(decision, symbol=config.symbol)
     emit_event(
-        code=decision.event_code,
-        category="trade",
         ts=log_ts,
-        level=decision.level,
         log_buffer=log_buffer,
-        symbol=config.symbol,
-        side=decision.side,
-        **decision.event_context,
+        **event_kwargs,
     )
 
 
@@ -352,22 +336,25 @@ def _process_discrete_row(
         )
 
         if isinstance(entry_decision, EntryGuardRejection):
-            emit_event(
-                code="entry_skipped_liquidation_guard",
-                category="risk",
-                ts=log_ts,
-                level="warning",
-                log_buffer=log_buffer,
+            event_kwargs = build_entry_guard_event_payload(
+                entry_decision,
                 symbol=config.symbol,
-                side=entry_decision.side,
-                entry=entry_decision.entry,
-                sl=entry_decision.sl,
-                liq_price=entry_decision.liq_price,
-                trigger=entry_decision.trigger,
+            )
+            emit_event(
+                ts=log_ts,
+                log_buffer=log_buffer,
+                **event_kwargs,
             )
         elif isinstance(entry_decision, EntryDecision):
             position = build_position_from_entry(entry_decision, row_ts=row_ts)
             _refresh_position_snapshot(position, price, config.leverage, row_ts)
+            event_kwargs = build_trade_opened_event_payload(
+                entry_decision,
+                symbol=config.symbol,
+                leverage=config.leverage,
+                fee=entry_decision.size * price * config.fee_rate,
+                rsi=rsi,
+            )
 
             if live:
                 if can_open_trade(config.symbol, entry_decision.size, config.leverage):
@@ -384,44 +371,16 @@ def _process_discrete_row(
                     update_position(state, position)
                     update_balance(state, balance)
                 emit_event(
-                    code="trade_opened",
-                    category="trade",
                     ts=log_ts,
-                    level="info",
-                    notify=True,
                     log_buffer=log_buffer,
-                    symbol=config.symbol,
-                    side=entry_decision.side,
-                    entry=entry_decision.entry,
-                    sl=entry_decision.sl,
-                    tp=entry_decision.tp,
-                    size=entry_decision.size,
-                    leverage=config.leverage,
-                    fee=entry_decision.size * price * config.fee_rate,
-                    rsi=rsi,
-                    stake_mode=entry_decision.stake_mode,
-                    trigger=entry_decision.trigger,
+                    **event_kwargs,
                 )
             else:
                 balance -= entry_decision.size * price * config.fee_rate
                 emit_event(
-                    code="trade_opened",
-                    category="trade",
                     ts=log_ts,
-                    level="info",
-                    notify=True,
                     log_buffer=log_buffer,
-                    symbol=config.symbol,
-                    side=entry_decision.side,
-                    entry=entry_decision.entry,
-                    sl=entry_decision.sl,
-                    tp=entry_decision.tp,
-                    size=entry_decision.size,
-                    leverage=config.leverage,
-                    fee=entry_decision.size * price * config.fee_rate,
-                    rsi=rsi,
-                    stake_mode=entry_decision.stake_mode,
-                    trigger=entry_decision.trigger,
+                    **event_kwargs,
                 )
 
     else:
