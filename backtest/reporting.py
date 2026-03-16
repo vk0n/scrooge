@@ -1,9 +1,10 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import webbrowser
-import tempfile
 import os
+import tempfile
+import webbrowser
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from tqdm import tqdm
@@ -16,6 +17,19 @@ from bot.state import (
     load_trade_history,
 )
 from core.engine import run_strategy
+
+
+def _ensure_matplotlib_cache_dir() -> None:
+    cache_root = Path(
+        os.getenv("SCROOGE_MPLCONFIGDIR", os.getenv("MPLCONFIGDIR", "/tmp/scrooge-matplotlib"))
+    ).expanduser()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(cache_root)
+
+
+_ensure_matplotlib_cache_dir()
+
+import matplotlib.pyplot as plt
 
 _client = None
 _rw_df = None
