@@ -94,6 +94,7 @@ class StrategyConfig:
     trail_atr_mult: float
     allow_entries: bool
     execution_mode: str
+    strategy_mode: str
 
 
 @dataclass(slots=True)
@@ -836,6 +837,26 @@ def _simulated_position_amt(position: dict[str, Any]) -> float:
     return size if side == "long" else -size
 
 
+def _position_entry_fee(position: dict[str, Any], fee_rate: float) -> float:
+    size = float(position.get("size") or 0.0)
+    entry_price = float(position.get("entry") or 0.0)
+    if fee_rate <= 0 or size <= 0 or entry_price <= 0:
+        return 0.0
+    return size * entry_price * fee_rate
+
+
+def _resolve_backtest_exit_balance_delta(
+    position: dict[str, Any],
+    decision: ExitDecision,
+    *,
+    fee_rate: float,
+) -> float:
+    entry_fee = _position_entry_fee(position, fee_rate)
+    if decision.gross_pnl is not None:
+        return float(decision.gross_pnl) - entry_fee
+    return float(decision.net_pnl) + entry_fee
+
+
 def emit_simulated_entry_execution_events(
     runtime: StrategyRuntime,
     config: StrategyConfig,
@@ -846,7 +867,7 @@ def emit_simulated_entry_execution_events(
 ) -> None:
     size = float(position.get("size") or 0.0)
     entry_price = float(position.get("entry") or 0.0)
-    open_fee = size * entry_price * config.fee_rate
+    open_fee = _position_entry_fee(position, config.fee_rate)
     order_side = "BUY" if str(position.get("side", "")).strip().lower() == "long" else "SELL"
 
     _append_execution_event(
@@ -906,7 +927,12 @@ def emit_simulated_exit_execution_events(
     size = float(position.get("size") or 0.0)
     entry_price = float(position.get("entry") or 0.0)
     exit_price = float(decision.exit)
-    exit_fee = (size * entry_price * config.fee_rate) if config.fee_rate > 0 else 0.0
+    exit_fee = _position_entry_fee(position, config.fee_rate)
+    balance_delta = _resolve_backtest_exit_balance_delta(
+        position,
+        decision,
+        fee_rate=config.fee_rate,
+    )
     order_side = "SELL" if str(position.get("side", "")).strip().lower() == "long" else "BUY"
     realized_pnl = decision.gross_pnl if decision.gross_pnl is not None else decision.net_pnl
 
@@ -949,7 +975,7 @@ def emit_simulated_exit_execution_events(
             ts=ts,
             wallet_balance=balance_after,
             cross_wallet_balance=balance_after,
-            balance_delta=decision.net_pnl,
+            balance_delta=balance_delta,
             source="simulated_execution",
         ),
     )
@@ -1120,9 +1146,14 @@ def apply_backtest_exit_transition(
     decision: ExitDecision,
     *,
     row_ts: str,
+    fee_rate: float,
 ) -> tuple[float, dict[str, Any]]:
     trade = build_exit_trade(position, decision, row_ts=row_ts)
-    updated_balance = balance + decision.net_pnl
+    updated_balance = balance + _resolve_backtest_exit_balance_delta(
+        position,
+        decision,
+        fee_rate=fee_rate,
+    )
     sanitized_trade = sanitize_trade_for_history(trade)
     trade_history.append(sanitized_trade)
     return updated_balance, sanitized_trade
@@ -1226,6 +1257,7 @@ def emit_exit_event(log_buffer, config: StrategyConfig, log_ts: str, decision: E
     emit_event(
         ts=log_ts,
         log_buffer=log_buffer,
+        strategy_mode=config.strategy_mode,
         **event_kwargs,
     )
 
@@ -1246,6 +1278,7 @@ def apply_trail_decision(
     emit_event(
         ts=log_ts,
         log_buffer=log_buffer,
+        strategy_mode=config.strategy_mode,
         **event_kwargs,
     )
 
@@ -1537,6 +1570,7 @@ def apply_exit_decision(
             position,
             decision,
             row_ts=row_ts,
+            fee_rate=config.fee_rate,
         )
         emit_exit_event(log_buffer, config, log_ts, decision, decision.net_pnl)
         if runtime.execution_mode == "simulated":
@@ -1617,6 +1651,7 @@ def process_discrete_row(
             emit_event(
                 ts=log_ts,
                 log_buffer=log_buffer,
+                strategy_mode=config.strategy_mode,
                 **event_kwargs,
             )
         elif isinstance(entry_decision, EntryDecision):
@@ -1647,13 +1682,15 @@ def process_discrete_row(
                 emit_event(
                     ts=log_ts,
                     log_buffer=log_buffer,
+                    strategy_mode=config.strategy_mode,
                     **event_kwargs,
                 )
             else:
-                balance -= entry_decision.size * price * config.fee_rate
+                balance -= _position_entry_fee(position, config.fee_rate)
                 emit_event(
                     ts=log_ts,
                     log_buffer=log_buffer,
+                    strategy_mode=config.strategy_mode,
                     **event_kwargs,
                 )
                 if runtime.execution_mode == "simulated":
@@ -1798,6 +1835,7 @@ def run_strategy(
         trail_atr_mult=trail_atr_mult,
         allow_entries=allow_entries,
         execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
+        strategy_mode="discrete",
     )
 
     def on_row(snapshot, row_runtime):
@@ -1887,6 +1925,7 @@ def run_strategy_on_market_events(
         trail_atr_mult=trail_atr_mult,
         allow_entries=allow_entries,
         execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
+        strategy_mode=normalized_strategy_mode,
     )
 
     def on_row(snapshot, row_runtime):
