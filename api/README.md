@@ -60,7 +60,7 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
 - Config write endpoint:
   - `POST /api/config/editable`
   - Accepts only validated editable subset (`symbol`, `leverage`, `use_full_balance`, `qty`, selected `params.*`)
-  - Creates `config.yaml` backup before overwrite and returns `backup_path`
+  - Creates a live-config backup before overwrite and returns `backup_path`
   - Returns `restart_required` for save-and-restart flow
 - Control endpoints:
   - `POST /api/control/start`
@@ -74,7 +74,7 @@ export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http
   - Mutating actions are queued via Redis and executed asynchronously by bot runtime loop.
   - Semantics: `start` = resume trading, `stop` = pause trading, `restart` = resume + config reload, `close-position` = manual close active position, `update-sl`/`update-tp` = update current position levels.
   - Note: commands are processed only when live bot service is running (Compose `live` profile).
-- `config.yaml`, `state.json`, `trade_history.jsonl`, `balance_history.jsonl`, and `trading_log.txt` are read from runtime paths.
+- Live config, `state.json`, `trade_history.jsonl`, `balance_history.jsonl`, and `trading_log.txt` are read from runtime paths.
 - WebSocket live endpoints:
   - `ws://localhost:8000/ws`
   - `ws://localhost:8000/ws/status`

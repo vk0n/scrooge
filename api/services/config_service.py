@@ -14,7 +14,7 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-CONFIG_PATH = Path(os.getenv("SCROOGE_CONFIG_PATH", str(_project_root() / "config.yaml"))).expanduser()
+CONFIG_PATH = Path(os.getenv("SCROOGE_CONFIG_PATH", str(_project_root() / "config" / "live.yaml"))).expanduser()
 
 EDITABLE_TOP_LEVEL_KEYS = ("live", "symbol", "leverage", "initial_balance", "use_full_balance", "qty")
 EDITABLE_INTERVAL_KEYS = ("small", "medium", "big")

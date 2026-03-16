@@ -13,10 +13,10 @@ All services use shared Docker volume `scrooge_runtime`.
 ## 1. Prepare configs
 
 Live config:
-- `config.yaml` (`live: true`)
+- `config/live.yaml` (`live: true`)
 
 Backtest config:
-- `config.backtest.yaml` (`live: false`)
+- `config/backtest.yaml` (`live: false`)
 
 ## 2. Prepare `.env`
 
@@ -116,7 +116,7 @@ docker compose --profile backtest run --rm backtest
 ```
 
 Optional host export for backtest artifacts:
-- Set in `config.backtest.yaml`:
+- Set in `config/backtest.yaml`:
   - `export_artifacts_to_host: true`
   - `host_artifacts_dir: /host_artifacts`
 - Host bind path is controlled by `.env`:
@@ -138,7 +138,7 @@ Open UI:
 
 ## 4. Runtime data model (live)
 
-- API edits/reads `config.yaml` via `/runtime/config.yaml`.
+- API edits/reads live config from `config/live.yaml` via `/runtime/config.yaml`.
 - Live runtime writes:
   - `/runtime/state.json` (runtime snapshot only)
   - `/runtime/trade_history.jsonl`

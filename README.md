@@ -52,9 +52,10 @@ scrooge/
 │   ├── engine.py
 │   └── event_store.py
 ├── main.py                  # Thin entry shim; keeps the Scrooge greeting
-├── config.yaml              # Main live configuration file
-├── config.backtest.yaml     # Backtest configuration file
-├── param_grid.yaml          # Optimization parameter grid
+├── config/
+│   ├── live.yaml            # Main live configuration file
+│   ├── backtest.yaml        # Backtest configuration file
+│   └── param_grid.yaml      # Optimization parameter grid
 ├── results/                 # Historical charts and configuration snapshots
 ├── requirements.bot.txt     # Slim live-runtime dependencies
 ├── requirements.backtest.txt# Backtest/report extras
@@ -99,9 +100,9 @@ BINANCE_API_SECRET=your_api_secret
 
 ---
 
-## ⚙️ Configuration (`config.yaml`)
+## ⚙️ Configuration (`config/live.yaml`)
 
-All runtime parameters are centralized in `config.yaml`.
+All runtime parameters are centralized in `config/live.yaml`.
 
 Example:
 ```yaml
@@ -123,22 +124,9 @@ enable_logs: true
 
 ## 🚀 Usage
 
-### 1. Generate Historical Data
-Fetch and prepare synchronized multi-timeframe data:
+### 1. Backtesting
 
-```bash
-python -m backtest.dataset
-```
-This will output a merged file named after your intervals:
-```
-1m1h4h.pkl
-```
-
----
-
-### 2. Backtesting
-
-Run a simulation using your `config.yaml`:
+Run a simulation using your `config/backtest.yaml`:
 ```bash
 python main.py
 ```
@@ -150,21 +138,21 @@ Results will include:
 
 ---
 
-### 3. Parameter Optimization
+### 2. Parameter Optimization
 
 Explore optimal values for stop-loss, take-profit, and RSI thresholds:
 ```bash
 python -m backtest.optimize
 ```
 
-Results are automatically stored in YAML format (e.g., `best_metrics.yaml`), with visual summaries in `results/`.
+Results are automatically stored from `config/param_grid.yaml`, with summaries written to `best_params.yaml` and `optimization_results.csv`.
 
 ---
 
-### 4. Live Trading (Experimental)
+### 3. Live Trading (Experimental)
 
 Ensure you have a Futures account and sufficient balance.  
-Then simply set `live: true` in `config.yaml` and launch manually:
+Then simply set `live: true` in `config/live.yaml` and launch manually:
 
 ```bash
 python main.py

@@ -14,14 +14,14 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PARAM_GRID_PATH = PROJECT_ROOT / "param_grid.yaml"
+PARAM_GRID_PATH = PROJECT_ROOT / "config" / "param_grid.yaml"
 RESULTS_PATH = PROJECT_ROOT / "optimization_results.csv"
 BEST_PARAMS_PATH = PROJECT_ROOT / "best_params.yaml"
 
 CONFIG_PATH = Path(
     os.getenv(
         "SCROOGE_BACKTEST_CONFIG_PATH",
-        os.getenv("SCROOGE_CONFIG_PATH", str(PROJECT_ROOT / "config.backtest.yaml")),
+        os.getenv("SCROOGE_CONFIG_PATH", str(PROJECT_ROOT / "config" / "backtest.yaml")),
     )
 ).expanduser()
 

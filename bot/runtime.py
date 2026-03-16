@@ -89,7 +89,7 @@ signal.signal(signal.SIGINT, handle_exit)
 
 
 def load_config() -> dict[str, Any]:
-    config_path = Path(os.getenv("SCROOGE_CONFIG_PATH", "config.yaml")).expanduser()
+    config_path = Path(os.getenv("SCROOGE_CONFIG_PATH", "config/live.yaml")).expanduser()
     with config_path.open("r", encoding="utf-8") as file_obj:
         config = yaml.safe_load(file_obj)
     if not isinstance(config, dict):

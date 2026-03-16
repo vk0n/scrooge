@@ -50,7 +50,7 @@ services:
       SCROOGE_RUNTIME_CHART_DATASET_PATH: "${SCROOGE_RUNTIME_CHART_DATASET_PATH:-/runtime/chart_dataset.csv}"
     volumes:
       - scrooge_runtime:/runtime
-      - ./config.yaml:/runtime/config.yaml:ro
+      - ./config/live.yaml:/runtime/config.yaml:ro
     labels:
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
@@ -81,7 +81,7 @@ services:
       SCROOGE_PUSH_ENABLED: "0"
     volumes:
       - scrooge_runtime:/runtime
-      - ./config.backtest.yaml:/runtime/config.backtest.yaml:ro
+      - ./config/backtest.yaml:/runtime/config.backtest.yaml:ro
       - ${SCROOGE_HOST_BACKTEST_ARTIFACTS_DIR:-./backtest_artifacts}:/host_artifacts
     labels:
       com.centurylinklabs.watchtower.enable: "false"
@@ -121,7 +121,7 @@ services:
       SCROOGE_CHART_DATASET_PATH: "${SCROOGE_CHART_DATASET_PATH:-/runtime/chart_dataset.csv}"
     volumes:
       - scrooge_runtime:/runtime
-      - ./config.yaml:/runtime/config.yaml
+      - ./config/live.yaml:/runtime/config.yaml
     labels:
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"
