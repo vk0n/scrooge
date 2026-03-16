@@ -30,8 +30,9 @@ scrooge/
 │   ├── engine.py
 │   ├── market_events.py
 │   └── event_store.py
-├── backtest/                # Dataset building, discrete runner/tape, replay, reporting, optimization
+├── backtest/                # Dataset building, discrete runner/tape/event-stream, replay, reporting, optimization
 │   ├── dataset.py
+│   ├── discrete_event_stream.py
 │   ├── discrete_tape.py
 │   ├── runner.py
 │   ├── replay.py
@@ -139,6 +140,7 @@ SCROOGE_CONFIG_PATH=config/backtest.yaml python main.py
 Backtest outputs include:
 - runtime artifacts for the run
 - `market_tape.jsonl`
+- `market_events.jsonl`
 - canonical `event_history.jsonl`
 - `replay_summary.json`
 - `replay_trades.jsonl`
@@ -153,12 +155,20 @@ The future realtime-grade stream boundary is reserved in:
 Backtest input modes:
 - `backtest_input_mode: build` — fetch/build dataset, then derive `market_tape.jsonl`
 - `backtest_input_mode: discrete_tape` — start directly from an existing `market_tape.jsonl`
+- `backtest_input_mode: discrete_event_stream` — start directly from an existing `market_events.jsonl`
 
 To replay from an existing tape, set in `config/backtest.yaml`:
 
 ```yaml
 backtest_input_mode: discrete_tape
 market_tape_input_path: /path/to/market_tape.jsonl
+```
+
+To replay from an existing discrete event stream:
+
+```yaml
+backtest_input_mode: discrete_event_stream
+market_event_input_path: /path/to/market_events.jsonl
 ```
 
 ### Replay a canonical event log
