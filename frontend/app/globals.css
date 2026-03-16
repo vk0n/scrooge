@@ -478,8 +478,10 @@ pre {
 }
 
 .floating-pnl-value.value-negative {
-  color: #ffc3cd;
-  text-shadow: 0 0 10px rgba(218, 78, 106, 0.2);
+  color: #ff8e9f;
+  text-shadow:
+    0 0 12px rgba(232, 79, 110, 0.24),
+    0 0 2px rgba(255, 150, 170, 0.3);
 }
 
 .value-positive {
