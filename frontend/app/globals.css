@@ -682,6 +682,14 @@ pre {
   min-width: 0;
 }
 
+.logs-toolbar-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.42rem;
+  min-width: 0;
+}
+
 .logs-toolbar-rail {
   display: flex;
   align-items: center;
@@ -2313,6 +2321,22 @@ pre {
   .logs-toolbar-rail {
     width: 100%;
     justify-content: stretch;
+  }
+
+  .logs-toolbar-group {
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .logs-toolbar-toggles {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.45rem;
+  }
+
+  .logs-toolbar-toggles > * {
+    width: 100%;
   }
 
   .logs-toolbar-rail {

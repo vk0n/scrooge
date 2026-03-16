@@ -158,26 +158,28 @@ function LogsContent(): JSX.Element {
               }}
             />
           </label>
-          <label htmlFor="autoRefresh" className="field-inline dialog-user-toggle logs-toolbar-toggle">
-            <input
-              id="autoRefresh"
-              type="checkbox"
-              className="dialog-user-check"
-              checked={autoRefresh}
-              onChange={(event) => setAutoRefresh(event.target.checked)}
-            />
-            Auto Tail
-          </label>
-          <label htmlFor="newestFirst" className="field-inline dialog-user-toggle logs-toolbar-toggle">
-            <input
-              id="newestFirst"
-              type="checkbox"
-              className="dialog-user-check"
-              checked={newestFirst}
-              onChange={(event) => setNewestFirst(event.target.checked)}
-            />
-            Newest First
-          </label>
+          <div className="logs-toolbar-toggles">
+            <label htmlFor="autoRefresh" className="field-inline dialog-user-toggle logs-toolbar-toggle">
+              <input
+                id="autoRefresh"
+                type="checkbox"
+                className="dialog-user-check"
+                checked={autoRefresh}
+                onChange={(event) => setAutoRefresh(event.target.checked)}
+              />
+              Auto Tail
+            </label>
+            <label htmlFor="newestFirst" className="field-inline dialog-user-toggle logs-toolbar-toggle">
+              <input
+                id="newestFirst"
+                type="checkbox"
+                className="dialog-user-check"
+                checked={newestFirst}
+                onChange={(event) => setNewestFirst(event.target.checked)}
+              />
+              Newest First
+            </label>
+          </div>
         </div>
         <div className="logs-toolbar-rail">
           {loading ? <span className="dialog-scrooge dialog-scrooge-compact">Loading...</span> : null}
