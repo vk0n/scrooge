@@ -32,6 +32,7 @@ scrooge/
 │   └── event_store.py
 ├── backtest/                # Dataset building, discrete runner/tape/event-stream, replay, reporting, optimization
 │   ├── dataset.py
+│   ├── agg_trade_market_event_stream.py
 │   ├── discrete_event_stream.py
 │   ├── discrete_tape.py
 │   ├── historical_market_event_stream.py
@@ -176,6 +177,7 @@ The backtest execution path is now owned by:
 - `backtest/market_event_projection.py`
 
 The realtime-grade stream path is owned by:
+- `backtest/agg_trade_market_event_stream.py`
 - `backtest/historical_market_event_stream.py`
 - `core/market_events.py`
 
@@ -183,11 +185,18 @@ Backtest input modes:
 - `backtest_input_mode: build` — fetch/build dataset, derive `market_tape.jsonl`, and synthesize a historical `market_events.jsonl`
 - `backtest_input_mode: discrete_tape` — start from an existing `market_tape.jsonl` and synthesize a historical `market_events.jsonl`
 - `backtest_input_mode: market_event_stream` — start directly from an existing `market_events.jsonl`, while also projecting `market_tape.jsonl` as an artifact
+- `backtest_input_mode: agg_trade_stream` — fetch historical Binance Futures `aggTrades`, compress them into `price_tick` events, synthesize `1m/1h/4h candle_closed` plus `indicator_snapshot`, and write a native historical `market_events.jsonl`
 
 Historical `market_events.jsonl` synthesized from candles includes:
 - intrabar `price_tick` events derived from the `1m` OHLC path
 - `candle_closed` events for `1m`, `1h`, and `4h`
 - `indicator_snapshot` events for discrete replay compatibility
+
+Historical `market_events.jsonl` synthesized from `aggTrades` includes:
+- `price_tick` events derived from public Binance Futures aggregate trades
+- by default, tick compression to `1s` so the stream stays practical for local replay
+- `candle_closed` events for `1m`, `1h`, and `4h` rebuilt from those trades
+- `indicator_snapshot` events rebuilt from the resulting candle history
 
 When replaying from `market_event_stream`, the resulting `state.json` also carries execution-sync context when available:
 - `execution_sync`
@@ -221,6 +230,21 @@ market_event_input_path: /path/to/market_events.jsonl
 That `market_events.jsonl` can come either from:
 - a backtest-generated historical realtime stream
 - or a live bot runtime captured at `runtime/market_events.jsonl`
+
+To build a historical event stream from Binance `aggTrades`:
+
+```yaml
+backtest_input_mode: agg_trade_stream
+strategy_mode: realtime
+execution_mode: simulated
+agg_trade_source: archive
+agg_trade_tick_interval: 1s
+```
+
+Notes:
+- `agg_trade_source: archive` uses Binance public data and automatically fills the latest missing tail through REST when needed
+- `agg_trade_source: rest` is available, but it is practical only for shorter windows
+- `agg_trade_tick_interval: 1s` is the recommended default for realtime backtests; `raw` is available but can get very heavy very quickly on BTCUSDT
 
 ### Replay a canonical event log
 

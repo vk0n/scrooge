@@ -9,12 +9,17 @@ from typing import Any, Callable
 import pandas as pd
 
 import backtest.dataset as dataset_module
+from backtest.agg_trade_market_event_stream import (
+    AggTradeMarketEventStreamSummary,
+    build_historical_agg_trade_market_event_stream,
+)
 from backtest.discrete_event_stream import (
     read_discrete_market_event_stream,
     write_discrete_market_event_stream,
 )
 from backtest.market_event_projection import (
     DiscreteTapeProjectionSummary,
+    project_discrete_tape_from_market_events,
     read_projected_discrete_tape_from_market_event_stream,
 )
 from backtest.historical_market_event_stream import build_historical_market_event_stream
@@ -42,6 +47,10 @@ from core.market_events import MarketEvent, market_event_from_dict
 class DiscreteBacktestConfig:
     backtest_input_mode: str
     execution_mode: str
+    agg_trade_source: str
+    agg_trade_tick_interval: str
+    agg_trade_archive_base_url: str
+    agg_trade_rest_base_url: str
     symbol: str
     leverage: float
     initial_balance: float
@@ -74,6 +83,7 @@ class DiscreteBacktestResult:
     tape: list[DiscreteMarketTapeRow]
     market_events: list[MarketEvent]
     market_event_projection: DiscreteTapeProjectionSummary | None
+    agg_trade_stream_summary: AggTradeMarketEventStreamSummary | None
     market_event_execution_summary: MarketExecutionSummary | None
     trade_alignment_summary: TradeAlignmentSummary | None
     final_balance: float
@@ -107,8 +117,8 @@ def build_discrete_backtest_config(
         input_mode = "market_event_stream"
     if input_mode == "discrete_event_stream":
         input_mode = "market_event_stream"
-    if input_mode not in {"build", "discrete_tape", "market_event_stream"}:
-        raise ValueError("backtest_input_mode must be one of: build, discrete_tape, market_event_stream")
+    if input_mode not in {"build", "discrete_tape", "market_event_stream", "agg_trade_stream"}:
+        raise ValueError("backtest_input_mode must be one of: build, discrete_tape, market_event_stream, agg_trade_stream")
     normalized_strategy_mode = str(cfg.get("strategy_mode", strategy_mode)).strip().lower() or strategy_mode
     if normalized_strategy_mode not in {"discrete", "realtime"}:
         raise ValueError("strategy_mode must be one of: discrete, realtime")
@@ -117,6 +127,14 @@ def build_discrete_backtest_config(
         raise ValueError("execution_mode must be one of: simulated, observed")
     if execution_mode == "observed" and input_mode != "market_event_stream":
         raise ValueError("execution_mode=observed requires backtest_input_mode=market_event_stream")
+    agg_trade_source = str(cfg.get("agg_trade_source", "archive")).strip().lower() or "archive"
+    if agg_trade_source not in {"archive", "rest", "auto"}:
+        raise ValueError("agg_trade_source must be one of: archive, rest, auto")
+    agg_trade_tick_interval = str(cfg.get("agg_trade_tick_interval", "1s")).strip().lower() or "1s"
+    if agg_trade_tick_interval not in {"1s", "raw"}:
+        raise ValueError("agg_trade_tick_interval must be one of: 1s, raw")
+    agg_trade_archive_base_url = str(cfg.get("agg_trade_archive_base_url", "") or "").strip()
+    agg_trade_rest_base_url = str(cfg.get("agg_trade_rest_base_url", "") or "").strip()
 
     raw_input_path = str(cfg.get("market_tape_input_path", "") or "").strip()
     market_tape_input_path = Path(raw_input_path).expanduser() if raw_input_path else None
@@ -126,6 +144,10 @@ def build_discrete_backtest_config(
     return DiscreteBacktestConfig(
         backtest_input_mode=input_mode,
         execution_mode=execution_mode,
+        agg_trade_source=agg_trade_source,
+        agg_trade_tick_interval=agg_trade_tick_interval,
+        agg_trade_archive_base_url=agg_trade_archive_base_url,
+        agg_trade_rest_base_url=agg_trade_rest_base_url,
         symbol=str(cfg["symbol"]),
         leverage=float(cfg["leverage"]),
         initial_balance=float(initial_balance),
@@ -266,6 +288,7 @@ def run_discrete_backtest(
 ) -> DiscreteBacktestResult:
     logger = technical_logger or get_technical_logger()
     market_event_projection: DiscreteTapeProjectionSummary | None = None
+    agg_trade_stream_summary: AggTradeMarketEventStreamSummary | None = None
 
     import backtest.reporting as report_module
     from backtest.reporting import (
@@ -333,6 +356,43 @@ def run_discrete_backtest(
             )
         write_discrete_market_tape(config.market_tape_path, tape)
         logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
+    elif config.backtest_input_mode == "agg_trade_stream":
+        market_events, agg_trade_stream_summary = build_historical_agg_trade_market_event_stream(
+            symbol=config.symbol,
+            backtest_period_days=config.backtest_period_days,
+            backtest_period_end_time=config.backtest_period_end_time,
+            intervals={key: str(value) for key, value in config.intervals.items()},
+            source=config.agg_trade_source,
+            tick_interval=config.agg_trade_tick_interval,
+            archive_base_url=config.agg_trade_archive_base_url,
+            rest_base_url=config.agg_trade_rest_base_url,
+        )
+        if not market_events:
+            raise ValueError("No market events were built from historical aggTrades.")
+        write_discrete_market_event_stream(config.market_event_stream_path, market_events)
+        logger.info(
+            "backtest_agg_trade_market_event_stream_written source=%s raw_trades=%s price_ticks=%s small_candles=%s medium_candles=%s big_candles=%s indicator_snapshots=%s total_events=%s path=%s",
+            agg_trade_stream_summary.source,
+            agg_trade_stream_summary.raw_agg_trades,
+            agg_trade_stream_summary.price_ticks,
+            agg_trade_stream_summary.candle_events_small,
+            agg_trade_stream_summary.candle_events_medium,
+            agg_trade_stream_summary.candle_events_big,
+            agg_trade_stream_summary.indicator_snapshots,
+            agg_trade_stream_summary.total_events,
+            config.market_event_stream_path,
+        )
+        tape, market_event_projection = project_discrete_tape_from_market_events(
+            market_events,
+            candle_interval=str(config.intervals["small"]),
+            symbol=config.symbol,
+            require_indicator_snapshot=True,
+        )
+        if not tape:
+            raise ValueError("Historical aggTrade stream produced no discrete tape rows.")
+        df = discrete_market_tape_to_frame(tape)
+        write_discrete_market_tape(config.market_tape_path, tape)
+        logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
     else:
         df = dataset_builder(
             symbol=config.symbol,
@@ -364,7 +424,7 @@ def run_discrete_backtest(
         "use_state": False,
         **config.params,
     }
-    if config.strategy_mode == "realtime" or config.backtest_input_mode == "market_event_stream":
+    if config.strategy_mode == "realtime" or config.backtest_input_mode in {"market_event_stream", "agg_trade_stream"}:
         final_balance, trades, balance_history, state = market_event_strategy_runner(
             market_events,
             candle_interval=str(config.intervals["small"]),
@@ -496,6 +556,7 @@ def run_discrete_backtest(
         tape=tape,
         market_events=market_events,
         market_event_projection=market_event_projection,
+        agg_trade_stream_summary=agg_trade_stream_summary,
         market_event_execution_summary=market_event_execution_summary,
         trade_alignment_summary=trade_alignment_summary,
         final_balance=float(final_balance),

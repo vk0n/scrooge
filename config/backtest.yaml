@@ -1,9 +1,13 @@
 live: false
-strategy_mode: discrete
+strategy_mode: realtime
 execution_mode: simulated
-backtest_input_mode: build
+backtest_input_mode: agg_trade_stream
 market_tape_input_path: ''
 market_event_input_path: ''
+agg_trade_source: archive
+agg_trade_tick_interval: 1s
+agg_trade_archive_base_url: ''
+agg_trade_rest_base_url: ''
 symbol: BTCUSDT
 leverage: 3
 initial_balance: 10000
@@ -26,7 +30,7 @@ limits:
   medium: 500
   big: 100
 backtest_period_end_time: ''
-backtest_period_days: 1825
+backtest_period_days: 30
 params:
   sl_mult: 3.7
   tp_mult: 1.9
