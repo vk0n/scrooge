@@ -2,13 +2,17 @@
 # pip install python-binance pandas pandas_ta matplotlib
 
 import os
-from dataclasses import dataclass
 import pandas as pd
 from datetime import datetime
 from core_engine import (
     DiscreteRowSnapshot,
+    EntryDecision,
+    EntryGuardRejection,
     StrategyRuntime,
+    StrategyConfig,
+    build_position_from_entry,
     initialize_strategy_runtime,
+    resolve_entry_decision,
     run_discrete_engine,
 )
 from event_log import emit_event, get_technical_logger
@@ -228,35 +232,6 @@ def _trade_margin_used(position_value, leverage_value):
     return position_value / leverage_numeric
 
 
-@dataclass(slots=True)
-class StrategyConfig:
-    qty: float | None
-    sl_mult: float
-    tp_mult: float
-    symbol: str
-    leverage: float
-    use_full_balance: bool
-    fee_rate: float
-    rsi_extreme_long: float
-    rsi_extreme_short: float
-    rsi_long_open_threshold: float
-    rsi_long_qty_threshold: float
-    rsi_long_tp_threshold: float
-    rsi_long_close_threshold: float
-    rsi_short_open_threshold: float
-    rsi_short_qty_threshold: float
-    rsi_short_tp_threshold: float
-    rsi_short_close_threshold: float
-    trail_atr_mult: float
-    allow_entries: bool
-
-
-def _calc_liquidation_price(entry, leverage_value, side):
-    if side == "long":
-        return entry * (1 - 1 / leverage_value)
-    return entry * (1 + 1 / leverage_value)
-
-
 def _consume_manual_trade_suggestion(state, live):
     suggestion = _normalize_manual_trade_suggestion(state.get("manual_trade_suggestion"))
     if suggestion is None:
@@ -302,8 +277,6 @@ def _process_discrete_row(
 
         manual_trade_suggestion = _consume_manual_trade_suggestion(state, live) if live else None
         manual_side = manual_trade_suggestion["side"] if manual_trade_suggestion else None
-        manual_long = manual_side == "buy"
-        manual_short = manual_side == "sell"
 
         qty_local = compute_qty(
             config.symbol,
@@ -314,172 +287,85 @@ def _process_discrete_row(
             config.use_full_balance,
             live,
         )
+        entry_decision = resolve_entry_decision(
+            snapshot,
+            config=config,
+            qty_local=qty_local,
+            manual_side=manual_side,
+        )
 
-        if (price < lower and rsi < config.rsi_long_open_threshold and price > ema) or manual_long:
-            qty_open = qty_local * 0.5 if rsi > config.rsi_long_qty_threshold else qty_local
-            full_balance_stake = rsi <= config.rsi_long_qty_threshold
-            sl = price - atr * config.sl_mult
-            tp = price + atr * config.tp_mult
-            liquidation_price = _calc_liquidation_price(price, config.leverage, "long")
+        if isinstance(entry_decision, EntryGuardRejection):
+            emit_event(
+                code="entry_skipped_liquidation_guard",
+                category="risk",
+                ts=log_ts,
+                level="warning",
+                log_buffer=log_buffer,
+                symbol=config.symbol,
+                side=entry_decision.side,
+                entry=entry_decision.entry,
+                sl=entry_decision.sl,
+                liq_price=entry_decision.liq_price,
+                trigger=entry_decision.trigger,
+            )
+        elif isinstance(entry_decision, EntryDecision):
+            position = build_position_from_entry(entry_decision, row_ts=row_ts)
+            _refresh_position_snapshot(position, price, config.leverage, row_ts)
 
-            if sl < liquidation_price:
+            if live:
+                if can_open_trade(config.symbol, entry_decision.size, config.leverage):
+                    side_command = "BUY" if entry_decision.side == "long" else "SELL"
+                    open_position(
+                        config.symbol,
+                        side_command,
+                        entry_decision.size,
+                        entry_decision.sl,
+                        entry_decision.tp,
+                        config.leverage,
+                    )
+                    balance = get_balance()
+                    update_position(state, position)
+                    update_balance(state, balance)
                 emit_event(
-                    code="entry_skipped_liquidation_guard",
-                    category="risk",
+                    code="trade_opened",
+                    category="trade",
                     ts=log_ts,
-                    level="warning",
+                    level="info",
+                    notify=True,
                     log_buffer=log_buffer,
                     symbol=config.symbol,
-                    side="long",
-                    entry=price,
-                    sl=sl,
-                    liq_price=liquidation_price,
-                    trigger="manual_suggestion" if manual_long else "strategy_rules",
+                    side=entry_decision.side,
+                    entry=entry_decision.entry,
+                    sl=entry_decision.sl,
+                    tp=entry_decision.tp,
+                    size=entry_decision.size,
+                    leverage=config.leverage,
+                    fee=entry_decision.size * price * config.fee_rate,
+                    rsi=rsi,
+                    stake_mode=entry_decision.stake_mode,
+                    trigger=entry_decision.trigger,
                 )
             else:
-                position = {
-                    "side": "long",
-                    "size": qty_open,
-                    "entry": price,
-                    "sl": sl,
-                    "tp": tp,
-                    "liq_price": liquidation_price,
-                    "trail_active": False,
-                    "trail_price": None,
-                    "time": row_ts,
-                    "entry_time": row_ts,
-                }
-                _refresh_position_snapshot(position, price, config.leverage, row_ts)
-
-                if live:
-                    if can_open_trade(config.symbol, qty_open, config.leverage):
-                        open_position(config.symbol, "BUY", qty_open, sl, tp, config.leverage)
-                        balance = get_balance()
-                        update_position(state, position)
-                        update_balance(state, balance)
-                    emit_event(
-                        code="trade_opened",
-                        category="trade",
-                        ts=log_ts,
-                        level="info",
-                        notify=True,
-                        log_buffer=log_buffer,
-                        symbol=config.symbol,
-                        side="long",
-                        entry=price,
-                        sl=sl,
-                        tp=tp,
-                        size=qty_open,
-                        leverage=config.leverage,
-                        fee=qty_open * price * config.fee_rate,
-                        rsi=rsi,
-                        stake_mode="full" if full_balance_stake else "half",
-                        trigger="manual_suggestion" if manual_long else "strategy_rules",
-                    )
-                else:
-                    balance -= qty_open * price * config.fee_rate
-                    emit_event(
-                        code="trade_opened",
-                        category="trade",
-                        ts=log_ts,
-                        level="info",
-                        notify=True,
-                        log_buffer=log_buffer,
-                        symbol=config.symbol,
-                        side="long",
-                        entry=price,
-                        sl=sl,
-                        tp=tp,
-                        size=qty_open,
-                        leverage=config.leverage,
-                        fee=qty_open * price * config.fee_rate,
-                        rsi=rsi,
-                        stake_mode="full" if full_balance_stake else "half",
-                        trigger="manual_suggestion" if manual_long else "strategy_rules",
-                    )
-
-        elif (price > upper and rsi > config.rsi_short_open_threshold and price < ema) or manual_short:
-            qty_open = qty_local * 0.5 if rsi < config.rsi_short_qty_threshold else qty_local
-            full_balance_stake = rsi >= config.rsi_short_qty_threshold
-            sl = price + atr * config.sl_mult
-            tp = price - atr * config.tp_mult
-            liquidation_price = _calc_liquidation_price(price, config.leverage, "short")
-
-            if sl > liquidation_price:
+                balance -= entry_decision.size * price * config.fee_rate
                 emit_event(
-                    code="entry_skipped_liquidation_guard",
-                    category="risk",
+                    code="trade_opened",
+                    category="trade",
                     ts=log_ts,
-                    level="warning",
+                    level="info",
+                    notify=True,
                     log_buffer=log_buffer,
                     symbol=config.symbol,
-                    side="short",
-                    entry=price,
-                    sl=sl,
-                    liq_price=liquidation_price,
-                    trigger="manual_suggestion" if manual_short else "strategy_rules",
+                    side=entry_decision.side,
+                    entry=entry_decision.entry,
+                    sl=entry_decision.sl,
+                    tp=entry_decision.tp,
+                    size=entry_decision.size,
+                    leverage=config.leverage,
+                    fee=entry_decision.size * price * config.fee_rate,
+                    rsi=rsi,
+                    stake_mode=entry_decision.stake_mode,
+                    trigger=entry_decision.trigger,
                 )
-            else:
-                position = {
-                    "side": "short",
-                    "size": qty_open,
-                    "entry": price,
-                    "sl": sl,
-                    "tp": tp,
-                    "liq_price": liquidation_price,
-                    "trail_active": False,
-                    "trail_price": None,
-                    "time": row_ts,
-                    "entry_time": row_ts,
-                }
-                _refresh_position_snapshot(position, price, config.leverage, row_ts)
-
-                if live:
-                    if can_open_trade(config.symbol, qty_open, config.leverage):
-                        open_position(config.symbol, "SELL", qty_open, sl, tp, config.leverage)
-                        balance = get_balance()
-                        update_position(state, position)
-                        update_balance(state, balance)
-                    emit_event(
-                        code="trade_opened",
-                        category="trade",
-                        ts=log_ts,
-                        level="info",
-                        notify=True,
-                        log_buffer=log_buffer,
-                        symbol=config.symbol,
-                        side="short",
-                        entry=price,
-                        sl=sl,
-                        tp=tp,
-                        size=qty_open,
-                        leverage=config.leverage,
-                        fee=qty_open * price * config.fee_rate,
-                        rsi=rsi,
-                        stake_mode="full" if full_balance_stake else "half",
-                        trigger="manual_suggestion" if manual_short else "strategy_rules",
-                    )
-                else:
-                    balance -= qty_open * price * config.fee_rate
-                    emit_event(
-                        code="trade_opened",
-                        category="trade",
-                        ts=log_ts,
-                        level="info",
-                        notify=True,
-                        log_buffer=log_buffer,
-                        symbol=config.symbol,
-                        side="short",
-                        entry=price,
-                        sl=sl,
-                        tp=tp,
-                        size=qty_open,
-                        leverage=config.leverage,
-                        fee=qty_open * price * config.fee_rate,
-                        rsi=rsi,
-                        stake_mode="full" if full_balance_stake else "half",
-                        trigger="manual_suggestion" if manual_short else "strategy_rules",
-                    )
 
     else:
         size = position["size"]

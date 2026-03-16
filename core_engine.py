@@ -35,6 +35,50 @@ class StrategyRuntime:
     enable_logs: bool
 
 
+@dataclass(slots=True)
+class StrategyConfig:
+    qty: float | None
+    sl_mult: float
+    tp_mult: float
+    symbol: str
+    leverage: float
+    use_full_balance: bool
+    fee_rate: float
+    rsi_extreme_long: float
+    rsi_extreme_short: float
+    rsi_long_open_threshold: float
+    rsi_long_qty_threshold: float
+    rsi_long_tp_threshold: float
+    rsi_long_close_threshold: float
+    rsi_short_open_threshold: float
+    rsi_short_qty_threshold: float
+    rsi_short_tp_threshold: float
+    rsi_short_close_threshold: float
+    trail_atr_mult: float
+    allow_entries: bool
+
+
+@dataclass(slots=True)
+class EntryDecision:
+    side: str
+    size: float
+    entry: float
+    sl: float
+    tp: float
+    liq_price: float
+    stake_mode: str
+    trigger: str
+
+
+@dataclass(slots=True)
+class EntryGuardRejection:
+    side: str
+    entry: float
+    sl: float
+    liq_price: float
+    trigger: str
+
+
 def initialize_strategy_runtime(
     *,
     live: bool,
@@ -100,6 +144,97 @@ def build_row_snapshot(
         row_ts=row_ts,
         log_ts=log_ts,
     )
+
+
+def calc_liquidation_price(entry: float, leverage_value: float, side: str) -> float:
+    if side == "long":
+        return entry * (1 - 1 / leverage_value)
+    return entry * (1 + 1 / leverage_value)
+
+
+def resolve_entry_decision(
+    snapshot: DiscreteRowSnapshot,
+    *,
+    config: StrategyConfig,
+    qty_local: float,
+    manual_side: str | None,
+) -> EntryDecision | EntryGuardRejection | None:
+    price = snapshot.price
+    lower = snapshot.lower
+    upper = snapshot.upper
+    atr = snapshot.atr
+    rsi = snapshot.rsi
+    ema = snapshot.ema
+
+    manual_long = manual_side == "buy"
+    manual_short = manual_side == "sell"
+
+    if (price < lower and rsi < config.rsi_long_open_threshold and price > ema) or manual_long:
+        size = qty_local * 0.5 if rsi > config.rsi_long_qty_threshold else qty_local
+        sl = price - atr * config.sl_mult
+        tp = price + atr * config.tp_mult
+        liq_price = calc_liquidation_price(price, config.leverage, "long")
+        trigger = "manual_suggestion" if manual_long else "strategy_rules"
+        if sl < liq_price:
+            return EntryGuardRejection(
+                side="long",
+                entry=price,
+                sl=sl,
+                liq_price=liq_price,
+                trigger=trigger,
+            )
+        return EntryDecision(
+            side="long",
+            size=size,
+            entry=price,
+            sl=sl,
+            tp=tp,
+            liq_price=liq_price,
+            stake_mode="half" if rsi > config.rsi_long_qty_threshold else "full",
+            trigger=trigger,
+        )
+
+    if (price > upper and rsi > config.rsi_short_open_threshold and price < ema) or manual_short:
+        size = qty_local * 0.5 if rsi < config.rsi_short_qty_threshold else qty_local
+        sl = price + atr * config.sl_mult
+        tp = price - atr * config.tp_mult
+        liq_price = calc_liquidation_price(price, config.leverage, "short")
+        trigger = "manual_suggestion" if manual_short else "strategy_rules"
+        if sl > liq_price:
+            return EntryGuardRejection(
+                side="short",
+                entry=price,
+                sl=sl,
+                liq_price=liq_price,
+                trigger=trigger,
+            )
+        return EntryDecision(
+            side="short",
+            size=size,
+            entry=price,
+            sl=sl,
+            tp=tp,
+            liq_price=liq_price,
+            stake_mode="half" if rsi < config.rsi_short_qty_threshold else "full",
+            trigger=trigger,
+        )
+
+    return None
+
+
+def build_position_from_entry(decision: EntryDecision, *, row_ts: str) -> dict[str, Any]:
+    return {
+        "side": decision.side,
+        "size": decision.size,
+        "entry": decision.entry,
+        "sl": decision.sl,
+        "tp": decision.tp,
+        "liq_price": decision.liq_price,
+        "trail_active": False,
+        "trail_price": None,
+        "time": row_ts,
+        "entry_time": row_ts,
+    }
 
 
 def finalize_strategy_runtime(
