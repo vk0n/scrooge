@@ -1160,7 +1160,7 @@ function DashboardContent(): JSX.Element {
               </div>
             ) : null}
 
-            <div className="toolbar">
+            <div className="toolbar office-runtime-toolbar">
               {!tradingEnabled ? (
                 <button
                   type="button"
