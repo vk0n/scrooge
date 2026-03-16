@@ -11,6 +11,7 @@ It currently supports:
 - discrete backtests
 - canonical event logging and replay artifacts
 - a canonical discrete market tape for backtest runs
+- a separate shared schema boundary for future realtime-grade market events
 
 ## Project Structure
 
@@ -27,9 +28,11 @@ scrooge/
 │   └── trade.py
 ├── core/                    # Shared engine and canonical event storage
 │   ├── engine.py
+│   ├── market_events.py
 │   └── event_store.py
-├── backtest/                # Dataset building, discrete runner, replay, reporting, optimization
+├── backtest/                # Dataset building, discrete runner/tape, replay, reporting, optimization
 │   ├── dataset.py
+│   ├── discrete_tape.py
 │   ├── runner.py
 │   ├── replay.py
 │   ├── reporting.py
@@ -142,16 +145,19 @@ Backtest outputs include:
 
 The backtest execution path is now owned by:
 - `backtest/runner.py`
-- `backtest/tape.py`
+- `backtest/discrete_tape.py`
+
+The future realtime-grade stream boundary is reserved in:
+- `core/market_events.py`
 
 Backtest input modes:
 - `backtest_input_mode: build` — fetch/build dataset, then derive `market_tape.jsonl`
-- `backtest_input_mode: tape` — start directly from an existing `market_tape.jsonl`
+- `backtest_input_mode: discrete_tape` — start directly from an existing `market_tape.jsonl`
 
 To replay from an existing tape, set in `config/backtest.yaml`:
 
 ```yaml
-backtest_input_mode: tape
+backtest_input_mode: discrete_tape
 market_tape_input_path: /path/to/market_tape.jsonl
 ```
 

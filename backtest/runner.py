@@ -9,15 +9,15 @@ from typing import Any, Callable
 import pandas as pd
 
 import backtest.dataset as dataset_module
-from backtest.dataset import build_dataset
-from backtest.replay import ReplaySummary, write_replay_artifacts
-from backtest.tape import (
+from backtest.discrete_tape import (
     DiscreteMarketTapeRow,
     build_discrete_market_tape,
     discrete_market_tape_to_frame,
     read_discrete_market_tape,
     write_discrete_market_tape,
 )
+from backtest.dataset import build_dataset
+from backtest.replay import ReplaySummary, write_replay_artifacts
 from bot.event_log import get_technical_logger
 from bot.state import save_state
 from core.engine import run_strategy_on_tape
@@ -79,8 +79,10 @@ def build_discrete_backtest_config(
         raise ValueError("Backtest config must include initial_balance.")
 
     input_mode = str(cfg.get("backtest_input_mode", "build")).strip().lower() or "build"
-    if input_mode not in {"build", "tape"}:
-        raise ValueError("backtest_input_mode must be one of: build, tape")
+    if input_mode == "tape":
+        input_mode = "discrete_tape"
+    if input_mode not in {"build", "discrete_tape"}:
+        raise ValueError("backtest_input_mode must be one of: build, discrete_tape")
 
     raw_input_path = str(cfg.get("market_tape_input_path", "") or "").strip()
     market_tape_input_path = Path(raw_input_path).expanduser() if raw_input_path else None
@@ -235,7 +237,7 @@ def run_discrete_backtest(
         report_module.set_client(config.client)
 
     logger.info("bot_mode_backtest_started symbol=%s leverage=%s", config.symbol, config.leverage)
-    if config.backtest_input_mode == "tape":
+    if config.backtest_input_mode == "discrete_tape":
         source_path = config.market_tape_input_path or config.market_tape_path
         tape = read_discrete_market_tape(source_path)
         if not tape:
