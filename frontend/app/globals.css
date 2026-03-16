@@ -467,6 +467,21 @@ pre {
   word-break: break-word;
 }
 
+.floating-pnl-value {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.floating-pnl-value.value-positive {
+  color: #b9f6d5;
+  text-shadow: 0 0 10px rgba(69, 199, 137, 0.22);
+}
+
+.floating-pnl-value.value-negative {
+  color: #ffc3cd;
+  text-shadow: 0 0 10px rgba(218, 78, 106, 0.2);
+}
+
 .value-positive {
   color: var(--value-positive);
 }
@@ -1956,9 +1971,10 @@ pre {
   }
 
   .status-chip-value {
-    width: 100%;
+    width: auto;
+    max-width: 100%;
     justify-content: flex-start;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
   }
 
   .status-chip .badge {
@@ -2317,16 +2333,13 @@ pre {
   }
 
   .chart-toolbar-group-primary {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    justify-content: stretch;
+    justify-content: flex-end;
     width: 100%;
   }
 
   .chart-toolbar-status {
     margin-left: 0;
-    justify-self: start;
+    margin-right: auto;
   }
 
   .chart-panel {

@@ -1128,10 +1128,10 @@ function ChartContent(): JSX.Element {
               </div>
 
               <div className="chart-toolbar-group chart-toolbar-group-primary">
+                {loading ? <span className="dialog-scrooge dialog-scrooge-compact chart-toolbar-status">Loading...</span> : null}
                 <button type="button" className="dialog-user-btn chart-toolbar-btn" onClick={() => void loadChart(false)}>
                   Scout Now
                 </button>
-                {loading ? <span className="dialog-scrooge dialog-scrooge-compact chart-toolbar-status">Loading...</span> : null}
               </div>
             </div>
           </div>

@@ -238,15 +238,15 @@ function formatPositionSide(side: unknown): string {
 
 function unrealizedPnlClass(value: number | null): string {
   if (value === null) {
-    return "metric-value value-neutral";
+    return "metric-value floating-pnl-value value-neutral";
   }
   if (value > 0) {
-    return "metric-value value-positive";
+    return "metric-value floating-pnl-value value-positive";
   }
   if (value < 0) {
-    return "metric-value value-negative";
+    return "metric-value floating-pnl-value value-negative";
   }
-  return "metric-value value-neutral";
+  return "metric-value floating-pnl-value value-neutral";
 }
 
 function formatUnrealizedPnlUsd(value: number | null): string {
