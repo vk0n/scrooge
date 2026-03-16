@@ -174,6 +174,19 @@ def format_event_timestamp(value: Any) -> str:
     return text_value or datetime.now().strftime(TIMESTAMP_FORMAT)
 
 
+def _row_value(row: Any, key: str) -> Any:
+    if isinstance(row, pd.Series):
+        return row.get(key)
+    if isinstance(row, dict):
+        return row.get(key)
+    if hasattr(row, key):
+        return getattr(row, key)
+    getter = getattr(row, "get", None)
+    if callable(getter):
+        return getter(key)
+    return None
+
+
 def to_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -353,12 +366,19 @@ def initialize_strategy_runtime(
     )
 
 
-def iter_discrete_rows(df: pd.DataFrame, *, live: bool, show_progress: bool) -> Any:
-    if live:
-        return [df.iloc[-1]]
+def iter_discrete_rows(rows: Any, *, live: bool, show_progress: bool) -> Any:
+    if isinstance(rows, pd.DataFrame):
+        if live:
+            return [rows.iloc[-1]]
+        df_iter = [rows.iloc[i] for i in range(1, len(rows))]
+        return tqdm(df_iter, desc="Backtest Progress", disable=not show_progress)
 
-    df_iter = [df.iloc[i] for i in range(1, len(df))]
-    return tqdm(df_iter, desc="Backtest Progress", disable=not show_progress)
+    row_list = list(rows)
+    if live:
+        return row_list[-1:] if row_list else []
+
+    tape_iter = row_list[1:]
+    return tqdm(tape_iter, desc="Backtest Progress", disable=not show_progress)
 
 
 def build_row_snapshot(
@@ -368,17 +388,17 @@ def build_row_snapshot(
     timestamp_format: str,
     timestamp_formatter: Callable[[Any], str],
 ) -> DiscreteRowSnapshot:
-    row_ts = timestamp_formatter(row.get("open_time"))
+    row_ts = timestamp_formatter(_row_value(row, "open_time"))
     log_ts = datetime.now().strftime(timestamp_format) if live else row_ts
     return DiscreteRowSnapshot(
         raw_row=row,
-        price=row["close"],
-        lower=row["BBL"],
-        upper=row["BBU"],
-        mid=row["BBM"],
-        atr=row["ATR"],
-        rsi=row["RSI"],
-        ema=row["EMA"],
+        price=_row_value(row, "close"),
+        lower=_row_value(row, "BBL"),
+        upper=_row_value(row, "BBU"),
+        mid=_row_value(row, "BBM"),
+        atr=_row_value(row, "ATR"),
+        rsi=_row_value(row, "RSI"),
+        ema=_row_value(row, "EMA"),
         row_ts=row_ts,
         log_ts=log_ts,
     )
@@ -1173,6 +1193,13 @@ def run_strategy(
         save_log_fn=save_log,
         save_state_fn=save_state,
     )
+
+
+def run_strategy_on_tape(
+    tape_rows,
+    **kwargs,
+):
+    return run_strategy(tape_rows, **kwargs)
 
 
 def finalize_strategy_runtime(

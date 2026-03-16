@@ -198,6 +198,7 @@ Each backtest run emits:
 - `trade_history.jsonl`
 - `balance_history.jsonl`
 - `trading_log.txt`
+- `market_tape.jsonl`
 - `event_history.jsonl`
 - `chart_dataset.csv`
 - `replay_summary.json`

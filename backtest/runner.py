@@ -11,9 +11,10 @@ import pandas as pd
 import backtest.dataset as dataset_module
 from backtest.dataset import build_dataset
 from backtest.replay import ReplaySummary, write_replay_artifacts
+from backtest.tape import DiscreteMarketTapeRow, build_discrete_market_tape, write_discrete_market_tape
 from bot.event_log import get_technical_logger
 from bot.state import save_state
-from core.engine import run_strategy
+from core.engine import run_strategy_on_tape
 
 
 @dataclass(slots=True)
@@ -35,6 +36,7 @@ class DiscreteBacktestConfig:
     rolling_window_workers: int | None
     chart_dataset_path: Path
     event_log_path: Path
+    market_tape_path: Path
     runtime_mode: str
     strategy_mode: str
     client: Any | None = None
@@ -43,6 +45,7 @@ class DiscreteBacktestConfig:
 @dataclass(slots=True)
 class DiscreteBacktestResult:
     dataset: pd.DataFrame
+    tape: list[DiscreteMarketTapeRow]
     final_balance: float
     trades: pd.DataFrame
     balance_history: list[float]
@@ -85,6 +88,7 @@ def build_discrete_backtest_config(
         rolling_window_workers=cfg.get("rolling_window_workers"),
         chart_dataset_path=Path(chart_dataset_path).expanduser(),
         event_log_path=Path(event_log_path).expanduser(),
+        market_tape_path=Path(event_log_path).expanduser().with_name("market_tape.jsonl"),
         runtime_mode=runtime_mode,
         strategy_mode=strategy_mode,
         client=client,
@@ -196,7 +200,7 @@ def run_discrete_backtest(
     *,
     technical_logger: Any | None = None,
     dataset_builder: Callable[..., pd.DataFrame] = build_dataset,
-    strategy_runner: Callable[..., tuple[float, pd.DataFrame, list[float], dict[str, Any]]] = run_strategy,
+    strategy_runner: Callable[..., tuple[float, pd.DataFrame, list[float], dict[str, Any]]] = run_strategy_on_tape,
     replay_writer: Callable[..., ReplaySummary] = write_replay_artifacts,
 ) -> DiscreteBacktestResult:
     logger = technical_logger or get_technical_logger()
@@ -220,9 +224,12 @@ def run_discrete_backtest(
         backtest_period_days=config.backtest_period_days,
         backtest_period_end_time=config.backtest_period_end_time,
     )
+    tape = build_discrete_market_tape(df, symbol=config.symbol)
+    write_discrete_market_tape(config.market_tape_path, tape)
+    logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
 
     final_balance, trades, balance_history, state = strategy_runner(
-        df,
+        tape,
         live=False,
         initial_balance=config.initial_balance,
         qty=config.qty,
@@ -285,6 +292,7 @@ def run_discrete_backtest(
 
     return DiscreteBacktestResult(
         dataset=df,
+        tape=tape,
         final_balance=float(final_balance),
         trades=trades,
         balance_history=balance_history,

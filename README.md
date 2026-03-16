@@ -10,6 +10,7 @@ It currently supports:
 - a local control plane (`api/` + `frontend/`)
 - discrete backtests
 - canonical event logging and replay artifacts
+- a canonical discrete market tape for backtest runs
 
 ## Project Structure
 
@@ -134,12 +135,14 @@ SCROOGE_CONFIG_PATH=config/backtest.yaml python main.py
 
 Backtest outputs include:
 - runtime artifacts for the run
+- `market_tape.jsonl`
 - canonical `event_history.jsonl`
 - `replay_summary.json`
 - `replay_trades.jsonl`
 
 The backtest execution path is now owned by:
 - `backtest/runner.py`
+- `backtest/tape.py`
 
 ### Replay a canonical event log
 
