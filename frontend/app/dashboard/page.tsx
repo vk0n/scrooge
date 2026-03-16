@@ -1072,7 +1072,7 @@ function DashboardContent(): JSX.Element {
                         Apply Net
                       </button>
                     </div>
-                    <p className={`trade-edit-preview value-${slDraftPreview?.tone ?? "neutral"}`}>
+                    <p className={`trade-edit-preview floating-pnl-value value-${slDraftPreview?.tone ?? "neutral"}`}>
                       If hit: {slDraftPreview ? formatUnrealizedPnlUsd(slDraftPreview.pnlUsd) : "N/A"}
                     </p>
                   </div>
@@ -1101,7 +1101,7 @@ function DashboardContent(): JSX.Element {
                         Mark Treasure
                       </button>
                     </div>
-                    <p className={`trade-edit-preview value-${tpDraftPreview?.tone ?? "neutral"}`}>
+                    <p className={`trade-edit-preview floating-pnl-value value-${tpDraftPreview?.tone ?? "neutral"}`}>
                       If hit: {tpDraftPreview ? formatUnrealizedPnlUsd(tpDraftPreview.pnlUsd) : "N/A"}
                     </p>
                   </div>
