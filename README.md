@@ -42,6 +42,7 @@ scrooge/
 ├── strategy.py              # Core trading logic (RSI/EMA/Bollinger)
 ├── trade.py                 # Binance Futures order management
 ├── state.py                 # Persistent storage for open positions
+├── replay.py                # Canonical event-log replay and trade reconstruction
 ├── optimize.py              # Automated parameter optimization script
 ├── report.py                # Plotting and performance visualization
 ├── main.py                  # Entry point for backtesting or live trading
@@ -74,6 +75,11 @@ pip install -r requirements.txt
 `requirements.txt` installs the full local toolchain. Docker uses a slimmer dependency split internally:
 - `docker/bot.Dockerfile` -> `requirements.bot.txt`
 - `docker/backtest.Dockerfile` -> `requirements.backtest.txt`
+
+Canonical event replay summary:
+```bash
+python replay.py /path/to/event_history.jsonl --runtime-mode backtest --strategy-mode discrete
+```
 
 ### 4. Set Up Environment Variables
 Create a `.env` file in the project root:

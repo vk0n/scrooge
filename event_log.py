@@ -27,6 +27,11 @@ KNOWN_QUOTE_ASSETS = (
 )
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "1" if default else "0").strip().lower()
+    return raw not in {"0", "false", "no", "off", ""}
+
+
 def _as_float(value: Any) -> float | None:
     try:
         numeric = float(value)
@@ -311,6 +316,13 @@ def get_technical_logger() -> logging.Logger:
     return _ensure_technical_logger()
 
 
+def _should_emit_event_to_stdout(event: dict[str, Any]) -> bool:
+    runtime_mode = str(event.get("runtime_mode") or "").strip().lower()
+    if runtime_mode == "backtest":
+        return _env_flag("SCROOGE_BACKTEST_EVENT_STDOUT_ENABLED", False)
+    return _env_flag("SCROOGE_EVENT_STDOUT_ENABLED", True)
+
+
 def append_ui_log_line(ts: str, message: str, *, log_buffer: list[str] | None = None, ui_log_path: Path | None = None) -> None:
     line = f"[{ts}] {message}"
     if log_buffer is not None:
@@ -370,7 +382,8 @@ def emit_event(
         get_event_store().append(event)
     except OSError:
         logger.exception("Failed to append canonical event record")
-    logger.log(log_level, json.dumps(event, ensure_ascii=True, sort_keys=True, default=str))
+    if _should_emit_event_to_stdout(event):
+        logger.log(log_level, json.dumps(event, ensure_ascii=True, sort_keys=True, default=str))
     if dispatch_event_push is not None:
         dispatch_event_push(event)
     return event
