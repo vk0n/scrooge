@@ -5,9 +5,9 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY requirements.bot.txt /app/requirements.bot.txt
-COPY requirements.backtest.txt /app/requirements.backtest.txt
-RUN pip install --no-cache-dir -r /app/requirements.backtest.txt
+COPY requirements/bot.txt /app/requirements/bot.txt
+COPY requirements/backtest.txt /app/requirements/backtest.txt
+RUN pip install --no-cache-dir -r /app/requirements/backtest.txt
 
 COPY . /app
 

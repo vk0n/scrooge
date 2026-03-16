@@ -146,7 +146,7 @@ def _ensure_runtime_log_file() -> None:
     Ensure runtime log file exists so API logs endpoint can read it immediately.
     """
     try:
-        log_path = Path(os.getenv("SCROOGE_LOG_FILE", "trading_log.txt")).expanduser()
+        log_path = Path(os.getenv("SCROOGE_LOG_FILE", "runtime/trading_log.txt")).expanduser()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch(exist_ok=True)
     except OSError as exc:
@@ -421,7 +421,7 @@ if __name__ == "__main__":
     control_poll_slice_seconds = _env_int("SCROOGE_CONTROL_POLL_SLICE_SECONDS", 1)
     user_stream_stale_after_seconds = _env_float("SCROOGE_USER_STREAM_STALE_AFTER_SECONDS", 120.0)
     debug_strategy_ticks = _env_flag("SCROOGE_DEBUG_STRATEGY_TICKS", False)
-    chart_dataset_path = Path(os.getenv("SCROOGE_RUNTIME_CHART_DATASET_PATH", "chart_dataset.csv")).expanduser()
+    chart_dataset_path = Path(os.getenv("SCROOGE_RUNTIME_CHART_DATASET_PATH", "runtime/chart_dataset.csv")).expanduser()
 
     load_dotenv()
     api_key = os.getenv("BINANCE_API_KEY")
@@ -432,7 +432,7 @@ if __name__ == "__main__":
 
     # Load or create state
     state = load_state()
-    state_path = Path(os.getenv("SCROOGE_STATE_FILE", "state.json")).expanduser()
+    state_path = Path(os.getenv("SCROOGE_STATE_FILE", "runtime/state.json")).expanduser()
     if not state_path.exists():
         save_state(state)
         technical_logger.info("state_initialized path=%s", state_path)
@@ -749,7 +749,7 @@ if __name__ == "__main__":
             balance_history=balance_history,
         )
         replay_summary = write_replay_artifacts(
-            os.getenv("SCROOGE_EVENT_LOG_FILE", "event_history.jsonl"),
+            os.getenv("SCROOGE_EVENT_LOG_FILE", "runtime/event_history.jsonl"),
             runtime_mode=os.getenv("SCROOGE_RUNTIME_MODE", "backtest"),
             strategy_mode=os.getenv("SCROOGE_STRATEGY_MODE", "discrete"),
             symbol=symbol,
@@ -758,7 +758,7 @@ if __name__ == "__main__":
             "backtest_replay_artifacts_written trades=%s net_pnl=%.8f path=%s",
             replay_summary.closed_trades,
             replay_summary.net_pnl,
-            os.getenv("SCROOGE_EVENT_LOG_FILE", "event_history.jsonl"),
+            os.getenv("SCROOGE_EVENT_LOG_FILE", "runtime/event_history.jsonl"),
         )
         stats = compute_stats(initial_balance, final_balance, trades, balance_history)
 

@@ -35,7 +35,7 @@ jobs:
             bot:
               - '.dockerignore'
               - 'docker/bot.Dockerfile'
-              - 'requirements.bot.txt'
+              - 'requirements/**'
               - 'docker/backtest_entrypoint.sh'
               - 'config/**'
               - '*.py'
@@ -48,8 +48,7 @@ jobs:
               - '.dockerignore'
               - 'docker/backtest.Dockerfile'
               - 'docker/backtest_entrypoint.sh'
-              - 'requirements.bot.txt'
-              - 'requirements.backtest.txt'
+              - 'requirements/**'
               - 'config/**'
               - '*.py'
               - 'bot/**'

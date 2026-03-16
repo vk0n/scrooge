@@ -9,7 +9,7 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-LOG_PATH = Path(os.getenv("SCROOGE_LOG_PATH", str(_project_root() / "trading_log.txt"))).expanduser()
+LOG_PATH = Path(os.getenv("SCROOGE_LOG_PATH", str(_project_root() / "runtime" / "trading_log.txt"))).expanduser()
 
 
 def _ensure_log_file_exists() -> None:

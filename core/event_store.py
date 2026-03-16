@@ -9,7 +9,7 @@ from uuid import uuid4
 
 
 EVENT_SCHEMA_VERSION = 1
-EVENT_LOG_FILE = os.getenv("SCROOGE_EVENT_LOG_FILE", "event_history.jsonl")
+EVENT_LOG_FILE = os.getenv("SCROOGE_EVENT_LOG_FILE", "runtime/event_history.jsonl")
 DEFAULT_RUNTIME_MODE = os.getenv("SCROOGE_RUNTIME_MODE", "").strip() or None
 DEFAULT_STRATEGY_MODE = os.getenv("SCROOGE_STRATEGY_MODE", "").strip() or None
 EVENT_STORE_LOGGER_NAME = "scrooge.event_store"

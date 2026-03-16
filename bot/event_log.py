@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover - api package may be unavailable in some
     dispatch_event_push = None
 
 
-UI_LOG_PATH = Path(os.getenv("SCROOGE_LOG_FILE", "trading_log.txt")).expanduser()
+UI_LOG_PATH = Path(os.getenv("SCROOGE_LOG_FILE", "runtime/trading_log.txt")).expanduser()
 TECHNICAL_LOGGER_NAME = "scrooge.bot"
 KNOWN_QUOTE_ASSETS = (
     "USDT",

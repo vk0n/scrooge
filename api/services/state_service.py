@@ -11,7 +11,7 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-STATE_PATH = Path(os.getenv("SCROOGE_STATE_PATH", str(_project_root() / "state.json"))).expanduser()
+STATE_PATH = Path(os.getenv("SCROOGE_STATE_PATH", str(_project_root() / "runtime" / "state.json"))).expanduser()
 
 SEARCH_STATUS_LABELS = {
     "looking_for_buy_opportunity": "Looking for a buy opportunity...",

@@ -139,7 +139,7 @@ _TRANSIENT_POSITION_FIELDS = {
 }
 
 
-LOG_FILE = os.getenv("SCROOGE_LOG_FILE", "trading_log.txt")
+LOG_FILE = os.getenv("SCROOGE_LOG_FILE", "runtime/trading_log.txt")
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 SEARCH_STATUS_LABELS = {
     "looking_for_buy_opportunity": "Looking for a buy opportunity...",

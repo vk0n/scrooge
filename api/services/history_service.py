@@ -11,7 +11,7 @@ def _project_root() -> Path:
 
 
 def _default_state_path() -> Path:
-    raw_state_path = os.getenv("SCROOGE_STATE_PATH", str(_project_root() / "state.json"))
+    raw_state_path = os.getenv("SCROOGE_STATE_PATH", str(_project_root() / "runtime" / "state.json"))
     return Path(raw_state_path).expanduser()
 
 

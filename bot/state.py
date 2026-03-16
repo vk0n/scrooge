@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 from bot.event_log import get_technical_logger
 
-STATE_FILE = os.getenv("SCROOGE_STATE_FILE", "state.json")
-TRADE_HISTORY_FILE = os.getenv("SCROOGE_TRADE_HISTORY_FILE", "trade_history.jsonl")
-BALANCE_HISTORY_FILE = os.getenv("SCROOGE_BALANCE_HISTORY_FILE", "balance_history.jsonl")
+STATE_FILE = os.getenv("SCROOGE_STATE_FILE", "runtime/state.json")
+TRADE_HISTORY_FILE = os.getenv("SCROOGE_TRADE_HISTORY_FILE", "runtime/trade_history.jsonl")
+BALANCE_HISTORY_FILE = os.getenv("SCROOGE_BALANCE_HISTORY_FILE", "runtime/balance_history.jsonl")
 STATE_BACKUP_SUFFIX = ".bak"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 

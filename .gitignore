@@ -106,13 +106,8 @@ data/
 data_*
 best_params*
 optimization_results.csv
-state.json
-state.json.bak
-trade_history.jsonl
-balance_history.jsonl
-event_history.jsonl
-chart_dataset.csv
-trading_log.txt
+runtime/*
+!runtime/.gitkeep
 backtest_artifacts/
 scrooge-env
 .env

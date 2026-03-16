@@ -51,15 +51,17 @@ scrooge/
 ├── core/                    # Shared engine and canonical event storage
 │   ├── engine.py
 │   └── event_store.py
+├── requirements/
+│   ├── bot.txt
+│   ├── backtest.txt
+│   └── full.txt
+├── runtime/                 # Local default runtime artifacts (gitignored)
 ├── main.py                  # Thin entry shim; keeps the Scrooge greeting
 ├── config/
 │   ├── live.yaml            # Main live configuration file
 │   ├── backtest.yaml        # Backtest configuration file
 │   └── param_grid.yaml      # Optimization parameter grid
-├── results/                 # Historical charts and configuration snapshots
-├── requirements.bot.txt     # Slim live-runtime dependencies
-├── requirements.backtest.txt# Backtest/report extras
-└── requirements.txt         # Full local install (includes backtest extras)
+└── results/                 # Historical charts and configuration snapshots
 ```
 ---
 
@@ -79,12 +81,12 @@ source scrooge-env/bin/activate
 
 ### 3. Install Dependencies
 ```bash
-pip install -r requirements.txt
+pip install -r requirements/full.txt
 ```
 
-`requirements.txt` installs the full local toolchain. Docker uses a slimmer dependency split internally:
-- `docker/bot.Dockerfile` -> `requirements.bot.txt`
-- `docker/backtest.Dockerfile` -> `requirements.backtest.txt`
+`requirements/full.txt` installs the full local toolchain. Docker uses a slimmer dependency split internally:
+- `docker/bot.Dockerfile` -> `requirements/bot.txt`
+- `docker/backtest.Dockerfile` -> `requirements/backtest.txt`
 
 Canonical event replay summary:
 ```bash
@@ -133,7 +135,7 @@ python main.py
 
 Results will include:
 - Final balance and performance metrics
-- Trade log (`trading_log.txt`)
+- Trade log (`runtime/trading_log.txt`)
 - Graphs in `results/{intervals}/`
 
 ---
@@ -160,8 +162,8 @@ python main.py
 
 Logs and states are persistently stored under:
 ```
-state.json
-trading_log.txt
+runtime/state.json
+runtime/trading_log.txt
 ```
 
 ---

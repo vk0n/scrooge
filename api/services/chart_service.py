@@ -181,7 +181,7 @@ def _resolve_dataset_file_path() -> tuple[Path | None, list[str]]:
             candidates.append(configured)
 
     default_runtime = Path("/runtime/chart_dataset.csv")
-    default_local = _project_root() / "chart_dataset.csv"
+    default_local = _project_root() / "runtime" / "chart_dataset.csv"
     default_data_dir = _project_root() / "data"
     candidates.extend([default_runtime, default_local])
     if default_data_dir.exists():

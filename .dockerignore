@@ -19,10 +19,4 @@ data/
 *.pem
 .env
 backtest_artifacts/
-chart_dataset.csv
-trading_log.txt
-event_history.jsonl
-trade_history.jsonl
-balance_history.jsonl
-state.json
-state.json.bak
+runtime/
