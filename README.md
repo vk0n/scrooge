@@ -251,7 +251,10 @@ Notes:
 - `agg_trade_source: rest` is available, but it is practical only for shorter windows
 - `agg_trade_tick_interval` accepts `raw` or any second bucket like `1s`, `5s`, `15s`, `30s`
 - `agg_trade_tick_interval: 1s` is the closest to realtime; `5s` or `15s` are often much more practical for iteration on BTCUSDT
-- raw agg-trade downloads are cached by default under `data/agg_trades/`; control this with `agg_trade_cache_enabled` and `agg_trade_cache_dir`
+- raw agg-trade downloads are cached by default under `data/agg_trades/`
+- archive-based `aggTrades` are sharded by UTC day under `data/agg_trades/<symbol>/archive_daily/`, which makes overlapping `last N days` runs reuse the same days efficiently
+- older whole-window cache files are still accepted as a bootstrap source and are automatically split into daily shards when reused
+- control this with `agg_trade_cache_enabled` and `agg_trade_cache_dir`
 
 ### Replay a canonical event log
 

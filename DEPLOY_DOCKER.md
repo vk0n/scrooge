@@ -237,7 +237,10 @@ Backtest input modes:
 - use `market_tape_input_path` or `market_event_input_path` in `config/backtest.yaml` when replaying from stored input artifacts
 - use `agg_trade_source` and `agg_trade_tick_interval` in `config/backtest.yaml` when building from Binance historical `aggTrades`
 - `agg_trade_tick_interval` supports `raw` or second buckets like `1s`, `5s`, `15s`, `30s`; for BTCUSDT, `5s` or `15s` are often much more practical than `1s`
-- raw `aggTrades` are cached by default under `data/agg_trades`; tune with `agg_trade_cache_enabled` and `agg_trade_cache_dir`
+- raw `aggTrades` are cached by default under `data/agg_trades`
+- archive-based `aggTrades` are cached per UTC day under `data/agg_trades/<symbol>/archive_daily`, so overlapping `last N days` runs reuse most of the same files
+- older whole-window cache files are still accepted as a bootstrap source and get split into daily shards on reuse
+- tune this with `agg_trade_cache_enabled` and `agg_trade_cache_dir`
 - `state.json` will also capture `execution_sync`, `exchange_balance`, `exchange_position`, and `last_order_trade_update` when those events exist in the replay stream
 
 ## Control Behavior

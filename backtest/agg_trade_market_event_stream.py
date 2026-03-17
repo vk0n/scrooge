@@ -3,7 +3,7 @@ from __future__ import annotations
 import calendar
 import csv
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO, TextIOWrapper
 import json
 import os
@@ -94,6 +94,31 @@ def _resolve_agg_trade_cache_path(
     return target_dir / f"{symbol}_aggTrades_{source}_{normalized_cache_key}.pkl"
 
 
+def _resolve_archive_day_cache_dir(
+    *,
+    cache_dir: str | Path | None,
+    symbol: str,
+) -> Path | None:
+    if cache_dir is None:
+        return None
+    normalized = str(cache_dir).strip()
+    if not normalized:
+        return None
+    return Path(normalized).expanduser() / symbol / "archive_daily"
+
+
+def _resolve_archive_day_cache_path(
+    *,
+    cache_dir: str | Path | None,
+    symbol: str,
+    day: date,
+) -> Path | None:
+    target_dir = _resolve_archive_day_cache_dir(cache_dir=cache_dir, symbol=symbol)
+    if target_dir is None:
+        return None
+    return target_dir / f"{day.isoformat()}.pkl"
+
+
 def _resolve_agg_trade_cache_key(*, backtest_period_days: int, backtest_period_end_time: str) -> str:
     raw_end_time = str(backtest_period_end_time or "").strip()
     if not raw_end_time:
@@ -127,22 +152,22 @@ def _write_agg_trade_cache(path: Path, df: pd.DataFrame) -> None:
     df.to_pickle(path)
 
 
-def _archive_day_urls(
+def _archive_day_specs(
     *,
     symbol: str,
     start_time: datetime,
     end_time: datetime,
     base_url: str,
-) -> list[str]:
+) -> list[tuple[date, str]]:
     start_date = start_time.date()
     end_date = end_time.date()
-    urls: list[str] = []
+    specs: list[tuple[date, str]] = []
     current = start_date
     while current <= end_date:
         datestr = current.isoformat()
-        urls.append(f"{base_url}/daily/aggTrades/{symbol}/{symbol}-aggTrades-{datestr}.zip")
+        specs.append((current, f"{base_url}/daily/aggTrades/{symbol}/{symbol}-aggTrades-{datestr}.zip"))
         current += timedelta(days=1)
-    return urls
+    return specs
 
 
 def _download_response_payload(url: str, *, desc: str, leave_progress: bool = False) -> bytes:
@@ -210,52 +235,169 @@ def _parse_archive_csv_rows(file_obj) -> list[tuple[int, float, float]]:
     return rows
 
 
+def _download_archive_day_rows(
+    *,
+    symbol: str,
+    day: date,
+    base_url: str,
+) -> list[tuple[int, float, float]]:
+    url = f"{base_url}/daily/aggTrades/{symbol}/{symbol}-aggTrades-{day.isoformat()}.zip"
+    try:
+        payload = _download_response_payload(
+            url,
+            desc=f"  {day.isoformat()}",
+            leave_progress=False,
+        )
+    except HTTPError as exc:
+        if exc.code == 404:
+            return []
+        raise
+    except URLError:
+        raise
+
+    rows: list[tuple[int, float, float]] = []
+    with zipfile.ZipFile(BytesIO(payload)) as zf:
+        member_name = next((name for name in zf.namelist() if name.lower().endswith(".csv")), None)
+        if member_name is None:
+            return rows
+        with zf.open(member_name) as file_obj:
+            rows.extend(_parse_archive_csv_rows(file_obj))
+    return rows
+
+
+def _filter_trade_frame_to_range(
+    df: pd.DataFrame,
+    *,
+    start_time: datetime,
+    end_time: datetime,
+) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    start_ts = pd.Timestamp(start_time)
+    end_ts = pd.Timestamp(end_time)
+    filtered = df[(df["ts"] >= start_ts) & (df["ts"] <= end_ts)].copy()
+    return filtered.sort_values("ts").reset_index(drop=True)
+
+
+def _split_trade_frame_by_day(df: pd.DataFrame) -> dict[date, pd.DataFrame]:
+    if df.empty:
+        return {}
+    working = df.copy()
+    working["day"] = working["ts"].dt.date
+    partitions: dict[date, pd.DataFrame] = {}
+    for day_value, partition in working.groupby("day", sort=True):
+        if not isinstance(day_value, date):
+            continue
+        partitions[day_value] = partition.drop(columns=["day"]).reset_index(drop=True)
+    return partitions
+
+
+def _seed_archive_day_caches_from_frame(
+    *,
+    df: pd.DataFrame,
+    cache_dir: str | Path | None,
+    symbol: str,
+) -> int:
+    written = 0
+    for day_value, partition in _split_trade_frame_by_day(df).items():
+        shard_path = _resolve_archive_day_cache_path(
+            cache_dir=cache_dir,
+            symbol=symbol,
+            day=day_value,
+        )
+        if shard_path is None or shard_path.exists():
+            continue
+        _write_agg_trade_cache(shard_path, partition)
+        written += 1
+    return written
+
+
 def _download_archive_rows(
     *,
     symbol: str,
     start_time: datetime,
     end_time: datetime,
     base_url: str,
-) -> list[tuple[int, float, float]]:
-    rows: list[tuple[int, float, float]] = []
-    start_ms = int(start_time.timestamp() * 1000)
-    end_ms = int(end_time.timestamp() * 1000)
+    cache_enabled: bool = True,
+    cache_dir: str | Path | None = DEFAULT_AGG_TRADE_CACHE_DIR,
+) -> tuple[list[tuple[int, float, float]], int, int]:
+    day_specs = _archive_day_specs(symbol=symbol, start_time=start_time, end_time=end_time, base_url=base_url)
+    day_frames: list[pd.DataFrame] = []
+    cache_hits = 0
+    downloaded_days = 0
+    today_utc = datetime.now(UTC).date()
 
-    archive_urls = _archive_day_urls(symbol=symbol, start_time=start_time, end_time=end_time, base_url=base_url)
     with tqdm(
-        archive_urls,
+        day_specs,
         desc="aggTrades Archive",
         unit="day",
         dynamic_ncols=True,
     ) as archive_progress:
-        for url in archive_progress:
-            day_label = url.rsplit("-", 1)[-1].removesuffix(".zip")
+        for day_value, _url in archive_progress:
+            day_label = day_value.isoformat()
             archive_progress.set_postfix_str(day_label)
+
+            shard_path = _resolve_archive_day_cache_path(
+                cache_dir=cache_dir if cache_enabled else None,
+                symbol=symbol,
+                day=day_value,
+            )
+            if cache_enabled and shard_path is not None and shard_path.exists():
+                day_frames.append(_read_agg_trade_cache(shard_path))
+                cache_hits += 1
+                archive_progress.set_postfix_str(f"{day_label} cache")
+                continue
+
             try:
-                payload = _download_response_payload(
-                    url,
-                    desc=f"  {day_label}",
-                    leave_progress=False,
+                day_rows = _download_archive_day_rows(
+                    symbol=symbol,
+                    day=day_value,
+                    base_url=base_url,
                 )
             except HTTPError as exc:
                 if exc.code == 404:
+                    archive_progress.set_postfix_str(f"{day_label} missing")
                     continue
                 raise
             except URLError:
                 raise
 
-            with zipfile.ZipFile(BytesIO(payload)) as zf:
-                member_name = next((name for name in zf.namelist() if name.lower().endswith(".csv")), None)
-                if member_name is None:
-                    continue
-                with zf.open(member_name) as file_obj:
-                    for ts, price, qty in _parse_archive_csv_rows(file_obj):
-                        if ts < start_ms or ts > end_ms:
-                            continue
-                        rows.append((ts, price, qty))
-            archive_progress.set_postfix_str(f"{day_label} rows={len(rows)}")
+            if day_rows:
+                day_df = pd.DataFrame(day_rows, columns=["ts", "price", "qty"])
+                day_df = day_df.sort_values("ts").drop_duplicates(subset=["ts", "price", "qty"], keep="last")
+                day_df["ts"] = pd.to_datetime(day_df["ts"], unit="ms")
+                day_df["source"] = "archive"
+                day_df = day_df.reset_index(drop=True)
+            else:
+                day_df = pd.DataFrame(columns=["ts", "price", "qty", "source"])
 
-    return rows
+            if (
+                cache_enabled
+                and shard_path is not None
+                and (not day_df.empty or day_value < today_utc)
+            ):
+                _write_agg_trade_cache(shard_path, day_df)
+                technical_logger.info("agg_trade_daily_cache_written path=%s rows=%s", shard_path, len(day_df))
+            downloaded_days += 1
+            day_frames.append(day_df)
+            archive_progress.set_postfix_str(f"{day_label} cache={cache_hits} dl={downloaded_days}")
+
+    if not day_frames:
+        return [], cache_hits, downloaded_days
+
+    combined = pd.concat(day_frames, ignore_index=True) if len(day_frames) > 1 else day_frames[0].copy()
+    filtered = _filter_trade_frame_to_range(
+        combined,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    if filtered.empty:
+        return [], cache_hits, downloaded_days
+
+    rows: list[tuple[int, float, float]] = []
+    for row in filtered.itertuples(index=False):
+        rows.append((int(pd.Timestamp(row.ts).timestamp() * 1000), float(row.price), float(row.qty)))
+    return rows, cache_hits, downloaded_days
 
 
 def _download_rest_rows(
@@ -348,25 +490,57 @@ def fetch_historical_agg_trades(
         source=normalized_source,
         cache_key=(str(cache_key).strip() if cache_key is not None and str(cache_key).strip() else "rolling"),
     )
+    archive_daily_cache_dir = _resolve_archive_day_cache_dir(
+        cache_dir=cache_dir if cache_enabled else None,
+        symbol=symbol,
+    )
     if cache_enabled and cache_path is not None and cache_path.exists():
         technical_logger.info("agg_trade_cache_found path=%s", cache_path)
-        return _read_agg_trade_cache(cache_path), True, cache_path
+        cached = _read_agg_trade_cache(cache_path)
+        if normalized_source in {"archive", "auto"}:
+            seeded = _seed_archive_day_caches_from_frame(
+                df=cached,
+                cache_dir=cache_dir,
+                symbol=symbol,
+            )
+            if seeded > 0:
+                technical_logger.info(
+                    "agg_trade_daily_cache_seeded source=%s path=%s shards=%s",
+                    normalized_source,
+                    archive_daily_cache_dir,
+                    seeded,
+                )
+        return cached, True, cache_path
 
     rows: list[tuple[int, float, float]] = []
     resolved_source = normalized_source
     start_ms = int(start_time.timestamp() * 1000)
     end_ms = int(end_time.timestamp() * 1000)
+    cache_hit = False
+    resolved_cache_path = cache_path
 
     if normalized_source in {"archive", "auto"}:
-        rows = _download_archive_rows(
+        rows, archive_cache_hits, archive_downloaded_days = _download_archive_rows(
             symbol=symbol,
             start_time=start_time,
             end_time=end_time,
             base_url=archive_base_url,
+            cache_enabled=cache_enabled,
+            cache_dir=cache_dir,
         )
+        if cache_enabled and archive_daily_cache_dir is not None:
+            resolved_cache_path = archive_daily_cache_dir
+        cache_hit = archive_cache_hits > 0 and archive_downloaded_days == 0
         had_archive_rows = bool(rows)
         if rows:
             resolved_source = "archive"
+            if cache_enabled and archive_daily_cache_dir is not None:
+                technical_logger.info(
+                    "agg_trade_daily_cache_used path=%s range=%s..%s",
+                    archive_daily_cache_dir,
+                    start_time.date().isoformat(),
+                    end_time.date().isoformat(),
+                )
         latest_ts = max((item[0] for item in rows), default=(start_ms - 1))
         if latest_ts < end_ms:
             rest_start_time = datetime.fromtimestamp((latest_ts + 1) / 1000)
@@ -392,6 +566,7 @@ def fetch_historical_agg_trades(
             if gap_rows:
                 rows.extend(gap_rows)
                 resolved_source = "archive+rest" if had_archive_rows else "rest"
+                cache_hit = False
 
     if not rows and normalized_source in {"rest", "auto"}:
         rows = _download_rest_rows(
@@ -401,19 +576,34 @@ def fetch_historical_agg_trades(
             base_url=rest_base_url,
         )
         resolved_source = "rest"
+        resolved_cache_path = cache_path
+        cache_hit = False
 
     if not rows:
-        return pd.DataFrame(columns=["ts", "price", "qty", "source"]), False, cache_path
+        return pd.DataFrame(columns=["ts", "price", "qty", "source"]), cache_hit, resolved_cache_path
 
     df = pd.DataFrame(rows, columns=["ts", "price", "qty"])
     df = df.sort_values("ts").drop_duplicates(subset=["ts", "price", "qty"], keep="last")
     df["ts"] = pd.to_datetime(df["ts"], unit="ms")
     df["source"] = resolved_source
     output = df.reset_index(drop=True)
-    if cache_enabled and cache_path is not None:
+    if cache_enabled and cache_path is not None and normalized_source == "rest":
         _write_agg_trade_cache(cache_path, output)
         technical_logger.info("agg_trade_cache_written path=%s rows=%s", cache_path, len(output))
-    return output, False, cache_path
+    if cache_enabled and normalized_source in {"archive", "auto"}:
+        seeded = _seed_archive_day_caches_from_frame(
+            df=output[output["source"].astype(str).str.contains("archive", na=False)].copy(),
+            cache_dir=cache_dir,
+            symbol=symbol,
+        )
+        if seeded > 0:
+            technical_logger.info(
+                "agg_trade_daily_cache_seeded source=%s path=%s shards=%s",
+                normalized_source,
+                archive_daily_cache_dir,
+                seeded,
+            )
+    return output, cache_hit, resolved_cache_path
 
 
 def _resample_trade_frame_to_candles(trades: pd.DataFrame, *, interval: str) -> pd.DataFrame:
