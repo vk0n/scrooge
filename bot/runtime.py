@@ -406,7 +406,6 @@ if __name__ == "__main__":
     use_full_balance = cfg["use_full_balance"]
 
     intervals = cfg["intervals"]
-    limits = cfg["limits"]
 
     params = cfg["params"]
 
@@ -453,7 +452,6 @@ if __name__ == "__main__":
             symbol=symbol,
             leverage=lvrg,
             intervals=intervals,
-            limits=limits,
             state_getter=lambda: runtime_context["state"],
             state_lock=state_lock,
             save_state_fn=save_state,
@@ -556,7 +554,6 @@ if __name__ == "__main__":
                         qty = cfg["qty"]
                         use_full_balance = cfg["use_full_balance"]
                         intervals = cfg["intervals"]
-                        limits = cfg["limits"]
                         params = cfg["params"]
                         set_leverage(symbol, lvrg)
                         command_kwargs = _build_command_kwargs(symbol)
@@ -565,7 +562,6 @@ if __name__ == "__main__":
                                 symbol=symbol,
                                 leverage=lvrg,
                                 intervals=intervals,
-                                limits=limits,
                             )
                             if not live_market_stream.is_running():
                                 raise RuntimeError("Live market stream failed to restart after config reload.")

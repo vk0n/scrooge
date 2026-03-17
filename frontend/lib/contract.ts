@@ -20,12 +20,6 @@ export type EditableIntervals = {
   big?: string | null;
 };
 
-export type EditableLimits = {
-  small?: number | null;
-  medium?: number | null;
-  big?: number | null;
-};
-
 export type EditableConfig = {
   live: boolean | null;
   symbol: string | null;
@@ -34,7 +28,6 @@ export type EditableConfig = {
   use_full_balance: boolean | null;
   qty: number | null;
   intervals?: EditableIntervals | null;
-  limits?: EditableLimits | null;
   params?: EditableParams | null;
 };
 
@@ -89,7 +82,6 @@ function valueSegment(path: string, value: unknown): ContractSegment {
 
 export function buildContractParagraphs(config: EditableConfig): ContractParagraph[] {
   const intervals = config.intervals ?? {};
-  const limits = config.limits ?? {};
   const params = config.params ?? {};
   const sizingTail =
     config.qty === null || config.qty === undefined
@@ -121,13 +113,7 @@ export function buildContractParagraphs(config: EditableConfig): ContractParagra
       valueSegment("intervals.medium", intervals.medium),
       textSegment(" candles for Bollinger Bands and ATR, and "),
       valueSegment("intervals.big", intervals.big),
-      textSegment(" candles for RSI and EMA. He shall keep up to "),
-      valueSegment("limits.small", limits.small),
-      textSegment(", "),
-      valueSegment("limits.medium", limits.medium),
-      textSegment(", and "),
-      valueSegment("limits.big", limits.big),
-      textSegment(" candles in those three books."),
+      textSegment(" candles for RSI and EMA."),
     ],
     [
       textSegment("3. "),

@@ -18,7 +18,6 @@ CONFIG_PATH = Path(os.getenv("SCROOGE_CONFIG_PATH", str(_project_root() / "confi
 
 EDITABLE_TOP_LEVEL_KEYS = ("live", "symbol", "leverage", "initial_balance", "use_full_balance", "qty")
 EDITABLE_INTERVAL_KEYS = ("small", "medium", "big")
-EDITABLE_LIMIT_KEYS = ("small", "medium", "big")
 EDITABLE_PARAM_KEYS = (
     "sl_mult",
     "tp_mult",
@@ -79,8 +78,6 @@ def extract_editable_config(config: dict[str, Any]) -> dict[str, Any]:
     params_map = params if isinstance(params, dict) else {}
     intervals = config.get("intervals")
     interval_map = intervals if isinstance(intervals, dict) else {}
-    limits = config.get("limits")
-    limit_map = limits if isinstance(limits, dict) else {}
 
     return {
         "live": config.get("live"),
@@ -90,7 +87,6 @@ def extract_editable_config(config: dict[str, Any]) -> dict[str, Any]:
         "use_full_balance": config.get("use_full_balance"),
         "qty": config.get("qty"),
         "intervals": {key: interval_map.get(key) for key in EDITABLE_INTERVAL_KEYS},
-        "limits": {key: limit_map.get(key) for key in EDITABLE_LIMIT_KEYS},
         "params": {key: params_map.get(key) for key in EDITABLE_PARAM_KEYS},
     }
 
@@ -137,7 +133,7 @@ def _write_raw_config_text(raw_text: str) -> None:
 
 
 def update_editable_config(patch: dict[str, Any]) -> dict[str, Any]:
-    allowed_top = set(EDITABLE_TOP_LEVEL_KEYS) | {"intervals", "limits", "params"}
+    allowed_top = set(EDITABLE_TOP_LEVEL_KEYS) | {"intervals", "params"}
     unknown_top = set(patch) - allowed_top
     if unknown_top:
         unknown_joined = ", ".join(sorted(unknown_top))
@@ -151,15 +147,6 @@ def update_editable_config(patch: dict[str, Any]) -> dict[str, Any]:
         if unknown_intervals:
             unknown_joined = ", ".join(sorted(unknown_intervals))
             raise ValueError(f"Unsupported editable intervals field(s): {unknown_joined}")
-
-    limits_patch = patch.get("limits")
-    if limits_patch is not None:
-        if not isinstance(limits_patch, dict):
-            raise ValueError("limits must be an object")
-        unknown_limits = set(limits_patch) - set(EDITABLE_LIMIT_KEYS)
-        if unknown_limits:
-            unknown_joined = ", ".join(sorted(unknown_limits))
-            raise ValueError(f"Unsupported editable limits field(s): {unknown_joined}")
 
     params_patch = patch.get("params")
     if params_patch is not None:
@@ -195,18 +182,6 @@ def update_editable_config(patch: dict[str, Any]) -> dict[str, Any]:
             if current_intervals.get(key) != value:
                 current_intervals[key] = value
                 changed_fields.append(f"intervals.{key}")
-
-    if limits_patch is not None:
-        current_limits = updated.get("limits")
-        if not isinstance(current_limits, dict):
-            current_limits = {}
-            updated["limits"] = current_limits
-        for key, value in limits_patch.items():
-            if value is None:
-                raise ValueError(f"limits.{key} cannot be null")
-            if current_limits.get(key) != value:
-                current_limits[key] = value
-                changed_fields.append(f"limits.{key}")
 
     if params_patch is not None:
         current_params = updated.get("params")

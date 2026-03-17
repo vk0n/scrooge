@@ -53,14 +53,6 @@ class EditableIntervalsPayload(BaseModel):
         return normalized
 
 
-class EditableLimitsPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    small: int | None = Field(default=None, ge=1)
-    medium: int | None = Field(default=None, ge=1)
-    big: int | None = Field(default=None, ge=1)
-
-
 class EditableConfigPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -71,7 +63,6 @@ class EditableConfigPayload(BaseModel):
     use_full_balance: bool | None = None
     qty: float | None = Field(default=None, gt=0)
     intervals: EditableIntervalsPayload | None = None
-    limits: EditableLimitsPayload | None = None
     params: EditableParamsPayload | None = None
 
     @field_validator("symbol")

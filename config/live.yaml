@@ -7,10 +7,6 @@ intervals:
   small: 1m
   medium: 1h
   big: 4h
-limits:
-  small: 1500
-  medium: 500
-  big: 100
 params:
   sl_mult: 3.7
   tp_mult: 1.9

@@ -82,6 +82,12 @@ USER_STREAM_RECONNECT_SECONDS = max(
 )
 FUTURES_REST_BASE_URL = os.getenv("SCROOGE_FUTURES_REST_BASE_URL", "https://fapi.binance.com").rstrip("/")
 FUTURES_WS_BASE_URL = os.getenv("SCROOGE_FUTURES_WS_BASE_URL", "wss://fstream.binance.com/ws").rstrip("/")
+BINANCE_MAX_KLINE_LIMIT = 1500
+INDICATOR_WARMUP_ROWS = {
+    "small": 2,
+    "medium": 24,
+    "big": 54,
+}
 
 
 def _to_float(value: Any) -> float | None:
@@ -92,14 +98,6 @@ def _to_float(value: Any) -> float | None:
     if not numeric == numeric:  # NaN check without math import
         return None
     return numeric
-
-
-def _to_int(value: Any, fallback: int) -> int:
-    try:
-        numeric = int(value)
-    except (TypeError, ValueError):
-        return fallback
-    return numeric if numeric > 0 else fallback
 
 
 def _to_optional_int(value: Any) -> int | None:
@@ -137,6 +135,27 @@ def _interval_to_timedelta(interval: str) -> pd.Timedelta:
     if unit == "w":
         return pd.Timedelta(weeks=value)
     raise ValueError(f"Unsupported Binance interval: {interval}")
+
+
+def _derive_candle_limits(intervals: dict[str, str]) -> dict[str, int]:
+    small_interval = str(intervals["small"])
+    medium_interval = str(intervals["medium"])
+    big_interval = str(intervals["big"])
+
+    small_delta = _interval_to_timedelta(small_interval)
+    coverage_span = small_delta * BINANCE_MAX_KLINE_LIMIT
+
+    def required_rows(interval: str, *, timeframe: str) -> int:
+        interval_delta = _interval_to_timedelta(interval)
+        coverage_rows = int((coverage_span / interval_delta)) + 2
+        derived = max(coverage_rows, INDICATOR_WARMUP_ROWS[timeframe])
+        return max(1, min(BINANCE_MAX_KLINE_LIMIT, derived))
+
+    return {
+        "small": BINANCE_MAX_KLINE_LIMIT,
+        "medium": required_rows(medium_interval, timeframe="medium"),
+        "big": required_rows(big_interval, timeframe="big"),
+    }
 
 
 def _empty_candle_frame() -> pd.DataFrame:
@@ -190,7 +209,6 @@ class LiveMarketStream:
         symbol: str,
         leverage: float | int,
         intervals: dict[str, Any],
-        limits: dict[str, Any],
         state_getter: Callable[[], dict[str, Any]],
         state_lock: threading.RLock,
         save_state_fn: Callable[[dict[str, Any]], None],
@@ -216,11 +234,7 @@ class LiveMarketStream:
             "medium": str(intervals["medium"]),
             "big": str(intervals["big"]),
         }
-        self._limits = {
-            "small": _to_int(limits.get("small"), 1500),
-            "medium": _to_int(limits.get("medium"), 500),
-            "big": _to_int(limits.get("big"), 100),
-        }
+        self._candle_limits = _derive_candle_limits(self._intervals)
         self._interval_deltas = {
             key: _interval_to_timedelta(value)
             for key, value in self._intervals.items()
@@ -354,7 +368,6 @@ class LiveMarketStream:
         symbol: str,
         leverage: float | int,
         intervals: dict[str, Any],
-        limits: dict[str, Any],
     ) -> None:
         next_symbol = str(symbol).upper()
         next_leverage = leverage
@@ -363,15 +376,11 @@ class LiveMarketStream:
             "medium": str(intervals["medium"]),
             "big": str(intervals["big"]),
         }
-        next_limits = {
-            "small": _to_int(limits.get("small"), 1500),
-            "medium": _to_int(limits.get("medium"), 500),
-            "big": _to_int(limits.get("big"), 100),
-        }
+        next_candle_limits = _derive_candle_limits(next_intervals)
 
         symbol_changed = next_symbol != self._symbol
         intervals_changed = next_intervals != self._intervals
-        limits_changed = next_limits != self._limits
+        limits_changed = next_candle_limits != self._candle_limits
 
         self._leverage = next_leverage
         if not symbol_changed and not intervals_changed and not limits_changed:
@@ -381,7 +390,7 @@ class LiveMarketStream:
         self.stop()
         self._symbol = next_symbol
         self._intervals = next_intervals
-        self._limits = next_limits
+        self._candle_limits = next_candle_limits
         self._interval_deltas = {
             key: _interval_to_timedelta(value)
             for key, value in self._intervals.items()
@@ -702,23 +711,26 @@ class LiveMarketStream:
 
     def _bootstrap_candle_caches(self) -> None:
         technical_logger.info(
-            "market_stream_bootstrap_started symbol=%s small=%s medium=%s big=%s",
+            "market_stream_bootstrap_started symbol=%s small=%s medium=%s big=%s lookback=%s/%s/%s",
             self._symbol,
             self._intervals["small"],
             self._intervals["medium"],
             self._intervals["big"],
+            self._candle_limits["small"],
+            self._candle_limits["medium"],
+            self._candle_limits["big"],
         )
         df_small = _normalize_candle_frame(
-            self._fetch_historical_fn(self._symbol, self._intervals["small"], self._limits["small"]),
-            self._limits["small"],
+            self._fetch_historical_fn(self._symbol, self._intervals["small"], self._candle_limits["small"]),
+            self._candle_limits["small"],
         )
         df_medium = _normalize_candle_frame(
-            self._fetch_historical_fn(self._symbol, self._intervals["medium"], self._limits["medium"]),
-            self._limits["medium"],
+            self._fetch_historical_fn(self._symbol, self._intervals["medium"], self._candle_limits["medium"]),
+            self._candle_limits["medium"],
         )
         df_big = _normalize_candle_frame(
-            self._fetch_historical_fn(self._symbol, self._intervals["big"], self._limits["big"]),
-            self._limits["big"],
+            self._fetch_historical_fn(self._symbol, self._intervals["big"], self._candle_limits["big"]),
+            self._candle_limits["big"],
         )
 
         with self._cache_lock:
@@ -1032,7 +1044,7 @@ class LiveMarketStream:
             self._upsert_closed_candle("big", candle)
 
     def _upsert_closed_candle(self, timeframe: str, candle: dict[str, Any]) -> None:
-        limit = self._limits[timeframe]
+        limit = self._candle_limits[timeframe]
         expected_delta = self._interval_deltas[timeframe]
         row_df = pd.DataFrame([candle])
 
