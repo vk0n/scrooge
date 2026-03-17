@@ -300,12 +300,25 @@ def fetch_historical_agg_trades(
         latest_ts = max((item[0] for item in rows), default=(start_ms - 1))
         if latest_ts < end_ms:
             rest_start_time = datetime.fromtimestamp((latest_ts + 1) / 1000)
-            gap_rows = _download_rest_rows(
-                symbol=symbol,
-                start_time=rest_start_time,
-                end_time=end_time,
-                base_url=rest_base_url,
-            )
+            try:
+                gap_rows = _download_rest_rows(
+                    symbol=symbol,
+                    start_time=rest_start_time,
+                    end_time=end_time,
+                    base_url=rest_base_url,
+                )
+            except (HTTPError, URLError, OSError) as exc:
+                if had_archive_rows:
+                    technical_logger.warning(
+                        "agg_trade_rest_gap_fill_failed symbol=%s start=%s end=%s error=%s fallback=archive_only",
+                        symbol,
+                        rest_start_time.isoformat(),
+                        end_time.isoformat(),
+                        exc,
+                    )
+                    gap_rows = []
+                else:
+                    raise
             if gap_rows:
                 rows.extend(gap_rows)
                 resolved_source = "archive+rest" if had_archive_rows else "rest"
