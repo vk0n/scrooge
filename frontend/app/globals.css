@@ -2480,3 +2480,27 @@ pre {
     min-height: 164px;
   }
 }
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .status-chip {
+    white-space: normal;
+    align-items: flex-start;
+  }
+
+  .status-chip-value {
+    max-width: calc(100% - 4.7rem);
+    justify-content: flex-start;
+  }
+
+  .status-chip:first-child .status-chip-value > .badge {
+    max-width: 12.8rem;
+    white-space: normal;
+    text-align: left;
+    line-height: 1.12;
+  }
+
+  .status-chip:first-child .status-chip-value > .badge,
+  .status-chip:first-child .status-chip-value > .position-upnl-badge {
+    min-height: 2.48rem;
+  }
+}
