@@ -10,6 +10,7 @@ from plotly.subplots import make_subplots
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from backtest.dataset import fetch_historical_paginated, prepare_multi_tf
+from backtest.stats import compute_stats
 from bot.event_log import get_technical_logger
 from bot.state import (
     load_balance_history,
@@ -117,50 +118,6 @@ def fetch_session_klines(symbol, interval, start_ts, end_ts):
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
     df["close"] = pd.to_numeric(df["close"])
     return df[["open_time","close"]]
-
-def compute_stats(initial_balance, final_balance, trades, balance_history):
-    """Compute basic performance metrics."""
-    stats = {}
-
-    # Basic
-    stats["Initial Balance"] = initial_balance
-    stats["Final Balance"] = final_balance
-    stats["Total Return %"] = (final_balance - initial_balance) / initial_balance * 100
-
-    # Trades
-    n_trades = len(trades)
-    stats["Number of Trades"] = n_trades
-
-    if n_trades > 0:
-        wins = trades[trades["net_pnl"] > 0]
-        losses = trades[trades["net_pnl"] < 0]
-
-        stats["Win Rate %"] = len(wins) / n_trades * 100
-        stats["Average PnL"] = trades["net_pnl"].mean()
-        stats["Average Profit"] = wins["net_pnl"].mean() if len(wins) > 0 else 0
-        stats["Average Loss"] = losses["net_pnl"].mean() if len(losses) > 0 else 0
-        stats["Best Trade"] = trades["net_pnl"].max()
-        stats["Worst Trade"] = trades["net_pnl"].min()
-        stats["Total Fee"] = trades["fee"].sum()
-
-        total_profit = wins["net_pnl"].sum()
-        total_loss = abs(losses["net_pnl"].sum())
-        stats["Profit Factor"] = round(total_profit / total_loss, 2) if total_loss > 0 else np.inf
-    else:
-        stats["Win Rate %"] = 0
-        stats["Average PnL"] = 0
-        stats["Best Trade"] = 0
-        stats["Worst Trade"] = 0
-        stats["Profit Factor"] = 0
-
-    # Max drawdown
-    equity = np.array(balance_history)
-    rolling_max = np.maximum.accumulate(equity)
-    drawdowns = (equity - rolling_max) / rolling_max
-    stats["Max Drawdown %"] = drawdowns.min() * 100
-
-    return stats
-
 
 def plot_results(df, trades, balance_history):
     """Plot price with Bollinger Bands, RSI and Equity Curve."""

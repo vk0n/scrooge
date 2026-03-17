@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 import yaml
 from backtest.dataset import build_dataset
-from backtest.reporting import compute_stats
+from backtest.stats import compute_stats
 from binance.client import Client
 from core.engine import run_strategy
 from dotenv import load_dotenv

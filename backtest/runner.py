@@ -36,6 +36,7 @@ from backtest.market_event_replay import (
     write_market_event_execution_artifacts,
 )
 from backtest.replay import ReplaySummary, write_replay_artifacts
+from backtest.stats import compute_stats
 from backtest.trade_alignment import TradeAlignmentSummary, write_trade_alignment_artifacts
 from bot.event_log import get_technical_logger
 from bot.state import save_state
@@ -301,18 +302,34 @@ def run_discrete_backtest(
     logger = technical_logger or get_technical_logger()
     market_event_projection: DiscreteTapeProjectionSummary | None = None
     agg_trade_stream_summary: AggTradeMarketEventStreamSummary | None = None
-
-    import backtest.reporting as report_module
-    from backtest.reporting import (
-        compute_stats,
-        monte_carlo_from_equity,
-        plot_results_interactive,
-        rolling_window_backtest_distribution,
+    needs_reporting = bool(
+        config.enable_plot
+        or config.run_monte_carlo
+        or config.run_rolling_window_backtest_distribution
     )
+    report_module: Any | None = None
+    monte_carlo_from_equity: Callable[..., Any] | None = None
+    plot_results_interactive: Callable[..., Any] | None = None
+    rolling_window_backtest_distribution: Callable[..., Any] | None = None
 
     if config.client is not None:
         dataset_module.set_client(config.client)
-        report_module.set_client(config.client)
+
+    if needs_reporting:
+        import backtest.reporting as report_module_import
+        from backtest.reporting import (
+            monte_carlo_from_equity as monte_carlo_from_equity_import,
+            plot_results_interactive as plot_results_interactive_import,
+            rolling_window_backtest_distribution as rolling_window_backtest_distribution_import,
+        )
+
+        report_module = report_module_import
+        monte_carlo_from_equity = monte_carlo_from_equity_import
+        plot_results_interactive = plot_results_interactive_import
+        rolling_window_backtest_distribution = rolling_window_backtest_distribution_import
+
+        if config.client is not None:
+            report_module.set_client(config.client)
 
     logger.info("bot_mode_backtest_started symbol=%s leverage=%s", config.symbol, config.leverage)
     if config.backtest_input_mode == "discrete_tape":
@@ -551,12 +568,18 @@ def run_discrete_backtest(
         logger.info("backtest_stat %s=%s", key, value)
 
     if config.enable_plot:
+        if plot_results_interactive is None:
+            raise RuntimeError("plot_results_interactive is unavailable because reporting helpers were not loaded")
         plot_results_interactive(df, trades, balance_history, split_by_year=config.plot_split_by_year)
 
     if config.run_monte_carlo:
+        if monte_carlo_from_equity is None:
+            raise RuntimeError("monte_carlo_from_equity is unavailable because reporting helpers were not loaded")
         monte_carlo_from_equity(df, balance_history, start_balance=config.initial_balance)
 
     if config.run_rolling_window_backtest_distribution:
+        if rolling_window_backtest_distribution is None:
+            raise RuntimeError("rolling_window_backtest_distribution is unavailable because reporting helpers were not loaded")
         rolling_window_backtest_distribution(
             df,
             k_days=config.rolling_window_days,
