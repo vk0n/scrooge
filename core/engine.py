@@ -94,6 +94,7 @@ class StrategyConfig:
     trail_atr_mult: float
     allow_entries: bool
     execution_mode: str
+    runtime_mode: str
     strategy_mode: str
 
 
@@ -1258,6 +1259,7 @@ def emit_exit_event(log_buffer, config: StrategyConfig, log_ts: str, decision: E
     emit_event(
         ts=log_ts,
         log_buffer=log_buffer,
+        runtime_mode=config.runtime_mode,
         strategy_mode=config.strategy_mode,
         **event_kwargs,
     )
@@ -1279,6 +1281,7 @@ def apply_trail_decision(
     emit_event(
         ts=log_ts,
         log_buffer=log_buffer,
+        runtime_mode=config.runtime_mode,
         strategy_mode=config.strategy_mode,
         **event_kwargs,
     )
@@ -1652,6 +1655,7 @@ def process_discrete_row(
             emit_event(
                 ts=log_ts,
                 log_buffer=log_buffer,
+                runtime_mode=config.runtime_mode,
                 strategy_mode=config.strategy_mode,
                 **event_kwargs,
             )
@@ -1683,6 +1687,7 @@ def process_discrete_row(
                 emit_event(
                     ts=log_ts,
                     log_buffer=log_buffer,
+                    runtime_mode=config.runtime_mode,
                     strategy_mode=config.strategy_mode,
                     **event_kwargs,
                 )
@@ -1691,6 +1696,7 @@ def process_discrete_row(
                 emit_event(
                     ts=log_ts,
                     log_buffer=log_buffer,
+                    runtime_mode=config.runtime_mode,
                     strategy_mode=config.strategy_mode,
                     **event_kwargs,
                 )
@@ -1805,7 +1811,11 @@ def run_strategy(
     trail_atr_mult: float = 0.5,
     allow_entries: bool = True,
     execution_mode: str = "simulated",
+    runtime_mode: str | None = None,
 ):
+    normalized_runtime_mode = str(
+        runtime_mode or os.getenv("SCROOGE_RUNTIME_MODE", "live" if live else "backtest")
+    ).strip().lower() or ("live" if live else "backtest")
     runtime = initialize_strategy_runtime(
         live=live,
         initial_balance=initial_balance,
@@ -1836,6 +1846,7 @@ def run_strategy(
         trail_atr_mult=trail_atr_mult,
         allow_entries=allow_entries,
         execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
+        runtime_mode=normalized_runtime_mode,
         strategy_mode="discrete",
     )
 
@@ -1894,8 +1905,12 @@ def run_strategy_on_market_events(
     trail_atr_mult: float = 0.5,
     allow_entries: bool = True,
     execution_mode: str = "simulated",
+    runtime_mode: str | None = None,
 ):
     normalized_strategy_mode = str(strategy_mode or "discrete").strip().lower() or "discrete"
+    normalized_runtime_mode = str(
+        runtime_mode or os.getenv("SCROOGE_RUNTIME_MODE", "live" if live else "backtest")
+    ).strip().lower() or ("live" if live else "backtest")
     runtime = initialize_strategy_runtime(
         live=live,
         initial_balance=initial_balance,
@@ -1926,6 +1941,7 @@ def run_strategy_on_market_events(
         trail_atr_mult=trail_atr_mult,
         allow_entries=allow_entries,
         execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
+        runtime_mode=normalized_runtime_mode,
         strategy_mode=normalized_strategy_mode,
     )
 
