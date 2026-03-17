@@ -16,6 +16,7 @@ import zipfile
 
 import pandas as pd
 import pandas_ta as ta
+from tqdm import tqdm
 
 from bot.event_log import get_technical_logger
 from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent
@@ -129,6 +130,36 @@ def _archive_day_urls(
     return urls
 
 
+def _download_response_payload(url: str, *, desc: str, leave_progress: bool = False) -> bytes:
+    with urlopen(url) as response:  # noqa: S310
+        total_bytes_header = response.headers.get("Content-Length")
+        try:
+            total_bytes = int(total_bytes_header) if total_bytes_header else 0
+        except ValueError:
+            total_bytes = 0
+
+        if total_bytes <= 0:
+            return response.read()
+
+        chunks: list[bytes] = []
+        with tqdm(
+            total=total_bytes,
+            desc=desc,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            dynamic_ncols=True,
+            leave=leave_progress,
+        ) as progress:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                progress.update(len(chunk))
+        return b"".join(chunks)
+
+
 def _parse_archive_csv_rows(file_obj) -> list[tuple[int, float, float]]:
     text_stream = TextIOWrapper(file_obj, encoding="utf-8")
     reader = csv.reader(text_stream)
@@ -175,26 +206,39 @@ def _download_archive_rows(
     start_ms = int(start_time.timestamp() * 1000)
     end_ms = int(end_time.timestamp() * 1000)
 
-    for url in _archive_day_urls(symbol=symbol, start_time=start_time, end_time=end_time, base_url=base_url):
-        try:
-            with urlopen(url) as response:  # noqa: S310
-                payload = response.read()
-        except HTTPError as exc:
-            if exc.code == 404:
-                continue
-            raise
-        except URLError:
-            raise
+    archive_urls = _archive_day_urls(symbol=symbol, start_time=start_time, end_time=end_time, base_url=base_url)
+    with tqdm(
+        archive_urls,
+        desc="aggTrades Archive",
+        unit="day",
+        dynamic_ncols=True,
+    ) as archive_progress:
+        for url in archive_progress:
+            day_label = url.rsplit("-", 1)[-1].removesuffix(".zip")
+            archive_progress.set_postfix_str(day_label)
+            try:
+                payload = _download_response_payload(
+                    url,
+                    desc=f"  {day_label}",
+                    leave_progress=False,
+                )
+            except HTTPError as exc:
+                if exc.code == 404:
+                    continue
+                raise
+            except URLError:
+                raise
 
-        with zipfile.ZipFile(BytesIO(payload)) as zf:
-            member_name = next((name for name in zf.namelist() if name.lower().endswith(".csv")), None)
-            if member_name is None:
-                continue
-            with zf.open(member_name) as file_obj:
-                for ts, price, qty in _parse_archive_csv_rows(file_obj):
-                    if ts < start_ms or ts > end_ms:
-                        continue
-                    rows.append((ts, price, qty))
+            with zipfile.ZipFile(BytesIO(payload)) as zf:
+                member_name = next((name for name in zf.namelist() if name.lower().endswith(".csv")), None)
+                if member_name is None:
+                    continue
+                with zf.open(member_name) as file_obj:
+                    for ts, price, qty in _parse_archive_csv_rows(file_obj):
+                        if ts < start_ms or ts > end_ms:
+                            continue
+                        rows.append((ts, price, qty))
+            archive_progress.set_postfix_str(f"{day_label} rows={len(rows)}")
 
     return rows
 
@@ -212,44 +256,55 @@ def _download_rest_rows(
     rows: list[tuple[int, float, float]] = []
     cursor = start_ms
 
-    while cursor <= end_ms:
-        query = urlencode(
-            {
-                "symbol": symbol,
-                "startTime": cursor,
-                "endTime": end_ms,
-                "limit": limit,
-            }
-        )
-        url = f"{base_url}/fapi/v1/aggTrades?{query}"
-        with urlopen(url) as response:  # noqa: S310
-            payload = json.loads(response.read().decode("utf-8"))
-        if not isinstance(payload, list) or not payload:
-            break
+    total_hours = max((end_ms - start_ms) / (60 * 60 * 1000), 1.0)
+    with tqdm(
+        total=total_hours,
+        desc="aggTrades REST",
+        unit="h",
+        dynamic_ncols=True,
+    ) as rest_progress:
+        while cursor <= end_ms:
+            query = urlencode(
+                {
+                    "symbol": symbol,
+                    "startTime": cursor,
+                    "endTime": end_ms,
+                    "limit": limit,
+                }
+            )
+            url = f"{base_url}/fapi/v1/aggTrades?{query}"
+            with urlopen(url) as response:  # noqa: S310
+                payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, list) or not payload:
+                break
 
-        batch_max_ts = cursor
-        batch_added = 0
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            try:
-                ts = int(item["T"])
-                price = float(item["p"])
-                qty = float(item["q"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if ts < start_ms or ts > end_ms:
-                continue
-            rows.append((ts, price, qty))
-            batch_added += 1
-            if ts > batch_max_ts:
-                batch_max_ts = ts
+            batch_max_ts = cursor
+            batch_added = 0
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    ts = int(item["T"])
+                    price = float(item["p"])
+                    qty = float(item["q"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if ts < start_ms or ts > end_ms:
+                    continue
+                rows.append((ts, price, qty))
+                batch_added += 1
+                if ts > batch_max_ts:
+                    batch_max_ts = ts
 
-        if batch_added == 0:
-            break
-        if len(payload) < limit:
-            break
-        cursor = batch_max_ts + 1
+            covered_hours = max(0.0, (min(batch_max_ts, end_ms) - start_ms) / (60 * 60 * 1000))
+            rest_progress.update(max(0.0, covered_hours - rest_progress.n))
+            rest_progress.set_postfix(rows=len(rows))
+
+            if batch_added == 0:
+                break
+            if len(payload) < limit:
+                break
+            cursor = batch_max_ts + 1
 
     return rows
 
