@@ -244,7 +244,8 @@ agg_trade_tick_interval: 1s
 Notes:
 - `agg_trade_source: archive` uses Binance public data and automatically fills the latest missing tail through REST when needed
 - `agg_trade_source: rest` is available, but it is practical only for shorter windows
-- `agg_trade_tick_interval: 1s` is the recommended default for realtime backtests; `raw` is available but can get very heavy very quickly on BTCUSDT
+- `agg_trade_tick_interval` accepts `raw` or any second bucket like `1s`, `5s`, `15s`, `30s`
+- `agg_trade_tick_interval: 1s` is the closest to realtime; `5s` or `15s` are often much more practical for iteration on BTCUSDT
 - raw agg-trade downloads are cached by default under `data/agg_trades/`; control this with `agg_trade_cache_enabled` and `agg_trade_cache_dir`
 
 ### Replay a canonical event log

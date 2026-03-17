@@ -424,6 +424,21 @@ def _close_time_from_open_time(open_time: pd.Timestamp, interval: str) -> str:
     return _format_ts(open_time + delta - timedelta(seconds=1))
 
 
+def _normalize_tick_interval_seconds(value: str) -> int | None:
+    normalized = str(value or "1s").strip().lower() or "1s"
+    if normalized == "raw":
+        return None
+    if not normalized.endswith("s"):
+        raise ValueError("agg_trade_tick_interval must be 'raw' or an integer number of seconds like 1s, 5s, 15s")
+    try:
+        seconds = int(normalized[:-1])
+    except ValueError as exc:
+        raise ValueError("agg_trade_tick_interval must be 'raw' or an integer number of seconds like 1s, 5s, 15s") from exc
+    if seconds <= 0:
+        raise ValueError("agg_trade_tick_interval seconds must be greater than zero")
+    return seconds
+
+
 def _build_price_tick_events(
     trades: pd.DataFrame,
     *,
@@ -434,14 +449,13 @@ def _build_price_tick_events(
     if trades.empty:
         return []
 
-    if tick_interval == "raw":
+    interval_seconds = _normalize_tick_interval_seconds(tick_interval)
+    if interval_seconds is None:
         tick_df = trades[["ts", "price"]].copy()
     else:
-        normalized = str(tick_interval or "1s").strip().lower() or "1s"
-        if normalized != "1s":
-            raise ValueError("agg_trade_tick_interval must be one of: raw, 1s")
+        normalized = f"{interval_seconds}s"
         tick_df = (
-            trades.assign(bucket=trades["ts"].dt.floor("1s"))
+            trades.assign(bucket=trades["ts"].dt.floor(normalized))
             .groupby("bucket", as_index=False)
             .agg(price=("price", "last"))
             .rename(columns={"bucket": "ts"})

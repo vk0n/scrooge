@@ -133,8 +133,14 @@ def build_discrete_backtest_config(
     if agg_trade_source not in {"archive", "rest", "auto"}:
         raise ValueError("agg_trade_source must be one of: archive, rest, auto")
     agg_trade_tick_interval = str(cfg.get("agg_trade_tick_interval", "1s")).strip().lower() or "1s"
-    if agg_trade_tick_interval not in {"1s", "raw"}:
-        raise ValueError("agg_trade_tick_interval must be one of: 1s, raw")
+    if agg_trade_tick_interval != "raw":
+        if not agg_trade_tick_interval.endswith("s"):
+            raise ValueError("agg_trade_tick_interval must be 'raw' or an integer number of seconds like 1s, 5s, 15s")
+        try:
+            if int(agg_trade_tick_interval[:-1]) <= 0:
+                raise ValueError("agg_trade_tick_interval seconds must be greater than zero")
+        except ValueError as exc:
+            raise ValueError("agg_trade_tick_interval must be 'raw' or an integer number of seconds like 1s, 5s, 15s") from exc
     agg_trade_archive_base_url = str(cfg.get("agg_trade_archive_base_url", "") or "").strip()
     agg_trade_rest_base_url = str(cfg.get("agg_trade_rest_base_url", "") or "").strip()
     agg_trade_cache_enabled = bool(cfg.get("agg_trade_cache_enabled", True))

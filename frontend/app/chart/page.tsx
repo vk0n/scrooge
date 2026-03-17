@@ -255,6 +255,54 @@ function clampVisibleXRange(
   return [overlapStart, overlapEnd];
 }
 
+function alignTimestampToStep(startMs: number, stepMs: number): number {
+  if (!Number.isFinite(startMs) || !Number.isFinite(stepMs) || stepMs <= 0) {
+    return startMs;
+  }
+  return Math.floor(startMs / stepMs) * stepMs;
+}
+
+function resolveSharedDateTickMs(startMs: number, endMs: number): number {
+  const spanMs = endMs - startMs;
+  const hour = 60 * 60 * 1000;
+  const day = 24 * hour;
+
+  if (spanMs <= 12 * hour) {
+    return hour;
+  }
+  if (spanMs <= 2 * day) {
+    return 3 * hour;
+  }
+  if (spanMs <= 7 * day) {
+    return 12 * hour;
+  }
+  if (spanMs <= 31 * day) {
+    return day;
+  }
+  if (spanMs <= 90 * day) {
+    return 3 * day;
+  }
+  if (spanMs <= 365 * day) {
+    return 14 * day;
+  }
+  return 30 * day;
+}
+
+function buildSharedDateAxisSettings(
+  startMs: number | null,
+  endMs: number | null
+): { tick0?: string; dtick?: number } {
+  if (startMs === null || endMs === null || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return {};
+  }
+
+  const dtick = resolveSharedDateTickMs(startMs, endMs);
+  return {
+    tick0: new Date(alignTimestampToStep(startMs, dtick)).toISOString(),
+    dtick,
+  };
+}
+
 function pointsToXY(points: IndicatorPoint[]): { x: string[]; y: Array<number | null> } {
   return {
     x: points.map((point) => point.time),
@@ -589,6 +637,16 @@ function ChartContent(): JSX.Element {
             new Date(boundedVisibleRange[1]).toISOString(),
           ]
         : undefined;
+      const activeRangeStartMs = boundedVisibleRange?.[0] ?? chartStartMs;
+      const activeRangeEndMs = boundedVisibleRange?.[1] ?? chartEndMs;
+      const sharedDateAxisSettings = buildSharedDateAxisSettings(activeRangeStartMs, activeRangeEndMs);
+      const sharedChartMargins = {
+        t: compactChartUi ? 16 : 18,
+        r: compactChartUi ? 12 : 16,
+        b: compactChartUi ? 28 : 40,
+        l: compactChartUi ? 46 : 55,
+        autoexpand: false,
+      };
       const plotConfig = {
         responsive: true,
         displaylogo: false,
@@ -742,10 +800,12 @@ function ChartContent(): JSX.Element {
               type: "date",
               rangeslider: { visible: !compactChartUi },
               range: initialXRange,
+              automargin: false,
+              ...sharedDateAxisSettings,
             },
-            yaxis: { title: "Price" },
+            yaxis: { title: "Price", automargin: false },
             showlegend: false,
-            margin: { t: compactChartUi ? 16 : 18, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
+            margin: sharedChartMargins,
             shapes: priceShapes,
           },
           plotConfig
@@ -774,9 +834,13 @@ function ChartContent(): JSX.Element {
           if (!targets.length) {
             return;
           }
-          const payload = range
+          const syncedRange = range ?? (chartStartMs !== null && chartEndMs !== null ? [chartStartMs, chartEndMs] : null);
+          const syncedAxisSettings = buildSharedDateAxisSettings(syncedRange?.[0] ?? null, syncedRange?.[1] ?? null);
+          const payload = syncedRange
             ? {
-                "xaxis.range": [new Date(range[0]).toISOString(), new Date(range[1]).toISOString()],
+                "xaxis.range": [new Date(syncedRange[0]).toISOString(), new Date(syncedRange[1]).toISOString()],
+                ...(syncedAxisSettings.tick0 ? { "xaxis.tick0": syncedAxisSettings.tick0 } : {}),
+                ...(syncedAxisSettings.dtick ? { "xaxis.dtick": syncedAxisSettings.dtick } : {}),
               }
             : { "xaxis.autorange": true };
           targets.forEach((target) => {
@@ -867,9 +931,11 @@ function ChartContent(): JSX.Element {
             xaxis: {
               type: "date",
               range: initialXRange,
+              automargin: false,
+              ...sharedDateAxisSettings,
             },
-            yaxis: { title: "Vault" },
-            margin: { t: compactChartUi ? 16 : 18, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
+            yaxis: { title: "Vault", automargin: false },
+            margin: sharedChartMargins,
           },
           plotConfig
         );
@@ -930,9 +996,11 @@ function ChartContent(): JSX.Element {
               xaxis: {
                 type: "date",
                 range: initialXRange,
+                automargin: false,
+                ...sharedDateAxisSettings,
               },
-              yaxis: { title: "RSI", range: [0, 100] },
-              margin: { t: compactChartUi ? 16 : 18, r: compactChartUi ? 12 : 16, b: compactChartUi ? 28 : 40, l: compactChartUi ? 46 : 55 },
+              yaxis: { title: "RSI", range: [0, 100], automargin: false },
+              margin: sharedChartMargins,
               shapes: rsiShapes,
             },
             plotConfig
@@ -946,7 +1014,10 @@ function ChartContent(): JSX.Element {
               plot_bgcolor: CHART_THEME.bg,
               font: { color: CHART_THEME.mutedText },
               uirevision: `${chartRevisionKey}:rsi-empty`,
-              margin: { t: compactChartUi ? 16 : 18, r: compactChartUi ? 12 : 16, b: compactChartUi ? 24 : 30, l: compactChartUi ? 36 : 40 },
+              margin: {
+                ...sharedChartMargins,
+                b: compactChartUi ? 24 : 30,
+              },
             },
             plotConfig
           );
