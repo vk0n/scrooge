@@ -5,7 +5,7 @@ import signal
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +99,7 @@ def load_config() -> dict[str, Any]:
 
 
 def _backtest_run_timestamp() -> str:
-    return datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _safe_symlink_latest(root_dir: Path, run_dir: Path) -> None:

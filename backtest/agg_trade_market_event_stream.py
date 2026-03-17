@@ -76,8 +76,7 @@ def _resolve_agg_trade_cache_path(
     cache_dir: str | Path | None,
     symbol: str,
     source: str,
-    start_time: datetime,
-    end_time: datetime,
+    cache_key: str,
 ) -> Path | None:
     if cache_dir is None:
         return None
@@ -85,10 +84,26 @@ def _resolve_agg_trade_cache_path(
     if not normalized:
         return None
     target_dir = Path(normalized).expanduser()
-    return target_dir / (
-        f"{symbol}_aggTrades_{source}_"
-        f"{int(start_time.timestamp() * 1000)}_{int(end_time.timestamp() * 1000)}.pkl"
+    normalized_cache_key = (
+        str(cache_key or "rolling")
+        .strip()
+        .replace(" ", "_")
+        .replace(":", "-")
+        .replace("/", "-")
     )
+    return target_dir / f"{symbol}_aggTrades_{source}_{normalized_cache_key}.pkl"
+
+
+def _resolve_agg_trade_cache_key(*, backtest_period_days: int, backtest_period_end_time: str) -> str:
+    raw_end_time = str(backtest_period_end_time or "").strip()
+    if not raw_end_time:
+        return f"{int(backtest_period_days)}d_rolling"
+    try:
+        end_time = datetime.fromisoformat(raw_end_time)
+        end_day = end_time.date().isoformat()
+    except ValueError:
+        end_day = raw_end_time[:10] or raw_end_time
+    return f"{int(backtest_period_days)}d_until_{end_day}"
 
 
 def _read_agg_trade_cache(path: Path) -> pd.DataFrame:
@@ -319,6 +334,7 @@ def fetch_historical_agg_trades(
     rest_base_url: str = DEFAULT_AGG_TRADE_REST_BASE_URL,
     cache_enabled: bool = True,
     cache_dir: str | Path | None = DEFAULT_AGG_TRADE_CACHE_DIR,
+    cache_key: str | None = None,
 ) -> tuple[pd.DataFrame, bool, Path | None]:
     normalized_source = str(source or "archive").strip().lower() or "archive"
     archive_base_url = str(archive_base_url or DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL).strip().rstrip("/")
@@ -330,8 +346,7 @@ def fetch_historical_agg_trades(
         cache_dir=cache_dir if cache_enabled else None,
         symbol=symbol,
         source=normalized_source,
-        start_time=start_time,
-        end_time=end_time,
+        cache_key=(str(cache_key).strip() if cache_key is not None and str(cache_key).strip() else "rolling"),
     )
     if cache_enabled and cache_path is not None and cache_path.exists():
         technical_logger.info("agg_trade_cache_found path=%s", cache_path)
@@ -705,6 +720,10 @@ def build_historical_agg_trade_market_event_stream(
 ) -> tuple[list[MarketEvent], AggTradeMarketEventStreamSummary]:
     archive_base_url = str(archive_base_url or DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL).strip().rstrip("/")
     rest_base_url = str(rest_base_url or DEFAULT_AGG_TRADE_REST_BASE_URL).strip().rstrip("/")
+    cache_key = _resolve_agg_trade_cache_key(
+        backtest_period_days=backtest_period_days,
+        backtest_period_end_time=backtest_period_end_time,
+    )
     start_time, end_time = _resolve_time_range(
         backtest_period_days=backtest_period_days,
         backtest_period_end_time=backtest_period_end_time,
@@ -718,6 +737,7 @@ def build_historical_agg_trade_market_event_stream(
         rest_base_url=rest_base_url,
         cache_enabled=cache_enabled,
         cache_dir=cache_dir,
+        cache_key=cache_key,
     )
     events, summary = build_market_events_from_agg_trade_frame(
         trades,

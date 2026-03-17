@@ -7,7 +7,7 @@ backtest_run_root: runtime/backtests
 market_tape_input_path: ''
 market_event_input_path: ''
 agg_trade_source: archive
-agg_trade_tick_interval: 1s
+agg_trade_tick_interval: 5s
 agg_trade_archive_base_url: ''
 agg_trade_rest_base_url: ''
 agg_trade_cache_enabled: true
