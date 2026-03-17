@@ -30,6 +30,7 @@ from bot.trade import (
     get_open_position,
     set_leverage,
 )
+from core.event_store import reset_event_store
 from core.engine import run_strategy
 
 RLockType = type(threading.RLock())
@@ -95,6 +96,70 @@ def load_config() -> dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError(f"{config_path} must contain a YAML object")
     return config
+
+
+def _backtest_run_timestamp() -> str:
+    return datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+
+def _safe_symlink_latest(root_dir: Path, run_dir: Path) -> None:
+    latest_link = root_dir / "latest"
+    try:
+        latest_link.parent.mkdir(parents=True, exist_ok=True)
+        if latest_link.exists() or latest_link.is_symlink():
+            latest_link.unlink()
+        latest_link.symlink_to(run_dir.resolve())
+    except OSError as exc:
+        technical_logger.warning("backtest_run_latest_link_failed root=%s run=%s error=%s", root_dir, run_dir, exc)
+
+
+def _resolve_backtest_run_dir(cfg: dict[str, Any]) -> Path | None:
+    raw_run_dir = str(os.getenv("SCROOGE_BACKTEST_RUN_DIR", cfg.get("backtest_run_dir", "")) or "").strip()
+    raw_root_dir = str(os.getenv("SCROOGE_BACKTEST_ROOT", cfg.get("backtest_run_root", "runtime/backtests")) or "").strip()
+
+    if not raw_run_dir:
+        return None
+
+    if raw_run_dir.lower() != "auto":
+        return Path(raw_run_dir).expanduser()
+
+    root_dir = Path(raw_root_dir or "runtime/backtests").expanduser()
+    root_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = root_dir / _backtest_run_timestamp()
+    return run_dir
+
+
+def _apply_backtest_run_dir(run_dir: Path, cfg: dict[str, Any]) -> tuple[Path, bool]:
+    resolved_run_dir = run_dir.expanduser()
+    resolved_run_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["SCROOGE_BACKTEST_RUN_DIR"] = str(resolved_run_dir)
+
+    os.environ["SCROOGE_STATE_FILE"] = str(resolved_run_dir / "state.json")
+    os.environ["SCROOGE_TRADE_HISTORY_FILE"] = str(resolved_run_dir / "trade_history.jsonl")
+    os.environ["SCROOGE_BALANCE_HISTORY_FILE"] = str(resolved_run_dir / "balance_history.jsonl")
+    os.environ["SCROOGE_LOG_FILE"] = str(resolved_run_dir / "trading_log.txt")
+    os.environ["SCROOGE_EVENT_LOG_FILE"] = str(resolved_run_dir / "event_history.jsonl")
+    os.environ["SCROOGE_MARKET_EVENT_STREAM_FILE"] = str(resolved_run_dir / "market_events.jsonl")
+    os.environ["SCROOGE_RUNTIME_CHART_DATASET_PATH"] = str(resolved_run_dir / "chart_dataset.csv")
+
+    reset_event_store(os.environ["SCROOGE_EVENT_LOG_FILE"])
+
+    raw_root_dir = str(os.getenv("SCROOGE_BACKTEST_ROOT", cfg.get("backtest_run_root", "runtime/backtests")) or "").strip()
+    root_dir = Path(raw_root_dir or "runtime/backtests").expanduser()
+    latest_updated = False
+    try:
+        if resolved_run_dir.parent == root_dir or resolved_run_dir.is_relative_to(root_dir):
+            _safe_symlink_latest(root_dir, resolved_run_dir)
+            latest_updated = True
+    except AttributeError:
+        try:
+            resolved_run_dir.relative_to(root_dir)
+            _safe_symlink_latest(root_dir, resolved_run_dir)
+            latest_updated = True
+        except ValueError:
+            latest_updated = False
+
+    return resolved_run_dir, latest_updated
 
 
 def _sleep_with_command_poll(
@@ -319,10 +384,20 @@ def _build_command_kwargs(symbol: str) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    _ensure_runtime_log_file()
     cfg = load_config()
 
     live = cfg["live"]  # "backtest" or "live"
+    if not live:
+        backtest_run_dir = _resolve_backtest_run_dir(cfg)
+        if backtest_run_dir is not None:
+            resolved_run_dir, latest_updated = _apply_backtest_run_dir(backtest_run_dir, cfg)
+            technical_logger.info(
+                "backtest_run_directory_prepared path=%s latest_updated=%s",
+                resolved_run_dir,
+                latest_updated,
+            )
+
+    _ensure_runtime_log_file()
 
     symbol = cfg["symbol"]
     lvrg = cfg["leverage"]
@@ -348,14 +423,14 @@ if __name__ == "__main__":
     data_module.set_client(client)
     trade_module.set_client(client)
 
-    # Load or create state
-    state = load_state()
-    state_path = Path(os.getenv("SCROOGE_STATE_FILE", "runtime/state.json")).expanduser()
-    if not state_path.exists():
-        save_state(state)
-        technical_logger.info("state_initialized path=%s", state_path)
-
     if live:
+        # Load or create state
+        state = load_state()
+        state_path = Path(os.getenv("SCROOGE_STATE_FILE", "runtime/state.json")).expanduser()
+        if not state_path.exists():
+            save_state(state)
+            technical_logger.info("state_initialized path=%s", state_path)
+
         state_lock = threading.RLock()
         control_client = get_control_client()
         restart_requested = False

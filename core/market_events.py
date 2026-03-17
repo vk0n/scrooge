@@ -132,7 +132,7 @@ def _logger() -> logging.Logger:
 
 
 def resolve_market_event_stream_path(path: str | Path | None = None) -> Path:
-    return Path(path or MARKET_EVENT_STREAM_FILE).expanduser()
+    return Path(path or os.getenv("SCROOGE_MARKET_EVENT_STREAM_FILE", MARKET_EVENT_STREAM_FILE)).expanduser()
 
 
 def market_event_to_dict(event: MarketEvent) -> dict[str, Any]:

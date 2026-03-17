@@ -32,6 +32,12 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw not in {"0", "false", "no", "off", ""}
 
 
+def _resolve_ui_log_path(path: Path | None = None) -> Path:
+    if path is not None:
+        return path.expanduser()
+    return Path(os.getenv("SCROOGE_LOG_FILE", str(UI_LOG_PATH))).expanduser()
+
+
 def _as_float(value: Any) -> float | None:
     try:
         numeric = float(value)
@@ -329,7 +335,7 @@ def append_ui_log_line(ts: str, message: str, *, log_buffer: list[str] | None = 
         log_buffer.append(line)
         return
 
-    path = (ui_log_path or UI_LOG_PATH).expanduser()
+    path = _resolve_ui_log_path(ui_log_path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as file_obj:

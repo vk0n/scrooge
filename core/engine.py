@@ -192,7 +192,8 @@ REALTIME_WARMUP_LIMITS = {
 
 
 def save_log(log_buffer: list[str]) -> None:
-    with open(LOG_FILE, "a") as f:
+    log_path = os.getenv("SCROOGE_LOG_FILE", LOG_FILE)
+    with open(log_path, "a") as f:
         f.write("\n".join(log_buffer) + "\n")
 
 

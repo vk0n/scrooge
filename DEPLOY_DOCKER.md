@@ -186,6 +186,10 @@ Backtest runs write into:
 - `/runtime/backtests/<run_id>/...`
 - symlink `/runtime/backtests/latest`
 
+Local backtests can use the same pattern through `config/backtest.yaml`:
+- `backtest_run_dir: auto`
+- `backtest_run_root: runtime/backtests`
+
 If host export is enabled:
 - set `export_artifacts_to_host: true` in `config/backtest.yaml`
 - host bind target is controlled by:

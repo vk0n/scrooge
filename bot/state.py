@@ -41,18 +41,18 @@ def _now_text() -> str:
 
 
 def _state_path() -> Path:
-    return Path(STATE_FILE).expanduser()
+    return Path(os.getenv("SCROOGE_STATE_FILE", STATE_FILE)).expanduser()
 
 
 def _trade_history_path() -> Path:
-    path = Path(TRADE_HISTORY_FILE).expanduser()
+    path = Path(os.getenv("SCROOGE_TRADE_HISTORY_FILE", TRADE_HISTORY_FILE)).expanduser()
     if path.is_absolute():
         return path
     return _state_path().parent / path
 
 
 def _balance_history_path() -> Path:
-    path = Path(BALANCE_HISTORY_FILE).expanduser()
+    path = Path(os.getenv("SCROOGE_BALANCE_HISTORY_FILE", BALANCE_HISTORY_FILE)).expanduser()
     if path.is_absolute():
         return path
     return _state_path().parent / path

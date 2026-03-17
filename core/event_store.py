@@ -42,7 +42,7 @@ def _logger() -> logging.Logger:
 
 
 def resolve_event_log_path(path: str | Path | None = None) -> Path:
-    raw_path = Path(path or EVENT_LOG_FILE).expanduser()
+    raw_path = Path(path or os.getenv("SCROOGE_EVENT_LOG_FILE", EVENT_LOG_FILE)).expanduser()
     return raw_path
 
 
@@ -110,6 +110,12 @@ def get_event_store() -> JsonlEventStore:
     global _DEFAULT_EVENT_STORE
     if _DEFAULT_EVENT_STORE is None:
         _DEFAULT_EVENT_STORE = JsonlEventStore()
+    return _DEFAULT_EVENT_STORE
+
+
+def reset_event_store(path: str | Path | None = None) -> JsonlEventStore:
+    global _DEFAULT_EVENT_STORE
+    _DEFAULT_EVENT_STORE = JsonlEventStore(path)
     return _DEFAULT_EVENT_STORE
 
 

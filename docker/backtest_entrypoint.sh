@@ -19,6 +19,7 @@ export SCROOGE_RUNTIME_CHART_DATASET_PATH="${run_dir}/chart_dataset.csv"
 export SCROOGE_CONFIG_PATH="${SCROOGE_CONFIG_PATH:-/runtime/config.backtest.yaml}"
 export SCROOGE_RUNTIME_MODE="${SCROOGE_RUNTIME_MODE:-backtest}"
 export SCROOGE_STRATEGY_MODE="${SCROOGE_STRATEGY_MODE:-discrete}"
+export SCROOGE_BACKTEST_RUN_DIR="${run_dir}"
 
 export_settings="$(
 python - <<'PY'

@@ -2,6 +2,8 @@ live: false
 strategy_mode: realtime
 execution_mode: simulated
 backtest_input_mode: agg_trade_stream
+backtest_run_dir: auto
+backtest_run_root: runtime/backtests
 market_tape_input_path: ''
 market_event_input_path: ''
 agg_trade_source: archive

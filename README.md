@@ -145,6 +145,11 @@ Run against `config/backtest.yaml`:
 SCROOGE_CONFIG_PATH=config/backtest.yaml python main.py
 ```
 
+With the default config, local backtests now create an isolated run directory automatically:
+- `backtest_run_dir: auto`
+- `backtest_run_root: runtime/backtests`
+- symlink `runtime/backtests/latest`
+
 Backtest outputs include:
 - runtime artifacts for the run
 - `market_tape.jsonl`
