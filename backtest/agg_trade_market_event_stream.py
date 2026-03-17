@@ -377,7 +377,6 @@ def _download_archive_rows(
                 and (not day_df.empty or day_value < today_utc)
             ):
                 _write_agg_trade_cache(shard_path, day_df)
-                technical_logger.info("agg_trade_daily_cache_written path=%s rows=%s", shard_path, len(day_df))
             downloaded_days += 1
             day_frames.append(day_df)
             archive_progress.set_postfix_str(f"{day_label} cache={cache_hits} dl={downloaded_days}")

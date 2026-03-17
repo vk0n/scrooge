@@ -45,7 +45,7 @@ from core.market_events import MarketEvent, market_event_from_dict
 
 
 @dataclass(slots=True)
-class DiscreteBacktestConfig:
+class BacktestConfig:
     backtest_input_mode: str
     execution_mode: str
     agg_trade_source: str
@@ -81,7 +81,7 @@ class DiscreteBacktestConfig:
 
 
 @dataclass(slots=True)
-class DiscreteBacktestResult:
+class BacktestResult:
     dataset: pd.DataFrame
     tape: list[DiscreteMarketTapeRow]
     market_events: list[MarketEvent]
@@ -97,17 +97,17 @@ class DiscreteBacktestResult:
     stats: dict[str, Any]
 
 
-def build_discrete_backtest_config(
+def build_backtest_config(
     cfg: dict[str, Any],
     *,
     chart_dataset_path: str | Path,
     event_log_path: str | Path,
     runtime_mode: str = "backtest",
-    strategy_mode: str = "discrete",
+    strategy_mode: str | None = None,
     client: Any | None = None,
-) -> DiscreteBacktestConfig:
+) -> BacktestConfig:
     if bool(cfg.get("live", False)):
-        raise ValueError("DiscreteBacktestConfig requires a backtest config (live=false).")
+        raise ValueError("BacktestConfig requires a backtest config (live=false).")
 
     initial_balance = cfg.get("initial_balance")
     if initial_balance is None:
@@ -122,7 +122,8 @@ def build_discrete_backtest_config(
         input_mode = "market_event_stream"
     if input_mode not in {"build", "discrete_tape", "market_event_stream", "agg_trade_stream"}:
         raise ValueError("backtest_input_mode must be one of: build, discrete_tape, market_event_stream, agg_trade_stream")
-    normalized_strategy_mode = str(cfg.get("strategy_mode", strategy_mode)).strip().lower() or strategy_mode
+    fallback_strategy_mode = str(strategy_mode or "discrete").strip().lower() or "discrete"
+    normalized_strategy_mode = str(cfg.get("strategy_mode", fallback_strategy_mode)).strip().lower() or fallback_strategy_mode
     if normalized_strategy_mode not in {"discrete", "realtime"}:
         raise ValueError("strategy_mode must be one of: discrete, realtime")
     execution_mode = str(cfg.get("execution_mode", "simulated")).strip().lower() or "simulated"
@@ -152,7 +153,7 @@ def build_discrete_backtest_config(
     raw_market_event_input_path = str(cfg.get("market_event_input_path", "") or "").strip()
     market_event_input_path = Path(raw_market_event_input_path).expanduser() if raw_market_event_input_path else None
 
-    return DiscreteBacktestConfig(
+    return BacktestConfig(
         backtest_input_mode=input_mode,
         execution_mode=execution_mode,
         agg_trade_source=agg_trade_source,
@@ -288,8 +289,8 @@ def _write_chart_dataset_snapshot(df: pd.DataFrame, symbol: str, path: Path, bal
         get_technical_logger().warning("chart_dataset_snapshot_write_failed path=%s error=%s", path, exc)
 
 
-def run_discrete_backtest(
-    config: DiscreteBacktestConfig,
+def run_backtest(
+    config: BacktestConfig,
     *,
     technical_logger: Any | None = None,
     dataset_builder: Callable[..., pd.DataFrame] = build_dataset,
@@ -298,7 +299,7 @@ def run_discrete_backtest(
     replay_writer: Callable[..., ReplaySummary] = write_replay_artifacts,
     market_event_execution_writer: Callable[..., MarketExecutionSummary] = write_market_event_execution_artifacts,
     trade_alignment_writer: Callable[..., TradeAlignmentSummary] = write_trade_alignment_artifacts,
-) -> DiscreteBacktestResult:
+) -> BacktestResult:
     logger = technical_logger or get_technical_logger()
     market_event_projection: DiscreteTapeProjectionSummary | None = None
     agg_trade_stream_summary: AggTradeMarketEventStreamSummary | None = None
@@ -590,7 +591,7 @@ def run_discrete_backtest(
             **config.params,
         )
 
-    return DiscreteBacktestResult(
+    return BacktestResult(
         dataset=df,
         tape=tape,
         market_events=market_events,
@@ -605,3 +606,10 @@ def run_discrete_backtest(
         replay_summary=replay_summary,
         stats=stats,
     )
+
+
+# Backward-compatible aliases while the rest of the repo and any external scripts catch up.
+DiscreteBacktestConfig = BacktestConfig
+DiscreteBacktestResult = BacktestResult
+build_discrete_backtest_config = build_backtest_config
+run_discrete_backtest = run_backtest

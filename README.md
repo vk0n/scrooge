@@ -30,7 +30,7 @@ scrooge/
 │   ├── engine.py
 │   ├── market_events.py
 │   └── event_store.py
-├── backtest/                # Dataset building, discrete runner/tape/event-stream, replay, reporting, optimization
+├── backtest/                # Dataset building, backtest runner/tape/event-stream, replay, reporting, optimization
 │   ├── dataset.py
 │   ├── agg_trade_market_event_stream.py
 │   ├── discrete_event_stream.py

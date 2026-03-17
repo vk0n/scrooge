@@ -684,17 +684,16 @@ if __name__ == "__main__":
                 live_market_stream = None
 
     else:
-        from backtest.runner import build_discrete_backtest_config, run_discrete_backtest
+        from backtest.runner import build_backtest_config, run_backtest
 
-        backtest_config = build_discrete_backtest_config(
+        backtest_config = build_backtest_config(
             cfg,
             chart_dataset_path=chart_dataset_path,
             event_log_path=os.getenv("SCROOGE_EVENT_LOG_FILE", "runtime/event_history.jsonl"),
-            runtime_mode=os.getenv("SCROOGE_RUNTIME_MODE", "backtest"),
-            strategy_mode=os.getenv("SCROOGE_STRATEGY_MODE", "discrete"),
+            runtime_mode="backtest",
             client=client,
         )
-        run_discrete_backtest(
+        run_backtest(
             backtest_config,
             technical_logger=technical_logger,
         )
