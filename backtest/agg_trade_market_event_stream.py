@@ -19,7 +19,7 @@ import pandas_ta as ta
 from tqdm import tqdm
 
 from bot.event_log import get_technical_logger
-from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent
+from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent, market_event_to_dict
 
 
 DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL = os.getenv(
@@ -463,6 +463,352 @@ def _download_rest_rows(
             cursor = batch_max_ts + 1
 
     return rows
+
+
+def _normalize_trade_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["ts", "price", "qty", "source"])
+    out = df.copy()
+    out["ts"] = pd.to_datetime(out["ts"], errors="coerce")
+    out["price"] = pd.to_numeric(out["price"], errors="coerce")
+    out["qty"] = pd.to_numeric(out["qty"], errors="coerce")
+    if "source" not in out.columns:
+        out["source"] = "archive"
+    out["source"] = out["source"].astype(str)
+    out = out.dropna(subset=["ts", "price", "qty"]).sort_values("ts")
+    out = out.drop_duplicates(subset=["ts", "price", "qty"], keep="last").reset_index(drop=True)
+    return out[["ts", "price", "qty", "source"]]
+
+
+def _trade_frame_from_rows(
+    rows: list[tuple[int, float, float]],
+    *,
+    source: str,
+) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=["ts", "price", "qty", "source"])
+    df = pd.DataFrame(rows, columns=["ts", "price", "qty"])
+    df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+    df["source"] = source
+    return _normalize_trade_frame(df)
+
+
+def _iter_requested_days(start_time: datetime, end_time: datetime) -> list[date]:
+    return [day_value for day_value, _ in _archive_day_specs(symbol="", start_time=start_time, end_time=end_time, base_url="") for day_value in [day_value]]
+
+
+def _resolve_day_time_bounds(day_value: date, *, start_time: datetime, end_time: datetime) -> tuple[datetime, datetime]:
+    day_start = datetime.combine(day_value, datetime.min.time())
+    next_day_start = day_start + timedelta(days=1)
+    effective_start = max(start_time, day_start)
+    effective_end_exclusive = min(end_time + timedelta(microseconds=1), next_day_start)
+    effective_end_inclusive = effective_end_exclusive - timedelta(milliseconds=1)
+    return effective_start, effective_end_inclusive
+
+
+def _load_archive_trade_day_frame(
+    *,
+    symbol: str,
+    day_value: date,
+    start_time: datetime,
+    end_time: datetime,
+    source: str,
+    archive_base_url: str,
+    rest_base_url: str,
+    cache_enabled: bool,
+    cache_dir: str | Path | None,
+) -> tuple[pd.DataFrame, bool, str]:
+    normalized_source = str(source or "archive").strip().lower() or "archive"
+    if normalized_source not in {"archive", "rest", "auto"}:
+        raise ValueError("agg_trade_source must be one of: archive, rest, auto")
+
+    effective_start, effective_end = _resolve_day_time_bounds(
+        day_value,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    if effective_end < effective_start:
+        return pd.DataFrame(columns=["ts", "price", "qty", "source"]), True, "archive"
+
+    shard_path = _resolve_archive_day_cache_path(
+        cache_dir=cache_dir if cache_enabled else None,
+        symbol=symbol,
+        day=day_value,
+    )
+    if cache_enabled and shard_path is not None and shard_path.exists():
+        cached = _read_agg_trade_cache(shard_path)
+        return _filter_trade_frame_to_range(cached, start_time=effective_start, end_time=effective_end), True, str(
+            cached["source"].iloc[0]
+        ) if not cached.empty else "archive"
+
+    rows: list[tuple[int, float, float]] = []
+    resolved_source = normalized_source
+    if normalized_source in {"archive", "auto"}:
+        try:
+            rows = _download_archive_day_rows(
+                symbol=symbol,
+                day=day_value,
+                base_url=archive_base_url,
+            )
+            if rows:
+                resolved_source = "archive"
+        except (HTTPError, URLError, OSError):
+            rows = []
+
+    if not rows and normalized_source in {"archive", "auto", "rest"}:
+        rows = _download_rest_rows(
+            symbol=symbol,
+            start_time=effective_start,
+            end_time=effective_end,
+            base_url=rest_base_url,
+        )
+        resolved_source = "rest"
+
+    day_df = _trade_frame_from_rows(rows, source=resolved_source)
+    filtered = _filter_trade_frame_to_range(day_df, start_time=effective_start, end_time=effective_end)
+
+    today_utc = datetime.now(UTC).date()
+    if cache_enabled and shard_path is not None and (not day_df.empty or day_value < today_utc):
+        _write_agg_trade_cache(shard_path, day_df)
+
+    return filtered, False, resolved_source
+
+
+def _resample_candle_frame(candles: pd.DataFrame, *, interval: str) -> pd.DataFrame:
+    if candles.empty:
+        return pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume"])
+
+    working = candles.copy()
+    working["open_time"] = pd.to_datetime(working["open_time"], errors="coerce")
+    working = working.dropna(subset=["open_time"]).sort_values("open_time")
+    working = working.set_index("open_time")[["open", "high", "low", "close", "volume"]]
+    freq = {"m": "min", "h": "h", "d": "d"}[interval[-1]]
+    rule = f"{int(interval[:-1])}{freq}"
+    resampled = (
+        working.resample(rule, label="left", closed="left")
+        .agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
+        )
+        .dropna(subset=["open", "high", "low", "close"])
+        .reset_index()
+    )
+    return resampled.rename(columns={"open_time": "open_time"})
+
+
+def _slice_candle_frame_for_day(candles: pd.DataFrame, *, day_value: date) -> pd.DataFrame:
+    if candles.empty:
+        return candles
+    start_ts = pd.Timestamp(day_value)
+    end_ts = start_ts + pd.Timedelta(days=1)
+    return candles[(candles["open_time"] >= start_ts) & (candles["open_time"] < end_ts)].copy()
+
+
+def _slice_indicator_frame_for_day(indicator_df: pd.DataFrame, *, day_value: date) -> pd.DataFrame:
+    if indicator_df.empty:
+        return indicator_df
+    start_ts = pd.Timestamp(day_value)
+    end_ts = start_ts + pd.Timedelta(days=1)
+    return indicator_df[(indicator_df["open_time"] >= start_ts) & (indicator_df["open_time"] < end_ts)].copy()
+
+
+def write_historical_agg_trade_market_event_stream(
+    *,
+    symbol: str,
+    backtest_period_days: int,
+    backtest_period_end_time: str,
+    intervals: dict[str, str],
+    output_path: str | Path,
+    source: str = "archive",
+    tick_interval: str = "1s",
+    archive_base_url: str = DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL,
+    rest_base_url: str = DEFAULT_AGG_TRADE_REST_BASE_URL,
+    cache_enabled: bool = True,
+    cache_dir: str | Path | None = DEFAULT_AGG_TRADE_CACHE_DIR,
+) -> tuple[pd.DataFrame, AggTradeMarketEventStreamSummary]:
+    archive_base_url = str(archive_base_url or DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL).strip().rstrip("/")
+    rest_base_url = str(rest_base_url or DEFAULT_AGG_TRADE_REST_BASE_URL).strip().rstrip("/")
+    start_time, end_time = _resolve_time_range(
+        backtest_period_days=backtest_period_days,
+        backtest_period_end_time=backtest_period_end_time,
+    )
+    requested_days = _iter_requested_days(start_time, end_time)
+    if not requested_days:
+        empty_df = pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"])
+        return empty_df, AggTradeMarketEventStreamSummary(
+            source="historical_agg_trade",
+            symbol=symbol,
+            cache_hit=False,
+            cache_path=str(_resolve_archive_day_cache_dir(cache_dir=cache_dir, symbol=symbol)) if cache_dir else None,
+            raw_agg_trades=0,
+            price_ticks=0,
+            candle_events_small=0,
+            candle_events_medium=0,
+            candle_events_big=0,
+            indicator_snapshots=0,
+            total_events=0,
+            first_trade_ts=None,
+            last_trade_ts=None,
+        )
+
+    small_interval = str(intervals["small"])
+    medium_interval = str(intervals["medium"])
+    big_interval = str(intervals["big"])
+
+    small_frames: list[pd.DataFrame] = []
+    raw_agg_trades = 0
+    first_trade_ts: str | None = None
+    last_trade_ts: str | None = None
+    sources_seen: set[str] = set()
+    all_days_from_cache = True
+    archive_cache_path = _resolve_archive_day_cache_dir(cache_dir=cache_dir, symbol=symbol)
+
+    with tqdm(requested_days, desc="aggTrades Candles", unit="day", dynamic_ncols=True) as pass_one:
+        for day_value in pass_one:
+            day_df, cache_hit, day_source = _load_archive_trade_day_frame(
+                symbol=symbol,
+                day_value=day_value,
+                start_time=start_time,
+                end_time=end_time,
+                source=source,
+                archive_base_url=archive_base_url,
+                rest_base_url=rest_base_url,
+                cache_enabled=cache_enabled,
+                cache_dir=cache_dir,
+            )
+            all_days_from_cache = all_days_from_cache and cache_hit
+            sources_seen.add(day_source)
+            if day_df.empty:
+                pass_one.set_postfix_str(day_value.isoformat())
+                continue
+            raw_agg_trades += len(day_df)
+            first_trade_ts = first_trade_ts or _format_ts(day_df["ts"].iloc[0])
+            last_trade_ts = _format_ts(day_df["ts"].iloc[-1])
+            small_day = _resample_trade_frame_to_candles(day_df, interval=small_interval)
+            if not small_day.empty:
+                small_frames.append(small_day)
+            pass_one.set_postfix_str(f"{day_value.isoformat()} rows={raw_agg_trades}")
+
+    if not small_frames:
+        empty_df = pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"])
+        Path(output_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).expanduser().write_text("", encoding="utf-8")
+        return empty_df, AggTradeMarketEventStreamSummary(
+            source="historical_agg_trade",
+            symbol=symbol,
+            cache_hit=all_days_from_cache,
+            cache_path=str(archive_cache_path) if archive_cache_path is not None else None,
+            raw_agg_trades=0,
+            price_ticks=0,
+            candle_events_small=0,
+            candle_events_medium=0,
+            candle_events_big=0,
+            indicator_snapshots=0,
+            total_events=0,
+            first_trade_ts=None,
+            last_trade_ts=None,
+        )
+
+    small_df = pd.concat(small_frames, ignore_index=True)
+    small_df = small_df.sort_values("open_time").drop_duplicates(subset=["open_time"], keep="last").reset_index(drop=True)
+    medium_df = _resample_candle_frame(small_df, interval=medium_interval)
+    big_df = _resample_candle_frame(small_df, interval=big_interval)
+    indicator_df = _compute_indicator_snapshots(
+        small_df=small_df,
+        medium_df=medium_df,
+        big_df=big_df,
+    )
+
+    target_path = Path(output_path).expanduser()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    price_tick_count = 0
+    small_candle_count = 0
+    medium_candle_count = 0
+    big_candle_count = 0
+    indicator_snapshot_count = 0
+
+    with target_path.open("w", encoding="utf-8") as file_obj:
+        with tqdm(requested_days, desc="aggTrades Market Events", unit="day", dynamic_ncols=True) as pass_two:
+            for day_value in pass_two:
+                day_df, _, day_source = _load_archive_trade_day_frame(
+                    symbol=symbol,
+                    day_value=day_value,
+                    start_time=start_time,
+                    end_time=end_time,
+                    source=source,
+                    archive_base_url=archive_base_url,
+                    rest_base_url=rest_base_url,
+                    cache_enabled=cache_enabled,
+                    cache_dir=cache_dir,
+                )
+                day_events: list[MarketEvent] = []
+                if not day_df.empty:
+                    day_events.extend(
+                        _build_price_tick_events(
+                            day_df,
+                            symbol=symbol,
+                            tick_interval=tick_interval,
+                            source_label=f"historical_agg_trade_{day_source}",
+                        )
+                    )
+                small_day = _slice_candle_frame_for_day(small_df, day_value=day_value)
+                medium_day = _slice_candle_frame_for_day(medium_df, day_value=day_value)
+                big_day = _slice_candle_frame_for_day(big_df, day_value=day_value)
+                indicator_day = _slice_indicator_frame_for_day(indicator_df, day_value=day_value)
+
+                day_events.extend(_build_candle_events(small_day, symbol=symbol, interval=small_interval))
+                day_events.extend(_build_candle_events(medium_day, symbol=symbol, interval=medium_interval))
+                day_events.extend(_build_candle_events(big_day, symbol=symbol, interval=big_interval))
+                day_events.extend(_build_indicator_snapshot_events(indicator_day, symbol=symbol, small_interval=small_interval))
+                day_events.sort(
+                    key=lambda event: (
+                        str(getattr(event, "ts", "")),
+                        _event_priority(
+                            event,
+                            small_interval=small_interval,
+                            medium_interval=medium_interval,
+                            big_interval=big_interval,
+                        ),
+                    )
+                )
+                for event in day_events:
+                    file_obj.write(json.dumps(market_event_to_dict(event), ensure_ascii=True, sort_keys=True))
+                    file_obj.write("\n")
+
+                price_tick_count += sum(1 for event in day_events if isinstance(event, PriceTickEvent))
+                small_candle_count += sum(1 for event in day_events if isinstance(event, CandleClosedEvent) and event.interval == small_interval)
+                medium_candle_count += sum(1 for event in day_events if isinstance(event, CandleClosedEvent) and event.interval == medium_interval)
+                big_candle_count += sum(1 for event in day_events if isinstance(event, CandleClosedEvent) and event.interval == big_interval)
+                indicator_snapshot_count += sum(1 for event in day_events if isinstance(event, IndicatorSnapshotEvent))
+                pass_two.set_postfix_str(day_value.isoformat())
+
+    source_label = "historical_agg_trade"
+    if sources_seen:
+        if sources_seen == {"archive"}:
+            source_label = "historical_agg_trade_archive"
+        elif sources_seen == {"rest"}:
+            source_label = "historical_agg_trade_rest"
+        else:
+            source_label = "historical_agg_trade_archive+rest"
+
+    return indicator_df, AggTradeMarketEventStreamSummary(
+        source=source_label,
+        symbol=symbol,
+        cache_hit=all_days_from_cache,
+        cache_path=str(archive_cache_path) if archive_cache_path is not None else None,
+        raw_agg_trades=raw_agg_trades,
+        price_ticks=price_tick_count,
+        candle_events_small=small_candle_count,
+        candle_events_medium=medium_candle_count,
+        candle_events_big=big_candle_count,
+        indicator_snapshots=indicator_snapshot_count,
+        total_events=price_tick_count + small_candle_count + medium_candle_count + big_candle_count + indicator_snapshot_count,
+        first_trade_ts=first_trade_ts,
+        last_trade_ts=last_trade_ts,
+    )
 
 
 def fetch_historical_agg_trades(

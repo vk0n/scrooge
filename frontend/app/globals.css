@@ -394,6 +394,17 @@ pre {
   min-width: 0;
 }
 
+.status-chip-value > .badge,
+.status-chip-value > .position-upnl-badge {
+  min-height: 1.72rem;
+  box-sizing: border-box;
+}
+
+.status-chip-value > .position-upnl-badge {
+  justify-content: center;
+  padding-block: 0.16rem;
+}
+
 .status-chip-label {
   color: #aab1bf;
   font-size: 0.81rem;

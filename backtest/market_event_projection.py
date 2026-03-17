@@ -9,7 +9,7 @@ from core.market_events import (
     CandleClosedEvent,
     IndicatorSnapshotEvent,
     MarketEvent,
-    read_market_event_stream,
+    iter_market_event_stream,
 )
 
 
@@ -29,7 +29,7 @@ def read_projected_discrete_tape_from_market_event_stream(
     symbol: str | None = None,
     require_indicator_snapshot: bool = True,
 ) -> tuple[list[DiscreteMarketTapeRow], DiscreteTapeProjectionSummary]:
-    events = read_market_event_stream(path)
+    events = iter_market_event_stream(path)
     tape, summary = project_discrete_tape_from_market_events(
         events,
         candle_interval=candle_interval,

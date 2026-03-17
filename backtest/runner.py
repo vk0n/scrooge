@@ -11,10 +11,9 @@ import pandas as pd
 import backtest.dataset as dataset_module
 from backtest.agg_trade_market_event_stream import (
     AggTradeMarketEventStreamSummary,
-    build_historical_agg_trade_market_event_stream,
+    write_historical_agg_trade_market_event_stream,
 )
 from backtest.discrete_event_stream import (
-    read_discrete_market_event_stream,
     write_discrete_market_event_stream,
 )
 from backtest.market_event_projection import (
@@ -41,7 +40,7 @@ from backtest.trade_alignment import TradeAlignmentSummary, write_trade_alignmen
 from bot.event_log import get_technical_logger
 from bot.state import save_state
 from core.engine import run_strategy_on_market_events, run_strategy_on_tape
-from core.market_events import MarketEvent, market_event_from_dict
+from core.market_events import MarketEvent, iter_market_event_stream, market_event_from_dict
 
 
 @dataclass(slots=True)
@@ -84,7 +83,7 @@ class BacktestConfig:
 class BacktestResult:
     dataset: pd.DataFrame
     tape: list[DiscreteMarketTapeRow]
-    market_events: list[MarketEvent]
+    market_events: list[MarketEvent] | None
     market_event_projection: DiscreteTapeProjectionSummary | None
     agg_trade_stream_summary: AggTradeMarketEventStreamSummary | None
     market_event_execution_summary: MarketExecutionSummary | None
@@ -303,6 +302,8 @@ def run_backtest(
     logger = technical_logger or get_technical_logger()
     market_event_projection: DiscreteTapeProjectionSummary | None = None
     agg_trade_stream_summary: AggTradeMarketEventStreamSummary | None = None
+    market_events: list[MarketEvent] | None = None
+    market_event_iter_factory: Callable[[], Any] | None = None
     needs_reporting = bool(
         config.enable_plot
         or config.run_monte_carlo
@@ -349,6 +350,7 @@ def run_backtest(
             tape,
             intervals={key: str(value) for key, value in config.intervals.items()},
         )
+        market_event_iter_factory = lambda: market_events
         write_discrete_market_event_stream(config.market_event_stream_path, market_events)
         logger.info(
             "backtest_historical_market_event_stream_written events=%s path=%s",
@@ -357,9 +359,6 @@ def run_backtest(
         )
     elif config.backtest_input_mode == "market_event_stream":
         source_path = config.market_event_input_path or config.market_event_stream_path
-        market_events = read_discrete_market_event_stream(source_path)
-        if not market_events:
-            raise ValueError(f"No market events found at {source_path}")
         tape, market_event_projection = read_projected_discrete_tape_from_market_event_stream(
             source_path,
             candle_interval=str(config.intervals["small"]),
@@ -368,8 +367,10 @@ def run_backtest(
         if not tape:
             raise ValueError(f"Market event stream produced no discrete tape rows at {source_path}")
         df = discrete_market_tape_to_frame(tape)
-        logger.info("backtest_market_event_stream_loaded events=%s path=%s", len(market_events), source_path)
         if market_event_projection is not None:
+            if market_event_projection.total_events <= 0:
+                raise ValueError(f"No market events found at {source_path}")
+            logger.info("backtest_market_event_stream_loaded events=%s path=%s", market_event_projection.total_events, source_path)
             logger.info(
                 "backtest_market_event_projection rows=%s candles=%s indicator_snapshots=%s ignored=%s",
                 market_event_projection.projected_rows,
@@ -377,21 +378,25 @@ def run_backtest(
                 market_event_projection.matched_indicator_snapshots,
                 market_event_projection.ignored_events,
             )
+        target_market_event_path = source_path
         if source_path != config.market_event_stream_path:
-            write_discrete_market_event_stream(config.market_event_stream_path, market_events)
+            write_discrete_market_event_stream(config.market_event_stream_path, iter_market_event_stream(source_path))
             logger.info(
                 "backtest_market_event_stream_copied events=%s path=%s",
-                len(market_events),
+                market_event_projection.total_events if market_event_projection is not None else 0,
                 config.market_event_stream_path,
             )
+            target_market_event_path = config.market_event_stream_path
+        market_event_iter_factory = lambda path=target_market_event_path: iter_market_event_stream(path)
         write_discrete_market_tape(config.market_tape_path, tape)
         logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
     elif config.backtest_input_mode == "agg_trade_stream":
-        market_events, agg_trade_stream_summary = build_historical_agg_trade_market_event_stream(
+        df, agg_trade_stream_summary = write_historical_agg_trade_market_event_stream(
             symbol=config.symbol,
             backtest_period_days=config.backtest_period_days,
             backtest_period_end_time=config.backtest_period_end_time,
             intervals={key: str(value) for key, value in config.intervals.items()},
+            output_path=config.market_event_stream_path,
             source=config.agg_trade_source,
             tick_interval=config.agg_trade_tick_interval,
             archive_base_url=config.agg_trade_archive_base_url,
@@ -399,9 +404,9 @@ def run_backtest(
             cache_enabled=config.agg_trade_cache_enabled,
             cache_dir=config.agg_trade_cache_dir,
         )
-        if not market_events:
+        if agg_trade_stream_summary.total_events <= 0:
             raise ValueError("No market events were built from historical aggTrades.")
-        write_discrete_market_event_stream(config.market_event_stream_path, market_events)
+        market_event_iter_factory = lambda path=config.market_event_stream_path: iter_market_event_stream(path)
         logger.info(
             "backtest_agg_trade_market_event_stream_written source=%s cache_hit=%s cache_path=%s raw_trades=%s price_ticks=%s small_candles=%s medium_candles=%s big_candles=%s indicator_snapshots=%s total_events=%s path=%s",
             agg_trade_stream_summary.source,
@@ -417,14 +422,13 @@ def run_backtest(
             config.market_event_stream_path,
         )
         tape, market_event_projection = project_discrete_tape_from_market_events(
-            market_events,
+            market_event_iter_factory(),
             candle_interval=str(config.intervals["small"]),
             symbol=config.symbol,
             require_indicator_snapshot=True,
         )
         if not tape:
             raise ValueError("Historical aggTrade stream produced no discrete tape rows.")
-        df = discrete_market_tape_to_frame(tape)
         write_discrete_market_tape(config.market_tape_path, tape)
         logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
     else:
@@ -441,6 +445,7 @@ def run_backtest(
             tape,
             intervals={key: str(value) for key, value in config.intervals.items()},
         )
+        market_event_iter_factory = lambda: market_events
         write_discrete_market_event_stream(config.market_event_stream_path, market_events)
         logger.info(
             "backtest_historical_market_event_stream_written events=%s path=%s",
@@ -456,11 +461,14 @@ def run_backtest(
         "leverage": config.leverage,
         "use_full_balance": config.use_full_balance,
         "use_state": False,
+        "runtime_mode": config.runtime_mode,
         **config.params,
     }
     if config.strategy_mode == "realtime" or config.backtest_input_mode in {"market_event_stream", "agg_trade_stream"}:
+        if market_events is None and market_event_iter_factory is None:
+            raise ValueError("market event strategy runner requires a market event source")
         final_balance, trades, balance_history, state = market_event_strategy_runner(
-            market_events,
+            market_events if market_events is not None else market_event_iter_factory(),
             candle_interval=str(config.intervals["small"]),
             intervals={key: str(value) for key, value in config.intervals.items()},
             strategy_mode=config.strategy_mode,
@@ -502,7 +510,9 @@ def run_backtest(
         replay_summary.net_pnl,
         config.event_log_path,
     )
-    execution_artifact_events = market_events
+    execution_artifact_events = market_events if market_events is not None else (
+        market_event_iter_factory() if market_event_iter_factory is not None else []
+    )
     if config.execution_mode == "simulated":
         raw_simulated_execution_events = state.get("simulated_execution_events")
         if isinstance(raw_simulated_execution_events, list):

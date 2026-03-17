@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import pandas as pd
 import pandas_ta as ta
@@ -1873,7 +1873,7 @@ def run_strategy_on_tape(
 
 
 def run_strategy_on_market_events(
-    market_events: list[MarketEvent] | tuple[MarketEvent, ...],
+    market_events: Iterable[MarketEvent],
     *,
     candle_interval: str = "1m",
     intervals: dict[str, str] | None = None,

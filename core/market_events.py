@@ -272,3 +272,7 @@ def _build_market_event(payload: dict[str, Any]) -> MarketEvent:
 
 def read_market_event_stream(path: str | Path) -> list[MarketEvent]:
     return list(JsonlMarketEventStore(path).iter_events())
+
+
+def iter_market_event_stream(path: str | Path) -> Iterator[MarketEvent]:
+    return JsonlMarketEventStore(path).iter_events()
