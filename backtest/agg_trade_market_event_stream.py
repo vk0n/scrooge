@@ -63,10 +63,15 @@ def _format_ts(value: datetime | pd.Timestamp) -> str:
 
 
 def _resolve_time_range(*, backtest_period_days: int, backtest_period_end_time: str) -> tuple[datetime, datetime]:
+    def _normalize_utc_naive(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(UTC).replace(tzinfo=None)
+
     if str(backtest_period_end_time or "").strip():
-        end_time = datetime.fromisoformat(str(backtest_period_end_time).strip())
+        end_time = _normalize_utc_naive(datetime.fromisoformat(str(backtest_period_end_time).strip()))
     else:
-        end_time = datetime.now()
+        end_time = datetime.now(UTC).replace(tzinfo=None)
     start_time = end_time - timedelta(days=int(backtest_period_days))
     return start_time, end_time
 

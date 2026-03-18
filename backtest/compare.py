@@ -109,6 +109,10 @@ def _timestamp_slug() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _compare_anchor_end_time() -> str:
+    return datetime.now(UTC).replace(microsecond=0, tzinfo=None).isoformat()
+
+
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
     return slug or "scenario"
@@ -454,6 +458,18 @@ def _prepare_compare_run_dir(config: CompareConfig) -> Path:
     return run_dir
 
 
+def _apply_compare_end_time_anchor(
+    payload: dict[str, Any],
+    *,
+    anchor_end_time: str,
+) -> dict[str, Any]:
+    updated = copy.deepcopy(payload)
+    raw_end_time = str(updated.get("backtest_period_end_time", "") or "").strip()
+    if not raw_end_time:
+        updated["backtest_period_end_time"] = anchor_end_time
+    return updated
+
+
 def run_compare(
     config: CompareConfig,
     *,
@@ -464,12 +480,14 @@ def run_compare(
 ) -> CompareRunResult:
     logger = technical_logger or get_technical_logger()
     compare_run_dir = _prepare_compare_run_dir(config)
+    anchor_end_time = _compare_anchor_end_time()
 
     base_backtest_config = _load_yaml_mapping(config.base_backtest_config_path)
     compare_config_snapshot = {
         "base_backtest_config_path": str(config.base_backtest_config_path),
         "compare_run_dir": str(compare_run_dir),
         "compare_run_root": str(config.compare_run_root),
+        "compare_anchor_end_time": anchor_end_time,
         "base_backtest_overrides": config.base_backtest_overrides,
         "scenarios": [{"name": item.name, "overrides": item.overrides} for item in config.scenarios],
     }
@@ -483,6 +501,10 @@ def run_compare(
         merged_config = _deep_merge_dicts(base_backtest_config, config.base_backtest_overrides)
         merged_config = _deep_merge_dicts(merged_config, scenario.overrides)
         merged_config["live"] = False
+        merged_config = _apply_compare_end_time_anchor(
+            merged_config,
+            anchor_end_time=anchor_end_time,
+        )
         _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
 
         scenario_start = time.perf_counter()
