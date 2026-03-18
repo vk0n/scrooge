@@ -29,6 +29,11 @@ intervals:
   small: 1m
   medium: 1h
   big: 4h
+indicator_inputs:
+  ema: closed
+  rsi: closed
+  bb: closed
+  atr: closed
 backtest_period_end_time: ''
 backtest_period_days: 30
 params:

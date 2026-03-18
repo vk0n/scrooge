@@ -53,6 +53,29 @@ class EditableIntervalsPayload(BaseModel):
         return normalized
 
 
+class EditableIndicatorInputsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ema: str | None = Field(default=None)
+    rsi: str | None = Field(default=None)
+    bb: str | None = Field(default=None)
+    atr: str | None = Field(default=None)
+
+    @field_validator("ema", "rsi", "bb", "atr")
+    @classmethod
+    def validate_mode(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized == "discrete":
+            return "closed"
+        if normalized == "realtime":
+            return "intrabar"
+        if normalized not in {"closed", "intrabar"}:
+            raise ValueError("indicator input mode must be either closed or intrabar")
+        return normalized
+
+
 class EditableConfigPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -63,6 +86,7 @@ class EditableConfigPayload(BaseModel):
     use_full_balance: bool | None = None
     qty: float | None = Field(default=None, gt=0)
     intervals: EditableIntervalsPayload | None = None
+    indicator_inputs: EditableIndicatorInputsPayload | None = None
     params: EditableParamsPayload | None = None
 
     @field_validator("symbol")

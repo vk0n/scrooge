@@ -214,6 +214,7 @@ class LiveMarketStream:
         save_state_fn: Callable[[dict[str, Any]], None],
         fetch_historical_fn: Callable[[str, str, int], pd.DataFrame],
         prepare_multi_tf_fn: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame],
+        prepare_indicator_snapshot_fn: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame] | None = None,
         get_balance_fn: Callable[[], float],
         get_open_position_fn: Callable[[str], dict[str, Any] | None],
     ) -> None:
@@ -225,7 +226,8 @@ class LiveMarketStream:
         self._state_lock = state_lock
         self._save_state_fn = save_state_fn
         self._fetch_historical_fn = fetch_historical_fn
-        self._prepare_multi_tf_fn = prepare_multi_tf_fn
+        self._prepare_strategy_frame_fn = prepare_multi_tf_fn
+        self._prepare_indicator_snapshot_fn = prepare_indicator_snapshot_fn or prepare_multi_tf_fn
         self._get_balance_fn = get_balance_fn
         self._get_open_position_fn = get_open_position_fn
 
@@ -368,6 +370,8 @@ class LiveMarketStream:
         symbol: str,
         leverage: float | int,
         intervals: dict[str, Any],
+        prepare_multi_tf_fn: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame] | None = None,
+        prepare_indicator_snapshot_fn: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame] | None = None,
     ) -> None:
         next_symbol = str(symbol).upper()
         next_leverage = leverage
@@ -383,6 +387,10 @@ class LiveMarketStream:
         limits_changed = next_candle_limits != self._candle_limits
 
         self._leverage = next_leverage
+        if prepare_multi_tf_fn is not None:
+            self._prepare_strategy_frame_fn = prepare_multi_tf_fn
+        if prepare_indicator_snapshot_fn is not None:
+            self._prepare_indicator_snapshot_fn = prepare_indicator_snapshot_fn
         if not symbol_changed and not intervals_changed and not limits_changed:
             return
 
@@ -443,8 +451,9 @@ class LiveMarketStream:
             self._pending_small_open_time_ms = None
             self._pending_emit_after_monotonic = None
 
-        prepared_frame = self._prepare_multi_tf_fn(df_small, df_medium, df_big)
-        self._emit_indicator_snapshot_for_frame(prepared_frame)
+        snapshot_frame = self._prepare_indicator_snapshot_fn(df_small, df_medium, df_big)
+        prepared_frame = self._prepare_strategy_frame_fn(df_small, df_medium, df_big)
+        self._emit_indicator_snapshot_for_frame(snapshot_frame)
         return prepared_frame
 
     def _append_market_event(

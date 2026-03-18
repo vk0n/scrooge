@@ -20,6 +20,13 @@ export type EditableIntervals = {
   big?: string | null;
 };
 
+export type EditableIndicatorInputs = {
+  ema?: string | null;
+  rsi?: string | null;
+  bb?: string | null;
+  atr?: string | null;
+};
+
 export type EditableConfig = {
   live: boolean | null;
   symbol: string | null;
@@ -28,6 +35,7 @@ export type EditableConfig = {
   use_full_balance: boolean | null;
   qty: number | null;
   intervals?: EditableIntervals | null;
+  indicator_inputs?: EditableIndicatorInputs | null;
   params?: EditableParams | null;
 };
 
@@ -80,8 +88,17 @@ function valueSegment(path: string, value: unknown): ContractSegment {
   };
 }
 
+function indicatorInputDisplay(value: unknown): string {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "intrabar" || normalized === "realtime") {
+    return "live intrabar";
+  }
+  return "closed-candle";
+}
+
 export function buildContractParagraphs(config: EditableConfig): ContractParagraph[] {
   const intervals = config.intervals ?? {};
+  const indicatorInputs = config.indicator_inputs ?? {};
   const params = config.params ?? {};
   const sizingTail =
     config.qty === null || config.qty === undefined
@@ -113,7 +130,15 @@ export function buildContractParagraphs(config: EditableConfig): ContractParagra
       valueSegment("intervals.medium", intervals.medium),
       textSegment(" candles for Bollinger Bands and ATR, and "),
       valueSegment("intervals.big", intervals.big),
-      textSegment(" candles for RSI and EMA."),
+      textSegment(" candles for RSI and EMA. For decisions, Scrooge shall read Bollinger Bands as "),
+      valueSegment("indicator_inputs.bb", indicatorInputDisplay(indicatorInputs.bb)),
+      textSegment(", ATR as "),
+      valueSegment("indicator_inputs.atr", indicatorInputDisplay(indicatorInputs.atr)),
+      textSegment(", RSI as "),
+      valueSegment("indicator_inputs.rsi", indicatorInputDisplay(indicatorInputs.rsi)),
+      textSegment(", and EMA as "),
+      valueSegment("indicator_inputs.ema", indicatorInputDisplay(indicatorInputs.ema)),
+      textSegment("."),
     ],
     [
       textSegment("3. "),

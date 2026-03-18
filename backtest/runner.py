@@ -41,6 +41,7 @@ from backtest.trade_alignment import TradeAlignmentSummary, write_trade_alignmen
 from bot.event_log import get_technical_logger
 from bot.state import save_state
 from core.engine import run_strategy_on_market_events, run_strategy_on_tape
+from core.indicator_inputs import normalize_indicator_inputs, uses_realtime_indicator_inputs
 from core.market_events import MarketEvent, count_market_event_stream, iter_market_event_stream, market_event_from_dict
 
 
@@ -60,6 +61,7 @@ class BacktestConfig:
     qty: float | None
     use_full_balance: bool
     intervals: dict[str, Any]
+    indicator_inputs: dict[str, str]
     params: dict[str, Any]
     backtest_period_days: int
     backtest_period_end_time: str
@@ -147,6 +149,10 @@ def build_backtest_config(
     agg_trade_rest_base_url = str(cfg.get("agg_trade_rest_base_url", "") or "").strip()
     agg_trade_cache_enabled = bool(cfg.get("agg_trade_cache_enabled", True))
     agg_trade_cache_dir = Path(str(cfg.get("agg_trade_cache_dir", "data/agg_trades") or "data/agg_trades")).expanduser()
+    indicator_inputs = normalize_indicator_inputs(
+        cfg.get("indicator_inputs"),
+        strategy_mode=normalized_strategy_mode,
+    )
 
     raw_input_path = str(cfg.get("market_tape_input_path", "") or "").strip()
     market_tape_input_path = Path(raw_input_path).expanduser() if raw_input_path else None
@@ -168,6 +174,7 @@ def build_backtest_config(
         qty=cfg.get("qty"),
         use_full_balance=bool(cfg["use_full_balance"]),
         intervals=dict(cfg["intervals"]),
+        indicator_inputs=indicator_inputs,
         params=dict(cfg.get("params", {})),
         backtest_period_days=int(cfg["backtest_period_days"]),
         backtest_period_end_time=str(cfg.get("backtest_period_end_time", "")),
@@ -517,6 +524,7 @@ def run_backtest(
         "use_full_balance": config.use_full_balance,
         "use_state": False,
         "runtime_mode": config.runtime_mode,
+        "indicator_inputs": config.indicator_inputs,
         **config.params,
     }
     market_event_total: int | None = None
@@ -527,7 +535,11 @@ def run_backtest(
     elif market_events is not None:
         market_event_total = len(market_events)
 
-    if config.strategy_mode == "realtime" or config.backtest_input_mode in {"market_event_stream", "agg_trade_stream"}:
+    if (
+        config.strategy_mode == "realtime"
+        or uses_realtime_indicator_inputs(config.indicator_inputs)
+        or config.backtest_input_mode in {"market_event_stream", "agg_trade_stream"}
+    ):
         if market_events is None and market_event_iter_factory is None:
             raise ValueError("market event strategy runner requires a market event source")
         start_stage("Strategy Replay", max(1, market_event_total or 0))

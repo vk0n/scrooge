@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from core.indicator_inputs import INDICATOR_INPUT_KEYS, normalize_indicator_inputs
 
 
 def _project_root() -> Path:
@@ -18,6 +19,7 @@ CONFIG_PATH = Path(os.getenv("SCROOGE_CONFIG_PATH", str(_project_root() / "confi
 
 EDITABLE_TOP_LEVEL_KEYS = ("live", "symbol", "leverage", "initial_balance", "use_full_balance", "qty")
 EDITABLE_INTERVAL_KEYS = ("small", "medium", "big")
+EDITABLE_INDICATOR_INPUT_KEYS = INDICATOR_INPUT_KEYS
 EDITABLE_PARAM_KEYS = (
     "sl_mult",
     "tp_mult",
@@ -33,6 +35,13 @@ EDITABLE_PARAM_KEYS = (
     "rsi_short_tp_threshold",
     "rsi_short_close_threshold",
 )
+
+
+def _effective_strategy_mode(config: dict[str, Any]) -> str:
+    raw_value = str(config.get("strategy_mode", "") or "").strip().lower()
+    if raw_value in {"discrete", "realtime"}:
+        return raw_value
+    return "discrete"
 
 
 def load_config() -> dict[str, Any]:
@@ -78,6 +87,12 @@ def extract_editable_config(config: dict[str, Any]) -> dict[str, Any]:
     params_map = params if isinstance(params, dict) else {}
     intervals = config.get("intervals")
     interval_map = intervals if isinstance(intervals, dict) else {}
+    indicator_inputs = config.get("indicator_inputs")
+    strategy_mode = _effective_strategy_mode(config)
+    normalized_indicator_inputs = normalize_indicator_inputs(
+        indicator_inputs,
+        strategy_mode=strategy_mode,
+    )
 
     return {
         "live": config.get("live"),
@@ -87,6 +102,7 @@ def extract_editable_config(config: dict[str, Any]) -> dict[str, Any]:
         "use_full_balance": config.get("use_full_balance"),
         "qty": config.get("qty"),
         "intervals": {key: interval_map.get(key) for key in EDITABLE_INTERVAL_KEYS},
+        "indicator_inputs": {key: normalized_indicator_inputs.get(key) for key in EDITABLE_INDICATOR_INPUT_KEYS},
         "params": {key: params_map.get(key) for key in EDITABLE_PARAM_KEYS},
     }
 
@@ -133,11 +149,15 @@ def _write_raw_config_text(raw_text: str) -> None:
 
 
 def update_editable_config(patch: dict[str, Any]) -> dict[str, Any]:
-    allowed_top = set(EDITABLE_TOP_LEVEL_KEYS) | {"intervals", "params"}
+    allowed_top = set(EDITABLE_TOP_LEVEL_KEYS) | {"intervals", "params", "indicator_inputs"}
     unknown_top = set(patch) - allowed_top
     if unknown_top:
         unknown_joined = ", ".join(sorted(unknown_top))
         raise ValueError(f"Unsupported editable field(s): {unknown_joined}")
+
+    current = load_config()
+    updated = copy.deepcopy(current)
+    changed_fields: list[str] = []
 
     intervals_patch = patch.get("intervals")
     if intervals_patch is not None:
@@ -156,10 +176,31 @@ def update_editable_config(patch: dict[str, Any]) -> dict[str, Any]:
         if unknown_params:
             unknown_joined = ", ".join(sorted(unknown_params))
             raise ValueError(f"Unsupported editable params field(s): {unknown_joined}")
-
-    current = load_config()
-    updated = copy.deepcopy(current)
-    changed_fields: list[str] = []
+    indicator_inputs_patch = patch.get("indicator_inputs")
+    if indicator_inputs_patch is not None:
+        if not isinstance(indicator_inputs_patch, dict):
+            raise ValueError("indicator_inputs must be an object")
+        unknown_indicator_inputs = set(indicator_inputs_patch) - set(EDITABLE_INDICATOR_INPUT_KEYS)
+        if unknown_indicator_inputs:
+            unknown_joined = ", ".join(sorted(unknown_indicator_inputs))
+            raise ValueError(f"Unsupported editable indicator_inputs field(s): {unknown_joined}")
+        merged_indicator_inputs = normalize_indicator_inputs(
+            current.get("indicator_inputs"),
+            strategy_mode=_effective_strategy_mode(current),
+        )
+        for key, value in indicator_inputs_patch.items():
+            normalized = str(value or "").strip().lower()
+            if normalized == "discrete":
+                normalized = "closed"
+            elif normalized == "realtime":
+                normalized = "intrabar"
+            if normalized not in {"closed", "intrabar"}:
+                raise ValueError(f"indicator_inputs.{key} must be one of: closed, intrabar")
+            merged_indicator_inputs[key] = normalized
+        indicator_inputs_patch = {
+            key: merged_indicator_inputs[key]
+            for key in indicator_inputs_patch
+        }
 
     for key in EDITABLE_TOP_LEVEL_KEYS:
         if key not in patch:
@@ -194,6 +235,16 @@ def update_editable_config(patch: dict[str, Any]) -> dict[str, Any]:
             if current_params.get(key) != value:
                 current_params[key] = value
                 changed_fields.append(f"params.{key}")
+
+    if indicator_inputs_patch is not None:
+        current_inputs = updated.get("indicator_inputs")
+        if not isinstance(current_inputs, dict):
+            current_inputs = {}
+            updated["indicator_inputs"] = current_inputs
+        for key, value in indicator_inputs_patch.items():
+            if current_inputs.get(key) != value:
+                current_inputs[key] = value
+                changed_fields.append(f"indicator_inputs.{key}")
 
     if not changed_fields:
         return {

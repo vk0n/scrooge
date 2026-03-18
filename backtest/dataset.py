@@ -4,6 +4,7 @@ import pandas as pd
 import pandas_ta as ta
 from datetime import datetime, timedelta
 from bot.event_log import get_technical_logger
+from core.indicator_inputs import INDICATOR_COLUMNS, normalize_indicator_inputs, uses_realtime_indicator_inputs
 
 
 REQUIRED_INDICATOR_COLUMNS = ("BBL", "BBM", "BBU", "ATR", "RSI", "EMA")
@@ -104,6 +105,134 @@ def prepare_multi_tf(df_small, df_medium, df_big):
     df_merged = df_merged.merge(df_big, left_index=True, right_index=True, how="left").ffill()
     df_merged.reset_index(inplace=True)
     return df_merged
+
+
+def _normalize_candle_frame(df):
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume"])
+    out = df.copy()
+    out["open_time"] = pd.to_datetime(out["open_time"], errors="coerce")
+    for column in ("open", "high", "low", "close", "volume"):
+        out[column] = pd.to_numeric(out[column], errors="coerce")
+    out = out.dropna(subset=["open_time", "open", "high", "low", "close"])
+    out = out.sort_values("open_time").drop_duplicates(subset=["open_time"], keep="last").reset_index(drop=True)
+    return out[["open_time", "open", "high", "low", "close", "volume"]]
+
+
+def _interval_to_pandas_freq(interval: str) -> str:
+    normalized = str(interval or "").strip().lower()
+    if not normalized:
+        raise ValueError("interval must not be empty")
+    unit = normalized[-1]
+    value = normalized[:-1]
+    if unit == "m":
+        return f"{value}min"
+    if unit == "h":
+        return f"{value}h"
+    if unit == "d":
+        return f"{value}d"
+    raise ValueError(f"Unsupported interval unit: {interval}")
+
+
+def _materialize_live_timeframe_frame(df_small, closed_df, *, interval: str):
+    normalized_small = _normalize_candle_frame(df_small)
+    normalized_closed = _normalize_candle_frame(closed_df)
+    if normalized_small.empty:
+        return normalized_closed
+
+    current_open_time = normalized_small["open_time"].iloc[-1].floor(_interval_to_pandas_freq(interval))
+    current_slice = normalized_small[
+        normalized_small["open_time"].dt.floor(_interval_to_pandas_freq(interval)) == current_open_time
+    ].copy()
+    if current_slice.empty:
+        return normalized_closed
+
+    latest_closed_open_time = normalized_closed["open_time"].iloc[-1] if not normalized_closed.empty else None
+    if latest_closed_open_time is not None and pd.Timestamp(latest_closed_open_time) == current_open_time:
+        return normalized_closed
+
+    forming_row = pd.DataFrame(
+        [
+            {
+                "open_time": current_open_time,
+                "open": float(current_slice["open"].iloc[0]),
+                "high": float(current_slice["high"].max()),
+                "low": float(current_slice["low"].min()),
+                "close": float(current_slice["close"].iloc[-1]),
+                "volume": float(current_slice["volume"].sum()),
+            }
+        ]
+    )
+    return _normalize_candle_frame(pd.concat([normalized_closed, forming_row], ignore_index=True))
+
+
+def compute_latest_realtime_indicator_values(df_small, df_medium, df_big, *, intervals):
+    medium_frame = _materialize_live_timeframe_frame(
+        df_small,
+        df_medium,
+        interval=str(intervals["medium"]),
+    )
+    big_frame = _materialize_live_timeframe_frame(
+        df_small,
+        df_big,
+        interval=str(intervals["big"]),
+    )
+    if medium_frame.empty or big_frame.empty:
+        return None
+
+    medium = medium_frame.copy().set_index("open_time")
+    bb = ta.bbands(medium["close"], length=20, std=2)
+    atr = ta.atr(medium["high"], medium["low"], medium["close"], length=14)
+    if bb is None or atr is None:
+        return None
+
+    big = big_frame.copy().set_index("open_time")
+    rsi = ta.rsi(big["close"], length=11)
+    ema = ta.ema(big["close"], length=50)
+    if rsi is None or ema is None:
+        return None
+
+    latest = {
+        "BBL": float(bb["BBL_20_2.0_2.0"].iloc[-1]) if "BBL_20_2.0_2.0" in bb and pd.notna(bb["BBL_20_2.0_2.0"].iloc[-1]) else None,
+        "BBM": float(bb["BBM_20_2.0_2.0"].iloc[-1]) if "BBM_20_2.0_2.0" in bb and pd.notna(bb["BBM_20_2.0_2.0"].iloc[-1]) else None,
+        "BBU": float(bb["BBU_20_2.0_2.0"].iloc[-1]) if "BBU_20_2.0_2.0" in bb and pd.notna(bb["BBU_20_2.0_2.0"].iloc[-1]) else None,
+        "ATR": float(atr.iloc[-1]) if pd.notna(atr.iloc[-1]) else None,
+        "RSI": float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else None,
+        "EMA": float(ema.iloc[-1]) if pd.notna(ema.iloc[-1]) else None,
+    }
+    return latest
+
+
+def prepare_live_strategy_frame(
+    df_small,
+    df_medium,
+    df_big,
+    *,
+    intervals,
+    indicator_inputs=None,
+    strategy_mode: str = "discrete",
+):
+    discrete_frame = prepare_multi_tf(df_small, df_medium, df_big)
+    if discrete_frame.empty:
+        return discrete_frame
+
+    latest = discrete_frame.tail(1).copy()
+    normalized_inputs = normalize_indicator_inputs(
+        indicator_inputs,
+        strategy_mode=strategy_mode,
+    )
+    if not uses_realtime_indicator_inputs(normalized_inputs):
+        return latest
+
+    realtime_values = compute_latest_realtime_indicator_values(
+        df_small,
+        df_medium,
+        df_big,
+        intervals=intervals,
+    )
+    for column in INDICATOR_COLUMNS:
+        latest[f"{column}_RT"] = None if realtime_values is None else realtime_values.get(column)
+    return latest
 
 
 def _sanitize_dataset(df, required_columns=REQUIRED_INDICATOR_COLUMNS):

@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from binance.client import Client
@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 import bot.trade as trade_module
 import backtest.dataset as data_module
 from bot.control_channel import get_control_client, process_pending_commands
-from backtest.dataset import fetch_historical, prepare_multi_tf
+from backtest.dataset import fetch_historical, prepare_live_strategy_frame, prepare_multi_tf
 from bot.event_log import get_technical_logger
 from bot.market_stream import LiveMarketStream
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
@@ -32,6 +32,7 @@ from bot.trade import (
 )
 from core.event_store import reset_event_store
 from core.engine import run_strategy
+from core.indicator_inputs import normalize_indicator_inputs
 
 RLockType = type(threading.RLock())
 
@@ -383,6 +384,33 @@ def _build_command_kwargs(symbol: str) -> dict[str, Any]:
     }
 
 
+def _resolve_live_indicator_inputs(cfg: dict[str, Any]) -> dict[str, str]:
+    return normalize_indicator_inputs(
+        cfg.get("indicator_inputs"),
+        strategy_mode="discrete",
+    )
+
+
+def _build_live_prepare_functions(
+    *,
+    intervals: dict[str, Any],
+    indicator_inputs: dict[str, str],
+) -> tuple[
+    Callable[[Any, Any, Any], Any],
+    Callable[[Any, Any, Any], Any],
+]:
+    strategy_frame_fn = lambda df_small, df_medium, df_big: prepare_live_strategy_frame(  # noqa: E731
+        df_small,
+        df_medium,
+        df_big,
+        intervals=intervals,
+        indicator_inputs=indicator_inputs,
+        strategy_mode="discrete",
+    )
+    indicator_snapshot_fn = lambda df_small, df_medium, df_big: prepare_multi_tf(df_small, df_medium, df_big)  # noqa: E731
+    return strategy_frame_fn, indicator_snapshot_fn
+
+
 if __name__ == "__main__":
     cfg = load_config()
 
@@ -406,6 +434,7 @@ if __name__ == "__main__":
     use_full_balance = cfg["use_full_balance"]
 
     intervals = cfg["intervals"]
+    indicator_inputs = _resolve_live_indicator_inputs(cfg)
 
     params = cfg["params"]
 
@@ -446,6 +475,10 @@ if __name__ == "__main__":
 
         technical_logger.info("bot_mode_live_started symbol=%s leverage=%s", symbol, lvrg)
         set_leverage(symbol, lvrg)
+        live_prepare_strategy_frame_fn, live_prepare_indicator_snapshot_fn = _build_live_prepare_functions(
+            intervals=intervals,
+            indicator_inputs=indicator_inputs,
+        )
         live_market_stream = LiveMarketStream(
             api_key=api_key,
             api_secret=api_secret,
@@ -456,7 +489,8 @@ if __name__ == "__main__":
             state_lock=state_lock,
             save_state_fn=save_state,
             fetch_historical_fn=fetch_historical,
-            prepare_multi_tf_fn=prepare_multi_tf,
+            prepare_multi_tf_fn=live_prepare_strategy_frame_fn,
+            prepare_indicator_snapshot_fn=live_prepare_indicator_snapshot_fn,
             get_balance_fn=get_balance,
             get_open_position_fn=get_open_position,
         )
@@ -554,14 +588,21 @@ if __name__ == "__main__":
                         qty = cfg["qty"]
                         use_full_balance = cfg["use_full_balance"]
                         intervals = cfg["intervals"]
+                        indicator_inputs = _resolve_live_indicator_inputs(cfg)
                         params = cfg["params"]
                         set_leverage(symbol, lvrg)
                         command_kwargs = _build_command_kwargs(symbol)
                         if live_market_stream is not None:
+                            live_prepare_strategy_frame_fn, live_prepare_indicator_snapshot_fn = _build_live_prepare_functions(
+                                intervals=intervals,
+                                indicator_inputs=indicator_inputs,
+                            )
                             live_market_stream.update_config(
                                 symbol=symbol,
                                 leverage=lvrg,
                                 intervals=intervals,
+                                prepare_multi_tf_fn=live_prepare_strategy_frame_fn,
+                                prepare_indicator_snapshot_fn=live_prepare_indicator_snapshot_fn,
                             )
                             if not live_market_stream.is_running():
                                 raise RuntimeError("Live market stream failed to restart after config reload.")
@@ -659,6 +700,7 @@ if __name__ == "__main__":
                             use_full_balance=use_full_balance,
                             state=state,
                             allow_entries=trading_enabled,
+                            indicator_inputs=indicator_inputs,
                             **params,
                         )
                         runtime_context["state"] = state

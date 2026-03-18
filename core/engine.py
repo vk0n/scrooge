@@ -12,6 +12,13 @@ from tqdm import tqdm
 from bot.event_log import emit_event, get_technical_logger
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.trade import can_open_trade, close_position, compute_qty, get_balance, open_position
+from core.indicator_inputs import (
+    INDICATOR_COLUMNS,
+    indicator_input_mode_for_column,
+    merge_indicator_decision_values,
+    normalize_indicator_inputs,
+    uses_realtime_indicator_inputs,
+)
 from core.market_events import (
     AccountBalanceEvent,
     CandleClosedEvent,
@@ -96,6 +103,7 @@ class StrategyConfig:
     execution_mode: str
     runtime_mode: str
     strategy_mode: str
+    indicator_inputs: dict[str, str]
 
 
 @dataclass(slots=True)
@@ -415,10 +423,17 @@ def _build_realtime_snapshot(
     forming_small: dict[str, Any] | None,
     medium_df: pd.DataFrame,
     big_df: pd.DataFrame,
+    indicator_inputs: dict[str, str],
+    discrete_indicator_values: dict[str, float | None] | None = None,
 ) -> DiscreteRowSnapshot | None:
     if forming_small is None:
         return None
-    indicator_values = _compute_realtime_indicator_values(medium_df, big_df)
+    realtime_indicator_values = _compute_realtime_indicator_values(medium_df, big_df)
+    indicator_values = merge_indicator_decision_values(
+        indicator_inputs=indicator_inputs,
+        discrete_values=discrete_indicator_values,
+        realtime_values=realtime_indicator_values,
+    )
     if indicator_values is None:
         return None
     price = to_float(forming_small.get("close"))
@@ -459,6 +474,23 @@ def _row_value(row: Any, key: str) -> Any:
     if callable(getter):
         return getter(key)
     return None
+
+
+def _snapshot_indicator_value(row: Any, column: str, *, indicator_inputs: dict[str, str] | None) -> Any:
+    mode = indicator_input_mode_for_column(indicator_inputs, column)
+    if mode == "realtime":
+        realtime_key = f"{column}_RT"
+        realtime_value = _row_value(row, realtime_key)
+        if realtime_value is not None:
+            return realtime_value
+    return _row_value(row, column)
+
+
+def _indicator_values_from_snapshot_event(event: IndicatorSnapshotEvent) -> dict[str, float | None]:
+    return {
+        column: to_float(event.values.get(column))
+        for column in INDICATOR_COLUMNS
+    }
 
 
 def to_float(value: Any) -> float | None:
@@ -1076,18 +1108,19 @@ def build_row_snapshot(
     live: bool,
     timestamp_format: str,
     timestamp_formatter: Callable[[Any], str],
+    indicator_inputs: dict[str, str] | None = None,
 ) -> DiscreteRowSnapshot:
     row_ts = timestamp_formatter(_row_value(row, "open_time"))
     log_ts = datetime.now().strftime(timestamp_format) if live else row_ts
     return DiscreteRowSnapshot(
         raw_row=row,
         price=_row_value(row, "close"),
-        lower=_row_value(row, "BBL"),
-        upper=_row_value(row, "BBU"),
-        mid=_row_value(row, "BBM"),
-        atr=_row_value(row, "ATR"),
-        rsi=_row_value(row, "RSI"),
-        ema=_row_value(row, "EMA"),
+        lower=_snapshot_indicator_value(row, "BBL", indicator_inputs=indicator_inputs),
+        upper=_snapshot_indicator_value(row, "BBU", indicator_inputs=indicator_inputs),
+        mid=_snapshot_indicator_value(row, "BBM", indicator_inputs=indicator_inputs),
+        atr=_snapshot_indicator_value(row, "ATR", indicator_inputs=indicator_inputs),
+        rsi=_snapshot_indicator_value(row, "RSI", indicator_inputs=indicator_inputs),
+        ema=_snapshot_indicator_value(row, "EMA", indicator_inputs=indicator_inputs),
         row_ts=row_ts,
         log_ts=log_ts,
     )
@@ -1884,6 +1917,7 @@ def run_strategy(
     allow_entries: bool = True,
     execution_mode: str = "simulated",
     runtime_mode: str | None = None,
+    indicator_inputs: dict[str, str] | None = None,
     progress_reporter: Any | None = None,
 ):
     normalized_runtime_mode = str(
@@ -1898,6 +1932,10 @@ def run_strategy(
     )
     runtime.enable_logs = enable_logs
     technical_logger = get_technical_logger()
+    normalized_indicator_inputs = normalize_indicator_inputs(
+        indicator_inputs,
+        strategy_mode="discrete",
+    )
     config = StrategyConfig(
         qty=qty,
         sl_mult=sl_mult,
@@ -1921,6 +1959,7 @@ def run_strategy(
         execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
         runtime_mode=normalized_runtime_mode,
         strategy_mode="discrete",
+        indicator_inputs=normalized_indicator_inputs,
     )
 
     def on_row(snapshot, row_runtime):
@@ -1933,6 +1972,7 @@ def run_strategy(
         progress_reporter=progress_reporter,
         timestamp_format=TIMESTAMP_FORMAT,
         timestamp_formatter=format_event_timestamp,
+        indicator_inputs=config.indicator_inputs,
         on_row=on_row,
         save_log_fn=save_log,
         save_state_fn=save_state,
@@ -1981,6 +2021,7 @@ def run_strategy_on_market_events(
     allow_entries: bool = True,
     execution_mode: str = "simulated",
     runtime_mode: str | None = None,
+    indicator_inputs: dict[str, str] | None = None,
     progress_reporter: Any | None = None,
 ):
     normalized_strategy_mode = str(strategy_mode or "discrete").strip().lower() or "discrete"
@@ -1996,6 +2037,10 @@ def run_strategy_on_market_events(
     )
     runtime.enable_logs = enable_logs
     technical_logger = get_technical_logger()
+    normalized_indicator_inputs = normalize_indicator_inputs(
+        indicator_inputs,
+        strategy_mode=normalized_strategy_mode,
+    )
     config = StrategyConfig(
         qty=qty,
         sl_mult=sl_mult,
@@ -2019,12 +2064,13 @@ def run_strategy_on_market_events(
         execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
         runtime_mode=normalized_runtime_mode,
         strategy_mode=normalized_strategy_mode,
+        indicator_inputs=normalized_indicator_inputs,
     )
 
     def on_row(snapshot, row_runtime):
         process_discrete_row(snapshot, row_runtime, config, technical_logger)
 
-    if normalized_strategy_mode == "realtime":
+    if normalized_strategy_mode == "realtime" or uses_realtime_indicator_inputs(normalized_indicator_inputs):
         resolved_intervals = {
             "small": "1m",
             "medium": "1h",
@@ -2036,6 +2082,8 @@ def run_strategy_on_market_events(
             market_events,
             runtime=runtime,
             intervals=resolved_intervals,
+            indicator_inputs=normalized_indicator_inputs,
+            emit_on_price_tick=(normalized_strategy_mode == "realtime"),
             show_progress=show_progress,
             market_event_total=market_event_total,
             progress_reporter=progress_reporter,
@@ -2052,6 +2100,7 @@ def run_strategy_on_market_events(
         show_progress=show_progress,
         market_event_total=market_event_total,
         progress_reporter=progress_reporter,
+        indicator_inputs=normalized_indicator_inputs,
         timestamp_format=TIMESTAMP_FORMAT,
         timestamp_formatter=format_event_timestamp,
         on_row=on_row,
@@ -2107,6 +2156,7 @@ def run_discrete_engine(
     progress_reporter: Any | None,
     timestamp_format: str,
     timestamp_formatter: Callable[[Any], str],
+    indicator_inputs: dict[str, str] | None,
     on_row: Callable[[DiscreteRowSnapshot, StrategyRuntime], None],
     save_log_fn: Callable[[list[str]], None],
     save_state_fn: Callable[[dict[str, Any]], None],
@@ -2117,6 +2167,7 @@ def run_discrete_engine(
             live=runtime.live,
             timestamp_format=timestamp_format,
             timestamp_formatter=timestamp_formatter,
+            indicator_inputs=indicator_inputs,
         )
         on_row(snapshot, runtime)
         runtime.balance_history.append(runtime.balance)
@@ -2136,6 +2187,7 @@ def run_market_event_engine(
     show_progress: bool,
     market_event_total: int | None,
     progress_reporter: Any | None,
+    indicator_inputs: dict[str, str],
     timestamp_format: str,
     timestamp_formatter: Callable[[Any], str],
     on_row: Callable[[DiscreteRowSnapshot, StrategyRuntime], None],
@@ -2183,6 +2235,7 @@ def run_market_event_engine(
             live=runtime.live,
             timestamp_format=timestamp_format,
             timestamp_formatter=timestamp_formatter,
+            indicator_inputs=indicator_inputs,
         )
         on_row(snapshot, runtime)
         runtime.balance_history.append(runtime.balance)
@@ -2227,6 +2280,8 @@ def run_realtime_market_event_engine(
     *,
     runtime: StrategyRuntime,
     intervals: dict[str, str],
+    indicator_inputs: dict[str, str],
+    emit_on_price_tick: bool,
     show_progress: bool,
     market_event_total: int | None,
     progress_reporter: Any | None,
@@ -2247,6 +2302,8 @@ def run_realtime_market_event_engine(
         "medium": None,
         "big": None,
     }
+    pending_small_candles: dict[tuple[str, str], CandleClosedEvent] = {}
+    latest_discrete_indicator_values: dict[str, float | None] | None = None
     iterator = _iter_with_progress(
         market_events,
         show_progress=show_progress,
@@ -2288,37 +2345,50 @@ def run_realtime_market_event_engine(
                 if current_open <= event_open:
                     forming_candles[timeframe] = None
             if timeframe == "small":
+                pending_small_candles[(event.symbol, event.ts)] = event
                 open_key = str(event.open_time)
-                if open_key in tick_seen_small_open_times:
-                    continue
-                medium_df = _materialize_market_frame(
-                    closed_frames["medium"],
-                    forming_candles["medium"],
-                    limit=REALTIME_WARMUP_LIMITS["medium"],
-                )
-                big_df = _materialize_market_frame(
-                    closed_frames["big"],
-                    forming_candles["big"],
-                    limit=REALTIME_WARMUP_LIMITS["big"],
-                )
-                fallback_small = {
-                    "open_time": pd.Timestamp(event.open_time),
-                    "open": float(event.open),
-                    "high": float(event.high),
-                    "low": float(event.low),
-                    "close": float(event.close),
-                    "volume": float(event.volume),
-                }
-                snapshot = _build_realtime_snapshot(
-                    event_ts=format_event_timestamp(event.ts),
-                    forming_small=fallback_small,
-                    medium_df=medium_df,
-                    big_df=big_df,
-                )
-                if snapshot is not None:
-                    on_row(snapshot, runtime)
-                    runtime.balance_history.append(runtime.balance)
-                    emitted_snapshots += 1
+            continue
+
+        if isinstance(event, IndicatorSnapshotEvent) and event.interval == "discrete_snapshot":
+            latest_discrete_indicator_values = _indicator_values_from_snapshot_event(event)
+            key = (event.symbol, event.ts)
+            pending_candle = pending_small_candles.pop(key, None)
+            if pending_candle is None:
+                continue
+            open_key = str(pending_candle.open_time)
+            if emit_on_price_tick and open_key in tick_seen_small_open_times:
+                continue
+            medium_df = _materialize_market_frame(
+                closed_frames["medium"],
+                forming_candles["medium"],
+                limit=REALTIME_WARMUP_LIMITS["medium"],
+            )
+            big_df = _materialize_market_frame(
+                closed_frames["big"],
+                forming_candles["big"],
+                limit=REALTIME_WARMUP_LIMITS["big"],
+            )
+            fallback_small = {
+                "open_time": pd.Timestamp(pending_candle.open_time),
+                "open": float(pending_candle.open),
+                "high": float(pending_candle.high),
+                "low": float(pending_candle.low),
+                "close": float(pending_candle.close),
+                "volume": float(pending_candle.volume),
+            }
+            snapshot = _build_realtime_snapshot(
+                event_ts=format_event_timestamp(event.ts),
+                forming_small=fallback_small,
+                medium_df=medium_df,
+                big_df=big_df,
+                indicator_inputs=indicator_inputs,
+                discrete_indicator_values=latest_discrete_indicator_values,
+            )
+            if snapshot is None:
+                continue
+            on_row(snapshot, runtime)
+            runtime.balance_history.append(runtime.balance)
+            emitted_snapshots += 1
             continue
 
         if not isinstance(event, PriceTickEvent):
@@ -2354,8 +2424,10 @@ def run_realtime_market_event_engine(
             forming_small=forming_candles["small"],
             medium_df=medium_df,
             big_df=big_df,
+            indicator_inputs=indicator_inputs,
+            discrete_indicator_values=latest_discrete_indicator_values,
         )
-        if snapshot is None:
+        if snapshot is None or not emit_on_price_tick:
             continue
 
         on_row(snapshot, runtime)
