@@ -192,6 +192,66 @@ REALTIME_WARMUP_LIMITS = {
 }
 
 
+def _tqdm_position(extra_offset: int = 0) -> int | None:
+    raw = os.getenv("SCROOGE_TQDM_POSITION_BASE", "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0, int(raw) + int(extra_offset))
+    except ValueError:
+        return None
+
+
+def _tqdm_desc(desc: str) -> str:
+    prefix = os.getenv("SCROOGE_TQDM_DESC_PREFIX", "").strip()
+    if not prefix:
+        return desc
+    return f"{prefix} {desc}"
+
+
+def _tqdm_kwargs(*, desc: str, disable: bool, extra_offset: int = 0) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "desc": _tqdm_desc(desc),
+        "disable": disable,
+        "dynamic_ncols": True,
+    }
+    position = _tqdm_position(extra_offset=extra_offset)
+    if position is not None:
+        kwargs["position"] = position
+    return kwargs
+
+
+def _iter_with_progress(
+    iterable: Iterable[Any],
+    *,
+    show_progress: bool,
+    desc: str,
+    total: int | None = None,
+    progress_reporter: Any | None = None,
+) -> Iterable[Any]:
+    if progress_reporter is not None:
+        def _reported_iter():
+            for item in iterable:
+                yield item
+                progress_reporter.advance()
+
+        return _reported_iter()
+
+    if not show_progress:
+        return iterable
+
+    if total is None:
+        return tqdm(iterable, **_tqdm_kwargs(desc=desc, disable=False))
+
+    def _tqdm_iter():
+        with tqdm(total=total, **_tqdm_kwargs(desc=desc, disable=False)) as progress:
+            for item in iterable:
+                yield item
+                progress.update(1)
+
+    return _tqdm_iter()
+
+
 def save_log(log_buffer: list[str]) -> None:
     log_path = os.getenv("SCROOGE_LOG_FILE", LOG_FILE)
     with open(log_path, "a") as f:
@@ -983,19 +1043,31 @@ def emit_simulated_exit_execution_events(
     )
 
 
-def iter_discrete_rows(rows: Any, *, live: bool, show_progress: bool) -> Any:
+def iter_discrete_rows(rows: Any, *, live: bool, show_progress: bool, progress_reporter: Any | None = None) -> Any:
     if isinstance(rows, pd.DataFrame):
         if live:
             return [rows.iloc[-1]]
         df_iter = [rows.iloc[i] for i in range(1, len(rows))]
-        return tqdm(df_iter, desc="Backtest Progress", disable=not show_progress)
+        return _iter_with_progress(
+            df_iter,
+            show_progress=show_progress,
+            desc="Backtest Progress",
+            total=len(df_iter),
+            progress_reporter=progress_reporter,
+        )
 
     row_list = list(rows)
     if live:
         return row_list[-1:] if row_list else []
 
     tape_iter = row_list[1:]
-    return tqdm(tape_iter, desc="Backtest Progress", disable=not show_progress)
+    return _iter_with_progress(
+        tape_iter,
+        show_progress=show_progress,
+        desc="Backtest Progress",
+        total=len(tape_iter),
+        progress_reporter=progress_reporter,
+    )
 
 
 def build_row_snapshot(
@@ -1812,6 +1884,7 @@ def run_strategy(
     allow_entries: bool = True,
     execution_mode: str = "simulated",
     runtime_mode: str | None = None,
+    progress_reporter: Any | None = None,
 ):
     normalized_runtime_mode = str(
         runtime_mode or os.getenv("SCROOGE_RUNTIME_MODE", "live" if live else "backtest")
@@ -1857,6 +1930,7 @@ def run_strategy(
         df,
         runtime=runtime,
         show_progress=show_progress,
+        progress_reporter=progress_reporter,
         timestamp_format=TIMESTAMP_FORMAT,
         timestamp_formatter=format_event_timestamp,
         on_row=on_row,
@@ -1877,6 +1951,7 @@ def run_strategy_on_market_events(
     *,
     candle_interval: str = "1m",
     intervals: dict[str, str] | None = None,
+    market_event_total: int | None = None,
     strategy_mode: str = "discrete",
     strict_indicator_alignment: bool = False,
     live: bool = False,
@@ -1906,6 +1981,7 @@ def run_strategy_on_market_events(
     allow_entries: bool = True,
     execution_mode: str = "simulated",
     runtime_mode: str | None = None,
+    progress_reporter: Any | None = None,
 ):
     normalized_strategy_mode = str(strategy_mode or "discrete").strip().lower() or "discrete"
     normalized_runtime_mode = str(
@@ -1961,6 +2037,8 @@ def run_strategy_on_market_events(
             runtime=runtime,
             intervals=resolved_intervals,
             show_progress=show_progress,
+            market_event_total=market_event_total,
+            progress_reporter=progress_reporter,
             on_row=on_row,
             save_log_fn=save_log,
             save_state_fn=save_state,
@@ -1972,6 +2050,8 @@ def run_strategy_on_market_events(
         runtime=runtime,
         candle_interval=candle_interval,
         show_progress=show_progress,
+        market_event_total=market_event_total,
+        progress_reporter=progress_reporter,
         timestamp_format=TIMESTAMP_FORMAT,
         timestamp_formatter=format_event_timestamp,
         on_row=on_row,
@@ -2024,13 +2104,14 @@ def run_discrete_engine(
     *,
     runtime: StrategyRuntime,
     show_progress: bool,
+    progress_reporter: Any | None,
     timestamp_format: str,
     timestamp_formatter: Callable[[Any], str],
     on_row: Callable[[DiscreteRowSnapshot, StrategyRuntime], None],
     save_log_fn: Callable[[list[str]], None],
     save_state_fn: Callable[[dict[str, Any]], None],
 ) -> tuple[float, pd.DataFrame, list[float], dict[str, Any]]:
-    for row in iter_discrete_rows(df, live=runtime.live, show_progress=show_progress):
+    for row in iter_discrete_rows(df, live=runtime.live, show_progress=show_progress, progress_reporter=progress_reporter):
         snapshot = build_row_snapshot(
             row,
             live=runtime.live,
@@ -2053,6 +2134,8 @@ def run_market_event_engine(
     runtime: StrategyRuntime,
     candle_interval: str,
     show_progress: bool,
+    market_event_total: int | None,
+    progress_reporter: Any | None,
     timestamp_format: str,
     timestamp_formatter: Callable[[Any], str],
     on_row: Callable[[DiscreteRowSnapshot, StrategyRuntime], None],
@@ -2064,7 +2147,13 @@ def run_market_event_engine(
     target_symbol = str(symbol or "").strip().upper() or None
     pending_candles: dict[tuple[str, str], CandleClosedEvent] = {}
     pending_indicators: dict[tuple[str, str], IndicatorSnapshotEvent] = {}
-    iterator = tqdm(market_events, desc="Backtest Event Replay", disable=not show_progress)
+    iterator = _iter_with_progress(
+        market_events,
+        show_progress=show_progress,
+        desc="Backtest Event Replay",
+        total=market_event_total,
+        progress_reporter=progress_reporter,
+    )
 
     def try_emit(symbol_key: str, ts: str) -> None:
         key = (symbol_key, ts)
@@ -2139,6 +2228,8 @@ def run_realtime_market_event_engine(
     runtime: StrategyRuntime,
     intervals: dict[str, str],
     show_progress: bool,
+    market_event_total: int | None,
+    progress_reporter: Any | None,
     on_row: Callable[[DiscreteRowSnapshot, StrategyRuntime], None],
     save_log_fn: Callable[[list[str]], None],
     save_state_fn: Callable[[dict[str, Any]], None],
@@ -2156,7 +2247,13 @@ def run_realtime_market_event_engine(
         "medium": None,
         "big": None,
     }
-    iterator = tqdm(market_events, desc="Realtime Event Replay", disable=not show_progress)
+    iterator = _iter_with_progress(
+        market_events,
+        show_progress=show_progress,
+        desc="Realtime Event Replay",
+        total=market_event_total,
+        progress_reporter=progress_reporter,
+    )
     processed_price_ticks = 0
     emitted_snapshots = 0
     tick_seen_small_open_times: set[str] = set()

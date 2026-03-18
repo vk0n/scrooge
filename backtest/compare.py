@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+import logging
 import os
 import re
 import time
@@ -16,6 +17,7 @@ from typing import Any, Callable, Iterator
 import backtest.dataset as dataset_module
 import bot.trade as trade_module
 import yaml
+from backtest.progress import ScenarioProgressBar
 from backtest.runner import BacktestResult, build_backtest_config, run_backtest
 from binance.client import Client
 from bot.event_log import get_technical_logger
@@ -38,6 +40,8 @@ _COMPARE_ENV_KEYS = (
     "SCROOGE_RUNTIME_CHART_DATASET_PATH",
     "SCROOGE_RUNTIME_MODE",
     "SCROOGE_STRATEGY_MODE",
+    "SCROOGE_TQDM_POSITION_BASE",
+    "SCROOGE_TQDM_DESC_PREFIX",
 )
 
 
@@ -238,7 +242,13 @@ def load_compare_config(path: str | Path | None = None) -> CompareConfig:
 
 
 @contextmanager
-def _scenario_env(run_dir: Path, *, strategy_mode: str | None) -> Iterator[None]:
+def _scenario_env(
+    run_dir: Path,
+    *,
+    strategy_mode: str | None,
+    progress_position_base: int | None = None,
+    progress_desc_prefix: str | None = None,
+) -> Iterator[None]:
     previous = {key: os.environ.get(key) for key in _COMPARE_ENV_KEYS}
     os.environ["SCROOGE_BACKTEST_RUN_DIR"] = str(run_dir)
     os.environ["SCROOGE_STATE_FILE"] = str(run_dir / "state.json")
@@ -253,6 +263,14 @@ def _scenario_env(run_dir: Path, *, strategy_mode: str | None) -> Iterator[None]
         os.environ["SCROOGE_STRATEGY_MODE"] = strategy_mode
     else:
         os.environ.pop("SCROOGE_STRATEGY_MODE", None)
+    if progress_position_base is not None:
+        os.environ["SCROOGE_TQDM_POSITION_BASE"] = str(progress_position_base)
+    else:
+        os.environ.pop("SCROOGE_TQDM_POSITION_BASE", None)
+    if progress_desc_prefix:
+        os.environ["SCROOGE_TQDM_DESC_PREFIX"] = progress_desc_prefix
+    else:
+        os.environ.pop("SCROOGE_TQDM_DESC_PREFIX", None)
 
     reset_event_store(run_dir / "event_history.jsonl")
     try:
@@ -494,19 +512,60 @@ def _scenario_task_payload(
     scenario: CompareScenario,
     scenario_dir: Path,
     merged_config: dict[str, Any],
+    quiet_console_info: bool,
 ) -> dict[str, Any]:
     return {
         "index": index,
         "name": scenario.name,
         "scenario_dir": str(scenario_dir),
         "config": merged_config,
+        "quiet_console_info": quiet_console_info,
     }
+
+
+def _configure_compare_worker_logging(
+    *,
+    scenario_dir: Path,
+    quiet_console_info: bool,
+) -> None:
+    if not quiet_console_info:
+        return
+
+    worker_log_path = scenario_dir / "compare_worker.log"
+    worker_log_path.parent.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    file_handler = logging.FileHandler(worker_log_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+
+    stderr_handler = logging.StreamHandler()
+    stderr_handler.setLevel(logging.WARNING)
+    stderr_handler.setFormatter(formatter)
+
+    logger = logging.getLogger("scrooge.bot")
+    logger.handlers = [file_handler, stderr_handler]
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    event_store_logger = logging.getLogger("scrooge.event_store")
+    event_store_logger.handlers = [file_handler, stderr_handler]
+    event_store_logger.setLevel(logging.INFO)
+    event_store_logger.propagate = False
 
 
 def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
     scenario_name = str(task["name"])
     scenario_dir = Path(str(task["scenario_dir"])).expanduser()
     merged_config = dict(task["config"])
+    quiet_console_info = bool(task.get("quiet_console_info", False))
+    progress_position_base = max(0, int(task["index"]) - 1)
+    progress_desc_prefix = f"[{scenario_name}]"
+
+    _configure_compare_worker_logging(
+        scenario_dir=scenario_dir,
+        quiet_console_info=quiet_console_info,
+    )
     logger = get_technical_logger()
 
     load_dotenv()
@@ -528,9 +587,15 @@ def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
         merged_config.get("backtest_input_mode"),
         merged_config.get("execution_mode"),
     )
+    scenario_progress = ScenarioProgressBar(
+        scenario_name=scenario_name,
+        position=progress_position_base,
+    )
     with _scenario_env(
         scenario_dir,
         strategy_mode=str(merged_config.get("strategy_mode") or "").strip().lower() or None,
+        progress_position_base=progress_position_base,
+        progress_desc_prefix=progress_desc_prefix,
     ):
         try:
             backtest_config = build_backtest_config(
@@ -543,6 +608,7 @@ def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
             result = run_backtest(
                 backtest_config,
                 technical_logger=logger,
+                progress_reporter=scenario_progress,
             )
             duration_seconds = time.perf_counter() - scenario_start
             summary = _summarize_result(
@@ -572,6 +638,8 @@ def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
                 error=exc,
             )
             logger.exception("compare_scenario_failed name=%s duration_seconds=%.2f", scenario_name, duration_seconds)
+        finally:
+            scenario_progress.close()
 
     return {
         "index": int(task["index"]),
@@ -620,12 +688,17 @@ def run_compare(
                 scenario=scenario,
                 scenario_dir=scenario_dir,
                 merged_config=merged_config,
+                quiet_console_info=False,
             )
         )
 
     summaries_by_index: dict[int, CompareScenarioSummary] = {}
     parallel_enabled = config.compare_parallel and len(task_payloads) > 1
     max_workers = max(1, min(config.compare_max_workers, len(task_payloads)))
+
+    if parallel_enabled:
+        for task_payload in task_payloads:
+            task_payload["quiet_console_info"] = True
 
     if parallel_enabled:
         logger.info(

@@ -34,13 +34,14 @@ from backtest.market_event_replay import (
     MarketExecutionSummary,
     write_market_event_execution_artifacts,
 )
+from backtest.progress import BacktestProgressReporter
 from backtest.replay import ReplaySummary, write_replay_artifacts
 from backtest.stats import compute_stats
 from backtest.trade_alignment import TradeAlignmentSummary, write_trade_alignment_artifacts
 from bot.event_log import get_technical_logger
 from bot.state import save_state
 from core.engine import run_strategy_on_market_events, run_strategy_on_tape
-from core.market_events import MarketEvent, iter_market_event_stream, market_event_from_dict
+from core.market_events import MarketEvent, count_market_event_stream, iter_market_event_stream, market_event_from_dict
 
 
 @dataclass(slots=True)
@@ -292,6 +293,7 @@ def run_backtest(
     config: BacktestConfig,
     *,
     technical_logger: Any | None = None,
+    progress_reporter: BacktestProgressReporter | None = None,
     dataset_builder: Callable[..., pd.DataFrame] = build_dataset,
     strategy_runner: Callable[..., tuple[float, pd.DataFrame, list[float], dict[str, Any]]] = run_strategy_on_tape,
     market_event_strategy_runner: Callable[..., tuple[float, pd.DataFrame, list[float], dict[str, Any]]] = run_strategy_on_market_events,
@@ -317,6 +319,18 @@ def run_backtest(
     if config.client is not None:
         dataset_module.set_client(config.client)
 
+    def start_stage(label: str, total: int) -> None:
+        if progress_reporter is not None:
+            progress_reporter.start_stage(label, total)
+
+    def advance_stage(amount: int = 1) -> None:
+        if progress_reporter is not None:
+            progress_reporter.advance(amount)
+
+    def complete_stage() -> None:
+        if progress_reporter is not None:
+            progress_reporter.complete_stage()
+
     if needs_reporting:
         import backtest.reporting as report_module_import
         from backtest.reporting import (
@@ -336,22 +350,34 @@ def run_backtest(
     logger.info("bot_mode_backtest_started symbol=%s leverage=%s", config.symbol, config.leverage)
     if config.backtest_input_mode == "discrete_tape":
         source_path = config.market_tape_input_path or config.market_tape_path
+        start_stage("Load Market Tape", 1)
         tape = read_discrete_market_tape(source_path)
         if not tape:
             raise ValueError(f"No market tape rows found at {source_path}")
         df = discrete_market_tape_to_frame(tape)
         if df.empty:
             raise ValueError(f"Market tape frame is empty at {source_path}")
+        advance_stage()
+        complete_stage()
         logger.info("backtest_market_tape_loaded rows=%s path=%s", len(tape), source_path)
         if source_path != config.market_tape_path:
+            start_stage("Write Market Tape", 1)
             write_discrete_market_tape(config.market_tape_path, tape)
+            advance_stage()
+            complete_stage()
             logger.info("backtest_market_tape_copied rows=%s path=%s", len(tape), config.market_tape_path)
+        start_stage("Historical Event Stream", max(1, len(tape)))
         market_events = build_historical_market_event_stream(
             tape,
             intervals={key: str(value) for key, value in config.intervals.items()},
+            progress_reporter=progress_reporter,
         )
+        complete_stage()
         market_event_iter_factory = lambda: market_events
+        start_stage("Write Market Events", 1)
         write_discrete_market_event_stream(config.market_event_stream_path, market_events)
+        advance_stage()
+        complete_stage()
         logger.info(
             "backtest_historical_market_event_stream_written events=%s path=%s",
             len(market_events),
@@ -359,11 +385,15 @@ def run_backtest(
         )
     elif config.backtest_input_mode == "market_event_stream":
         source_path = config.market_event_input_path or config.market_event_stream_path
+        projection_total = count_market_event_stream(source_path)
+        start_stage("Project Market Tape", max(1, projection_total))
         tape, market_event_projection = read_projected_discrete_tape_from_market_event_stream(
             source_path,
             candle_interval=str(config.intervals["small"]),
             symbol=config.symbol,
+            progress_reporter=progress_reporter,
         )
+        complete_stage()
         if not tape:
             raise ValueError(f"Market event stream produced no discrete tape rows at {source_path}")
         df = discrete_market_tape_to_frame(tape)
@@ -380,7 +410,10 @@ def run_backtest(
             )
         target_market_event_path = source_path
         if source_path != config.market_event_stream_path:
+            start_stage("Copy Market Events", 1)
             write_discrete_market_event_stream(config.market_event_stream_path, iter_market_event_stream(source_path))
+            advance_stage()
+            complete_stage()
             logger.info(
                 "backtest_market_event_stream_copied events=%s path=%s",
                 market_event_projection.total_events if market_event_projection is not None else 0,
@@ -388,7 +421,10 @@ def run_backtest(
             )
             target_market_event_path = config.market_event_stream_path
         market_event_iter_factory = lambda path=target_market_event_path: iter_market_event_stream(path)
+        start_stage("Write Market Tape", 1)
         write_discrete_market_tape(config.market_tape_path, tape)
+        advance_stage()
+        complete_stage()
         logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
     elif config.backtest_input_mode == "agg_trade_stream":
         df, agg_trade_stream_summary = write_historical_agg_trade_market_event_stream(
@@ -403,6 +439,7 @@ def run_backtest(
             rest_base_url=config.agg_trade_rest_base_url,
             cache_enabled=config.agg_trade_cache_enabled,
             cache_dir=config.agg_trade_cache_dir,
+            progress_reporter=progress_reporter,
         )
         if agg_trade_stream_summary.total_events <= 0:
             raise ValueError("No market events were built from historical aggTrades.")
@@ -421,32 +458,50 @@ def run_backtest(
             agg_trade_stream_summary.total_events,
             config.market_event_stream_path,
         )
+        start_stage("Project Market Tape", agg_trade_stream_summary.total_events)
         tape, market_event_projection = project_discrete_tape_from_market_events(
             market_event_iter_factory(),
             candle_interval=str(config.intervals["small"]),
             symbol=config.symbol,
             require_indicator_snapshot=True,
+            progress_reporter=progress_reporter,
         )
+        complete_stage()
         if not tape:
             raise ValueError("Historical aggTrade stream produced no discrete tape rows.")
+        start_stage("Write Market Tape", 1)
         write_discrete_market_tape(config.market_tape_path, tape)
+        advance_stage()
+        complete_stage()
         logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
     else:
+        start_stage("Dataset Build", 1)
         df = dataset_builder(
             symbol=config.symbol,
             intervals=config.intervals,
             backtest_period_days=config.backtest_period_days,
             backtest_period_end_time=config.backtest_period_end_time,
         )
+        advance_stage()
+        complete_stage()
         tape = build_discrete_market_tape(df, symbol=config.symbol)
+        start_stage("Write Market Tape", 1)
         write_discrete_market_tape(config.market_tape_path, tape)
+        advance_stage()
+        complete_stage()
         logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
+        start_stage("Historical Event Stream", max(1, len(tape)))
         market_events = build_historical_market_event_stream(
             tape,
             intervals={key: str(value) for key, value in config.intervals.items()},
+            progress_reporter=progress_reporter,
         )
+        complete_stage()
         market_event_iter_factory = lambda: market_events
+        start_stage("Write Market Events", 1)
         write_discrete_market_event_stream(config.market_event_stream_path, market_events)
+        advance_stage()
+        complete_stage()
         logger.info(
             "backtest_historical_market_event_stream_written events=%s path=%s",
             len(market_events),
@@ -464,24 +519,40 @@ def run_backtest(
         "runtime_mode": config.runtime_mode,
         **config.params,
     }
+    market_event_total: int | None = None
+    if agg_trade_stream_summary is not None:
+        market_event_total = agg_trade_stream_summary.total_events
+    elif market_event_projection is not None:
+        market_event_total = market_event_projection.total_events
+    elif market_events is not None:
+        market_event_total = len(market_events)
+
     if config.strategy_mode == "realtime" or config.backtest_input_mode in {"market_event_stream", "agg_trade_stream"}:
         if market_events is None and market_event_iter_factory is None:
             raise ValueError("market event strategy runner requires a market event source")
+        start_stage("Strategy Replay", max(1, market_event_total or 0))
         final_balance, trades, balance_history, state = market_event_strategy_runner(
             market_events if market_events is not None else market_event_iter_factory(),
             candle_interval=str(config.intervals["small"]),
             intervals={key: str(value) for key, value in config.intervals.items()},
+            market_event_total=market_event_total,
             strategy_mode=config.strategy_mode,
             execution_mode=config.execution_mode,
             strict_indicator_alignment=False,
+            progress_reporter=progress_reporter,
             **strategy_kwargs,
         )
+        complete_stage()
     else:
+        start_stage("Strategy Replay", max(1, len(tape) - 1))
         final_balance, trades, balance_history, state = strategy_runner(
             tape,
+            progress_reporter=progress_reporter,
             **strategy_kwargs,
         )
+        complete_stage()
 
+    start_stage("Artifacts", 5)
     state["balance_history"] = _compress_balance_history_for_state(balance_history)
     state["balance"] = float(final_balance)
     if len(state["balance_history"]) != len(balance_history):
@@ -498,6 +569,7 @@ def run_backtest(
         path=config.chart_dataset_path,
         balance_history=balance_history,
     )
+    advance_stage()
     replay_summary = replay_writer(
         config.event_log_path,
         runtime_mode=config.runtime_mode,
@@ -510,6 +582,7 @@ def run_backtest(
         replay_summary.net_pnl,
         config.event_log_path,
     )
+    advance_stage()
     execution_artifact_events = market_events if market_events is not None else (
         market_event_iter_factory() if market_event_iter_factory is not None else []
     )
@@ -540,6 +613,7 @@ def run_backtest(
         market_event_execution_summary.commission_total,
         config.event_log_path.with_name("market_event_execution_summary.json"),
     )
+    advance_stage()
     trade_alignment_summary: TradeAlignmentSummary | None = None
     if market_event_execution_summary.observed_total_trades > 0:
         trade_alignment_summary = trade_alignment_writer(
@@ -558,6 +632,7 @@ def run_backtest(
             trade_alignment_summary.pnl_delta,
             config.event_log_path.with_name("market_event_trade_alignment_summary.json"),
         )
+    advance_stage()
     execution_sync = state.get("execution_sync")
     if isinstance(execution_sync, dict) and execution_sync:
         logger.info(
@@ -577,6 +652,8 @@ def run_backtest(
     stats = compute_stats(config.initial_balance, final_balance, trades, balance_history)
     for key, value in stats.items():
         logger.info("backtest_stat %s=%s", key, value)
+    advance_stage()
+    complete_stage()
 
     if config.enable_plot:
         if plot_results_interactive is None:

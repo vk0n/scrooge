@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Iterable
 
 from backtest.discrete_tape import DiscreteMarketTapeRow
+from backtest.progress import BacktestProgressReporter
 from core.market_events import (
     CandleClosedEvent,
     IndicatorSnapshotEvent,
@@ -28,6 +29,7 @@ def read_projected_discrete_tape_from_market_event_stream(
     candle_interval: str,
     symbol: str | None = None,
     require_indicator_snapshot: bool = True,
+    progress_reporter: BacktestProgressReporter | None = None,
 ) -> tuple[list[DiscreteMarketTapeRow], DiscreteTapeProjectionSummary]:
     events = iter_market_event_stream(path)
     tape, summary = project_discrete_tape_from_market_events(
@@ -35,6 +37,7 @@ def read_projected_discrete_tape_from_market_event_stream(
         candle_interval=candle_interval,
         symbol=symbol,
         require_indicator_snapshot=require_indicator_snapshot,
+        progress_reporter=progress_reporter,
     )
     return tape, summary
 
@@ -45,6 +48,7 @@ def project_discrete_tape_from_market_events(
     candle_interval: str,
     symbol: str | None = None,
     require_indicator_snapshot: bool = True,
+    progress_reporter: BacktestProgressReporter | None = None,
 ) -> tuple[list[DiscreteMarketTapeRow], DiscreteTapeProjectionSummary]:
     filtered_symbol = str(symbol or "").strip().upper() or None
     normalized_interval = str(candle_interval or "").strip()
@@ -91,6 +95,8 @@ def project_discrete_tape_from_market_events(
 
     for event in events:
         total_events += 1
+        if progress_reporter is not None:
+            progress_reporter.advance()
 
         event_symbol = getattr(event, "symbol", None)
         if filtered_symbol and str(event_symbol or "").upper() != filtered_symbol:

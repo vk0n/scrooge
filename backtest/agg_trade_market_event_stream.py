@@ -18,6 +18,7 @@ import pandas as pd
 import pandas_ta as ta
 from tqdm import tqdm
 
+from backtest.progress import BacktestProgressReporter
 from bot.event_log import get_technical_logger
 from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent, market_event_to_dict
 
@@ -60,6 +61,35 @@ def _format_ts(value: datetime | pd.Timestamp) -> str:
         resolved = value.tz_convert(None) if value.tzinfo is not None else value
         return resolved.strftime(MARKET_EVENT_TS_FORMAT)
     return value.strftime(MARKET_EVENT_TS_FORMAT)
+
+
+def _tqdm_position(extra_offset: int = 0) -> int | None:
+    raw = os.getenv("SCROOGE_TQDM_POSITION_BASE", "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0, int(raw) + int(extra_offset))
+    except ValueError:
+        return None
+
+
+def _tqdm_desc(desc: str) -> str:
+    prefix = os.getenv("SCROOGE_TQDM_DESC_PREFIX", "").strip()
+    if not prefix:
+        return desc
+    return f"{prefix} {desc}"
+
+
+def _tqdm_kwargs(*, desc: str, extra_offset: int = 0, **kwargs: Any) -> dict[str, Any]:
+    merged: dict[str, Any] = {
+        "desc": _tqdm_desc(desc),
+        "dynamic_ncols": True,
+        **kwargs,
+    }
+    position = _tqdm_position(extra_offset=extra_offset)
+    if position is not None:
+        merged["position"] = position
+    return merged
 
 
 def _resolve_time_range(*, backtest_period_days: int, backtest_period_end_time: str) -> tuple[datetime, datetime]:
@@ -189,12 +219,15 @@ def _download_response_payload(url: str, *, desc: str, leave_progress: bool = Fa
         chunks: list[bytes] = []
         with tqdm(
             total=total_bytes,
-            desc=desc,
-            unit="B",
-            unit_scale=True,
-            unit_divisor=1024,
-            dynamic_ncols=True,
-            leave=leave_progress,
+            **_tqdm_kwargs(
+                desc=desc,
+                extra_offset=1,
+                total=total_bytes,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                leave=leave_progress,
+            ),
         ) as progress:
             while True:
                 chunk = response.read(1024 * 1024)
@@ -332,12 +365,7 @@ def _download_archive_rows(
     downloaded_days = 0
     today_utc = datetime.now(UTC).date()
 
-    with tqdm(
-        day_specs,
-        desc="aggTrades Archive",
-        unit="day",
-        dynamic_ncols=True,
-    ) as archive_progress:
+    with tqdm(day_specs, **_tqdm_kwargs(desc="aggTrades Archive", unit="day")) as archive_progress:
         for day_value, _url in archive_progress:
             day_label = day_value.isoformat()
             archive_progress.set_postfix_str(day_label)
@@ -418,12 +446,7 @@ def _download_rest_rows(
     cursor = start_ms
 
     total_hours = max((end_ms - start_ms) / (60 * 60 * 1000), 1.0)
-    with tqdm(
-        total=total_hours,
-        desc="aggTrades REST",
-        unit="h",
-        dynamic_ncols=True,
-    ) as rest_progress:
+    with tqdm(total=total_hours, **_tqdm_kwargs(desc="aggTrades REST", unit="h")) as rest_progress:
         while cursor <= end_ms:
             query = urlencode(
                 {
@@ -633,6 +656,7 @@ def write_historical_agg_trade_market_event_stream(
     rest_base_url: str = DEFAULT_AGG_TRADE_REST_BASE_URL,
     cache_enabled: bool = True,
     cache_dir: str | Path | None = DEFAULT_AGG_TRADE_CACHE_DIR,
+    progress_reporter: BacktestProgressReporter | None = None,
 ) -> tuple[pd.DataFrame, AggTradeMarketEventStreamSummary]:
     archive_base_url = str(archive_base_url or DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL).strip().rstrip("/")
     rest_base_url = str(rest_base_url or DEFAULT_AGG_TRADE_REST_BASE_URL).strip().rstrip("/")
@@ -671,7 +695,9 @@ def write_historical_agg_trade_market_event_stream(
     all_days_from_cache = True
     archive_cache_path = _resolve_archive_day_cache_dir(cache_dir=cache_dir, symbol=symbol)
 
-    with tqdm(requested_days, desc="aggTrades Candles", unit="day", dynamic_ncols=True) as pass_one:
+    if progress_reporter is not None:
+        progress_reporter.start_stage("aggTrades Candles", len(requested_days))
+    with tqdm(requested_days, **_tqdm_kwargs(desc="aggTrades Candles", unit="day", disable=progress_reporter is not None)) as pass_one:
         for day_value in pass_one:
             day_df, cache_hit, day_source = _load_archive_trade_day_frame(
                 symbol=symbol,
@@ -696,6 +722,10 @@ def write_historical_agg_trade_market_event_stream(
             if not small_day.empty:
                 small_frames.append(small_day)
             pass_one.set_postfix_str(f"{day_value.isoformat()} rows={raw_agg_trades}")
+            if progress_reporter is not None:
+                progress_reporter.advance()
+    if progress_reporter is not None:
+        progress_reporter.complete_stage()
 
     if not small_frames:
         empty_df = pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"])
@@ -736,7 +766,9 @@ def write_historical_agg_trade_market_event_stream(
     indicator_snapshot_count = 0
 
     with target_path.open("w", encoding="utf-8") as file_obj:
-        with tqdm(requested_days, desc="aggTrades Market Events", unit="day", dynamic_ncols=True) as pass_two:
+        if progress_reporter is not None:
+            progress_reporter.start_stage("aggTrades Market Events", len(requested_days))
+        with tqdm(requested_days, **_tqdm_kwargs(desc="aggTrades Market Events", unit="day", disable=progress_reporter is not None)) as pass_two:
             for day_value in pass_two:
                 day_df, _, day_source = _load_archive_trade_day_frame(
                     symbol=symbol,
@@ -782,13 +814,16 @@ def write_historical_agg_trade_market_event_stream(
                 for event in day_events:
                     file_obj.write(json.dumps(market_event_to_dict(event), ensure_ascii=True, sort_keys=True))
                     file_obj.write("\n")
-
                 price_tick_count += sum(1 for event in day_events if isinstance(event, PriceTickEvent))
                 small_candle_count += sum(1 for event in day_events if isinstance(event, CandleClosedEvent) and event.interval == small_interval)
                 medium_candle_count += sum(1 for event in day_events if isinstance(event, CandleClosedEvent) and event.interval == medium_interval)
                 big_candle_count += sum(1 for event in day_events if isinstance(event, CandleClosedEvent) and event.interval == big_interval)
                 indicator_snapshot_count += sum(1 for event in day_events if isinstance(event, IndicatorSnapshotEvent))
                 pass_two.set_postfix_str(day_value.isoformat())
+                if progress_reporter is not None:
+                    progress_reporter.advance()
+        if progress_reporter is not None:
+            progress_reporter.complete_stage()
 
     source_label = "historical_agg_trade"
     if sources_seen:

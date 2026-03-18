@@ -276,3 +276,15 @@ def read_market_event_stream(path: str | Path) -> list[MarketEvent]:
 
 def iter_market_event_stream(path: str | Path) -> Iterator[MarketEvent]:
     return JsonlMarketEventStore(path).iter_events()
+
+
+def count_market_event_stream(path: str | Path) -> int:
+    target_path = Path(path).expanduser()
+    if not target_path.exists():
+        return 0
+    count = 0
+    with target_path.open("r", encoding="utf-8", errors="replace") as file_obj:
+        for raw_line in file_obj:
+            if raw_line.strip():
+                count += 1
+    return count

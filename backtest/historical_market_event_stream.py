@@ -5,6 +5,7 @@ from typing import Iterable
 
 import pandas as pd
 
+from backtest.progress import BacktestProgressReporter
 from backtest.discrete_tape import DiscreteMarketTapeRow, TAPE_TIMESTAMP_FORMAT, discrete_market_tape_to_frame
 from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent
 
@@ -114,6 +115,7 @@ def _build_small_candle_events(
     small_interval: str,
     emit_discrete_snapshot: bool,
     source: str,
+    progress_reporter: BacktestProgressReporter | None = None,
 ) -> list[MarketEvent]:
     events: list[MarketEvent] = []
     for row in tape:
@@ -155,6 +157,8 @@ def _build_small_candle_events(
                     },
                 )
             )
+        if progress_reporter is not None:
+            progress_reporter.advance()
     return events
 
 
@@ -231,6 +235,7 @@ def build_historical_market_event_stream(
     intervals: dict[str, str],
     emit_discrete_snapshot: bool = True,
     price_tick_source: str = "historical_intrabar",
+    progress_reporter: BacktestProgressReporter | None = None,
 ) -> list[MarketEvent]:
     rows = list(tape)
     if not rows:
@@ -245,6 +250,7 @@ def build_historical_market_event_stream(
         small_interval=small_interval,
         emit_discrete_snapshot=emit_discrete_snapshot,
         source=price_tick_source,
+        progress_reporter=progress_reporter,
     )
 
     tape_frame = discrete_market_tape_to_frame(rows)
