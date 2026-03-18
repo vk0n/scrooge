@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import os
 import re
@@ -52,6 +53,8 @@ class CompareConfig:
     base_backtest_config_path: Path
     compare_run_dir: str
     compare_run_root: Path
+    compare_parallel: bool
+    compare_max_workers: int
     base_backtest_overrides: dict[str, Any]
     scenarios: list[CompareScenario]
 
@@ -184,6 +187,19 @@ def load_compare_config(path: str | Path | None = None) -> CompareConfig:
     compare_run_dir = str(config.get("compare_run_dir", "auto") or "").strip() or "auto"
     raw_compare_run_root = str(config.get("compare_run_root", str(DEFAULT_COMPARE_RUN_ROOT)) or "").strip()
     compare_run_root = _resolve_path(raw_compare_run_root, base_dir=raw_path.parent)
+    compare_parallel = bool(config.get("compare_parallel", True))
+    raw_compare_max_workers = config.get("compare_max_workers")
+    default_workers = min(
+        max(1, os.cpu_count() or 1),
+        max(1, len(config.get("scenarios") or [])),
+        2,
+    )
+    try:
+        compare_max_workers = int(raw_compare_max_workers) if raw_compare_max_workers is not None else default_workers
+    except (TypeError, ValueError):
+        compare_max_workers = default_workers
+    if compare_max_workers <= 0:
+        compare_max_workers = 1
 
     base_backtest_overrides = config.get("base_backtest_overrides", {})
     if not isinstance(base_backtest_overrides, dict):
@@ -214,6 +230,8 @@ def load_compare_config(path: str | Path | None = None) -> CompareConfig:
         base_backtest_config_path=base_backtest_config_path,
         compare_run_dir=compare_run_dir,
         compare_run_root=compare_run_root,
+        compare_parallel=compare_parallel,
+        compare_max_workers=compare_max_workers,
         base_backtest_overrides=dict(base_backtest_overrides),
         scenarios=scenarios,
     )
@@ -470,13 +488,101 @@ def _apply_compare_end_time_anchor(
     return updated
 
 
+def _scenario_task_payload(
+    *,
+    index: int,
+    scenario: CompareScenario,
+    scenario_dir: Path,
+    merged_config: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "index": index,
+        "name": scenario.name,
+        "scenario_dir": str(scenario_dir),
+        "config": merged_config,
+    }
+
+
+def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
+    scenario_name = str(task["name"])
+    scenario_dir = Path(str(task["scenario_dir"])).expanduser()
+    merged_config = dict(task["config"])
+    logger = get_technical_logger()
+
+    load_dotenv()
+    client: Client | None = None
+    normalized_input_mode = str(merged_config.get("backtest_input_mode", "build") or "").strip().lower() or "build"
+    if normalized_input_mode == "build":
+        api_key = os.getenv("BINANCE_API_KEY")
+        api_secret = os.getenv("BINANCE_API_SECRET")
+        client = Client(api_key, api_secret)
+        dataset_module.set_client(client)
+        trade_module.set_client(client)
+
+    scenario_start = time.perf_counter()
+    logger.info(
+        "compare_scenario_started name=%s run_dir=%s strategy_mode=%s input_mode=%s execution_mode=%s",
+        scenario_name,
+        scenario_dir,
+        merged_config.get("strategy_mode"),
+        merged_config.get("backtest_input_mode"),
+        merged_config.get("execution_mode"),
+    )
+    with _scenario_env(
+        scenario_dir,
+        strategy_mode=str(merged_config.get("strategy_mode") or "").strip().lower() or None,
+    ):
+        try:
+            backtest_config = build_backtest_config(
+                merged_config,
+                chart_dataset_path=scenario_dir / "chart_dataset.csv",
+                event_log_path=scenario_dir / "event_history.jsonl",
+                runtime_mode="backtest",
+                client=client,
+            )
+            result = run_backtest(
+                backtest_config,
+                technical_logger=logger,
+            )
+            duration_seconds = time.perf_counter() - scenario_start
+            summary = _summarize_result(
+                name=scenario_name,
+                run_dir=scenario_dir,
+                duration_seconds=duration_seconds,
+                config_payload=merged_config,
+                result=result,
+            )
+            logger.info(
+                "compare_scenario_completed name=%s duration_seconds=%.2f final_balance=%.8f return_pct=%.8f trades=%s",
+                scenario_name,
+                duration_seconds,
+                summary.final_balance or 0.0,
+                summary.total_return_pct or 0.0,
+                summary.number_of_trades or 0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            duration_seconds = time.perf_counter() - scenario_start
+            trace_text = traceback.format_exc()
+            (scenario_dir / "compare_error.txt").write_text(trace_text, encoding="utf-8")
+            summary = _summarize_error(
+                name=scenario_name,
+                run_dir=scenario_dir,
+                duration_seconds=duration_seconds,
+                config_payload=merged_config,
+                error=exc,
+            )
+            logger.exception("compare_scenario_failed name=%s duration_seconds=%.2f", scenario_name, duration_seconds)
+
+    return {
+        "index": int(task["index"]),
+        "summary": asdict(summary),
+    }
+
+
 def run_compare(
     config: CompareConfig,
     *,
-    client: Any | None = None,
     technical_logger: Any | None = None,
-    backtest_runner: Callable[..., BacktestResult] = run_backtest,
-    backtest_config_builder: Callable[..., Any] = build_backtest_config,
 ) -> CompareRunResult:
     logger = technical_logger or get_technical_logger()
     compare_run_dir = _prepare_compare_run_dir(config)
@@ -487,13 +593,15 @@ def run_compare(
         "base_backtest_config_path": str(config.base_backtest_config_path),
         "compare_run_dir": str(compare_run_dir),
         "compare_run_root": str(config.compare_run_root),
+        "compare_parallel": config.compare_parallel,
+        "compare_max_workers": config.compare_max_workers,
         "compare_anchor_end_time": anchor_end_time,
         "base_backtest_overrides": config.base_backtest_overrides,
         "scenarios": [{"name": item.name, "overrides": item.overrides} for item in config.scenarios],
     }
     _write_yaml_snapshot(compare_run_dir / "compare_config.resolved.yaml", compare_config_snapshot)
 
-    summaries: list[CompareScenarioSummary] = []
+    task_payloads: list[dict[str, Any]] = []
 
     for index, scenario in enumerate(config.scenarios, start=1):
         scenario_dir = _scenario_dir(compare_run_dir, index, scenario.name)
@@ -506,62 +614,54 @@ def run_compare(
             anchor_end_time=anchor_end_time,
         )
         _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
-
-        scenario_start = time.perf_counter()
-        logger.info(
-            "compare_scenario_started name=%s run_dir=%s strategy_mode=%s input_mode=%s execution_mode=%s",
-            scenario.name,
-            scenario_dir,
-            merged_config.get("strategy_mode"),
-            merged_config.get("backtest_input_mode"),
-            merged_config.get("execution_mode"),
+        task_payloads.append(
+            _scenario_task_payload(
+                index=index,
+                scenario=scenario,
+                scenario_dir=scenario_dir,
+                merged_config=merged_config,
+            )
         )
-        with _scenario_env(
-            scenario_dir,
-            strategy_mode=str(merged_config.get("strategy_mode") or "").strip().lower() or None,
-        ):
-            try:
-                backtest_config = backtest_config_builder(
-                    merged_config,
-                    chart_dataset_path=scenario_dir / "chart_dataset.csv",
-                    event_log_path=scenario_dir / "event_history.jsonl",
-                    runtime_mode="backtest",
-                    client=client,
-                )
-                result = backtest_runner(
-                    backtest_config,
-                    technical_logger=logger,
-                )
-                duration_seconds = time.perf_counter() - scenario_start
-                summary = _summarize_result(
-                    name=scenario.name,
-                    run_dir=scenario_dir,
-                    duration_seconds=duration_seconds,
-                    config_payload=merged_config,
-                    result=result,
-                )
-                logger.info(
-                    "compare_scenario_completed name=%s duration_seconds=%.2f final_balance=%.8f return_pct=%.8f trades=%s",
-                    scenario.name,
-                    duration_seconds,
-                    summary.final_balance or 0.0,
-                    summary.total_return_pct or 0.0,
-                    summary.number_of_trades or 0,
-                )
-            except Exception as exc:  # noqa: BLE001
-                duration_seconds = time.perf_counter() - scenario_start
-                trace_text = traceback.format_exc()
-                (scenario_dir / "compare_error.txt").write_text(trace_text, encoding="utf-8")
-                summary = _summarize_error(
-                    name=scenario.name,
-                    run_dir=scenario_dir,
-                    duration_seconds=duration_seconds,
-                    config_payload=merged_config,
-                    error=exc,
-                )
-                logger.exception("compare_scenario_failed name=%s duration_seconds=%.2f", scenario.name, duration_seconds)
 
-        summaries.append(summary)
+    summaries_by_index: dict[int, CompareScenarioSummary] = {}
+    parallel_enabled = config.compare_parallel and len(task_payloads) > 1
+    max_workers = max(1, min(config.compare_max_workers, len(task_payloads)))
+
+    if parallel_enabled:
+        logger.info(
+            "compare_parallel_execution_enabled scenarios=%s max_workers=%s",
+            len(task_payloads),
+            max_workers,
+        )
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_run_compare_scenario_task, task_payload): task_payload
+                for task_payload in task_payloads
+            }
+            for future in as_completed(futures):
+                task_payload = futures[future]
+                scenario_dir = Path(str(task_payload["scenario_dir"]))
+                merged_config = dict(task_payload["config"])
+                try:
+                    completed = future.result()
+                    summaries_by_index[int(completed["index"])] = CompareScenarioSummary(**completed["summary"])
+                except Exception as exc:  # noqa: BLE001
+                    trace_text = traceback.format_exc()
+                    (scenario_dir / "compare_error.txt").write_text(trace_text, encoding="utf-8")
+                    logger.exception("compare_scenario_process_failed name=%s", task_payload["name"])
+                    summaries_by_index[int(task_payload["index"])] = _summarize_error(
+                        name=str(task_payload["name"]),
+                        run_dir=scenario_dir,
+                        duration_seconds=0.0,
+                        config_payload=merged_config,
+                        error=exc,
+                    )
+    else:
+        for task_payload in task_payloads:
+            completed = _run_compare_scenario_task(task_payload)
+            summaries_by_index[int(completed["index"])] = CompareScenarioSummary(**completed["summary"])
+
+    summaries = [summaries_by_index[index] for index in sorted(summaries_by_index)]
 
     succeeded = sum(1 for item in summaries if item.status == "ok")
     failed = len(summaries) - succeeded
@@ -597,15 +697,8 @@ def main() -> int:
     logger = get_technical_logger()
     config = load_compare_config()
 
-    api_key = os.getenv("BINANCE_API_KEY")
-    api_secret = os.getenv("BINANCE_API_SECRET")
-    client = Client(api_key, api_secret)
-    dataset_module.set_client(client)
-    trade_module.set_client(client)
-
     result = run_compare(
         config,
-        client=client,
         technical_logger=logger,
     )
     if result.failed > 0:

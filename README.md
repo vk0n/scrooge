@@ -274,6 +274,7 @@ By default it:
 - uses `config/backtest.yaml` as the base config
 - applies scenario-specific overrides
 - runs each scenario in its own isolated directory under `runtime/compare/<timestamp>/scenarios/`
+- can run scenarios in parallel via separate worker processes with `compare_parallel` / `compare_max_workers`
 
 Compare outputs include:
 - `compare_summary.json`
