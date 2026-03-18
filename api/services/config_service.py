@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from core.indicator_inputs import INDICATOR_INPUT_KEYS, normalize_indicator_inputs
 
 
 def _project_root() -> Path:
@@ -19,7 +18,7 @@ CONFIG_PATH = Path(os.getenv("SCROOGE_CONFIG_PATH", str(_project_root() / "confi
 
 EDITABLE_TOP_LEVEL_KEYS = ("live", "symbol", "leverage", "initial_balance", "use_full_balance", "qty")
 EDITABLE_INTERVAL_KEYS = ("small", "medium", "big")
-EDITABLE_INDICATOR_INPUT_KEYS = INDICATOR_INPUT_KEYS
+EDITABLE_INDICATOR_INPUT_KEYS = ("ema", "rsi", "bb", "atr")
 EDITABLE_PARAM_KEYS = (
     "sl_mult",
     "tp_mult",
@@ -35,6 +34,50 @@ EDITABLE_PARAM_KEYS = (
     "rsi_short_tp_threshold",
     "rsi_short_close_threshold",
 )
+LEGACY_INDICATOR_INPUT_GROUP_ALIASES = {
+    "bbl": "bb",
+    "bbm": "bb",
+    "bbu": "bb",
+}
+LEGACY_INDICATOR_INPUT_MODE_ALIASES = {
+    "discrete": "closed",
+    "realtime": "intrabar",
+}
+
+
+def normalize_indicator_inputs(raw_value: Any, *, strategy_mode: str | None = None) -> dict[str, str]:
+    default_mode = "intrabar" if str(strategy_mode or "discrete").strip().lower() == "realtime" else "closed"
+    normalized = {key: default_mode for key in EDITABLE_INDICATOR_INPUT_KEYS}
+
+    if raw_value is None:
+        return normalized
+    if not isinstance(raw_value, dict):
+        raise ValueError("indicator_inputs must be an object mapping indicator names to closed/intrabar.")
+
+    supported_keys = set(EDITABLE_INDICATOR_INPUT_KEYS) | set(LEGACY_INDICATOR_INPUT_GROUP_ALIASES)
+    unknown_keys = sorted(set(raw_value) - supported_keys)
+    if unknown_keys:
+        unknown_joined = ", ".join(unknown_keys)
+        raise ValueError(
+            "indicator_inputs contains unsupported key(s): "
+            f"{unknown_joined}. Allowed keys: {', '.join(EDITABLE_INDICATOR_INPUT_KEYS)}"
+        )
+
+    seen_modes_by_key: dict[str, str] = {}
+    for key, value in raw_value.items():
+        canonical_key = LEGACY_INDICATOR_INPUT_GROUP_ALIASES.get(key, key)
+        mode = LEGACY_INDICATOR_INPUT_MODE_ALIASES.get(str(value or "").strip().lower(), str(value or "").strip().lower())
+        if mode not in {"closed", "intrabar"}:
+            raise ValueError(f"indicator_inputs.{canonical_key} must be one of: closed, intrabar")
+        previous_mode = seen_modes_by_key.get(canonical_key)
+        if previous_mode is not None and previous_mode != mode:
+            raise ValueError(
+                f"indicator_inputs.{canonical_key} has conflicting values; use a single mode for the full indicator group."
+            )
+        normalized[canonical_key] = mode
+        seen_modes_by_key[canonical_key] = mode
+
+    return normalized
 
 
 def _effective_strategy_mode(config: dict[str, Any]) -> str:
