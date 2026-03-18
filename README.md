@@ -37,6 +37,7 @@ scrooge/
 │   ├── discrete_tape.py
 │   ├── historical_market_event_stream.py
 │   ├── market_event_projection.py
+│   ├── compare.py
 │   ├── runner.py
 │   ├── replay.py
 │   ├── reporting.py
@@ -44,6 +45,7 @@ scrooge/
 ├── config/
 │   ├── live.yaml
 │   ├── backtest.yaml
+│   ├── compare.yaml
 │   └── param_grid.yaml
 ├── requirements/
 │   ├── bot.txt
@@ -105,6 +107,9 @@ Live trading config:
 
 Backtest config:
 - [backtest.yaml](config/backtest.yaml)
+
+Compare matrix:
+- [compare.yaml](config/compare.yaml)
 
 Optimization grid:
 - [param_grid.yaml](config/param_grid.yaml)
@@ -255,6 +260,33 @@ Notes:
 - archive-based `aggTrades` are sharded by UTC day under `data/agg_trades/<symbol>/archive_daily/`, which makes overlapping `last N days` runs reuse the same days efficiently
 - older whole-window cache files are still accepted as a bootstrap source and are automatically split into daily shards when reused
 - control this with `agg_trade_cache_enabled` and `agg_trade_cache_dir`
+
+### Compare multiple backtests
+
+Run a scenario matrix from `config/compare.yaml`:
+
+```bash
+python -m backtest.compare
+```
+
+By default it:
+- loads `config/compare.yaml`
+- uses `config/backtest.yaml` as the base config
+- applies scenario-specific overrides
+- runs each scenario in its own isolated directory under `runtime/compare/<timestamp>/scenarios/`
+
+Compare outputs include:
+- `compare_summary.json`
+- `compare_runs.jsonl`
+- `compare_table.md`
+- `compare_config.resolved.yaml`
+- one resolved backtest config and full artifact set per scenario
+
+Typical compare use cases:
+- `discrete` vs `realtime`
+- `5s` vs `30s`
+- different `execution_mode`
+- fixed-window benchmarks with the same symbol and params
 
 ### Replay a canonical event log
 
