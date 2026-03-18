@@ -64,6 +64,7 @@ class BacktestConfig:
     indicator_inputs: dict[str, str]
     params: dict[str, Any]
     backtest_period_days: int
+    backtest_period_start_time: str
     backtest_period_end_time: str
     enable_plot: bool
     plot_split_by_year: bool
@@ -177,6 +178,7 @@ def build_backtest_config(
         indicator_inputs=indicator_inputs,
         params=dict(cfg.get("params", {})),
         backtest_period_days=int(cfg["backtest_period_days"]),
+        backtest_period_start_time=str(cfg.get("backtest_period_start_time", "")),
         backtest_period_end_time=str(cfg.get("backtest_period_end_time", "")),
         enable_plot=bool(cfg["enable_plot"]),
         plot_split_by_year=bool(cfg.get("plot_split_by_year", True)),
@@ -437,6 +439,7 @@ def run_backtest(
         df, agg_trade_stream_summary = write_historical_agg_trade_market_event_stream(
             symbol=config.symbol,
             backtest_period_days=config.backtest_period_days,
+            backtest_period_start_time=config.backtest_period_start_time,
             backtest_period_end_time=config.backtest_period_end_time,
             intervals={key: str(value) for key, value in config.intervals.items()},
             output_path=config.market_event_stream_path,
@@ -487,6 +490,7 @@ def run_backtest(
             symbol=config.symbol,
             intervals=config.intervals,
             backtest_period_days=config.backtest_period_days,
+            backtest_period_start_time=config.backtest_period_start_time,
             backtest_period_end_time=config.backtest_period_end_time,
         )
         advance_stage()

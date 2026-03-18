@@ -2,7 +2,8 @@ import os
 import time
 import pandas as pd
 import pandas_ta as ta
-from datetime import datetime, timedelta
+from datetime import datetime
+from backtest.time_windows import resolve_backtest_time_range
 from bot.event_log import get_technical_logger
 from core.indicator_inputs import INDICATOR_COLUMNS, normalize_indicator_inputs, uses_realtime_indicator_inputs
 
@@ -269,6 +270,7 @@ def build_dataset(
     intervals=None,
     backtest_period_days=365,
     backtest_period_end_time="",
+    backtest_period_start_time="",
     output_dir="data"
 ):
     """Fetch and build dataset from Binance, or load if already cached."""
@@ -280,17 +282,18 @@ def build_dataset(
     interval_big = intervals["big"]
 
     os.makedirs(output_dir, exist_ok=True)
+    time_range = resolve_backtest_time_range(
+        backtest_period_days=backtest_period_days,
+        backtest_period_end_time=backtest_period_end_time,
+        backtest_period_start_time=backtest_period_start_time,
+    )
     output_filename = (
         f"{symbol}_{interval_small}_{interval_medium}_{interval_big}_"
-        f"{backtest_period_days}_{backtest_period_end_time}.pkl"
+        f"{time_range.cache_key}.pkl"
     )
     output_path = os.path.join(output_dir, output_filename)
-
-    if backtest_period_end_time == "":
-        end_time = datetime.now()
-    else:
-        end_time = datetime.fromisoformat(backtest_period_end_time)
-    start_time = end_time - timedelta(days=backtest_period_days)
+    end_time = time_range.end_time
+    start_time = time_range.start_time
 
     if os.path.exists(output_path):
         technical_logger.info("dataset_cache_found path=%s", output_path)
@@ -305,7 +308,7 @@ def build_dataset(
     technical_logger.info(
         "dataset_fetch_started symbol=%s days=%s intervals=%s,%s,%s",
         symbol,
-        backtest_period_days,
+        time_range.duration_days,
         interval_small,
         interval_medium,
         interval_big,

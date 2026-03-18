@@ -4,6 +4,7 @@ import copy
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import logging
+from multiprocessing import RLock
 import os
 import re
 import time
@@ -19,10 +20,13 @@ import bot.trade as trade_module
 import yaml
 from backtest.progress import ScenarioProgressBar
 from backtest.runner import BacktestResult, build_backtest_config, run_backtest
+from backtest.sieves import CompareSieve, resolve_compare_sieves
+from backtest.time_windows import resolve_backtest_time_range
 from binance.client import Client
 from bot.event_log import get_technical_logger
 from core.event_store import reset_event_store
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +63,8 @@ class CompareConfig:
     compare_run_root: Path
     compare_parallel: bool
     compare_max_workers: int
+    sieve_preset: str | None
+    sieves: list[CompareSieve]
     base_backtest_overrides: dict[str, Any]
     scenarios: list[CompareScenario]
 
@@ -66,6 +72,8 @@ class CompareConfig:
 @dataclass(slots=True)
 class CompareScenarioSummary:
     name: str
+    base_name: str | None
+    sieve_name: str | None
     status: str
     error: str | None
     duration_seconds: float
@@ -76,6 +84,7 @@ class CompareScenarioSummary:
     backtest_input_mode: str | None
     agg_trade_tick_interval: str | None
     backtest_period_days: int | None
+    backtest_period_start_time: str | None
     backtest_period_end_time: str | None
     initial_balance: float | None
     final_balance: float | None
@@ -106,6 +115,22 @@ class CompareRunResult:
     succeeded: int
     failed: int
     scenarios: list[CompareScenarioSummary]
+
+
+@dataclass(slots=True)
+class CompareSieveAggregate:
+    base_name: str
+    scenario_count: int
+    succeeded: int
+    failed: int
+    positive_return_sieves: int
+    profit_factor_ge_one_sieves: int
+    avg_return_pct: float | None
+    min_return_pct: float | None
+    worst_max_drawdown_pct: float | None
+    bull_return_pct: float | None
+    bear_return_pct: float | None
+    neutral_return_pct: float | None
 
 
 def _now_utc_text() -> str:
@@ -208,6 +233,11 @@ def load_compare_config(path: str | Path | None = None) -> CompareConfig:
     base_backtest_overrides = config.get("base_backtest_overrides", {})
     if not isinstance(base_backtest_overrides, dict):
         raise ValueError("base_backtest_overrides must be a mapping")
+    sieve_preset = str(config.get("sieve_preset", "") or "").strip() or None
+    sieves = resolve_compare_sieves(
+        preset=sieve_preset,
+        raw_sieves=config.get("sieves"),
+    )
 
     raw_scenarios = config.get("scenarios")
     if not isinstance(raw_scenarios, list) or not raw_scenarios:
@@ -236,6 +266,8 @@ def load_compare_config(path: str | Path | None = None) -> CompareConfig:
         compare_run_root=compare_run_root,
         compare_parallel=compare_parallel,
         compare_max_workers=compare_max_workers,
+        sieve_preset=sieve_preset,
+        sieves=sieves,
         base_backtest_overrides=dict(base_backtest_overrides),
         scenarios=scenarios,
     )
@@ -338,6 +370,8 @@ def _summarize_result(
 
     return CompareScenarioSummary(
         name=name,
+        base_name=str(config_payload.get("__compare_base_name") or "").strip() or name,
+        sieve_name=str(config_payload.get("__compare_sieve_name") or "").strip() or None,
         status="ok",
         error=None,
         duration_seconds=duration_seconds,
@@ -348,6 +382,7 @@ def _summarize_result(
         backtest_input_mode=str(config_payload.get("backtest_input_mode") or "").strip().lower() or None,
         agg_trade_tick_interval=str(config_payload.get("agg_trade_tick_interval") or "").strip().lower() or None,
         backtest_period_days=_int_or_none(config_payload.get("backtest_period_days")),
+        backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or "").strip() or None,
         backtest_period_end_time=str(config_payload.get("backtest_period_end_time") or "").strip() or None,
         initial_balance=_float_or_none(stats.get("Initial Balance")),
         final_balance=_float_or_none(stats.get("Final Balance")),
@@ -380,6 +415,8 @@ def _summarize_error(
 ) -> CompareScenarioSummary:
     return CompareScenarioSummary(
         name=name,
+        base_name=str(config_payload.get("__compare_base_name") or "").strip() or name,
+        sieve_name=str(config_payload.get("__compare_sieve_name") or "").strip() or None,
         status="failed",
         error=f"{type(error).__name__}: {error}",
         duration_seconds=duration_seconds,
@@ -390,6 +427,7 @@ def _summarize_error(
         backtest_input_mode=str(config_payload.get("backtest_input_mode") or "").strip().lower() or None,
         agg_trade_tick_interval=str(config_payload.get("agg_trade_tick_interval") or "").strip().lower() or None,
         backtest_period_days=_int_or_none(config_payload.get("backtest_period_days")),
+        backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or "").strip() or None,
         backtest_period_end_time=str(config_payload.get("backtest_period_end_time") or "").strip() or None,
         initial_balance=None,
         final_balance=None,
@@ -427,6 +465,7 @@ def _write_compare_table(path: Path, scenarios: list[CompareScenarioSummary]) ->
         "Mode",
         "Input",
         "Exec",
+        "Sieve",
         "Days",
         "Tick",
         "Return %",
@@ -453,6 +492,7 @@ def _write_compare_table(path: Path, scenarios: list[CompareScenarioSummary]) ->
                     item.strategy_mode or "-",
                     item.backtest_input_mode or "-",
                     item.execution_mode or "-",
+                    item.sieve_name or "-",
                     _format_cell(item.backtest_period_days, digits=0),
                     item.agg_trade_tick_interval or "-",
                     _format_cell(item.total_return_pct),
@@ -484,6 +524,81 @@ def _best_scenario_name(
 
 def _scenario_dir(compare_run_dir: Path, index: int, name: str) -> Path:
     return compare_run_dir / "scenarios" / f"{index:02d}-{_slugify(name)}"
+
+
+def _write_compare_sieve_table(path: Path, aggregates: list[CompareSieveAggregate]) -> None:
+    header = [
+        "Candidate",
+        "Succeeded",
+        "Positive Sieves",
+        "PF>=1 Sieves",
+        "Bull %",
+        "Bear %",
+        "Neutral %",
+        "Avg %",
+        "Min %",
+        "Worst DD %",
+    ]
+    lines = [
+        "# Three-Sieves Results",
+        "",
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join("---" for _ in header) + " |",
+    ]
+    for item in aggregates:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    item.base_name,
+                    f"{item.succeeded}/{item.scenario_count}",
+                    str(item.positive_return_sieves),
+                    str(item.profit_factor_ge_one_sieves),
+                    _format_cell(item.bull_return_pct),
+                    _format_cell(item.bear_return_pct),
+                    _format_cell(item.neutral_return_pct),
+                    _format_cell(item.avg_return_pct),
+                    _format_cell(item.min_return_pct),
+                    _format_cell(item.worst_max_drawdown_pct),
+                ]
+            )
+            + " |"
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _aggregate_sieves(scenarios: list[CompareScenarioSummary]) -> list[CompareSieveAggregate]:
+    grouped: dict[str, list[CompareScenarioSummary]] = {}
+    for item in scenarios:
+        if not item.base_name or not item.sieve_name:
+            continue
+        grouped.setdefault(item.base_name, []).append(item)
+
+    aggregates: list[CompareSieveAggregate] = []
+    for base_name, items in sorted(grouped.items()):
+        ok_items = [item for item in items if item.status == "ok"]
+        returns = [item.total_return_pct for item in ok_items if item.total_return_pct is not None]
+        max_drawdowns = [item.max_drawdown_pct for item in ok_items if item.max_drawdown_pct is not None]
+        by_sieve = {item.sieve_name or "": item for item in ok_items}
+        aggregates.append(
+            CompareSieveAggregate(
+                base_name=base_name,
+                scenario_count=len(items),
+                succeeded=len(ok_items),
+                failed=len(items) - len(ok_items),
+                positive_return_sieves=sum(1 for item in ok_items if (item.total_return_pct or 0.0) > 0.0),
+                profit_factor_ge_one_sieves=sum(1 for item in ok_items if (item.profit_factor or 0.0) >= 1.0),
+                avg_return_pct=(sum(returns) / len(returns) if returns else None),
+                min_return_pct=(min(returns) if returns else None),
+                worst_max_drawdown_pct=(min(max_drawdowns) if max_drawdowns else None),
+                bull_return_pct=(by_sieve.get("bull").total_return_pct if by_sieve.get("bull") is not None else None),
+                bear_return_pct=(by_sieve.get("bear").total_return_pct if by_sieve.get("bear") is not None else None),
+                neutral_return_pct=(by_sieve.get("neutral").total_return_pct if by_sieve.get("neutral") is not None else None),
+            )
+        )
+    return aggregates
 
 
 def _prepare_compare_run_dir(config: CompareConfig) -> Path:
@@ -552,6 +667,11 @@ def _configure_compare_worker_logging(
     event_store_logger.handlers = [file_handler, stderr_handler]
     event_store_logger.setLevel(logging.INFO)
     event_store_logger.propagate = False
+
+
+def _initialize_compare_worker(progress_lock: Any | None = None) -> None:
+    if progress_lock is not None:
+        tqdm.set_lock(progress_lock)
 
 
 def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -663,6 +783,8 @@ def run_compare(
         "compare_run_root": str(config.compare_run_root),
         "compare_parallel": config.compare_parallel,
         "compare_max_workers": config.compare_max_workers,
+        "sieve_preset": config.sieve_preset,
+        "sieves": [asdict(item) for item in config.sieves],
         "compare_anchor_end_time": anchor_end_time,
         "base_backtest_overrides": config.base_backtest_overrides,
         "scenarios": [{"name": item.name, "overrides": item.overrides} for item in config.scenarios],
@@ -670,22 +792,43 @@ def run_compare(
     _write_yaml_snapshot(compare_run_dir / "compare_config.resolved.yaml", compare_config_snapshot)
 
     task_payloads: list[dict[str, Any]] = []
+    expanded_scenarios: list[tuple[CompareScenario, CompareSieve | None]] = []
+    if config.sieves:
+        for scenario in config.scenarios:
+            for sieve in config.sieves:
+                expanded_scenarios.append((scenario, sieve))
+    else:
+        expanded_scenarios = [(scenario, None) for scenario in config.scenarios]
 
-    for index, scenario in enumerate(config.scenarios, start=1):
-        scenario_dir = _scenario_dir(compare_run_dir, index, scenario.name)
+    for index, (scenario, sieve) in enumerate(expanded_scenarios, start=1):
+        scenario_name = scenario.name if sieve is None else f"{scenario.name}-{sieve.name}"
+        scenario_dir = _scenario_dir(compare_run_dir, index, scenario_name)
         scenario_dir.mkdir(parents=True, exist_ok=True)
         merged_config = _deep_merge_dicts(base_backtest_config, config.base_backtest_overrides)
         merged_config = _deep_merge_dicts(merged_config, scenario.overrides)
         merged_config["live"] = False
-        merged_config = _apply_compare_end_time_anchor(
-            merged_config,
-            anchor_end_time=anchor_end_time,
-        )
+        if sieve is not None:
+            time_range = resolve_backtest_time_range(
+                backtest_period_days=sieve.duration_days,
+                backtest_period_start_time=sieve.start_time,
+                backtest_period_end_time=sieve.end_time,
+            )
+            merged_config["backtest_period_days"] = time_range.duration_days
+            merged_config["backtest_period_start_time"] = sieve.start_time
+            merged_config["backtest_period_end_time"] = sieve.end_time
+            merged_config["__compare_sieve_name"] = sieve.name
+        else:
+            merged_config = _apply_compare_end_time_anchor(
+                merged_config,
+                anchor_end_time=anchor_end_time,
+            )
+            merged_config["__compare_sieve_name"] = ""
+        merged_config["__compare_base_name"] = scenario.name
         _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
         task_payloads.append(
             _scenario_task_payload(
                 index=index,
-                scenario=scenario,
+                scenario=CompareScenario(name=scenario_name, overrides=scenario.overrides),
                 scenario_dir=scenario_dir,
                 merged_config=merged_config,
                 quiet_console_info=False,
@@ -706,7 +849,13 @@ def run_compare(
             len(task_payloads),
             max_workers,
         )
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        progress_lock = RLock()
+        tqdm.set_lock(progress_lock)
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_initialize_compare_worker,
+            initargs=(progress_lock,),
+        ) as executor:
             futures = {
                 executor.submit(_run_compare_scenario_task, task_payload): task_payload
                 for task_payload in task_payloads
@@ -762,6 +911,10 @@ def run_compare(
     _write_json(compare_run_dir / "compare_summary.json", summary_payload)
     _write_jsonl(compare_run_dir / "compare_runs.jsonl", [asdict(item) for item in summaries])
     _write_compare_table(compare_run_dir / "compare_table.md", summaries)
+    sieve_aggregates = _aggregate_sieves(summaries)
+    if sieve_aggregates:
+        _write_json(compare_run_dir / "compare_sieves_summary.json", [asdict(item) for item in sieve_aggregates])
+        _write_compare_sieve_table(compare_run_dir / "compare_sieves_table.md", sieve_aggregates)
     return compare_result
 
 

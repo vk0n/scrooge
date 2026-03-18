@@ -57,6 +57,7 @@ def main() -> None:
         symbol=symbol,
         intervals=cfg["intervals"],
         backtest_period_days=cfg["backtest_period_days"],
+        backtest_period_start_time=cfg.get("backtest_period_start_time", ""),
         backtest_period_end_time=cfg["backtest_period_end_time"],
     )
 

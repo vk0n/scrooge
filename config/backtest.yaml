@@ -35,6 +35,7 @@ indicator_inputs:
   bb: closed
   atr: closed
 backtest_period_end_time: ''
+backtest_period_start_time: ''
 backtest_period_days: 30
 params:
   sl_mult: 3.7

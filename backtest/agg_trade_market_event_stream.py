@@ -19,6 +19,7 @@ import pandas_ta as ta
 from tqdm import tqdm
 
 from backtest.progress import BacktestProgressReporter
+from backtest.time_windows import resolve_backtest_time_range
 from bot.event_log import get_technical_logger
 from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent, market_event_to_dict
 
@@ -92,20 +93,6 @@ def _tqdm_kwargs(*, desc: str, extra_offset: int = 0, **kwargs: Any) -> dict[str
     return merged
 
 
-def _resolve_time_range(*, backtest_period_days: int, backtest_period_end_time: str) -> tuple[datetime, datetime]:
-    def _normalize_utc_naive(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            return value
-        return value.astimezone(UTC).replace(tzinfo=None)
-
-    if str(backtest_period_end_time or "").strip():
-        end_time = _normalize_utc_naive(datetime.fromisoformat(str(backtest_period_end_time).strip()))
-    else:
-        end_time = datetime.now(UTC).replace(tzinfo=None)
-    start_time = end_time - timedelta(days=int(backtest_period_days))
-    return start_time, end_time
-
-
 def _resolve_agg_trade_cache_path(
     *,
     cache_dir: str | Path | None,
@@ -154,16 +141,17 @@ def _resolve_archive_day_cache_path(
     return target_dir / f"{day.isoformat()}.pkl"
 
 
-def _resolve_agg_trade_cache_key(*, backtest_period_days: int, backtest_period_end_time: str) -> str:
-    raw_end_time = str(backtest_period_end_time or "").strip()
-    if not raw_end_time:
-        return f"{int(backtest_period_days)}d_rolling"
-    try:
-        end_time = datetime.fromisoformat(raw_end_time)
-        end_day = end_time.date().isoformat()
-    except ValueError:
-        end_day = raw_end_time[:10] or raw_end_time
-    return f"{int(backtest_period_days)}d_until_{end_day}"
+def _resolve_agg_trade_cache_key(
+    *,
+    backtest_period_days: int,
+    backtest_period_end_time: str,
+    backtest_period_start_time: str,
+) -> str:
+    return resolve_backtest_time_range(
+        backtest_period_days=backtest_period_days,
+        backtest_period_end_time=backtest_period_end_time,
+        backtest_period_start_time=backtest_period_start_time,
+    ).cache_key
 
 
 def _read_agg_trade_cache(path: Path) -> pd.DataFrame:
@@ -648,6 +636,7 @@ def write_historical_agg_trade_market_event_stream(
     symbol: str,
     backtest_period_days: int,
     backtest_period_end_time: str,
+    backtest_period_start_time: str,
     intervals: dict[str, str],
     output_path: str | Path,
     source: str = "archive",
@@ -660,10 +649,12 @@ def write_historical_agg_trade_market_event_stream(
 ) -> tuple[pd.DataFrame, AggTradeMarketEventStreamSummary]:
     archive_base_url = str(archive_base_url or DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL).strip().rstrip("/")
     rest_base_url = str(rest_base_url or DEFAULT_AGG_TRADE_REST_BASE_URL).strip().rstrip("/")
-    start_time, end_time = _resolve_time_range(
+    time_range = resolve_backtest_time_range(
         backtest_period_days=backtest_period_days,
         backtest_period_end_time=backtest_period_end_time,
+        backtest_period_start_time=backtest_period_start_time,
     )
+    start_time, end_time = time_range.start_time, time_range.end_time
     requested_days = _iter_requested_days(start_time, end_time)
     if not requested_days:
         empty_df = pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"])
@@ -1285,6 +1276,7 @@ def build_historical_agg_trade_market_event_stream(
     symbol: str,
     backtest_period_days: int,
     backtest_period_end_time: str,
+    backtest_period_start_time: str,
     intervals: dict[str, str],
     source: str = "archive",
     tick_interval: str = "1s",
@@ -1298,11 +1290,14 @@ def build_historical_agg_trade_market_event_stream(
     cache_key = _resolve_agg_trade_cache_key(
         backtest_period_days=backtest_period_days,
         backtest_period_end_time=backtest_period_end_time,
+        backtest_period_start_time=backtest_period_start_time,
     )
-    start_time, end_time = _resolve_time_range(
+    time_range = resolve_backtest_time_range(
         backtest_period_days=backtest_period_days,
         backtest_period_end_time=backtest_period_end_time,
+        backtest_period_start_time=backtest_period_start_time,
     )
+    start_time, end_time = time_range.start_time, time_range.end_time
     trades, cache_hit, cache_path = fetch_historical_agg_trades(
         symbol=symbol,
         start_time=start_time,

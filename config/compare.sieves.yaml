@@ -1,0 +1,29 @@
+base_backtest_config_path: config/backtest.yaml
+compare_run_dir: auto
+compare_run_root: runtime/compare
+compare_parallel: true
+compare_max_workers: 3
+sieve_preset: btcusdt-three-sieves-v1
+base_backtest_overrides:
+  execution_mode: simulated
+scenarios:
+  - name: realtime-5s-closed
+    overrides:
+      strategy_mode: realtime
+      backtest_input_mode: agg_trade_stream
+      agg_trade_tick_interval: 5s
+      indicator_inputs:
+        ema: closed
+        rsi: closed
+        bb: closed
+        atr: closed
+  - name: realtime-5s-intrabar
+    overrides:
+      strategy_mode: realtime
+      backtest_input_mode: agg_trade_stream
+      agg_trade_tick_interval: 5s
+      indicator_inputs:
+        ema: intrabar
+        rsi: intrabar
+        bb: intrabar
+        atr: intrabar
