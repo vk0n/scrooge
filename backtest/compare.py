@@ -4,6 +4,7 @@ import copy
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import logging
+import math
 from multiprocessing import RLock
 import os
 import re
@@ -22,8 +23,8 @@ from backtest.progress import ScenarioProgressBar
 from backtest.runner import BacktestResult, build_backtest_config, run_backtest
 from backtest.sieves import CompareSieve, resolve_compare_sieves
 from backtest.time_windows import resolve_backtest_time_range
-from binance.client import Client
 from bot.event_log import get_technical_logger
+from core.binance_retry import create_binance_client
 from core.event_store import reset_event_store
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -63,6 +64,9 @@ class CompareConfig:
     compare_run_root: Path
     compare_parallel: bool
     compare_max_workers: int
+    sieve_stage_keep_ratio: float
+    sieve_min_stage_avg_win_rate_pct: float | None
+    sieve_auto_advance_single_candidate: bool
     sieve_preset: str | None
     sieves: list[CompareSieve]
     base_backtest_overrides: dict[str, Any]
@@ -73,6 +77,7 @@ class CompareConfig:
 class CompareScenarioSummary:
     name: str
     base_name: str | None
+    sieve_stage: str | None
     sieve_name: str | None
     status: str
     error: str | None
@@ -88,6 +93,7 @@ class CompareScenarioSummary:
     backtest_period_end_time: str | None
     initial_balance: float | None
     final_balance: float | None
+    score: float | None
     total_return_pct: float | None
     number_of_trades: int | None
     win_rate_pct: float | None
@@ -113,6 +119,7 @@ class CompareRunResult:
     base_backtest_config_path: str
     scenario_count: int
     succeeded: int
+    skipped: int
     failed: int
     scenarios: list[CompareScenarioSummary]
 
@@ -122,15 +129,37 @@ class CompareSieveAggregate:
     base_name: str
     scenario_count: int
     succeeded: int
+    skipped: int
     failed: int
     positive_return_sieves: int
     profit_factor_ge_one_sieves: int
     avg_return_pct: float | None
     min_return_pct: float | None
     worst_max_drawdown_pct: float | None
-    bull_return_pct: float | None
-    bear_return_pct: float | None
-    neutral_return_pct: float | None
+    avg_score: float | None
+    min_score: float | None
+    stage_returns: dict[str, dict[str, float | None]]
+    stage_scores: dict[str, dict[str, float | None]]
+    stage_avg_return_pct: dict[str, float | None]
+    stage_min_return_pct: dict[str, float | None]
+    stage_avg_score: dict[str, float | None]
+    stage_min_score: dict[str, float | None]
+    stage_passes: dict[str, bool]
+    overall_pass: bool
+
+
+@dataclass(slots=True)
+class CompareStageDecision:
+    stage_name: str
+    input_candidates: int
+    completed_candidates: int
+    eligible_candidates: int
+    kept_candidates: int
+    keep_ratio: float
+    min_avg_win_rate_pct: float | None
+    auto_advanced_single_candidate: bool
+    survivors: list[str]
+    dropped: list[dict[str, Any]]
 
 
 def _now_utc_text() -> str:
@@ -217,6 +246,25 @@ def load_compare_config(path: str | Path | None = None) -> CompareConfig:
     raw_compare_run_root = str(config.get("compare_run_root", str(DEFAULT_COMPARE_RUN_ROOT)) or "").strip()
     compare_run_root = _resolve_path(raw_compare_run_root, base_dir=raw_path.parent)
     compare_parallel = bool(config.get("compare_parallel", True))
+    raw_keep_ratio = config.get("sieve_stage_keep_ratio", 0.5)
+    try:
+        sieve_stage_keep_ratio = float(raw_keep_ratio)
+    except (TypeError, ValueError):
+        sieve_stage_keep_ratio = 0.5
+    if sieve_stage_keep_ratio <= 0.0:
+        sieve_stage_keep_ratio = 0.5
+    sieve_stage_keep_ratio = min(1.0, sieve_stage_keep_ratio)
+
+    raw_min_stage_win_rate = config.get("sieve_min_stage_avg_win_rate_pct", 50.0)
+    if raw_min_stage_win_rate in (None, "", False):
+        sieve_min_stage_avg_win_rate_pct = None
+    else:
+        try:
+            sieve_min_stage_avg_win_rate_pct = float(raw_min_stage_win_rate)
+        except (TypeError, ValueError):
+            sieve_min_stage_avg_win_rate_pct = 50.0
+    sieve_auto_advance_single_candidate = bool(config.get("sieve_auto_advance_single_candidate", True))
+
     raw_compare_max_workers = config.get("compare_max_workers")
     default_workers = min(
         max(1, os.cpu_count() or 1),
@@ -266,6 +314,9 @@ def load_compare_config(path: str | Path | None = None) -> CompareConfig:
         compare_run_root=compare_run_root,
         compare_parallel=compare_parallel,
         compare_max_workers=compare_max_workers,
+        sieve_stage_keep_ratio=sieve_stage_keep_ratio,
+        sieve_min_stage_avg_win_rate_pct=sieve_min_stage_avg_win_rate_pct,
+        sieve_auto_advance_single_candidate=sieve_auto_advance_single_candidate,
         sieve_preset=sieve_preset,
         sieves=sieves,
         base_backtest_overrides=dict(base_backtest_overrides),
@@ -367,10 +418,17 @@ def _summarize_result(
     execution_summary = result.market_event_execution_summary
     alignment_summary = result.trade_alignment_summary
     replay_summary = result.replay_summary
+    initial_balance = _float_or_none(stats.get("Initial Balance"))
+    final_balance = _float_or_none(stats.get("Final Balance"))
+    profit_factor = _float_or_none(stats.get("Profit Factor"))
+    score: float | None = None
+    if initial_balance is not None and final_balance is not None and initial_balance > 0 and profit_factor is not None:
+        score = profit_factor * (final_balance / initial_balance)
 
     return CompareScenarioSummary(
         name=name,
         base_name=str(config_payload.get("__compare_base_name") or "").strip() or name,
+        sieve_stage=str(config_payload.get("__compare_sieve_stage") or "").strip() or None,
         sieve_name=str(config_payload.get("__compare_sieve_name") or "").strip() or None,
         status="ok",
         error=None,
@@ -384,13 +442,14 @@ def _summarize_result(
         backtest_period_days=_int_or_none(config_payload.get("backtest_period_days")),
         backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or "").strip() or None,
         backtest_period_end_time=str(config_payload.get("backtest_period_end_time") or "").strip() or None,
-        initial_balance=_float_or_none(stats.get("Initial Balance")),
-        final_balance=_float_or_none(stats.get("Final Balance")),
+        initial_balance=initial_balance,
+        final_balance=final_balance,
+        score=score,
         total_return_pct=_float_or_none(stats.get("Total Return %")),
         number_of_trades=_int_or_none(stats.get("Number of Trades")),
         win_rate_pct=_float_or_none(stats.get("Win Rate %")),
         total_fee=_float_or_none(stats.get("Total Fee")),
-        profit_factor=_float_or_none(stats.get("Profit Factor")),
+        profit_factor=profit_factor,
         max_drawdown_pct=_float_or_none(stats.get("Max Drawdown %")),
         replay_closed_trades=int(replay_summary.closed_trades),
         replay_net_pnl=float(replay_summary.net_pnl),
@@ -416,6 +475,7 @@ def _summarize_error(
     return CompareScenarioSummary(
         name=name,
         base_name=str(config_payload.get("__compare_base_name") or "").strip() or name,
+        sieve_stage=str(config_payload.get("__compare_sieve_stage") or "").strip() or None,
         sieve_name=str(config_payload.get("__compare_sieve_name") or "").strip() or None,
         status="failed",
         error=f"{type(error).__name__}: {error}",
@@ -431,6 +491,7 @@ def _summarize_error(
         backtest_period_end_time=str(config_payload.get("backtest_period_end_time") or "").strip() or None,
         initial_balance=None,
         final_balance=None,
+        score=None,
         total_return_pct=None,
         number_of_trades=None,
         win_rate_pct=None,
@@ -450,6 +511,202 @@ def _summarize_error(
     )
 
 
+def _summarize_skipped(
+    *,
+    name: str,
+    run_dir: Path,
+    config_payload: dict[str, Any],
+    reason: str,
+) -> CompareScenarioSummary:
+    return CompareScenarioSummary(
+        name=name,
+        base_name=str(config_payload.get("__compare_base_name") or "").strip() or name,
+        sieve_stage=str(config_payload.get("__compare_sieve_stage") or "").strip() or None,
+        sieve_name=str(config_payload.get("__compare_sieve_name") or "").strip() or None,
+        status="skipped",
+        error=reason,
+        duration_seconds=0.0,
+        run_dir=str(run_dir),
+        symbol=str(config_payload.get("symbol") or "").strip().upper() or None,
+        strategy_mode=str(config_payload.get("strategy_mode") or "").strip().lower() or None,
+        execution_mode=str(config_payload.get("execution_mode") or "").strip().lower() or None,
+        backtest_input_mode=str(config_payload.get("backtest_input_mode") or "").strip().lower() or None,
+        agg_trade_tick_interval=str(config_payload.get("agg_trade_tick_interval") or "").strip().lower() or None,
+        backtest_period_days=_int_or_none(config_payload.get("backtest_period_days")),
+        backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or "").strip() or None,
+        backtest_period_end_time=str(config_payload.get("backtest_period_end_time") or "").strip() or None,
+        initial_balance=None,
+        final_balance=None,
+        score=None,
+        total_return_pct=None,
+        number_of_trades=None,
+        win_rate_pct=None,
+        total_fee=None,
+        profit_factor=None,
+        max_drawdown_pct=None,
+        replay_closed_trades=None,
+        replay_net_pnl=None,
+        execution_events=None,
+        observed_trades=None,
+        realized_pnl=None,
+        alignment_paired_trades=None,
+        alignment_pnl_delta=None,
+        agg_trade_raw_trades=None,
+        agg_trade_total_events=None,
+        agg_trade_price_ticks=None,
+    )
+
+
+def _group_sieves_by_stage(sieves: list[CompareSieve]) -> list[tuple[str, list[CompareSieve]]]:
+    ordered_stage_names: list[str] = []
+    grouped: dict[str, list[CompareSieve]] = {}
+    for sieve in sieves:
+        if sieve.stage_name not in grouped:
+            grouped[sieve.stage_name] = []
+            ordered_stage_names.append(sieve.stage_name)
+        grouped[sieve.stage_name].append(sieve)
+    return [(stage_name, grouped[stage_name]) for stage_name in ordered_stage_names]
+
+
+def _candidate_stage_sort_key(metrics: dict[str, Any]) -> tuple[float, float, float, float]:
+    avg_score = float(metrics.get("avg_score") or float("-inf"))
+    min_score = float(metrics.get("min_score") or float("-inf"))
+    avg_return_pct = float(metrics.get("avg_return_pct") or float("-inf"))
+    worst_max_drawdown_pct = float(metrics.get("worst_max_drawdown_pct") or float("-inf"))
+    return (avg_score, min_score, avg_return_pct, worst_max_drawdown_pct)
+
+
+def _select_stage_survivors(
+    *,
+    stage_name: str,
+    candidate_names: list[str],
+    stage_summaries: list[CompareScenarioSummary],
+    stage_sieves: list[CompareSieve],
+    keep_ratio: float,
+    min_avg_win_rate_pct: float | None,
+    auto_advance_single_candidate: bool,
+) -> CompareStageDecision:
+    grouped: dict[str, list[CompareScenarioSummary]] = {}
+    for item in stage_summaries:
+        grouped.setdefault(item.base_name or item.name, []).append(item)
+
+    expected_sieve_names = {sieve.name for sieve in stage_sieves}
+    stage_metrics: dict[str, dict[str, Any]] = {}
+    dropped: list[dict[str, Any]] = []
+
+    for candidate_name in candidate_names:
+        items = grouped.get(candidate_name, [])
+        ok_items = [item for item in items if item.status == "ok"]
+        ok_sieve_names = {item.sieve_name for item in ok_items if item.sieve_name}
+        if len(ok_items) != len(stage_sieves) or ok_sieve_names != expected_sieve_names:
+            dropped.append(
+                {
+                    "candidate": candidate_name,
+                    "reason": "stage_incomplete",
+                }
+            )
+            continue
+
+        score_values = [float(item.score) for item in ok_items if item.score is not None]
+        return_values = [float(item.total_return_pct) for item in ok_items if item.total_return_pct is not None]
+        win_rate_values = [float(item.win_rate_pct) for item in ok_items if item.win_rate_pct is not None]
+        drawdown_values = [float(item.max_drawdown_pct) for item in ok_items if item.max_drawdown_pct is not None]
+        stage_metrics[candidate_name] = {
+            "candidate": candidate_name,
+            "avg_score": (sum(score_values) / len(score_values)) if score_values else None,
+            "min_score": min(score_values) if score_values else None,
+            "avg_return_pct": (sum(return_values) / len(return_values)) if return_values else None,
+            "min_return_pct": min(return_values) if return_values else None,
+            "avg_win_rate_pct": (sum(win_rate_values) / len(win_rate_values)) if win_rate_values else None,
+            "worst_max_drawdown_pct": min(drawdown_values) if drawdown_values else None,
+        }
+
+    completed_candidates = list(stage_metrics.values())
+    auto_advanced = False
+    eligible_candidates = completed_candidates
+
+    if len(completed_candidates) == 1 and auto_advance_single_candidate:
+        survivors = [completed_candidates[0]["candidate"]]
+        auto_advanced = True
+    else:
+        filtered_candidates = eligible_candidates
+        if min_avg_win_rate_pct is not None:
+            threshold_pass = [
+                item
+                for item in filtered_candidates
+                if item.get("avg_win_rate_pct") is None or float(item["avg_win_rate_pct"]) >= min_avg_win_rate_pct
+            ]
+            if threshold_pass:
+                filtered_out_names = {item["candidate"] for item in filtered_candidates} - {
+                    item["candidate"] for item in threshold_pass
+                }
+                for candidate_name in sorted(filtered_out_names):
+                    metrics = stage_metrics[candidate_name]
+                    dropped.append(
+                        {
+                            "candidate": candidate_name,
+                            "reason": f"avg_win_rate_below_{min_avg_win_rate_pct:.2f}",
+                            "avg_score": metrics.get("avg_score"),
+                            "avg_return_pct": metrics.get("avg_return_pct"),
+                            "avg_win_rate_pct": metrics.get("avg_win_rate_pct"),
+                            "worst_max_drawdown_pct": metrics.get("worst_max_drawdown_pct"),
+                        }
+                    )
+                filtered_candidates = threshold_pass
+
+        eligible_candidates = filtered_candidates
+        if len(eligible_candidates) == 1 and auto_advance_single_candidate:
+            survivors = [eligible_candidates[0]["candidate"]]
+            auto_advanced = True
+        elif eligible_candidates:
+            keep_count = max(1, math.ceil(len(eligible_candidates) * keep_ratio))
+            ranked = sorted(eligible_candidates, key=_candidate_stage_sort_key, reverse=True)
+            survivors = [item["candidate"] for item in ranked[:keep_count]]
+            survivor_names = set(survivors)
+            for metrics in ranked[keep_count:]:
+                dropped.append(
+                    {
+                        "candidate": metrics["candidate"],
+                        "reason": "ranked_out",
+                        "avg_score": metrics.get("avg_score"),
+                        "avg_return_pct": metrics.get("avg_return_pct"),
+                        "avg_win_rate_pct": metrics.get("avg_win_rate_pct"),
+                        "worst_max_drawdown_pct": metrics.get("worst_max_drawdown_pct"),
+                    }
+                )
+        else:
+            survivors = []
+
+    dropped_names = {item["candidate"] for item in dropped}
+    for candidate_name, metrics in stage_metrics.items():
+        if candidate_name in dropped_names or candidate_name in survivors:
+            continue
+        dropped.append(
+            {
+                "candidate": candidate_name,
+                "reason": "ranked_out",
+                "avg_score": metrics.get("avg_score"),
+                "avg_return_pct": metrics.get("avg_return_pct"),
+                "avg_win_rate_pct": metrics.get("avg_win_rate_pct"),
+                "worst_max_drawdown_pct": metrics.get("worst_max_drawdown_pct"),
+            }
+        )
+
+    dropped.sort(key=lambda item: item["candidate"])
+    return CompareStageDecision(
+        stage_name=stage_name,
+        input_candidates=len(candidate_names),
+        completed_candidates=len(completed_candidates),
+        eligible_candidates=len(eligible_candidates),
+        kept_candidates=len(survivors),
+        keep_ratio=keep_ratio,
+        min_avg_win_rate_pct=min_avg_win_rate_pct,
+        auto_advanced_single_candidate=auto_advanced,
+        survivors=sorted(survivors),
+        dropped=dropped,
+    )
+
+
 def _format_cell(value: Any, *, digits: int = 2) -> str:
     if value is None:
         return "-"
@@ -465,9 +722,11 @@ def _write_compare_table(path: Path, scenarios: list[CompareScenarioSummary]) ->
         "Mode",
         "Input",
         "Exec",
+        "Stage",
         "Sieve",
         "Days",
         "Tick",
+        "Score",
         "Return %",
         "Final Balance",
         "Trades",
@@ -492,9 +751,11 @@ def _write_compare_table(path: Path, scenarios: list[CompareScenarioSummary]) ->
                     item.strategy_mode or "-",
                     item.backtest_input_mode or "-",
                     item.execution_mode or "-",
+                    item.sieve_stage or "-",
                     item.sieve_name or "-",
                     _format_cell(item.backtest_period_days, digits=0),
                     item.agg_trade_tick_interval or "-",
+                    _format_cell(item.score),
                     _format_cell(item.total_return_pct),
                     _format_cell(item.final_balance),
                     _format_cell(item.number_of_trades, digits=0),
@@ -529,12 +790,26 @@ def _scenario_dir(compare_run_dir: Path, index: int, name: str) -> Path:
 def _write_compare_sieve_table(path: Path, aggregates: list[CompareSieveAggregate]) -> None:
     header = [
         "Candidate",
-        "Succeeded",
+        "Executed",
+        "Skipped",
+        "Failed",
+        "1m Pass",
+        "90d Pass",
+        "180d Pass",
+        "Overall Pass",
         "Positive Sieves",
         "PF>=1 Sieves",
-        "Bull %",
-        "Bear %",
-        "Neutral %",
+        "1m Bull %",
+        "1m Bear %",
+        "1m Neutral %",
+        "90d Bull %",
+        "90d Bear %",
+        "90d Neutral %",
+        "180d Bull %",
+        "180d Bear %",
+        "180d Neutral %",
+        "Avg Score",
+        "Min Score",
         "Avg %",
         "Min %",
         "Worst DD %",
@@ -546,17 +821,34 @@ def _write_compare_sieve_table(path: Path, aggregates: list[CompareSieveAggregat
         "| " + " | ".join("---" for _ in header) + " |",
     ]
     for item in aggregates:
+        month_returns = item.stage_returns.get("month", {})
+        quarter_returns = item.stage_returns.get("quarter", {})
+        half_year_returns = item.stage_returns.get("half_year", {})
         lines.append(
             "| "
             + " | ".join(
                 [
                     item.base_name,
                     f"{item.succeeded}/{item.scenario_count}",
+                    str(item.skipped),
+                    str(item.failed),
+                    "yes" if item.stage_passes.get("month", False) else "no",
+                    "yes" if item.stage_passes.get("quarter", False) else "no",
+                    "yes" if item.stage_passes.get("half_year", False) else "no",
+                    "yes" if item.overall_pass else "no",
                     str(item.positive_return_sieves),
                     str(item.profit_factor_ge_one_sieves),
-                    _format_cell(item.bull_return_pct),
-                    _format_cell(item.bear_return_pct),
-                    _format_cell(item.neutral_return_pct),
+                    _format_cell(month_returns.get("bull")),
+                    _format_cell(month_returns.get("bear")),
+                    _format_cell(month_returns.get("neutral")),
+                    _format_cell(quarter_returns.get("bull")),
+                    _format_cell(quarter_returns.get("bear")),
+                    _format_cell(quarter_returns.get("neutral")),
+                    _format_cell(half_year_returns.get("bull")),
+                    _format_cell(half_year_returns.get("bear")),
+                    _format_cell(half_year_returns.get("neutral")),
+                    _format_cell(item.avg_score),
+                    _format_cell(item.min_score),
                     _format_cell(item.avg_return_pct),
                     _format_cell(item.min_return_pct),
                     _format_cell(item.worst_max_drawdown_pct),
@@ -572,7 +864,7 @@ def _write_compare_sieve_table(path: Path, aggregates: list[CompareSieveAggregat
 def _aggregate_sieves(scenarios: list[CompareScenarioSummary]) -> list[CompareSieveAggregate]:
     grouped: dict[str, list[CompareScenarioSummary]] = {}
     for item in scenarios:
-        if not item.base_name or not item.sieve_name:
+        if not item.base_name or not item.sieve_name or not item.sieve_stage:
             continue
         grouped.setdefault(item.base_name, []).append(item)
 
@@ -580,25 +872,100 @@ def _aggregate_sieves(scenarios: list[CompareScenarioSummary]) -> list[CompareSi
     for base_name, items in sorted(grouped.items()):
         ok_items = [item for item in items if item.status == "ok"]
         returns = [item.total_return_pct for item in ok_items if item.total_return_pct is not None]
+        scores = [item.score for item in ok_items if item.score is not None]
         max_drawdowns = [item.max_drawdown_pct for item in ok_items if item.max_drawdown_pct is not None]
-        by_sieve = {item.sieve_name or "": item for item in ok_items}
+        stage_returns: dict[str, dict[str, float | None]] = {
+            "month": {"bull": None, "bear": None, "neutral": None},
+            "quarter": {"bull": None, "bear": None, "neutral": None},
+            "half_year": {"bull": None, "bear": None, "neutral": None},
+        }
+        stage_scores: dict[str, dict[str, float | None]] = {
+            "month": {"bull": None, "bear": None, "neutral": None},
+            "quarter": {"bull": None, "bear": None, "neutral": None},
+            "half_year": {"bull": None, "bear": None, "neutral": None},
+        }
+        stage_groups: dict[str, list[CompareScenarioSummary]] = {}
+        for item in ok_items:
+            if item.sieve_stage not in stage_returns:
+                stage_returns[item.sieve_stage] = {}
+                stage_scores[item.sieve_stage] = {}
+            stage_returns[item.sieve_stage][item.sieve_name] = item.total_return_pct
+            stage_scores[item.sieve_stage][item.sieve_name] = item.score
+            stage_groups.setdefault(item.sieve_stage, []).append(item)
+        stage_avg_return_pct = {
+            stage: (
+                sum(sub.total_return_pct for sub in group if sub.total_return_pct is not None)
+                / len([sub for sub in group if sub.total_return_pct is not None])
+                if any(sub.total_return_pct is not None for sub in group)
+                else None
+            )
+            for stage, group in stage_groups.items()
+        }
+        stage_min_return_pct = {
+            stage: (
+                min(sub.total_return_pct for sub in group if sub.total_return_pct is not None)
+                if any(sub.total_return_pct is not None for sub in group)
+                else None
+            )
+            for stage, group in stage_groups.items()
+        }
+        stage_avg_score = {
+            stage: (
+                sum(sub.score for sub in group if sub.score is not None)
+                / len([sub for sub in group if sub.score is not None])
+                if any(sub.score is not None for sub in group)
+                else None
+            )
+            for stage, group in stage_groups.items()
+        }
+        stage_min_score = {
+            stage: (
+                min(sub.score for sub in group if sub.score is not None)
+                if any(sub.score is not None for sub in group)
+                else None
+            )
+            for stage, group in stage_groups.items()
+        }
+        stage_passes = {
+            stage: (
+                len(group) == 3
+                and all((sub.score or 0.0) >= 1.0 for sub in group)
+            )
+            for stage, group in stage_groups.items()
+        }
         aggregates.append(
             CompareSieveAggregate(
                 base_name=base_name,
                 scenario_count=len(items),
                 succeeded=len(ok_items),
-                failed=len(items) - len(ok_items),
+                skipped=sum(1 for item in items if item.status == "skipped"),
+                failed=sum(1 for item in items if item.status == "failed"),
                 positive_return_sieves=sum(1 for item in ok_items if (item.total_return_pct or 0.0) > 0.0),
                 profit_factor_ge_one_sieves=sum(1 for item in ok_items if (item.profit_factor or 0.0) >= 1.0),
                 avg_return_pct=(sum(returns) / len(returns) if returns else None),
                 min_return_pct=(min(returns) if returns else None),
                 worst_max_drawdown_pct=(min(max_drawdowns) if max_drawdowns else None),
-                bull_return_pct=(by_sieve.get("bull").total_return_pct if by_sieve.get("bull") is not None else None),
-                bear_return_pct=(by_sieve.get("bear").total_return_pct if by_sieve.get("bear") is not None else None),
-                neutral_return_pct=(by_sieve.get("neutral").total_return_pct if by_sieve.get("neutral") is not None else None),
+                avg_score=(sum(scores) / len(scores) if scores else None),
+                min_score=(min(scores) if scores else None),
+                stage_returns=stage_returns,
+                stage_scores=stage_scores,
+                stage_avg_return_pct=stage_avg_return_pct,
+                stage_min_return_pct=stage_min_return_pct,
+                stage_avg_score=stage_avg_score,
+                stage_min_score=stage_min_score,
+                stage_passes=stage_passes,
+                overall_pass=all(stage_passes.get(stage, False) for stage in ("month", "quarter", "half_year")),
             )
         )
-    return aggregates
+    return sorted(
+        aggregates,
+        key=lambda item: (
+            0 if item.overall_pass else 1,
+            -sum(1 for passed in item.stage_passes.values() if passed),
+            -(item.avg_score if item.avg_score is not None else float("-inf")),
+            -(item.avg_return_pct if item.avg_return_pct is not None else float("-inf")),
+        ),
+    )
 
 
 def _prepare_compare_run_dir(config: CompareConfig) -> Path:
@@ -636,6 +1003,94 @@ def _scenario_task_payload(
         "config": merged_config,
         "quiet_console_info": quiet_console_info,
     }
+
+
+def _build_merged_compare_config(
+    *,
+    base_backtest_config: dict[str, Any],
+    base_backtest_overrides: dict[str, Any],
+    scenario: CompareScenario,
+    sieve: CompareSieve | None,
+    anchor_end_time: str,
+) -> dict[str, Any]:
+    merged_config = _deep_merge_dicts(base_backtest_config, base_backtest_overrides)
+    merged_config = _deep_merge_dicts(merged_config, scenario.overrides)
+    merged_config["live"] = False
+    if sieve is not None:
+        time_range = resolve_backtest_time_range(
+            backtest_period_days=sieve.duration_days,
+            backtest_period_start_time=sieve.start_time,
+            backtest_period_end_time=sieve.end_time,
+        )
+        merged_config["backtest_period_days"] = time_range.duration_days
+        merged_config["backtest_period_start_time"] = sieve.start_time
+        merged_config["backtest_period_end_time"] = sieve.end_time
+        merged_config["__compare_sieve_stage"] = sieve.stage_name
+        merged_config["__compare_sieve_name"] = sieve.name
+    else:
+        merged_config = _apply_compare_end_time_anchor(
+            merged_config,
+            anchor_end_time=anchor_end_time,
+        )
+        merged_config["__compare_sieve_stage"] = ""
+        merged_config["__compare_sieve_name"] = ""
+    merged_config["__compare_base_name"] = scenario.name
+    return merged_config
+
+
+def _execute_compare_task_payloads(
+    *,
+    task_payloads: list[dict[str, Any]],
+    logger: Any,
+    compare_parallel: bool,
+    compare_max_workers: int,
+) -> dict[int, CompareScenarioSummary]:
+    summaries_by_index: dict[int, CompareScenarioSummary] = {}
+    parallel_enabled = compare_parallel and len(task_payloads) > 1
+    max_workers = max(1, min(compare_max_workers, len(task_payloads)))
+
+    if parallel_enabled:
+        for task_payload in task_payloads:
+            task_payload["quiet_console_info"] = True
+        logger.info(
+            "compare_parallel_execution_enabled scenarios=%s max_workers=%s",
+            len(task_payloads),
+            max_workers,
+        )
+        progress_lock = RLock()
+        tqdm.set_lock(progress_lock)
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_initialize_compare_worker,
+            initargs=(progress_lock,),
+        ) as executor:
+            futures = {
+                executor.submit(_run_compare_scenario_task, task_payload): task_payload
+                for task_payload in task_payloads
+            }
+            for future in as_completed(futures):
+                task_payload = futures[future]
+                scenario_dir = Path(str(task_payload["scenario_dir"]))
+                merged_config = dict(task_payload["config"])
+                try:
+                    completed = future.result()
+                    summaries_by_index[int(completed["index"])] = CompareScenarioSummary(**completed["summary"])
+                except Exception as exc:  # noqa: BLE001
+                    trace_text = traceback.format_exc()
+                    (scenario_dir / "compare_error.txt").write_text(trace_text, encoding="utf-8")
+                    logger.exception("compare_scenario_process_failed name=%s", task_payload["name"])
+                    summaries_by_index[int(task_payload["index"])] = _summarize_error(
+                        name=str(task_payload["name"]),
+                        run_dir=scenario_dir,
+                        duration_seconds=0.0,
+                        config_payload=merged_config,
+                        error=exc,
+                    )
+    else:
+        for task_payload in task_payloads:
+            completed = _run_compare_scenario_task(task_payload)
+            summaries_by_index[int(completed["index"])] = CompareScenarioSummary(**completed["summary"])
+    return summaries_by_index
 
 
 def _configure_compare_worker_logging(
@@ -689,12 +1144,12 @@ def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
     logger = get_technical_logger()
 
     load_dotenv()
-    client: Client | None = None
+    client = None
     normalized_input_mode = str(merged_config.get("backtest_input_mode", "build") or "").strip().lower() or "build"
     if normalized_input_mode == "build":
         api_key = os.getenv("BINANCE_API_KEY")
         api_secret = os.getenv("BINANCE_API_SECRET")
-        client = Client(api_key, api_secret)
+        client = create_binance_client(api_key, api_secret, logger=logger)
         dataset_module.set_client(client)
         trade_module.set_client(client)
 
@@ -783,6 +1238,9 @@ def run_compare(
         "compare_run_root": str(config.compare_run_root),
         "compare_parallel": config.compare_parallel,
         "compare_max_workers": config.compare_max_workers,
+        "sieve_stage_keep_ratio": config.sieve_stage_keep_ratio,
+        "sieve_min_stage_avg_win_rate_pct": config.sieve_min_stage_avg_win_rate_pct,
+        "sieve_auto_advance_single_candidate": config.sieve_auto_advance_single_candidate,
         "sieve_preset": config.sieve_preset,
         "sieves": [asdict(item) for item in config.sieves],
         "compare_anchor_end_time": anchor_end_time,
@@ -791,114 +1249,169 @@ def run_compare(
     }
     _write_yaml_snapshot(compare_run_dir / "compare_config.resolved.yaml", compare_config_snapshot)
 
-    task_payloads: list[dict[str, Any]] = []
-    expanded_scenarios: list[tuple[CompareScenario, CompareSieve | None]] = []
-    if config.sieves:
-        for scenario in config.scenarios:
-            for sieve in config.sieves:
-                expanded_scenarios.append((scenario, sieve))
-    else:
-        expanded_scenarios = [(scenario, None) for scenario in config.scenarios]
+    summaries_by_index: dict[int, CompareScenarioSummary] = {}
+    stage_decisions: list[CompareStageDecision] = []
+    next_index = 1
 
-    for index, (scenario, sieve) in enumerate(expanded_scenarios, start=1):
-        scenario_name = scenario.name if sieve is None else f"{scenario.name}-{sieve.name}"
-        scenario_dir = _scenario_dir(compare_run_dir, index, scenario_name)
-        scenario_dir.mkdir(parents=True, exist_ok=True)
-        merged_config = _deep_merge_dicts(base_backtest_config, config.base_backtest_overrides)
-        merged_config = _deep_merge_dicts(merged_config, scenario.overrides)
-        merged_config["live"] = False
-        if sieve is not None:
-            time_range = resolve_backtest_time_range(
-                backtest_period_days=sieve.duration_days,
-                backtest_period_start_time=sieve.start_time,
-                backtest_period_end_time=sieve.end_time,
+    if config.sieves:
+        scenario_lookup = {scenario.name: scenario for scenario in config.scenarios}
+        stage_groups = _group_sieves_by_stage(config.sieves)
+        active_scenarios = list(config.scenarios)
+
+        for stage_position, (stage_name, stage_sieves) in enumerate(stage_groups):
+            if not active_scenarios:
+                break
+
+            logger.info(
+                "compare_sieve_stage_started stage=%s candidates=%s windows=%s",
+                stage_name,
+                len(active_scenarios),
+                len(stage_sieves),
             )
-            merged_config["backtest_period_days"] = time_range.duration_days
-            merged_config["backtest_period_start_time"] = sieve.start_time
-            merged_config["backtest_period_end_time"] = sieve.end_time
-            merged_config["__compare_sieve_name"] = sieve.name
-        else:
-            merged_config = _apply_compare_end_time_anchor(
-                merged_config,
+            task_payloads: list[dict[str, Any]] = []
+            for scenario in active_scenarios:
+                for sieve in stage_sieves:
+                    index = next_index
+                    next_index += 1
+                    scenario_name = f"{scenario.name}-{sieve.stage_name}-{sieve.name}"
+                    scenario_dir = _scenario_dir(compare_run_dir, index, scenario_name)
+                    scenario_dir.mkdir(parents=True, exist_ok=True)
+                    merged_config = _build_merged_compare_config(
+                        base_backtest_config=base_backtest_config,
+                        base_backtest_overrides=config.base_backtest_overrides,
+                        scenario=scenario,
+                        sieve=sieve,
+                        anchor_end_time=anchor_end_time,
+                    )
+                    _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
+                    task_payloads.append(
+                        _scenario_task_payload(
+                            index=index,
+                            scenario=CompareScenario(name=scenario_name, overrides=scenario.overrides),
+                            scenario_dir=scenario_dir,
+                            merged_config=merged_config,
+                            quiet_console_info=False,
+                        )
+                    )
+
+            stage_results = _execute_compare_task_payloads(
+                task_payloads=task_payloads,
+                logger=logger,
+                compare_parallel=config.compare_parallel,
+                compare_max_workers=config.compare_max_workers,
+            )
+            for index, summary in stage_results.items():
+                summaries_by_index[index] = summary
+
+            stage_summaries = [stage_results[index] for index in sorted(stage_results)]
+            decision = _select_stage_survivors(
+                stage_name=stage_name,
+                candidate_names=[scenario.name for scenario in active_scenarios],
+                stage_summaries=stage_summaries,
+                stage_sieves=stage_sieves,
+                keep_ratio=config.sieve_stage_keep_ratio,
+                min_avg_win_rate_pct=config.sieve_min_stage_avg_win_rate_pct,
+                auto_advance_single_candidate=config.sieve_auto_advance_single_candidate,
+            )
+            stage_decisions.append(decision)
+            logger.info(
+                "compare_sieve_stage_completed stage=%s input_candidates=%s completed_candidates=%s survivors=%s dropped=%s",
+                stage_name,
+                decision.input_candidates,
+                decision.completed_candidates,
+                len(decision.survivors),
+                len(decision.dropped),
+            )
+
+            dropped_by_candidate = {item["candidate"]: item for item in decision.dropped}
+            remaining_stage_groups = stage_groups[stage_position + 1 :]
+            for dropped_candidate in sorted(dropped_by_candidate):
+                scenario = scenario_lookup.get(dropped_candidate)
+                if scenario is None:
+                    continue
+                dropped_entry = dropped_by_candidate[dropped_candidate]
+                reason = str(dropped_entry.get("reason") or "filtered_out")
+                for future_stage_name, future_stage_sieves in remaining_stage_groups:
+                    for sieve in future_stage_sieves:
+                        index = next_index
+                        next_index += 1
+                        scenario_name = f"{scenario.name}-{future_stage_name}-{sieve.name}"
+                        scenario_dir = _scenario_dir(compare_run_dir, index, scenario_name)
+                        scenario_dir.mkdir(parents=True, exist_ok=True)
+                        merged_config = _build_merged_compare_config(
+                            base_backtest_config=base_backtest_config,
+                            base_backtest_overrides=config.base_backtest_overrides,
+                            scenario=scenario,
+                            sieve=sieve,
+                            anchor_end_time=anchor_end_time,
+                        )
+                        _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
+                        skip_reason = f"filtered_out_after_{stage_name}: {reason}"
+                        (scenario_dir / "compare_skipped.txt").write_text(skip_reason + "\n", encoding="utf-8")
+                        summaries_by_index[index] = _summarize_skipped(
+                            name=scenario_name,
+                            run_dir=scenario_dir,
+                            config_payload=merged_config,
+                            reason=skip_reason,
+                        )
+
+            active_scenarios = [
+                scenario_lookup[name]
+                for name in decision.survivors
+                if name in scenario_lookup
+            ]
+    else:
+        task_payloads: list[dict[str, Any]] = []
+        for scenario in config.scenarios:
+            index = next_index
+            next_index += 1
+            scenario_dir = _scenario_dir(compare_run_dir, index, scenario.name)
+            scenario_dir.mkdir(parents=True, exist_ok=True)
+            merged_config = _build_merged_compare_config(
+                base_backtest_config=base_backtest_config,
+                base_backtest_overrides=config.base_backtest_overrides,
+                scenario=scenario,
+                sieve=None,
                 anchor_end_time=anchor_end_time,
             )
-            merged_config["__compare_sieve_name"] = ""
-        merged_config["__compare_base_name"] = scenario.name
-        _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
-        task_payloads.append(
-            _scenario_task_payload(
-                index=index,
-                scenario=CompareScenario(name=scenario_name, overrides=scenario.overrides),
-                scenario_dir=scenario_dir,
-                merged_config=merged_config,
-                quiet_console_info=False,
+            _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
+            task_payloads.append(
+                _scenario_task_payload(
+                    index=index,
+                    scenario=scenario,
+                    scenario_dir=scenario_dir,
+                    merged_config=merged_config,
+                    quiet_console_info=False,
+                )
             )
+        stage_results = _execute_compare_task_payloads(
+            task_payloads=task_payloads,
+            logger=logger,
+            compare_parallel=config.compare_parallel,
+            compare_max_workers=config.compare_max_workers,
         )
-
-    summaries_by_index: dict[int, CompareScenarioSummary] = {}
-    parallel_enabled = config.compare_parallel and len(task_payloads) > 1
-    max_workers = max(1, min(config.compare_max_workers, len(task_payloads)))
-
-    if parallel_enabled:
-        for task_payload in task_payloads:
-            task_payload["quiet_console_info"] = True
-
-    if parallel_enabled:
-        logger.info(
-            "compare_parallel_execution_enabled scenarios=%s max_workers=%s",
-            len(task_payloads),
-            max_workers,
-        )
-        progress_lock = RLock()
-        tqdm.set_lock(progress_lock)
-        with ProcessPoolExecutor(
-            max_workers=max_workers,
-            initializer=_initialize_compare_worker,
-            initargs=(progress_lock,),
-        ) as executor:
-            futures = {
-                executor.submit(_run_compare_scenario_task, task_payload): task_payload
-                for task_payload in task_payloads
-            }
-            for future in as_completed(futures):
-                task_payload = futures[future]
-                scenario_dir = Path(str(task_payload["scenario_dir"]))
-                merged_config = dict(task_payload["config"])
-                try:
-                    completed = future.result()
-                    summaries_by_index[int(completed["index"])] = CompareScenarioSummary(**completed["summary"])
-                except Exception as exc:  # noqa: BLE001
-                    trace_text = traceback.format_exc()
-                    (scenario_dir / "compare_error.txt").write_text(trace_text, encoding="utf-8")
-                    logger.exception("compare_scenario_process_failed name=%s", task_payload["name"])
-                    summaries_by_index[int(task_payload["index"])] = _summarize_error(
-                        name=str(task_payload["name"]),
-                        run_dir=scenario_dir,
-                        duration_seconds=0.0,
-                        config_payload=merged_config,
-                        error=exc,
-                    )
-    else:
-        for task_payload in task_payloads:
-            completed = _run_compare_scenario_task(task_payload)
-            summaries_by_index[int(completed["index"])] = CompareScenarioSummary(**completed["summary"])
+        for index, summary in stage_results.items():
+            summaries_by_index[index] = summary
 
     summaries = [summaries_by_index[index] for index in sorted(summaries_by_index)]
 
     succeeded = sum(1 for item in summaries if item.status == "ok")
-    failed = len(summaries) - succeeded
+    skipped = sum(1 for item in summaries if item.status == "skipped")
+    failed = sum(1 for item in summaries if item.status == "failed")
     compare_result = CompareRunResult(
         generated_at=_now_utc_text(),
         compare_run_dir=str(compare_run_dir),
         base_backtest_config_path=str(config.base_backtest_config_path),
         scenario_count=len(summaries),
         succeeded=succeeded,
+        skipped=skipped,
         failed=failed,
         scenarios=summaries,
     )
 
     summary_payload = {
         **asdict(compare_result),
+        "stage_decisions": [asdict(item) for item in stage_decisions],
         "best_by_total_return_pct": _best_scenario_name(
             summaries,
             key=lambda item: item.total_return_pct,
@@ -909,6 +1422,8 @@ def run_compare(
         ),
     }
     _write_json(compare_run_dir / "compare_summary.json", summary_payload)
+    if stage_decisions:
+        _write_json(compare_run_dir / "compare_stage_decisions.json", [asdict(item) for item in stage_decisions])
     _write_jsonl(compare_run_dir / "compare_runs.jsonl", [asdict(item) for item in summaries])
     _write_compare_table(compare_run_dir / "compare_table.md", summaries)
     sieve_aggregates = _aggregate_sieves(summaries)

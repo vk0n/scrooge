@@ -17,6 +17,7 @@ from bot.state import (
     load_state as load_runtime_state,
     load_trade_history,
 )
+from core.binance_retry import create_binance_client, run_binance_with_retries
 from core.engine import run_strategy
 
 
@@ -104,12 +105,19 @@ def load_state():
 def fetch_session_klines(symbol, interval, start_ts, end_ts):
     """Fetch historical klines from Binance for session period."""
     client = _get_client()
-    klines = client.futures_klines(
-        symbol=symbol,
-        interval=interval,
-        startTime=start_ts,
-        endTime=end_ts,
-        limit=1500
+    klines = run_binance_with_retries(
+        lambda: client.futures_klines(
+            symbol=symbol,
+            interval=interval,
+            startTime=start_ts,
+            endTime=end_ts,
+            limit=1500,
+        ),
+        operation_name=(
+            f"reporting_futures_klines symbol={symbol} interval={interval} "
+            f"start_ts={start_ts} end_ts={end_ts}"
+        ),
+        logger=technical_logger,
     )
     df = pd.DataFrame(klines, columns=[
         "open_time","open","high","low","close","volume","close_time","qav",
@@ -821,11 +829,10 @@ def rolling_window_backtest_distribution(
 if __name__ == "__main__":
     if _client is None:
         from dotenv import load_dotenv
-        from binance.client import Client
         load_dotenv()
         api_key = os.getenv("BINANCE_API_KEY")
         api_secret = os.getenv("BINANCE_API_SECRET")
-        set_client(Client(api_key, api_secret))
+        set_client(create_binance_client(api_key, api_secret, logger=technical_logger))
     state = load_state()
     if state:
         plot_session(state)

@@ -8,6 +8,7 @@ from backtest.time_windows import resolve_backtest_time_range
 
 @dataclass(slots=True)
 class CompareSieve:
+    stage_name: str
     name: str
     start_time: str
     end_time: str
@@ -25,22 +26,67 @@ class CompareSieve:
 SIEVE_PRESETS: dict[str, list[CompareSieve]] = {
     "btcusdt-three-sieves-v1": [
         CompareSieve(
+            stage_name="month",
             name="bull",
             start_time="2021-10-01T00:00:00",
             end_time="2021-10-31T23:59:59",
             description="Strong bullish month with sustained upside and elevated range.",
         ),
         CompareSieve(
+            stage_name="month",
             name="bear",
             start_time="2022-11-01T00:00:00",
             end_time="2022-11-30T23:59:59",
             description="Representative bearish month with clear downside pressure.",
         ),
         CompareSieve(
+            stage_name="month",
             name="neutral",
             start_time="2025-03-01T00:00:00",
             end_time="2025-03-31T23:59:59",
             description="Sideways-to-mildly-negative month with tradable intramonth swings.",
+        ),
+        CompareSieve(
+            stage_name="quarter",
+            name="bull",
+            start_time="2024-10-14T00:00:00",
+            end_time="2025-01-11T23:59:59",
+            description="Representative bullish 90-day upswing.",
+        ),
+        CompareSieve(
+            stage_name="quarter",
+            name="bear",
+            start_time="2022-03-10T00:00:00",
+            end_time="2022-06-07T23:59:59",
+            description="Representative bearish 90-day decline.",
+        ),
+        CompareSieve(
+            stage_name="quarter",
+            name="neutral",
+            start_time="2022-07-03T00:00:00",
+            end_time="2022-10-01T23:59:59",
+            description="Representative 90-day sideways/choppy regime.",
+        ),
+        CompareSieve(
+            stage_name="half_year",
+            name="bull",
+            start_time="2024-06-19T00:00:00",
+            end_time="2024-12-15T23:59:59",
+            description="Representative bullish 180-day expansion.",
+        ),
+        CompareSieve(
+            stage_name="half_year",
+            name="bear",
+            start_time="2021-11-07T00:00:00",
+            end_time="2022-05-05T23:59:59",
+            description="Representative bearish 180-day drawdown.",
+        ),
+        CompareSieve(
+            stage_name="half_year",
+            name="neutral",
+            start_time="2022-08-04T00:00:00",
+            end_time="2023-01-30T23:59:59",
+            description="Representative 180-day neutral accumulation/chop regime.",
         ),
     ],
 }
@@ -75,6 +121,7 @@ def resolve_compare_sieves(
             )
             resolved.append(
                 CompareSieve(
+                    stage_name=str(item.get("stage_name", "custom") or "custom").strip().lower(),
                     name=name,
                     start_time=start_time,
                     end_time=end_time,
@@ -94,6 +141,7 @@ def resolve_compare_sieves(
         )
     return [
         CompareSieve(
+            stage_name=item.stage_name,
             name=item.name,
             start_time=item.start_time,
             end_time=item.end_time,

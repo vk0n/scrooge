@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
-from binance.client import Client
 from dotenv import load_dotenv
 
 import bot.trade as trade_module
@@ -33,6 +32,7 @@ from bot.trade import (
 from core.event_store import reset_event_store
 from core.engine import run_strategy
 from core.indicator_inputs import normalize_indicator_inputs
+from core.binance_retry import create_binance_client
 
 RLockType = type(threading.RLock())
 
@@ -447,7 +447,7 @@ if __name__ == "__main__":
     load_dotenv()
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
-    client = Client(api_key, api_secret)
+    client = create_binance_client(api_key, api_secret, logger=technical_logger)
     data_module.set_client(client)
     trade_module.set_client(client)
 

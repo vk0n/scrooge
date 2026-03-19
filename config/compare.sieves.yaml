@@ -3,6 +3,9 @@ compare_run_dir: auto
 compare_run_root: runtime/compare
 compare_parallel: true
 compare_max_workers: 3
+sieve_stage_keep_ratio: 0.5
+sieve_min_stage_avg_win_rate_pct: 50
+sieve_auto_advance_single_candidate: true
 sieve_preset: btcusdt-three-sieves-v1
 base_backtest_overrides:
   execution_mode: simulated
@@ -25,5 +28,45 @@ scenarios:
       indicator_inputs:
         ema: intrabar
         rsi: intrabar
+        bb: intrabar
+        atr: intrabar
+  - name: realtime-5s-mixed
+    overrides:
+      strategy_mode: realtime
+      backtest_input_mode: agg_trade_stream
+      agg_trade_tick_interval: 5s
+      indicator_inputs:
+        ema: closed
+        rsi: closed
+        bb: intrabar
+        atr: intrabar
+  - name: realtime-5s-ema
+    overrides:
+      strategy_mode: realtime
+      backtest_input_mode: agg_trade_stream
+      agg_trade_tick_interval: 5s
+      indicator_inputs:
+        ema: intrabar
+        rsi: closed
+        bb: closed
+        atr: intrabar
+  - name: realtime-5s-rsi
+    overrides:
+      strategy_mode: realtime
+      backtest_input_mode: agg_trade_stream
+      agg_trade_tick_interval: 5s
+      indicator_inputs:
+        ema: closed
+        rsi: intrabar
+        bb: closed
+        atr: intrabar
+  - name: realtime-5s-bb
+    overrides:
+      strategy_mode: realtime
+      backtest_input_mode: agg_trade_stream
+      agg_trade_tick_interval: 5s
+      indicator_inputs:
+        ema: closed
+        rsi: closed
         bb: intrabar
         atr: intrabar

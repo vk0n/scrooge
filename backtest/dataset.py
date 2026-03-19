@@ -5,6 +5,7 @@ import pandas_ta as ta
 from datetime import datetime
 from backtest.time_windows import resolve_backtest_time_range
 from bot.event_log import get_technical_logger
+from core.binance_retry import run_binance_with_retries
 from core.indicator_inputs import INDICATOR_COLUMNS, normalize_indicator_inputs, uses_realtime_indicator_inputs
 
 
@@ -28,7 +29,11 @@ def _get_client():
 def fetch_historical(symbol="BTCUSDT", interval="15m", limit=500):
     """Fetch historical klines from Binance Futures (include high/low)."""
     client = _get_client()
-    raw = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+    raw = run_binance_with_retries(
+        lambda: client.futures_klines(symbol=symbol, interval=interval, limit=limit),
+        operation_name=f"futures_klines symbol={symbol} interval={interval} limit={limit}",
+        logger=technical_logger,
+    )
     df = pd.DataFrame(raw, columns=[
         "open_time","open","high","low","close","volume","close_time","qav",
         "num_trades","taker_base_vol","taker_quote_vol","ignore"
@@ -48,12 +53,20 @@ def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None,
     end_ts = int(end_time.timestamp() * 1000) if end_time else None
 
     while True:
-        klines = client.futures_klines(
-            symbol=symbol,
-            interval=interval,
-            startTime=start_ts,
-            endTime=end_ts,
-            limit=limit
+        current_start_ts = start_ts
+        klines = run_binance_with_retries(
+            lambda current_start_ts=current_start_ts: client.futures_klines(
+                symbol=symbol,
+                interval=interval,
+                startTime=current_start_ts,
+                endTime=end_ts,
+                limit=limit,
+            ),
+            operation_name=(
+                f"futures_klines_paginated symbol={symbol} interval={interval} "
+                f"start_ts={current_start_ts} end_ts={end_ts} limit={limit}"
+            ),
+            logger=technical_logger,
         )
         if not klines:
             break

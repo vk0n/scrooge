@@ -8,7 +8,7 @@ import pandas as pd
 import yaml
 from backtest.dataset import build_dataset
 from backtest.stats import compute_stats
-from binance.client import Client
+from core.binance_retry import create_binance_client
 from core.engine import run_strategy
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -46,7 +46,7 @@ def main() -> None:
     load_dotenv()
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
-    data_module.set_client(Client(api_key, api_secret))
+    data_module.set_client(create_binance_client(api_key, api_secret))
 
     cfg = load_config()
     symbol = cfg["symbol"]

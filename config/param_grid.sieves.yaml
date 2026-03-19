@@ -1,0 +1,27 @@
+# Coarse screening grid for the three-sieves compare pipeline.
+# This stays intentionally "wide" around the current realtime baseline,
+# but keeps the Cartesian product tractable for local research runs.
+#
+# Candidate count:
+#   sl_mult (3) *
+#   tp_mult (2) *
+#   trail_atr_mult (2) *
+#   rsi_extreme_long (2) *
+#   rsi_extreme_short (2)
+# = 48 candidates
+#
+# The rest of the thresholds stay pinned to the current baseline for now.
+
+sl_mult: [3.0, 3.7, 4.4]
+tp_mult: [1.6, 2.2]
+rsi_extreme_long: [85, 90]
+rsi_extreme_short: [10, 15]
+rsi_long_open_threshold: [75]
+rsi_long_qty_threshold: [35]
+rsi_long_tp_threshold: [58]
+rsi_long_close_threshold: [70]
+rsi_short_open_threshold: [25]
+rsi_short_qty_threshold: [65]
+rsi_short_tp_threshold: [42]
+rsi_short_close_threshold: [30]
+trail_atr_mult: [0.03, 0.05]
