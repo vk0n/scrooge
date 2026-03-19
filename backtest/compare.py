@@ -611,8 +611,13 @@ def _select_stage_survivors(
         return_values = [float(item.total_return_pct) for item in ok_items if item.total_return_pct is not None]
         win_rate_values = [float(item.win_rate_pct) for item in ok_items if item.win_rate_pct is not None]
         drawdown_values = [float(item.max_drawdown_pct) for item in ok_items if item.max_drawdown_pct is not None]
+        stage_pass = (
+            len(ok_items) == len(stage_sieves)
+            and all(item.score is not None and float(item.score) >= 1.0 for item in ok_items)
+        )
         stage_metrics[candidate_name] = {
             "candidate": candidate_name,
+            "stage_pass": stage_pass,
             "avg_score": (sum(score_values) / len(score_values)) if score_values else None,
             "min_score": min(score_values) if score_values else None,
             "avg_return_pct": (sum(return_values) / len(return_values)) if return_values else None,
@@ -623,10 +628,25 @@ def _select_stage_survivors(
 
     completed_candidates = list(stage_metrics.values())
     auto_advanced = False
-    eligible_candidates = completed_candidates
+    passed_candidates = [item for item in completed_candidates if bool(item.get("stage_pass"))]
+    failed_candidates = [item for item in completed_candidates if not bool(item.get("stage_pass"))]
+    for metrics in failed_candidates:
+        dropped.append(
+            {
+                "candidate": metrics["candidate"],
+                "reason": "stage_failed",
+                "avg_score": metrics.get("avg_score"),
+                "min_score": metrics.get("min_score"),
+                "avg_return_pct": metrics.get("avg_return_pct"),
+                "min_return_pct": metrics.get("min_return_pct"),
+                "avg_win_rate_pct": metrics.get("avg_win_rate_pct"),
+                "worst_max_drawdown_pct": metrics.get("worst_max_drawdown_pct"),
+            }
+        )
+    eligible_candidates = passed_candidates
 
-    if len(completed_candidates) == 1 and auto_advance_single_candidate:
-        survivors = [completed_candidates[0]["candidate"]]
+    if len(eligible_candidates) == 1 and auto_advance_single_candidate:
+        survivors = [eligible_candidates[0]["candidate"]]
         auto_advanced = True
     else:
         filtered_candidates = eligible_candidates
