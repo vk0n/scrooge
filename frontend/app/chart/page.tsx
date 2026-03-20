@@ -386,7 +386,11 @@ function buildPriceLegendItems(
 
   const items: ChartLegendItem[] = [{ key: "price", label: "Price", swatchClassName: "chart-legend-swatch-price" }];
 
-  if (data.open_position?.entry !== null && data.open_position?.entry !== undefined && data.open_position?.time) {
+  const hasOpenPosition =
+    data.open_position?.entry !== null && data.open_position?.entry !== undefined && Boolean(data.open_position?.time);
+  const hasTradeEntryMarkers = Array.isArray(data.markers?.entries) && data.markers.entries.length > 0;
+
+  if (hasOpenPosition || hasTradeEntryMarkers) {
     items.push({ key: "open-trade", label: "Open Trade", swatchClassName: "chart-legend-swatch-open-trade" });
   }
 
