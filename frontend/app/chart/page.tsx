@@ -150,6 +150,24 @@ const CHART_THEME = {
   livePrice: "#d8dee8",
 } as const;
 
+function getTradeTriangleSymbol(side?: string | null): "triangle-up" | "triangle-down" {
+  return String(side || "").trim().toLowerCase() === "short" ? "triangle-down" : "triangle-up";
+}
+
+function buildTradeEntryMarker(side: string | null | undefined, size: number): {
+  color: string;
+  symbol: "triangle-up" | "triangle-down";
+  size: number;
+  line: { width: number; color: string };
+} {
+  return {
+    color: CHART_THEME.openPosition,
+    symbol: getTradeTriangleSymbol(side),
+    size,
+    line: { width: 1.15, color: CHART_THEME.exitOutline },
+  };
+}
+
 function buildCurrentLevelShapes(
   levels: Array<{ type: string; price: number }>,
   currentPrice: number | null
@@ -688,7 +706,7 @@ function ChartContent(): JSX.Element {
           name: "Long Entries",
           x: longEntries.map((marker) => marker.time),
           y: longEntries.map((marker) => marker.price),
-          marker: { color: CHART_THEME.longEntry, symbol: "triangle-up", size: 10 },
+          marker: buildTradeEntryMarker("long", 10),
         });
       }
       if (shortEntries.length) {
@@ -698,7 +716,7 @@ function ChartContent(): JSX.Element {
           name: "Short Entries",
           x: shortEntries.map((marker) => marker.time),
           y: shortEntries.map((marker) => marker.price),
-          marker: { color: CHART_THEME.shortEntry, symbol: "triangle-down", size: 10 },
+          marker: buildTradeEntryMarker("short", 10),
         });
       }
       if (data.markers.exits.length) {
@@ -735,7 +753,7 @@ function ChartContent(): JSX.Element {
           name: "Open Trade",
           x: [data.open_position.time],
           y: [data.open_position.entry],
-          marker: { color: CHART_THEME.openPosition, symbol: "diamond", size: 11 },
+          marker: buildTradeEntryMarker(data.open_position.side, 11),
         });
       }
 
