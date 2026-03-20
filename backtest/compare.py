@@ -1011,6 +1011,7 @@ def _apply_compare_end_time_anchor(
 def _scenario_task_payload(
     *,
     index: int,
+    progress_slot: int,
     scenario: CompareScenario,
     scenario_dir: Path,
     merged_config: dict[str, Any],
@@ -1018,6 +1019,7 @@ def _scenario_task_payload(
 ) -> dict[str, Any]:
     return {
         "index": index,
+        "progress_slot": progress_slot,
         "name": scenario.name,
         "scenario_dir": str(scenario_dir),
         "config": merged_config,
@@ -1113,6 +1115,13 @@ def _execute_compare_task_payloads(
     return summaries_by_index
 
 
+def _progress_slot_for_task(*, index: int, parallel_enabled: bool, max_workers: int) -> int:
+    if not parallel_enabled:
+        return 0
+    normalized_workers = max(1, int(max_workers))
+    return max(0, (int(index) - 1) % normalized_workers)
+
+
 def _configure_compare_worker_logging(
     *,
     scenario_dir: Path,
@@ -1154,7 +1163,7 @@ def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
     scenario_dir = Path(str(task["scenario_dir"])).expanduser()
     merged_config = dict(task["config"])
     quiet_console_info = bool(task.get("quiet_console_info", False))
-    progress_position_base = max(0, int(task["index"]) - 1)
+    progress_position_base = max(0, int(task.get("progress_slot", 0)))
     progress_desc_prefix = f"[{scenario_name}]"
 
     _configure_compare_worker_logging(
@@ -1185,6 +1194,7 @@ def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
     scenario_progress = ScenarioProgressBar(
         scenario_name=scenario_name,
         position=progress_position_base,
+        leave=False,
     )
     with _scenario_env(
         scenario_dir,
@@ -1293,6 +1303,11 @@ def run_compare(
                 for sieve in stage_sieves:
                     index = next_index
                     next_index += 1
+                    progress_slot = _progress_slot_for_task(
+                        index=index,
+                        parallel_enabled=config.compare_parallel and len(active_scenarios) * len(stage_sieves) > 1,
+                        max_workers=config.compare_max_workers,
+                    )
                     scenario_name = f"{scenario.name}-{sieve.stage_name}-{sieve.name}"
                     scenario_dir = _scenario_dir(compare_run_dir, index, scenario_name)
                     scenario_dir.mkdir(parents=True, exist_ok=True)
@@ -1307,6 +1322,7 @@ def run_compare(
                     task_payloads.append(
                         _scenario_task_payload(
                             index=index,
+                            progress_slot=progress_slot,
                             scenario=CompareScenario(name=scenario_name, overrides=scenario.overrides),
                             scenario_dir=scenario_dir,
                             merged_config=merged_config,
@@ -1383,6 +1399,11 @@ def run_compare(
         for scenario in config.scenarios:
             index = next_index
             next_index += 1
+            progress_slot = _progress_slot_for_task(
+                index=index,
+                parallel_enabled=config.compare_parallel and len(config.scenarios) > 1,
+                max_workers=config.compare_max_workers,
+            )
             scenario_dir = _scenario_dir(compare_run_dir, index, scenario.name)
             scenario_dir.mkdir(parents=True, exist_ok=True)
             merged_config = _build_merged_compare_config(
@@ -1396,6 +1417,7 @@ def run_compare(
             task_payloads.append(
                 _scenario_task_payload(
                     index=index,
+                    progress_slot=progress_slot,
                     scenario=scenario,
                     scenario_dir=scenario_dir,
                     merged_config=merged_config,

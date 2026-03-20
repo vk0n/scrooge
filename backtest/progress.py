@@ -24,6 +24,7 @@ class BacktestProgressReporter(Protocol):
 class ScenarioProgressBar:
     scenario_name: str
     position: int | None = None
+    leave: bool = False
     _bar: tqdm = field(init=False)
     _stage_total: int = field(init=False, default=0)
     _stage_done: int = field(init=False, default=0)
@@ -33,6 +34,7 @@ class ScenarioProgressBar:
             "total": 0,
             "desc": f"[{self.scenario_name}] Starting",
             "dynamic_ncols": True,
+            "leave": self.leave,
         }
         if self.position is not None:
             tqdm_kwargs["position"] = self.position
