@@ -134,7 +134,7 @@ const CHART_THEME = {
   shortEntry: "#ef4444",
   neutralMarker: "#9ca3af",
   exitOutline: "#e5e7eb",
-  openPosition: "#f59e0b",
+  openPosition: "#ffb020",
   ema: "#38bdf8",
   bbUpperLower: "#a78bfa",
   bbMiddle: "#c4b5fd",
@@ -158,13 +158,11 @@ function buildTradeEntryMarker(side: string | null | undefined, size: number): {
   color: string;
   symbol: "triangle-up" | "triangle-down";
   size: number;
-  line: { width: number; color: string };
 } {
   return {
     color: CHART_THEME.openPosition,
     symbol: getTradeTriangleSymbol(side),
     size,
-    line: { width: 1.15, color: CHART_THEME.exitOutline },
   };
 }
 
