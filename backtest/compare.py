@@ -1342,6 +1342,7 @@ def run_compare(
                 len(decision.survivors),
                 len(decision.dropped),
             )
+            _write_json(compare_run_dir / "compare_stage_decisions.json", [asdict(item) for item in stage_decisions])
 
             dropped_by_candidate = {item["candidate"]: item for item in decision.dropped}
             remaining_stage_groups = stage_groups[stage_position + 1 :]
@@ -1357,7 +1358,6 @@ def run_compare(
                         next_index += 1
                         scenario_name = f"{scenario.name}-{future_stage_name}-{sieve.name}"
                         scenario_dir = _scenario_dir(compare_run_dir, index, scenario_name)
-                        scenario_dir.mkdir(parents=True, exist_ok=True)
                         merged_config = _build_merged_compare_config(
                             base_backtest_config=base_backtest_config,
                             base_backtest_overrides=config.base_backtest_overrides,
@@ -1365,9 +1365,7 @@ def run_compare(
                             sieve=sieve,
                             anchor_end_time=anchor_end_time,
                         )
-                        _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
                         skip_reason = f"filtered_out_after_{stage_name}: {reason}"
-                        (scenario_dir / "compare_skipped.txt").write_text(skip_reason + "\n", encoding="utf-8")
                         summaries_by_index[index] = _summarize_skipped(
                             name=scenario_name,
                             run_dir=scenario_dir,
