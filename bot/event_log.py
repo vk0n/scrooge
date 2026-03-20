@@ -344,6 +344,13 @@ def append_ui_log_line(ts: str, message: str, *, log_buffer: list[str] | None = 
         _ensure_technical_logger().exception("Failed to append UI log line")
 
 
+def _should_persist_ui_immediately(runtime_mode: str | None, persist_ui: bool) -> bool:
+    if persist_ui:
+        return True
+    normalized_runtime_mode = str(runtime_mode or "").strip().lower()
+    return normalized_runtime_mode == "live"
+
+
 def emit_event(
     *,
     code: str,
@@ -361,6 +368,8 @@ def emit_event(
 ) -> dict[str, Any]:
     event_context = dict(context)
     rendered_ui_message = (ui_message or "").strip() or _render_ui_message(code, event_context)
+    persist_ui_immediately = _should_persist_ui_immediately(runtime_mode, persist_ui)
+    ui_log_buffer = None if persist_ui_immediately else log_buffer
 
     event = build_event_record(
         ts=ts,
@@ -374,11 +383,11 @@ def emit_event(
         strategy_mode=strategy_mode,
     )
 
-    if log_buffer is not None or persist_ui:
+    if ui_log_buffer is not None or persist_ui_immediately:
         append_ui_log_line(
             ts,
             rendered_ui_message,
-            log_buffer=log_buffer,
+            log_buffer=ui_log_buffer,
             ui_log_path=ui_log_path,
         )
 
