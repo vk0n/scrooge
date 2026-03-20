@@ -391,7 +391,7 @@ function buildPriceLegendItems(
   const hasTradeEntryMarkers = Array.isArray(data.markers?.entries) && data.markers.entries.length > 0;
 
   if (hasOpenPosition || hasTradeEntryMarkers) {
-    items.push({ key: "open-trade", label: "Open Trade", swatchClassName: "chart-legend-swatch-open-trade" });
+    items.push({ key: "open-trade", label: "Trade Entries", swatchClassName: "chart-legend-swatch-open-trade" });
   }
 
   if (includeIndicators && data.indicators?.ema?.length) {
