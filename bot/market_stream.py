@@ -18,7 +18,9 @@ from bot.trade import (
     set_cached_balance,
     set_cached_position,
 )
+from core.feature_engine import FeatureEngine
 from core.engine import refresh_runtime_state_from_price_tick
+from core.indicator_inputs import merge_indicator_decision_values
 from core.market_events import (
     AccountBalanceEvent,
     CandleClosedEvent,
@@ -213,8 +215,7 @@ class LiveMarketStream:
         state_lock: threading.RLock,
         save_state_fn: Callable[[dict[str, Any]], None],
         fetch_historical_fn: Callable[[str, str, int], pd.DataFrame],
-        prepare_multi_tf_fn: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame],
-        prepare_indicator_snapshot_fn: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame] | None = None,
+        indicator_inputs: dict[str, str] | None,
         get_balance_fn: Callable[[], float],
         get_open_position_fn: Callable[[str], dict[str, Any] | None],
     ) -> None:
@@ -226,8 +227,7 @@ class LiveMarketStream:
         self._state_lock = state_lock
         self._save_state_fn = save_state_fn
         self._fetch_historical_fn = fetch_historical_fn
-        self._prepare_strategy_frame_fn = prepare_multi_tf_fn
-        self._prepare_indicator_snapshot_fn = prepare_indicator_snapshot_fn or prepare_multi_tf_fn
+        self._indicator_inputs = dict(indicator_inputs or {})
         self._get_balance_fn = get_balance_fn
         self._get_open_position_fn = get_open_position_fn
 
@@ -370,8 +370,7 @@ class LiveMarketStream:
         symbol: str,
         leverage: float | int,
         intervals: dict[str, Any],
-        prepare_multi_tf_fn: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame] | None = None,
-        prepare_indicator_snapshot_fn: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame] | None = None,
+        indicator_inputs: dict[str, str] | None = None,
     ) -> None:
         next_symbol = str(symbol).upper()
         next_leverage = leverage
@@ -387,10 +386,8 @@ class LiveMarketStream:
         limits_changed = next_candle_limits != self._candle_limits
 
         self._leverage = next_leverage
-        if prepare_multi_tf_fn is not None:
-            self._prepare_strategy_frame_fn = prepare_multi_tf_fn
-        if prepare_indicator_snapshot_fn is not None:
-            self._prepare_indicator_snapshot_fn = prepare_indicator_snapshot_fn
+        if indicator_inputs is not None:
+            self._indicator_inputs = dict(indicator_inputs)
         if not symbol_changed and not intervals_changed and not limits_changed:
             return
 
@@ -418,7 +415,7 @@ class LiveMarketStream:
         if was_running:
             self.start()
 
-    def take_ready_strategy_frame(self) -> pd.DataFrame | None:
+    def take_ready_strategy_row(self) -> dict[str, Any] | None:
         pending_open_time_ms: int | None = None
         should_resync = False
 
@@ -451,10 +448,40 @@ class LiveMarketStream:
             self._pending_small_open_time_ms = None
             self._pending_emit_after_monotonic = None
 
-        snapshot_frame = self._prepare_indicator_snapshot_fn(df_small, df_medium, df_big)
-        prepared_frame = self._prepare_strategy_frame_fn(df_small, df_medium, df_big)
-        self._emit_indicator_snapshot_for_frame(snapshot_frame)
-        return prepared_frame
+        feature_engine = FeatureEngine(intervals=self._intervals)
+        feature_engine.bootstrap_from_frames(
+            df_small=df_small,
+            df_medium=df_medium,
+            df_big=df_big,
+        )
+        latest = df_small.iloc[-1]
+        discrete_indicator_values = feature_engine.closed_values()
+        realtime_indicator_values = feature_engine.realtime_values()
+        indicator_values = merge_indicator_decision_values(
+            indicator_inputs=self._indicator_inputs,
+            discrete_values=discrete_indicator_values,
+            realtime_values=realtime_indicator_values,
+        )
+        if indicator_values is None:
+            return None
+        self._emit_indicator_snapshot(
+            open_time=latest.get("open_time"),
+            values=discrete_indicator_values,
+        )
+        return {
+            "open_time": latest.get("open_time"),
+            "open": latest.get("open"),
+            "high": latest.get("high"),
+            "low": latest.get("low"),
+            "close": latest.get("close"),
+            "volume": latest.get("volume"),
+            "EMA": indicator_values["EMA"],
+            "RSI": indicator_values["RSI"],
+            "BBL": indicator_values["BBL"],
+            "BBM": indicator_values["BBM"],
+            "BBU": indicator_values["BBU"],
+            "ATR": indicator_values["ATR"],
+        }
 
     def _append_market_event(
         self,
@@ -476,13 +503,16 @@ class LiveMarketStream:
         except Exception as exc:  # noqa: BLE001
             technical_logger.warning("market_event_append_failed symbol=%s type=%s error=%s", self._symbol, event.event_type, exc)
 
-    def _emit_indicator_snapshot_for_frame(self, frame: pd.DataFrame | None) -> None:
-        if frame is None or frame.empty:
+    def _emit_indicator_snapshot(
+        self,
+        *,
+        open_time: Any,
+        values: dict[str, float | None] | None,
+    ) -> None:
+        if open_time is None:
             return
 
-        latest = frame.iloc[-1]
-        open_time = latest.get("open_time")
-        if open_time is None or pd.isna(open_time):
+        if pd.isna(open_time):
             return
 
         open_dt = pd.Timestamp(open_time)
@@ -490,20 +520,20 @@ class LiveMarketStream:
             open_dt = open_dt.tz_convert(None)
 
         close_dt = open_dt + self._interval_deltas["small"] - pd.Timedelta(seconds=1)
-        values = {
-            "EMA": _to_float(latest.get("EMA")),
-            "RSI": _to_float(latest.get("RSI")),
-            "BBL": _to_float(latest.get("BBL")),
-            "BBM": _to_float(latest.get("BBM")),
-            "BBU": _to_float(latest.get("BBU")),
-            "ATR": _to_float(latest.get("ATR")),
+        payload_values = {
+            "EMA": _to_float(None if values is None else values.get("EMA")),
+            "RSI": _to_float(None if values is None else values.get("RSI")),
+            "BBL": _to_float(None if values is None else values.get("BBL")),
+            "BBM": _to_float(None if values is None else values.get("BBM")),
+            "BBU": _to_float(None if values is None else values.get("BBU")),
+            "ATR": _to_float(None if values is None else values.get("ATR")),
         }
         self._append_market_event(
             IndicatorSnapshotEvent(
                 symbol=self._symbol,
                 ts=close_dt.strftime(TIMESTAMP_FORMAT),
                 interval="discrete_snapshot",
-                values=values,
+                values=payload_values,
             )
         )
 

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 import bot.trade as trade_module
 import backtest.dataset as data_module
 from bot.control_channel import get_control_client, process_pending_commands
-from backtest.dataset import fetch_historical, prepare_live_strategy_frame, prepare_multi_tf
+from backtest.dataset import fetch_historical
 from bot.event_log import get_technical_logger
 from bot.market_stream import LiveMarketStream
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
@@ -30,7 +30,7 @@ from bot.trade import (
     set_leverage,
 )
 from core.event_store import reset_event_store
-from core.engine import run_strategy
+from core.engine import run_strategy_on_snapshot
 from core.indicator_inputs import normalize_indicator_inputs
 from core.binance_retry import create_binance_client
 
@@ -296,28 +296,49 @@ def _read_dataset_header_columns(path: Path) -> list[str] | None:
         return None
 
 
+def _row_value(row: Any, key: str) -> Any:
+    if row is None:
+        return None
+    getter = getattr(row, "get", None)
+    if callable(getter):
+        return getter(key)
+    return getattr(row, key, None)
+
+
+def _resolve_latest_row(payload: Any) -> Any:
+    if payload is None:
+        return None
+    iloc = getattr(payload, "iloc", None)
+    if iloc is not None:
+        try:
+            return iloc[-1]
+        except Exception:  # noqa: BLE001
+            return None
+    return payload
+
+
 def _append_latest_chart_candle(
-    df: Any,
+    row: Any,
     symbol: str,
     path: Path,
     last_ts_ms: int | None,
     balance: float | None = None,
 ) -> int | None:
-    if df is None or len(df) == 0:  # noqa: PLR2004
+    latest = _resolve_latest_row(row)
+    if latest is None:
         return last_ts_ms
 
-    latest = df.iloc[-1]
-    ts_ms = _parse_open_time_to_ms(latest.get("open_time"))
+    ts_ms = _parse_open_time_to_ms(_row_value(latest, "open_time"))
     if ts_ms is None:
         return last_ts_ms
     if last_ts_ms is not None and ts_ms <= last_ts_ms:
         return last_ts_ms
 
-    open_price = latest.get("open")
-    high_price = latest.get("high")
-    low_price = latest.get("low")
-    close_price = latest.get("close")
-    volume = latest.get("volume")
+    open_price = _row_value(latest, "open")
+    high_price = _row_value(latest, "high")
+    low_price = _row_value(latest, "low")
+    close_price = _row_value(latest, "close")
+    volume = _row_value(latest, "volume")
     if None in (open_price, high_price, low_price, close_price, volume):
         return last_ts_ms
 
@@ -344,7 +365,7 @@ def _append_latest_chart_candle(
         header = default_header if write_header else (existing_header or default_header)
 
         row_map: dict[str, float | str] = {
-            "open_time": _format_open_time(latest.get("open_time")),
+            "open_time": _format_open_time(_row_value(latest, "open_time")),
             "symbol": symbol,
             "open": float(open_price),
             "high": float(high_price),
@@ -352,12 +373,12 @@ def _append_latest_chart_candle(
             "close": float(close_price),
             "volume": float(volume),
             "balance": _coerce_optional_float(balance),
-            "EMA": _coerce_optional_float(latest.get("EMA")),
-            "RSI": _coerce_optional_float(latest.get("RSI")),
-            "BBL": _coerce_optional_float(latest.get("BBL")),
-            "BBM": _coerce_optional_float(latest.get("BBM")),
-            "BBU": _coerce_optional_float(latest.get("BBU")),
-            "ATR": _coerce_optional_float(latest.get("ATR")),
+            "EMA": _coerce_optional_float(_row_value(latest, "EMA")),
+            "RSI": _coerce_optional_float(_row_value(latest, "RSI")),
+            "BBL": _coerce_optional_float(_row_value(latest, "BBL")),
+            "BBM": _coerce_optional_float(_row_value(latest, "BBM")),
+            "BBU": _coerce_optional_float(_row_value(latest, "BBU")),
+            "ATR": _coerce_optional_float(_row_value(latest, "ATR")),
         }
 
         with path.open("a", encoding="utf-8", newline="") as file_obj:
@@ -389,26 +410,6 @@ def _resolve_live_indicator_inputs(cfg: dict[str, Any]) -> dict[str, str]:
         cfg.get("indicator_inputs"),
         strategy_mode="discrete",
     )
-
-
-def _build_live_prepare_functions(
-    *,
-    intervals: dict[str, Any],
-    indicator_inputs: dict[str, str],
-) -> tuple[
-    Callable[[Any, Any, Any], Any],
-    Callable[[Any, Any, Any], Any],
-]:
-    strategy_frame_fn = lambda df_small, df_medium, df_big: prepare_live_strategy_frame(  # noqa: E731
-        df_small,
-        df_medium,
-        df_big,
-        intervals=intervals,
-        indicator_inputs=indicator_inputs,
-        strategy_mode="discrete",
-    )
-    indicator_snapshot_fn = lambda df_small, df_medium, df_big: prepare_multi_tf(df_small, df_medium, df_big)  # noqa: E731
-    return strategy_frame_fn, indicator_snapshot_fn
 
 
 if __name__ == "__main__":
@@ -475,10 +476,6 @@ if __name__ == "__main__":
 
         technical_logger.info("bot_mode_live_started symbol=%s leverage=%s", symbol, lvrg)
         set_leverage(symbol, lvrg)
-        live_prepare_strategy_frame_fn, live_prepare_indicator_snapshot_fn = _build_live_prepare_functions(
-            intervals=intervals,
-            indicator_inputs=indicator_inputs,
-        )
         live_market_stream = LiveMarketStream(
             api_key=api_key,
             api_secret=api_secret,
@@ -489,8 +486,7 @@ if __name__ == "__main__":
             state_lock=state_lock,
             save_state_fn=save_state,
             fetch_historical_fn=fetch_historical,
-            prepare_multi_tf_fn=live_prepare_strategy_frame_fn,
-            prepare_indicator_snapshot_fn=live_prepare_indicator_snapshot_fn,
+            indicator_inputs=indicator_inputs,
             get_balance_fn=get_balance,
             get_open_position_fn=get_open_position,
         )
@@ -593,16 +589,11 @@ if __name__ == "__main__":
                         set_leverage(symbol, lvrg)
                         command_kwargs = _build_command_kwargs(symbol)
                         if live_market_stream is not None:
-                            live_prepare_strategy_frame_fn, live_prepare_indicator_snapshot_fn = _build_live_prepare_functions(
-                                intervals=intervals,
-                                indicator_inputs=indicator_inputs,
-                            )
                             live_market_stream.update_config(
                                 symbol=symbol,
                                 leverage=lvrg,
                                 intervals=intervals,
-                                prepare_multi_tf_fn=live_prepare_strategy_frame_fn,
-                                prepare_indicator_snapshot_fn=live_prepare_indicator_snapshot_fn,
+                                indicator_inputs=indicator_inputs,
                             )
                             if not live_market_stream.is_running():
                                 raise RuntimeError("Live market stream failed to restart after config reload.")
@@ -633,17 +624,12 @@ if __name__ == "__main__":
                         last_balance_refresh_monotonic = now_monotonic
                         technical_logger.debug("live_balance balance=%.2f", current_balance)
 
-                    df = live_market_stream.take_ready_strategy_frame() if live_market_stream is not None else None
-                    if df is None:
+                    row = live_market_stream.take_ready_strategy_row() if live_market_stream is not None else None
+                    if row is None:
                         time.sleep(control_poll_slice_seconds)
                         continue
 
-                    latest_candle_open_time = "unknown"
-                    try:
-                        latest_candle_value = df.iloc[-1]["open_time"]
-                        latest_candle_open_time = str(latest_candle_value)
-                    except Exception:  # noqa: BLE001
-                        latest_candle_open_time = "unknown"
+                    latest_candle_open_time = str(_row_value(row, "open_time") or "unknown")
 
                     if latest_candle_open_time == last_strategy_candle_open_time:
                         if debug_strategy_ticks:
@@ -682,16 +668,15 @@ if __name__ == "__main__":
 
                     if debug_strategy_ticks:
                         technical_logger.info(
-                            "live_strategy_tick candle_open_time=%s trading_enabled=%s has_position=%s rows=%s",
+                            "live_strategy_tick candle_open_time=%s trading_enabled=%s has_position=%s",
                             latest_candle_open_time,
                             trading_enabled,
                             has_position,
-                            len(df),
                         )
 
                     with state_lock:
-                        balance, trades, balance_history, state = run_strategy(
-                            df,
+                        balance, trades, balance_history, state = run_strategy_on_snapshot(
+                            row,
                             live,
                             current_balance,
                             qty,
@@ -706,7 +691,7 @@ if __name__ == "__main__":
                         runtime_context["state"] = state
                     last_strategy_candle_open_time = latest_candle_open_time
                     last_chart_dataset_ts_ms = _append_latest_chart_candle(
-                        df=df,
+                        row=row,
                         symbol=symbol,
                         path=chart_dataset_path,
                         last_ts_ms=last_chart_dataset_ts_ms,

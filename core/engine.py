@@ -855,8 +855,11 @@ def initialize_strategy_runtime(
     use_state: bool,
     execution_mode: str,
     load_state_fn: Callable[..., dict[str, Any]],
+    provided_state: dict[str, Any] | None = None,
 ) -> StrategyRuntime:
-    if use_state:
+    if provided_state is not None:
+        state = provided_state
+    elif use_state:
         state = load_state_fn(include_history=not live)
     else:
         state = {
@@ -1896,6 +1899,7 @@ def run_strategy(
         use_state=use_state,
         execution_mode=execution_mode,
         load_state_fn=load_state,
+        provided_state=state,
     )
     runtime.enable_logs = enable_logs
     technical_logger = get_technical_logger()
@@ -1941,6 +1945,96 @@ def run_strategy(
         timestamp_formatter=format_event_timestamp,
         indicator_inputs=config.indicator_inputs,
         on_row=on_row,
+        save_log_fn=save_log,
+        save_state_fn=save_state,
+    )
+
+
+def run_strategy_on_snapshot(
+    row: Any,
+    live: bool = False,
+    initial_balance: float = 1000,
+    qty: float | None = None,
+    sl_mult: float = 1.5,
+    tp_mult: float = 3.0,
+    symbol: str = "BTCUSDT",
+    leverage: float = 1,
+    use_full_balance: bool = True,
+    fee_rate: float = 0.0005,
+    state=None,
+    use_state: bool = True,
+    enable_logs: bool = True,
+    rsi_extreme_long: float = 75,
+    rsi_extreme_short: float = 25,
+    rsi_long_open_threshold: float = 50,
+    rsi_long_qty_threshold: float = 30,
+    rsi_long_tp_threshold: float = 58,
+    rsi_long_close_threshold: float = 70,
+    rsi_short_open_threshold: float = 50,
+    rsi_short_qty_threshold: float = 70,
+    rsi_short_tp_threshold: float = 42,
+    rsi_short_close_threshold: float = 30,
+    trail_atr_mult: float = 0.5,
+    allow_entries: bool = True,
+    execution_mode: str = "simulated",
+    runtime_mode: str | None = None,
+    indicator_inputs: dict[str, str] | None = None,
+):
+    normalized_runtime_mode = str(
+        runtime_mode or os.getenv("SCROOGE_RUNTIME_MODE", "live" if live else "backtest")
+    ).strip().lower() or ("live" if live else "backtest")
+    runtime = initialize_strategy_runtime(
+        live=live,
+        initial_balance=initial_balance,
+        use_state=use_state,
+        execution_mode=execution_mode,
+        load_state_fn=load_state,
+        provided_state=state,
+    )
+    runtime.enable_logs = enable_logs
+    technical_logger = get_technical_logger()
+    normalized_indicator_inputs = normalize_indicator_inputs(
+        indicator_inputs,
+        strategy_mode="discrete",
+    )
+    config = StrategyConfig(
+        qty=qty,
+        sl_mult=sl_mult,
+        tp_mult=tp_mult,
+        symbol=symbol,
+        leverage=leverage,
+        use_full_balance=use_full_balance,
+        fee_rate=fee_rate,
+        rsi_extreme_long=rsi_extreme_long,
+        rsi_extreme_short=rsi_extreme_short,
+        rsi_long_open_threshold=rsi_long_open_threshold,
+        rsi_long_qty_threshold=rsi_long_qty_threshold,
+        rsi_long_tp_threshold=rsi_long_tp_threshold,
+        rsi_long_close_threshold=rsi_long_close_threshold,
+        rsi_short_open_threshold=rsi_short_open_threshold,
+        rsi_short_qty_threshold=rsi_short_qty_threshold,
+        rsi_short_tp_threshold=rsi_short_tp_threshold,
+        rsi_short_close_threshold=rsi_short_close_threshold,
+        trail_atr_mult=trail_atr_mult,
+        allow_entries=allow_entries,
+        execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
+        runtime_mode=normalized_runtime_mode,
+        strategy_mode="discrete",
+        indicator_inputs=normalized_indicator_inputs,
+    )
+
+    snapshot = build_row_snapshot(
+        row,
+        live=live,
+        timestamp_format=TIMESTAMP_FORMAT,
+        timestamp_formatter=format_event_timestamp,
+        indicator_inputs=normalized_indicator_inputs,
+    )
+    process_discrete_row(snapshot, runtime, config, technical_logger)
+    runtime.balance_history.append(runtime.balance)
+
+    return finalize_strategy_runtime(
+        runtime,
         save_log_fn=save_log,
         save_state_fn=save_state,
     )
@@ -2001,6 +2095,7 @@ def run_strategy_on_market_events(
         use_state=use_state,
         execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
         load_state_fn=load_state,
+        provided_state=state,
     )
     runtime.enable_logs = enable_logs
     technical_logger = get_technical_logger()

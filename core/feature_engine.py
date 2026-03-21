@@ -390,6 +390,20 @@ class FeatureEngine:
             return small.closed[-1].close
         return None
 
+    def closed_values(self) -> dict[str, float | None] | None:
+        bb_values = self._bb.closed_values()
+        values = {
+            "EMA": self._ema.closed_value(),
+            "RSI": self._rsi.closed_value(),
+            "ATR": self._atr.closed_value(),
+            "BBL": None if bb_values is None else bb_values["BBL"],
+            "BBM": None if bb_values is None else bb_values["BBM"],
+            "BBU": None if bb_values is None else bb_values["BBU"],
+        }
+        if all(value is None for value in values.values()):
+            return None
+        return values
+
     def realtime_values(self) -> dict[str, float | None] | None:
         medium_forming = self.timeframes["medium"].forming
         big_forming = self.timeframes["big"].forming
