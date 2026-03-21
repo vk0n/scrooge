@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 import math
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Protocol
 
 import pandas as pd
 
@@ -15,6 +15,8 @@ DEFAULT_FEATURE_ENGINE_LIMITS = {
     "medium": 240,
     "big": 240,
 }
+FEATURE_INPUT_CLOSE = "close"
+FEATURE_INPUT_CANDLE = "candle"
 
 
 def _interval_to_freq(interval: str) -> str:
@@ -138,6 +140,36 @@ class TimeframeState:
         self.forming = candle
 
 
+class OnlineFeatureRuntime(Protocol):
+    def bootstrap(self, values: Iterable[Any]) -> None:
+        ...
+
+    def on_closed(self, value: Any) -> None:
+        ...
+
+    def closed_payload(self) -> dict[str, float | None] | None:
+        ...
+
+    def intrabar_payload(self, value: Any) -> dict[str, float | None] | None:
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureSpec:
+    key: str
+    timeframe: str
+    input_kind: str
+    outputs: tuple[str, ...]
+    warmup_bars: int
+    factory: Callable[[], OnlineFeatureRuntime]
+
+
+@dataclass(slots=True)
+class FeatureBinding:
+    spec: FeatureSpec
+    runtime: OnlineFeatureRuntime
+
+
 class EMAFeature:
     def __init__(self, period: int) -> None:
         self.period = int(period)
@@ -176,6 +208,12 @@ class EMAFeature:
                 return None
             return (self._seed_sum + close) / self.period
         return ((close - self._closed_value) * self.alpha) + self._closed_value
+
+    def closed_payload(self) -> dict[str, float | None] | None:
+        return {"EMA": self.closed_value()}
+
+    def intrabar_payload(self, close: float | None) -> dict[str, float | None] | None:
+        return {"EMA": self.intrabar_value(close)}
 
 
 class RSIFeature:
@@ -230,6 +268,12 @@ class RSIFeature:
         avg_loss = ((self._avg_loss * (self.period - 1)) + loss) / self.period
         return _rsi_from_averages(avg_gain, avg_loss)
 
+    def closed_payload(self) -> dict[str, float | None] | None:
+        return {"RSI": self.closed_value()}
+
+    def intrabar_payload(self, close: float | None) -> dict[str, float | None] | None:
+        return {"RSI": self.intrabar_value(close)}
+
 
 class ATRFeature:
     def __init__(self, period: int) -> None:
@@ -281,6 +325,12 @@ class ATRFeature:
             return (self._seed_tr_sum + tr) / self.period
         return ((self._closed_value * (self.period - 1)) + tr) / self.period
 
+    def closed_payload(self) -> dict[str, float | None] | None:
+        return {"ATR": self.closed_value()}
+
+    def intrabar_payload(self, candle: Candle | None) -> dict[str, float | None] | None:
+        return {"ATR": self.intrabar_value(candle)}
+
 
 class BollingerBandsFeature:
     def __init__(self, period: int, std_mult: float) -> None:
@@ -326,6 +376,52 @@ class BollingerBandsFeature:
         next_sum_sq = self._sum_sq + (close * close)
         return _bollinger_values(next_sum, next_sum_sq, self.period, self.std_mult)
 
+    def closed_payload(self) -> dict[str, float | None] | None:
+        return self.closed_values()
+
+    def intrabar_payload(self, close: float | None) -> dict[str, float | None] | None:
+        return self.intrabar_values(close)
+
+
+def _build_default_feature_specs() -> tuple[FeatureSpec, ...]:
+    return (
+        FeatureSpec(
+            key="bb",
+            timeframe="medium",
+            input_kind=FEATURE_INPUT_CLOSE,
+            outputs=("BBL", "BBM", "BBU"),
+            warmup_bars=20,
+            factory=lambda: BollingerBandsFeature(period=20, std_mult=2.0),
+        ),
+        FeatureSpec(
+            key="atr",
+            timeframe="medium",
+            input_kind=FEATURE_INPUT_CANDLE,
+            outputs=("ATR",),
+            warmup_bars=14,
+            factory=lambda: ATRFeature(period=14),
+        ),
+        FeatureSpec(
+            key="rsi",
+            timeframe="big",
+            input_kind=FEATURE_INPUT_CLOSE,
+            outputs=("RSI",),
+            warmup_bars=11,
+            factory=lambda: RSIFeature(period=11),
+        ),
+        FeatureSpec(
+            key="ema",
+            timeframe="big",
+            input_kind=FEATURE_INPUT_CLOSE,
+            outputs=("EMA",),
+            warmup_bars=50,
+            factory=lambda: EMAFeature(period=50),
+        ),
+    )
+
+
+DEFAULT_FEATURE_SPECS = _build_default_feature_specs()
+
 
 class FeatureEngine:
     def __init__(
@@ -333,6 +429,7 @@ class FeatureEngine:
         *,
         intervals: dict[str, str],
         limits: dict[str, int] | None = None,
+        feature_specs: Iterable[FeatureSpec] | None = None,
     ) -> None:
         resolved_limits = dict(DEFAULT_FEATURE_ENGINE_LIMITS)
         if limits is not None:
@@ -342,10 +439,24 @@ class FeatureEngine:
             key: TimeframeState(interval=str(intervals[key]), limit=resolved_limits.get(key, 240))
             for key in ("small", "medium", "big")
         }
-        self._bb = BollingerBandsFeature(period=20, std_mult=2.0)
-        self._atr = ATRFeature(period=14)
-        self._rsi = RSIFeature(period=11)
-        self._ema = EMAFeature(period=50)
+        specs = DEFAULT_FEATURE_SPECS if feature_specs is None else tuple(feature_specs)
+        self.feature_specs = specs
+        self.output_columns = tuple(column for spec in specs for column in spec.outputs)
+        self._features: tuple[FeatureBinding, ...] = tuple(
+            FeatureBinding(spec=spec, runtime=spec.factory())
+            for spec in specs
+        )
+        self._features_by_timeframe: dict[str, tuple[FeatureBinding, ...]] = {
+            timeframe: tuple(binding for binding in self._features if binding.spec.timeframe == timeframe)
+            for timeframe in self.timeframes
+        }
+        for binding in self._features:
+            if binding.spec.timeframe not in self.timeframes:
+                raise ValueError(f"Unknown feature timeframe: {binding.spec.timeframe}")
+            if binding.spec.input_kind not in {FEATURE_INPUT_CLOSE, FEATURE_INPUT_CANDLE}:
+                raise ValueError(
+                    f"Unsupported feature input kind for {binding.spec.key}: {binding.spec.input_kind}"
+                )
 
     def bootstrap_from_frames(
         self,
@@ -359,10 +470,9 @@ class FeatureEngine:
         self.timeframes["big"].bootstrap(_candles_from_frame(df_big))
         self.timeframes["medium"].set_forming_from_small_frame(df_small)
         self.timeframes["big"].set_forming_from_small_frame(df_small)
-        self._bb.bootstrap(candle.close for candle in self.timeframes["medium"].closed)
-        self._atr.bootstrap(self.timeframes["medium"].closed)
-        self._rsi.bootstrap(candle.close for candle in self.timeframes["big"].closed)
-        self._ema.bootstrap(candle.close for candle in self.timeframes["big"].closed)
+        for binding in self._features:
+            timeframe_state = self.timeframes[binding.spec.timeframe]
+            binding.runtime.bootstrap(_iter_feature_inputs(timeframe_state.closed, input_kind=binding.spec.input_kind))
 
     def on_price_tick(self, *, ts_value: pd.Timestamp, price: float) -> None:
         normalized_ts = pd.Timestamp(ts_value)
@@ -375,12 +485,8 @@ class FeatureEngine:
         candle = Candle.from_event(event)
         state = self.timeframes[timeframe]
         state.upsert_closed(candle)
-        if timeframe == "medium":
-            self._bb.on_closed(candle.close)
-            self._atr.on_closed(candle)
-        elif timeframe == "big":
-            self._rsi.on_closed(candle.close)
-            self._ema.on_closed(candle.close)
+        for binding in self._features_by_timeframe.get(timeframe, ()):
+            binding.runtime.on_closed(_feature_input_from_candle(candle, input_kind=binding.spec.input_kind))
 
     def current_price(self) -> float | None:
         small = self.timeframes["small"]
@@ -391,34 +497,21 @@ class FeatureEngine:
         return None
 
     def closed_values(self) -> dict[str, float | None] | None:
-        bb_values = self._bb.closed_values()
-        values = {
-            "EMA": self._ema.closed_value(),
-            "RSI": self._rsi.closed_value(),
-            "ATR": self._atr.closed_value(),
-            "BBL": None if bb_values is None else bb_values["BBL"],
-            "BBM": None if bb_values is None else bb_values["BBM"],
-            "BBU": None if bb_values is None else bb_values["BBU"],
-        }
-        if all(value is None for value in values.values()):
-            return None
-        return values
+        return _merge_feature_payloads(
+            binding.runtime.closed_payload()
+            for binding in self._features
+        )
 
     def realtime_values(self) -> dict[str, float | None] | None:
-        medium_forming = self.timeframes["medium"].forming
-        big_forming = self.timeframes["big"].forming
-        bb_values = self._bb.intrabar_values(medium_forming.close if medium_forming is not None else None)
-        values = {
-            "EMA": self._ema.intrabar_value(big_forming.close if big_forming is not None else None),
-            "RSI": self._rsi.intrabar_value(big_forming.close if big_forming is not None else None),
-            "ATR": self._atr.intrabar_value(medium_forming),
-            "BBL": None if bb_values is None else bb_values["BBL"],
-            "BBM": None if bb_values is None else bb_values["BBM"],
-            "BBU": None if bb_values is None else bb_values["BBU"],
-        }
-        if all(value is None for value in values.values()):
-            return None
-        return values
+        return _merge_feature_payloads(
+            binding.runtime.intrabar_payload(
+                _feature_input_from_forming_candle(
+                    self.timeframes[binding.spec.timeframe].forming,
+                    input_kind=binding.spec.input_kind,
+                )
+            )
+            for binding in self._features
+        )
 
 
 def _candles_from_frame(df: pd.DataFrame | None) -> list[Candle]:
@@ -429,6 +522,40 @@ def _candles_from_frame(df: pd.DataFrame | None) -> list[Candle]:
         if candle is not None:
             candles.append(candle)
     return candles
+
+
+def _iter_feature_inputs(candles: Iterable[Candle], *, input_kind: str) -> Iterable[Any]:
+    if input_kind == FEATURE_INPUT_CANDLE:
+        return candles
+    return (candle.close for candle in candles)
+
+
+def _feature_input_from_candle(candle: Candle, *, input_kind: str) -> Any:
+    if input_kind == FEATURE_INPUT_CANDLE:
+        return candle
+    return candle.close
+
+
+def _feature_input_from_forming_candle(candle: Candle | None, *, input_kind: str) -> Any:
+    if input_kind == FEATURE_INPUT_CANDLE:
+        return candle
+    if candle is None:
+        return None
+    return candle.close
+
+
+def _merge_feature_payloads(payloads: Iterable[dict[str, float | None] | None]) -> dict[str, float | None] | None:
+    values: dict[str, float | None] = {}
+    saw_value = False
+    for payload in payloads:
+        if payload is None:
+            continue
+        for key, value in payload.items():
+            values[key] = value
+            saw_value = saw_value or value is not None
+    if not values or not saw_value:
+        return None
+    return values
 
 
 def _normalized_frame(df: pd.DataFrame | None) -> pd.DataFrame:
