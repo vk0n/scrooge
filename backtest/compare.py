@@ -1099,6 +1099,7 @@ def _execute_compare_task_payloads(
                     summaries_by_index[int(completed["index"])] = CompareScenarioSummary(**completed["summary"])
                 except Exception as exc:  # noqa: BLE001
                     trace_text = traceback.format_exc()
+                    scenario_dir.mkdir(parents=True, exist_ok=True)
                     (scenario_dir / "compare_error.txt").write_text(trace_text, encoding="utf-8")
                     logger.exception("compare_scenario_process_failed name=%s", task_payload["name"])
                     summaries_by_index[int(task_payload["index"])] = _summarize_error(
@@ -1166,6 +1167,8 @@ def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
     progress_position_base = max(0, int(task.get("progress_slot", 0)))
     progress_desc_prefix = f"[{scenario_name}]"
 
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
     _configure_compare_worker_logging(
         scenario_dir=scenario_dir,
         quiet_console_info=quiet_console_info,
@@ -1310,7 +1313,6 @@ def run_compare(
                     )
                     scenario_name = f"{scenario.name}-{sieve.stage_name}-{sieve.name}"
                     scenario_dir = _scenario_dir(compare_run_dir, index, scenario_name)
-                    scenario_dir.mkdir(parents=True, exist_ok=True)
                     merged_config = _build_merged_compare_config(
                         base_backtest_config=base_backtest_config,
                         base_backtest_overrides=config.base_backtest_overrides,
@@ -1318,7 +1320,6 @@ def run_compare(
                         sieve=sieve,
                         anchor_end_time=anchor_end_time,
                     )
-                    _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
                     task_payloads.append(
                         _scenario_task_payload(
                             index=index,
@@ -1405,7 +1406,6 @@ def run_compare(
                 max_workers=config.compare_max_workers,
             )
             scenario_dir = _scenario_dir(compare_run_dir, index, scenario.name)
-            scenario_dir.mkdir(parents=True, exist_ok=True)
             merged_config = _build_merged_compare_config(
                 base_backtest_config=base_backtest_config,
                 base_backtest_overrides=config.base_backtest_overrides,
@@ -1413,7 +1413,6 @@ def run_compare(
                 sieve=None,
                 anchor_end_time=anchor_end_time,
             )
-            _write_yaml_snapshot(scenario_dir / "backtest_config.resolved.yaml", merged_config)
             task_payloads.append(
                 _scenario_task_payload(
                     index=index,

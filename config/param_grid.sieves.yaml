@@ -1,31 +1,37 @@
-# Wide discrete screening grid for the three-sieves compare pipeline.
-# This one is intentionally broader and more scattered than the initial
-# realtime screen, but still focused on the structural risk/reward knobs.
+# Wide realtime screening grid around the current winner candidate.
+# Goal: map the direction quickly, not polish the final release params.
+# Indicator inputs stay fixed in config/compare.sieves.yaml, so this grid
+# only explores the structural risk/reward and TP-management knobs.
 #
 # Candidate count:
-#   sl_mult (5) *
-#   tp_mult (5) *
-#   trail_atr_mult (4) *
-#   rsi_extreme_long (3) *
-#   rsi_extreme_short (3)
-# = 900 candidates
+#   sl_mult (3) *
+#   tp_mult (3) *
+#   trail_atr_mult (3) *
+#   rsi_extreme_long (2) *
+#   rsi_extreme_short (2) *
+#   rsi_long_tp_threshold (3) *
+#   rsi_short_tp_threshold (3)
+# = 972 candidates
 #
-# The rest of the thresholds stay pinned to the current discrete baseline for now.
-# This grid now explicitly includes:
-# - exact baseline values from the current prod-style discrete setup
-# - a few intentionally awkward/sentinel values that should be easy for the
-#   sieve to reject if the screening logic is doing its job
+# Baseline values included:
+#   sl_mult: 3.7
+#   tp_mult: 1.9
+#   trail_atr_mult: 0.04
+#   rsi_extreme_long: 90
+#   rsi_extreme_short: 10
+#   rsi_long_tp_threshold: 58
+#   rsi_short_tp_threshold: 42
 
-sl_mult: [1.8, 2.6, 3.2, 3.7, 4.6]
-tp_mult: [0.9, 1.3, 1.8, 1.9, 3.0]
-rsi_extreme_long: [70, 80, 90]
-rsi_extreme_short: [10, 20, 30]
+sl_mult: [3.0, 3.7, 4.6]
+tp_mult: [1.5, 1.9, 2.3]
+rsi_extreme_long: [85, 90]
+rsi_extreme_short: [10, 15]
 rsi_long_open_threshold: [75]
 rsi_long_qty_threshold: [35]
-rsi_long_tp_threshold: [58]
+rsi_long_tp_threshold: [54, 58, 62]
 rsi_long_close_threshold: [70]
 rsi_short_open_threshold: [25]
 rsi_short_qty_threshold: [65]
-rsi_short_tp_threshold: [42]
+rsi_short_tp_threshold: [38, 42, 46]
 rsi_short_close_threshold: [30]
-trail_atr_mult: [0.01, 0.02, 0.04, 0.07]
+trail_atr_mult: [0.02, 0.04, 0.06]
