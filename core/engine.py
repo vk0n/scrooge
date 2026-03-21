@@ -6,12 +6,12 @@ from datetime import datetime
 from typing import Any, Callable, Iterable
 
 import pandas as pd
-import pandas_ta as ta
 from tqdm import tqdm
 
 from bot.event_log import emit_event, get_technical_logger
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.trade import can_open_trade, close_position, compute_qty, get_balance, open_position
+from core.feature_engine import FeatureEngine
 from core.indicator_inputs import (
     INDICATOR_COLUMNS,
     indicator_input_mode_for_column,
@@ -385,50 +385,15 @@ def _materialize_market_frame(
     return _normalize_market_candle_frame(merged, limit)
 
 
-def _compute_realtime_indicator_values(
-    medium_df: pd.DataFrame,
-    big_df: pd.DataFrame,
-) -> dict[str, float | None] | None:
-    if medium_df.empty or big_df.empty:
-        return None
-
-    medium = medium_df.copy().set_index("open_time")
-    bb = ta.bbands(medium["close"], length=20, std=2)
-    atr = ta.atr(medium["high"], medium["low"], medium["close"], length=14)
-    if bb is None or atr is None:
-        return None
-
-    big = big_df.copy().set_index("open_time")
-    rsi = ta.rsi(big["close"], length=11)
-    ema = ta.ema(big["close"], length=50)
-    if rsi is None or ema is None:
-        return None
-
-    latest_values = {
-        "BBL": to_float(bb["BBL_20_2.0_2.0"].iloc[-1]) if "BBL_20_2.0_2.0" in bb else None,
-        "BBM": to_float(bb["BBM_20_2.0_2.0"].iloc[-1]) if "BBM_20_2.0_2.0" in bb else None,
-        "BBU": to_float(bb["BBU_20_2.0_2.0"].iloc[-1]) if "BBU_20_2.0_2.0" in bb else None,
-        "ATR": to_float(atr.iloc[-1]),
-        "RSI": to_float(rsi.iloc[-1]),
-        "EMA": to_float(ema.iloc[-1]),
-    }
-    if any(value is None for value in latest_values.values()):
-        return None
-    return latest_values
-
-
 def _build_realtime_snapshot(
     *,
     event_ts: str,
-    forming_small: dict[str, Any] | None,
-    medium_df: pd.DataFrame,
-    big_df: pd.DataFrame,
+    feature_engine: FeatureEngine,
     indicator_inputs: dict[str, str],
     discrete_indicator_values: dict[str, float | None] | None = None,
+    fallback_small: dict[str, Any] | None = None,
 ) -> DiscreteRowSnapshot | None:
-    if forming_small is None:
-        return None
-    realtime_indicator_values = _compute_realtime_indicator_values(medium_df, big_df)
+    realtime_indicator_values = feature_engine.realtime_values()
     indicator_values = merge_indicator_decision_values(
         indicator_inputs=indicator_inputs,
         discrete_values=discrete_indicator_values,
@@ -436,7 +401,9 @@ def _build_realtime_snapshot(
     )
     if indicator_values is None:
         return None
-    price = to_float(forming_small.get("close"))
+    price = feature_engine.current_price()
+    if price is None and fallback_small is not None:
+        price = to_float(fallback_small.get("close"))
     if price is None:
         return None
     row_payload = {
@@ -2292,16 +2259,10 @@ def run_realtime_market_event_engine(
 ) -> tuple[float, pd.DataFrame, list[float], dict[str, Any]]:
     target_symbol = str(symbol or "").strip().upper() or None
     interval_freqs = {key: _interval_to_freq(value) for key, value in intervals.items()}
-    closed_frames = {
-        "small": _empty_market_candle_frame(),
-        "medium": _empty_market_candle_frame(),
-        "big": _empty_market_candle_frame(),
-    }
-    forming_candles: dict[str, dict[str, Any] | None] = {
-        "small": None,
-        "medium": None,
-        "big": None,
-    }
+    feature_engine = FeatureEngine(
+        intervals=intervals,
+        limits=REALTIME_WARMUP_LIMITS,
+    )
     pending_small_candles: dict[tuple[str, str], CandleClosedEvent] = {}
     latest_discrete_indicator_values: dict[str, float | None] | None = None
     iterator = _iter_with_progress(
@@ -2333,20 +2294,9 @@ def run_realtime_market_event_engine(
             timeframe = resolve_timeframe(event.interval)
             if timeframe is None:
                 continue
-            closed_frames[timeframe] = _upsert_closed_market_candle(
-                closed_frames[timeframe],
-                event,
-                limit=REALTIME_WARMUP_LIMITS[timeframe],
-            )
-            current_forming = forming_candles.get(timeframe)
-            if current_forming is not None:
-                current_open = pd.Timestamp(current_forming["open_time"])
-                event_open = pd.Timestamp(event.open_time)
-                if current_open <= event_open:
-                    forming_candles[timeframe] = None
+            feature_engine.on_candle_closed(timeframe=timeframe, event=event)
             if timeframe == "small":
                 pending_small_candles[(event.symbol, event.ts)] = event
-                open_key = str(event.open_time)
             continue
 
         if isinstance(event, IndicatorSnapshotEvent) and event.interval == "discrete_snapshot":
@@ -2358,16 +2308,6 @@ def run_realtime_market_event_engine(
             open_key = str(pending_candle.open_time)
             if emit_on_price_tick and open_key in tick_seen_small_open_times:
                 continue
-            medium_df = _materialize_market_frame(
-                closed_frames["medium"],
-                forming_candles["medium"],
-                limit=REALTIME_WARMUP_LIMITS["medium"],
-            )
-            big_df = _materialize_market_frame(
-                closed_frames["big"],
-                forming_candles["big"],
-                limit=REALTIME_WARMUP_LIMITS["big"],
-            )
             fallback_small = {
                 "open_time": pd.Timestamp(pending_candle.open_time),
                 "open": float(pending_candle.open),
@@ -2378,11 +2318,10 @@ def run_realtime_market_event_engine(
             }
             snapshot = _build_realtime_snapshot(
                 event_ts=format_event_timestamp(event.ts),
-                forming_small=fallback_small,
-                medium_df=medium_df,
-                big_df=big_df,
+                feature_engine=feature_engine,
                 indicator_inputs=indicator_inputs,
                 discrete_indicator_values=latest_discrete_indicator_values,
+                fallback_small=fallback_small,
             )
             if snapshot is None:
                 continue
@@ -2400,30 +2339,10 @@ def run_realtime_market_event_engine(
             continue
         processed_price_ticks += 1
         tick_seen_small_open_times.add(str(event_ts_value.floor(interval_freqs["small"])))
-
-        for timeframe, freq in interval_freqs.items():
-            interval_open = event_ts_value.floor(freq)
-            forming_candles[timeframe] = _update_forming_candle(
-                forming_candles.get(timeframe),
-                open_time=interval_open,
-                price=price,
-            )
-
-        medium_df = _materialize_market_frame(
-            closed_frames["medium"],
-            forming_candles["medium"],
-            limit=REALTIME_WARMUP_LIMITS["medium"],
-        )
-        big_df = _materialize_market_frame(
-            closed_frames["big"],
-            forming_candles["big"],
-            limit=REALTIME_WARMUP_LIMITS["big"],
-        )
+        feature_engine.on_price_tick(ts_value=event_ts_value, price=price)
         snapshot = _build_realtime_snapshot(
             event_ts=format_event_timestamp(event.ts),
-            forming_small=forming_candles["small"],
-            medium_df=medium_df,
-            big_df=big_df,
+            feature_engine=feature_engine,
             indicator_inputs=indicator_inputs,
             discrete_indicator_values=latest_discrete_indicator_values,
         )

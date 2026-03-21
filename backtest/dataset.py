@@ -6,6 +6,7 @@ from datetime import datetime
 from backtest.time_windows import resolve_backtest_time_range
 from bot.event_log import get_technical_logger
 from core.binance_retry import run_binance_with_retries
+from core.feature_engine import FeatureEngine
 from core.indicator_inputs import INDICATOR_COLUMNS, normalize_indicator_inputs, uses_realtime_indicator_inputs
 
 
@@ -181,40 +182,15 @@ def _materialize_live_timeframe_frame(df_small, closed_df, *, interval: str):
 
 
 def compute_latest_realtime_indicator_values(df_small, df_medium, df_big, *, intervals):
-    medium_frame = _materialize_live_timeframe_frame(
-        df_small,
-        df_medium,
-        interval=str(intervals["medium"]),
+    engine = FeatureEngine(
+        intervals={key: str(value) for key, value in intervals.items()},
     )
-    big_frame = _materialize_live_timeframe_frame(
-        df_small,
-        df_big,
-        interval=str(intervals["big"]),
+    engine.bootstrap_from_frames(
+        df_small=df_small,
+        df_medium=df_medium,
+        df_big=df_big,
     )
-    if medium_frame.empty or big_frame.empty:
-        return None
-
-    medium = medium_frame.copy().set_index("open_time")
-    bb = ta.bbands(medium["close"], length=20, std=2)
-    atr = ta.atr(medium["high"], medium["low"], medium["close"], length=14)
-    if bb is None or atr is None:
-        return None
-
-    big = big_frame.copy().set_index("open_time")
-    rsi = ta.rsi(big["close"], length=11)
-    ema = ta.ema(big["close"], length=50)
-    if rsi is None or ema is None:
-        return None
-
-    latest = {
-        "BBL": float(bb["BBL_20_2.0_2.0"].iloc[-1]) if "BBL_20_2.0_2.0" in bb and pd.notna(bb["BBL_20_2.0_2.0"].iloc[-1]) else None,
-        "BBM": float(bb["BBM_20_2.0_2.0"].iloc[-1]) if "BBM_20_2.0_2.0" in bb and pd.notna(bb["BBM_20_2.0_2.0"].iloc[-1]) else None,
-        "BBU": float(bb["BBU_20_2.0_2.0"].iloc[-1]) if "BBU_20_2.0_2.0" in bb and pd.notna(bb["BBU_20_2.0_2.0"].iloc[-1]) else None,
-        "ATR": float(atr.iloc[-1]) if pd.notna(atr.iloc[-1]) else None,
-        "RSI": float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else None,
-        "EMA": float(ema.iloc[-1]) if pd.notna(ema.iloc[-1]) else None,
-    }
-    return latest
+    return engine.realtime_values()
 
 
 def prepare_live_strategy_frame(
