@@ -1,12 +1,11 @@
 import os
 import time
 import pandas as pd
-import pandas_ta as ta
 from datetime import datetime
 from backtest.time_windows import resolve_backtest_time_range
 from bot.event_log import get_technical_logger
 from core.binance_retry import run_binance_with_retries
-from core.feature_engine import FeatureEngine
+from core.feature_engine import FeatureEngine, build_feature_frame
 from core.indicator_inputs import INDICATOR_COLUMNS, normalize_indicator_inputs, uses_realtime_indicator_inputs
 
 
@@ -94,32 +93,11 @@ def fetch_historical_paginated(symbol="BTCUSDT", interval="1m", start_time=None,
 
 def prepare_multi_tf(df_small, df_medium, df_big):
     """Merge multi-timeframe data (small=price, medium=BB/ATR, big=RSI/EMA)."""
-    df_small["open_time"] = pd.to_datetime(df_small["open_time"], unit="ms")
-    df_medium["open_time"] = pd.to_datetime(df_medium["open_time"], unit="ms")
-    df_big["open_time"] = pd.to_datetime(df_big["open_time"], unit="ms")
-
-    # --- RSI and EMA on big timeframe ---
-    df_big = df_big.set_index("open_time")
-    df_big["RSI"] = ta.rsi(df_big["close"], length=11)
-    df_big["EMA"] = ta.ema(df_big["close"], length=50)
-    df_big = df_big[["RSI", "EMA"]]
-
-    # --- Bollinger Bands and ATR on medium timeframe ---
-    df_medium = df_medium.set_index("open_time")
-    bb = ta.bbands(df_medium["close"], length=20, std=2)
-    atr = ta.atr(df_medium["high"], df_medium["low"], df_medium["close"], length=14)
-    df_medium["BBL"] = bb["BBL_20_2.0_2.0"]
-    df_medium["BBM"] = bb["BBM_20_2.0_2.0"]
-    df_medium["BBU"] = bb["BBU_20_2.0_2.0"]
-    df_medium["ATR"] = atr
-    df_medium = df_medium[["BBL", "BBM", "BBU", "ATR"]]
-
-    # --- Merge into small timeframe ---
-    df_merged = df_small.set_index("open_time")
-    df_merged = df_merged.merge(df_medium, left_index=True, right_index=True, how="left").ffill()
-    df_merged = df_merged.merge(df_big, left_index=True, right_index=True, how="left").ffill()
-    df_merged.reset_index(inplace=True)
-    return df_merged
+    return build_feature_frame(
+        df_small=df_small,
+        df_medium=df_medium,
+        df_big=df_big,
+    )
 
 
 def _normalize_candle_frame(df):

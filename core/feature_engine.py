@@ -219,13 +219,11 @@ class EMAFeature:
 class RSIFeature:
     def __init__(self, period: int) -> None:
         self.period = int(period)
+        self.alpha = 1.0 / self.period if self.period > 0 else 0.5
         self.reset()
 
     def reset(self) -> None:
         self._previous_close: float | None = None
-        self._seed_gain_sum = 0.0
-        self._seed_loss_sum = 0.0
-        self._seed_count = 0
         self._avg_gain: float | None = None
         self._avg_loss: float | None = None
 
@@ -243,15 +241,11 @@ class RSIFeature:
         loss = max(-delta, 0.0)
         self._previous_close = close
         if self._avg_gain is None or self._avg_loss is None:
-            self._seed_gain_sum += gain
-            self._seed_loss_sum += loss
-            self._seed_count += 1
-            if self._seed_count == self.period:
-                self._avg_gain = self._seed_gain_sum / self.period
-                self._avg_loss = self._seed_loss_sum / self.period
+            self._avg_gain = gain
+            self._avg_loss = loss
             return
-        self._avg_gain = ((self._avg_gain * (self.period - 1)) + gain) / self.period
-        self._avg_loss = ((self._avg_loss * (self.period - 1)) + loss) / self.period
+        self._avg_gain = (self.alpha * gain) + ((1.0 - self.alpha) * self._avg_gain)
+        self._avg_loss = (self.alpha * loss) + ((1.0 - self.alpha) * self._avg_loss)
 
     def closed_value(self) -> float | None:
         return _rsi_from_averages(self._avg_gain, self._avg_loss)
@@ -259,13 +253,17 @@ class RSIFeature:
     def intrabar_value(self, close: float | None) -> float | None:
         if close is None:
             return self.closed_value()
-        if self._previous_close is None or self._avg_gain is None or self._avg_loss is None:
+        if self._previous_close is None:
             return None
         delta = close - self._previous_close
         gain = max(delta, 0.0)
         loss = max(-delta, 0.0)
-        avg_gain = ((self._avg_gain * (self.period - 1)) + gain) / self.period
-        avg_loss = ((self._avg_loss * (self.period - 1)) + loss) / self.period
+        if self._avg_gain is None or self._avg_loss is None:
+            avg_gain = gain
+            avg_loss = loss
+        else:
+            avg_gain = (self.alpha * gain) + ((1.0 - self.alpha) * self._avg_gain)
+            avg_loss = (self.alpha * loss) + ((1.0 - self.alpha) * self._avg_loss)
         return _rsi_from_averages(avg_gain, avg_loss)
 
     def closed_payload(self) -> dict[str, float | None] | None:
@@ -514,6 +512,52 @@ class FeatureEngine:
         )
 
 
+class FeatureFrameBuilder:
+    def __init__(
+        self,
+        *,
+        feature_specs: Iterable[FeatureSpec] | None = None,
+    ) -> None:
+        specs = DEFAULT_FEATURE_SPECS if feature_specs is None else tuple(feature_specs)
+        self.feature_specs = specs
+        self.output_columns = _resolve_output_columns(specs)
+        self._bindings_by_timeframe: dict[str, tuple[FeatureBinding, ...]] = {
+            timeframe: tuple(
+                FeatureBinding(spec=spec, runtime=spec.factory())
+                for spec in specs
+                if spec.timeframe == timeframe
+            )
+            for timeframe in ("small", "medium", "big")
+        }
+
+    def update_timeframe_frame(self, *, timeframe: str, df: pd.DataFrame) -> pd.DataFrame | None:
+        normalized_timeframe = str(timeframe)
+        if normalized_timeframe not in self._bindings_by_timeframe:
+            raise ValueError(f"Unknown feature timeframe: {timeframe}")
+        return _build_bound_timeframe_feature_frame(
+            df,
+            bindings=self._bindings_by_timeframe[normalized_timeframe],
+        )
+
+
+def build_feature_frame(
+    *,
+    df_small: pd.DataFrame,
+    df_medium: pd.DataFrame,
+    df_big: pd.DataFrame,
+    feature_specs: Iterable[FeatureSpec] | None = None,
+) -> pd.DataFrame:
+    builder = FeatureFrameBuilder(feature_specs=feature_specs)
+    return merge_feature_frames(
+        df_small=df_small,
+        timeframe_feature_frames={
+            "medium": builder.update_timeframe_frame(timeframe="medium", df=df_medium),
+            "big": builder.update_timeframe_frame(timeframe="big", df=df_big),
+        },
+        output_columns=builder.output_columns,
+    )
+
+
 def _candles_from_frame(df: pd.DataFrame | None) -> list[Candle]:
     normalized = _normalized_frame(df)
     candles: list[Candle] = []
@@ -558,11 +602,102 @@ def _merge_feature_payloads(payloads: Iterable[dict[str, float | None] | None]) 
     return values
 
 
+def _resolve_output_columns(feature_specs: Iterable[FeatureSpec]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    output_columns: list[str] = []
+    for spec in feature_specs:
+        for column in spec.outputs:
+            if column in seen:
+                continue
+            seen.add(column)
+            output_columns.append(column)
+    return tuple(output_columns)
+
+
+def merge_feature_frames(
+    *,
+    df_small: pd.DataFrame,
+    timeframe_feature_frames: dict[str, pd.DataFrame | None],
+    output_columns: Iterable[str],
+) -> pd.DataFrame:
+    base_columns = ("open_time", "open", "high", "low", "close", "volume")
+    small = _normalized_frame(df_small)
+    resolved_output_columns = tuple(output_columns)
+    if small.empty:
+        return pd.DataFrame(columns=[*base_columns, *resolved_output_columns])
+
+    merged = small.set_index("open_time")
+    for timeframe in ("small", "medium", "big"):
+        feature_df = timeframe_feature_frames.get(timeframe)
+        if feature_df is None or feature_df.empty:
+            continue
+        merged = merged.merge(feature_df.set_index("open_time"), left_index=True, right_index=True, how="left")
+        if timeframe != "small":
+            merged = merged.ffill()
+
+    merged.reset_index(inplace=True)
+    for column in resolved_output_columns:
+        if column not in merged.columns:
+            merged[column] = None
+    return merged[[*base_columns, *resolved_output_columns]]
+
+
+def _build_bound_timeframe_feature_frame(
+    df: pd.DataFrame,
+    *,
+    bindings: Iterable[FeatureBinding],
+) -> pd.DataFrame | None:
+    resolved_bindings = tuple(bindings)
+    if not resolved_bindings:
+        return None
+
+    output_columns = _resolve_output_columns(binding.spec for binding in resolved_bindings)
+    if df.empty:
+        return pd.DataFrame(columns=["open_time", *output_columns])
+
+    rows: list[dict[str, Any]] = []
+    for candle in _candles_from_frame(df):
+        row: dict[str, Any] = {"open_time": candle.open_time}
+        for binding in resolved_bindings:
+            binding.runtime.on_closed(
+                _feature_input_from_candle(candle, input_kind=binding.spec.input_kind)
+            )
+            payload = binding.runtime.closed_payload() or {}
+            for column in binding.spec.outputs:
+                row[column] = payload.get(column)
+        rows.append(row)
+
+    feature_df = pd.DataFrame(rows)
+    for column in output_columns:
+        if column not in feature_df.columns:
+            feature_df[column] = None
+    return feature_df[["open_time", *output_columns]]
+
+
+def _build_timeframe_feature_frame(
+    df: pd.DataFrame,
+    *,
+    timeframe: str,
+    feature_specs: Iterable[FeatureSpec],
+) -> pd.DataFrame | None:
+    return _build_bound_timeframe_feature_frame(
+        df,
+        bindings=tuple(
+            FeatureBinding(spec=spec, runtime=spec.factory())
+            for spec in feature_specs
+            if spec.timeframe == timeframe
+        ),
+    )
+
+
 def _normalized_frame(df: pd.DataFrame | None) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume"])
     out = df.copy()
-    out["open_time"] = pd.to_datetime(out["open_time"], errors="coerce")
+    if pd.api.types.is_numeric_dtype(out["open_time"]):
+        out["open_time"] = pd.to_datetime(out["open_time"], unit="ms", errors="coerce")
+    else:
+        out["open_time"] = pd.to_datetime(out["open_time"], errors="coerce")
     for column in ("open", "high", "low", "close", "volume"):
         out[column] = pd.to_numeric(out[column], errors="coerce")
     out = out.dropna(subset=["open_time", "open", "high", "low", "close"])

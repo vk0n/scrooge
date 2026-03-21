@@ -4,6 +4,7 @@ import calendar
 import csv
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+import heapq
 from io import BytesIO, TextIOWrapper
 import json
 import os
@@ -15,12 +16,12 @@ from urllib.request import urlopen
 import zipfile
 
 import pandas as pd
-import pandas_ta as ta
 from tqdm import tqdm
 
 from backtest.progress import BacktestProgressReporter
 from backtest.time_windows import resolve_backtest_time_range
 from bot.event_log import get_technical_logger
+from core.feature_engine import FeatureFrameBuilder, build_feature_frame, merge_feature_frames
 from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent, market_event_to_dict
 
 
@@ -614,22 +615,6 @@ def _resample_candle_frame(candles: pd.DataFrame, *, interval: str) -> pd.DataFr
     return resampled.rename(columns={"open_time": "open_time"})
 
 
-def _slice_candle_frame_for_day(candles: pd.DataFrame, *, day_value: date) -> pd.DataFrame:
-    if candles.empty:
-        return candles
-    start_ts = pd.Timestamp(day_value)
-    end_ts = start_ts + pd.Timedelta(days=1)
-    return candles[(candles["open_time"] >= start_ts) & (candles["open_time"] < end_ts)].copy()
-
-
-def _slice_indicator_frame_for_day(indicator_df: pd.DataFrame, *, day_value: date) -> pd.DataFrame:
-    if indicator_df.empty:
-        return indicator_df
-    start_ts = pd.Timestamp(day_value)
-    end_ts = start_ts + pd.Timedelta(days=1)
-    return indicator_df[(indicator_df["open_time"] >= start_ts) & (indicator_df["open_time"] < end_ts)].copy()
-
-
 def write_historical_agg_trade_market_event_stream(
     *,
     symbol: str,
@@ -677,76 +662,17 @@ def write_historical_agg_trade_market_event_stream(
     medium_interval = str(intervals["medium"])
     big_interval = str(intervals["big"])
 
-    small_frames: list[pd.DataFrame] = []
+    indicator_frames: list[pd.DataFrame] = []
     raw_agg_trades = 0
     first_trade_ts: str | None = None
     last_trade_ts: str | None = None
     sources_seen: set[str] = set()
     all_days_from_cache = True
     archive_cache_path = _resolve_archive_day_cache_dir(cache_dir=cache_dir, symbol=symbol)
-
-    if progress_reporter is not None:
-        progress_reporter.start_stage("aggTrades Candles", len(requested_days))
-    with tqdm(requested_days, **_tqdm_kwargs(desc="aggTrades Candles", unit="day", disable=progress_reporter is not None)) as pass_one:
-        for day_value in pass_one:
-            day_df, cache_hit, day_source = _load_archive_trade_day_frame(
-                symbol=symbol,
-                day_value=day_value,
-                start_time=start_time,
-                end_time=end_time,
-                source=source,
-                archive_base_url=archive_base_url,
-                rest_base_url=rest_base_url,
-                cache_enabled=cache_enabled,
-                cache_dir=cache_dir,
-            )
-            all_days_from_cache = all_days_from_cache and cache_hit
-            sources_seen.add(day_source)
-            if day_df.empty:
-                pass_one.set_postfix_str(day_value.isoformat())
-                continue
-            raw_agg_trades += len(day_df)
-            first_trade_ts = first_trade_ts or _format_ts(day_df["ts"].iloc[0])
-            last_trade_ts = _format_ts(day_df["ts"].iloc[-1])
-            small_day = _resample_trade_frame_to_candles(day_df, interval=small_interval)
-            if not small_day.empty:
-                small_frames.append(small_day)
-            pass_one.set_postfix_str(f"{day_value.isoformat()} rows={raw_agg_trades}")
-            if progress_reporter is not None:
-                progress_reporter.advance()
-    if progress_reporter is not None:
-        progress_reporter.complete_stage()
-
-    if not small_frames:
-        empty_df = pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"])
-        Path(output_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
-        Path(output_path).expanduser().write_text("", encoding="utf-8")
-        return empty_df, AggTradeMarketEventStreamSummary(
-            source="historical_agg_trade",
-            symbol=symbol,
-            cache_hit=all_days_from_cache,
-            cache_path=str(archive_cache_path) if archive_cache_path is not None else None,
-            raw_agg_trades=0,
-            price_ticks=0,
-            candle_events_small=0,
-            candle_events_medium=0,
-            candle_events_big=0,
-            indicator_snapshots=0,
-            total_events=0,
-            first_trade_ts=None,
-            last_trade_ts=None,
-        )
-
-    small_df = pd.concat(small_frames, ignore_index=True)
-    small_df = small_df.sort_values("open_time").drop_duplicates(subset=["open_time"], keep="last").reset_index(drop=True)
-    medium_df = _resample_candle_frame(small_df, interval=medium_interval)
-    big_df = _resample_candle_frame(small_df, interval=big_interval)
-    indicator_df = _compute_indicator_snapshots(
-        small_df=small_df,
-        medium_df=medium_df,
-        big_df=big_df,
+    feature_builder = FeatureFrameBuilder()
+    empty_df = pd.DataFrame(
+        columns=["open_time", "open", "high", "low", "close", "volume", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"]
     )
-
     target_path = Path(output_path).expanduser()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     price_tick_count = 0
@@ -757,10 +683,10 @@ def write_historical_agg_trade_market_event_stream(
 
     with target_path.open("w", encoding="utf-8") as file_obj:
         if progress_reporter is not None:
-            progress_reporter.start_stage("aggTrades Market Events", len(requested_days))
-        with tqdm(requested_days, **_tqdm_kwargs(desc="aggTrades Market Events", unit="day", disable=progress_reporter is not None)) as pass_two:
-            for day_value in pass_two:
-                day_df, _, day_source = _load_archive_trade_day_frame(
+            progress_reporter.start_stage("aggTrades Stream", len(requested_days))
+        with tqdm(requested_days, **_tqdm_kwargs(desc="aggTrades Stream", unit="day", disable=progress_reporter is not None)) as pass_days:
+            for day_value in pass_days:
+                day_df, cache_hit, day_source = _load_archive_trade_day_frame(
                     symbol=symbol,
                     day_value=day_value,
                     start_time=start_time,
@@ -771,26 +697,51 @@ def write_historical_agg_trade_market_event_stream(
                     cache_enabled=cache_enabled,
                     cache_dir=cache_dir,
                 )
-                day_events: list[MarketEvent] = []
+                all_days_from_cache = all_days_from_cache and cache_hit
+                sources_seen.add(day_source)
                 if not day_df.empty:
-                    day_events.extend(
-                        _build_price_tick_events(
-                            day_df,
-                            symbol=symbol,
-                            tick_interval=tick_interval,
-                            source_label=f"historical_agg_trade_{day_source}",
-                        )
+                    raw_agg_trades += len(day_df)
+                    first_trade_ts = first_trade_ts or _format_ts(day_df["ts"].iloc[0])
+                    last_trade_ts = _format_ts(day_df["ts"].iloc[-1])
+                    price_tick_events = _build_price_tick_events(
+                        day_df,
+                        symbol=symbol,
+                        tick_interval=tick_interval,
+                        source_label=f"historical_agg_trade_{day_source}",
                     )
-                small_day = _slice_candle_frame_for_day(small_df, day_value=day_value)
-                medium_day = _slice_candle_frame_for_day(medium_df, day_value=day_value)
-                big_day = _slice_candle_frame_for_day(big_df, day_value=day_value)
-                indicator_day = _slice_indicator_frame_for_day(indicator_df, day_value=day_value)
+                else:
+                    price_tick_events = []
+                small_day = _resample_trade_frame_to_candles(day_df, interval=small_interval)
+                medium_day = _resample_candle_frame(small_day, interval=medium_interval)
+                big_day = _resample_candle_frame(small_day, interval=big_interval)
+                medium_feature_day = feature_builder.update_timeframe_frame(timeframe="medium", df=medium_day)
+                big_feature_day = feature_builder.update_timeframe_frame(timeframe="big", df=big_day)
+                indicator_day = merge_feature_frames(
+                    df_small=small_day,
+                    timeframe_feature_frames={
+                        "medium": medium_feature_day,
+                        "big": big_feature_day,
+                    },
+                    output_columns=feature_builder.output_columns,
+                )
+                if not indicator_day.empty:
+                    indicator_frames.append(indicator_day)
 
-                day_events.extend(_build_candle_events(small_day, symbol=symbol, interval=small_interval))
-                day_events.extend(_build_candle_events(medium_day, symbol=symbol, interval=medium_interval))
-                day_events.extend(_build_candle_events(big_day, symbol=symbol, interval=big_interval))
-                day_events.extend(_build_indicator_snapshot_events(indicator_day, symbol=symbol, small_interval=small_interval))
-                day_events.sort(
+                small_candle_events = _build_candle_events(small_day, symbol=symbol, interval=small_interval)
+                medium_candle_events = _build_candle_events(medium_day, symbol=symbol, interval=medium_interval)
+                big_candle_events = _build_candle_events(big_day, symbol=symbol, interval=big_interval)
+                indicator_snapshot_events = _build_indicator_snapshot_events(
+                    indicator_day,
+                    symbol=symbol,
+                    small_interval=small_interval,
+                )
+
+                merged_day_events = heapq.merge(
+                    price_tick_events,
+                    small_candle_events,
+                    medium_candle_events,
+                    big_candle_events,
+                    indicator_snapshot_events,
                     key=lambda event: (
                         str(getattr(event, "ts", "")),
                         _event_priority(
@@ -799,21 +750,27 @@ def write_historical_agg_trade_market_event_stream(
                             medium_interval=medium_interval,
                             big_interval=big_interval,
                         ),
-                    )
+                    ),
                 )
-                for event in day_events:
+                for event in merged_day_events:
                     file_obj.write(json.dumps(market_event_to_dict(event), ensure_ascii=True, sort_keys=True))
                     file_obj.write("\n")
-                price_tick_count += sum(1 for event in day_events if isinstance(event, PriceTickEvent))
-                small_candle_count += sum(1 for event in day_events if isinstance(event, CandleClosedEvent) and event.interval == small_interval)
-                medium_candle_count += sum(1 for event in day_events if isinstance(event, CandleClosedEvent) and event.interval == medium_interval)
-                big_candle_count += sum(1 for event in day_events if isinstance(event, CandleClosedEvent) and event.interval == big_interval)
-                indicator_snapshot_count += sum(1 for event in day_events if isinstance(event, IndicatorSnapshotEvent))
-                pass_two.set_postfix_str(day_value.isoformat())
+                price_tick_count += len(price_tick_events)
+                small_candle_count += len(small_candle_events)
+                medium_candle_count += len(medium_candle_events)
+                big_candle_count += len(big_candle_events)
+                indicator_snapshot_count += len(indicator_snapshot_events)
+                pass_days.set_postfix_str(f"{day_value.isoformat()} rows={raw_agg_trades}")
                 if progress_reporter is not None:
                     progress_reporter.advance()
         if progress_reporter is not None:
             progress_reporter.complete_stage()
+
+    indicator_df = (
+        pd.concat(indicator_frames, ignore_index=True)
+        if indicator_frames
+        else empty_df.copy()
+    )
 
     source_label = "historical_agg_trade"
     if sources_seen:
@@ -1010,38 +967,11 @@ def _compute_indicator_snapshots(
     medium_df: pd.DataFrame,
     big_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    small = small_df.copy()
-    medium = medium_df.copy()
-    big = big_df.copy()
-
-    small["open_time"] = pd.to_datetime(small["open_time"], errors="coerce")
-    medium["open_time"] = pd.to_datetime(medium["open_time"], errors="coerce")
-    big["open_time"] = pd.to_datetime(big["open_time"], errors="coerce")
-
-    big = big.set_index("open_time")
-    big["RSI"] = ta.rsi(big["close"], length=11)
-    big["EMA"] = ta.ema(big["close"], length=50)
-    big = big[["RSI", "EMA"]]
-
-    medium = medium.set_index("open_time")
-    bb = ta.bbands(medium["close"], length=20, std=2)
-    if isinstance(bb, pd.DataFrame):
-        medium["BBL"] = bb.get("BBL_20_2.0_2.0")
-        medium["BBM"] = bb.get("BBM_20_2.0_2.0")
-        medium["BBU"] = bb.get("BBU_20_2.0_2.0")
-    else:
-        medium["BBL"] = pd.Series(index=medium.index, dtype="float64")
-        medium["BBM"] = pd.Series(index=medium.index, dtype="float64")
-        medium["BBU"] = pd.Series(index=medium.index, dtype="float64")
-    atr = ta.atr(medium["high"], medium["low"], medium["close"], length=14)
-    medium["ATR"] = atr if atr is not None else pd.Series(index=medium.index, dtype="float64")
-    medium = medium[["BBL", "BBM", "BBU", "ATR"]]
-
-    merged = small.set_index("open_time")
-    merged = merged.merge(medium, left_index=True, right_index=True, how="left").ffill()
-    merged = merged.merge(big, left_index=True, right_index=True, how="left").ffill()
-    merged.reset_index(inplace=True)
-    return merged
+    return build_feature_frame(
+        df_small=small_df,
+        df_medium=medium_df,
+        df_big=big_df,
+    )
 
 
 def _close_time_from_open_time(open_time: pd.Timestamp, interval: str) -> str:

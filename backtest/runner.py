@@ -18,7 +18,6 @@ from backtest.discrete_event_stream import (
 )
 from backtest.market_event_projection import (
     DiscreteTapeProjectionSummary,
-    project_discrete_tape_from_market_events,
     read_projected_discrete_tape_from_market_event_stream,
 )
 from backtest.historical_market_event_stream import build_historical_market_event_stream
@@ -468,14 +467,9 @@ def run_backtest(
             agg_trade_stream_summary.total_events,
             config.market_event_stream_path,
         )
-        start_stage("Project Market Tape", agg_trade_stream_summary.total_events)
-        tape, market_event_projection = project_discrete_tape_from_market_events(
-            market_event_iter_factory(),
-            candle_interval=str(config.intervals["small"]),
-            symbol=config.symbol,
-            require_indicator_snapshot=True,
-            progress_reporter=progress_reporter,
-        )
+        start_stage("Project Market Tape", 1)
+        tape = build_discrete_market_tape(df, symbol=config.symbol)
+        advance_stage()
         complete_stage()
         if not tape:
             raise ValueError("Historical aggTrade stream produced no discrete tape rows.")
