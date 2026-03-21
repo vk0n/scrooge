@@ -30,10 +30,10 @@ intervals:
   medium: 1h
   big: 4h
 indicator_inputs:
-  ema: closed
+  ema: intrabar
   rsi: closed
   bb: closed
-  atr: closed
+  atr: intrabar
 backtest_period_end_time: ''
 backtest_period_start_time: ''
 backtest_period_days: 30

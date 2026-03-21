@@ -210,7 +210,6 @@ def _download_response_payload(url: str, *, desc: str, leave_progress: bool = Fa
             **_tqdm_kwargs(
                 desc=desc,
                 extra_offset=1,
-                total=total_bytes,
                 unit="B",
                 unit_scale=True,
                 unit_divisor=1024,

@@ -30,8 +30,10 @@ type UiStatus = {
   label: string;
 };
 
+type PositionSide = "long" | "short";
+
 type OpenTradeInfo = {
-  side: "long" | "short";
+  side: PositionSide;
   size: number;
   entry: number;
   sl: number | null;
@@ -182,6 +184,14 @@ function tradeSummaryPhraseClass(status: UiStatus | null): string {
   return "position-summary-phrase";
 }
 
+function normalizePositionSide(side: unknown): PositionSide | null {
+  const normalized = typeof side === "string" ? side.trim().toLowerCase() : "";
+  if (normalized === "long" || normalized === "short") {
+    return normalized;
+  }
+  return null;
+}
+
 function positionSummaryBadgeClass(
   hasOpenPosition: boolean,
   roiPercent: number | null
@@ -209,7 +219,7 @@ function positionSummaryBadgeText(
 }
 
 function positionSideBadgeClass(side: unknown): string {
-  const normalized = typeof side === "string" ? side.trim().toLowerCase() : "";
+  const normalized = normalizePositionSide(side);
   if (normalized === "long") {
     return "badge badge-good";
   }
@@ -223,17 +233,15 @@ function formatPositionSide(side: unknown): string {
   if (side === null || side === undefined) {
     return "N/A";
   }
-  const normalized = String(side).trim().toLowerCase();
-  if (!normalized) {
-    return "N/A";
-  }
+  const normalized = normalizePositionSide(side);
   if (normalized === "long") {
     return "LONG";
   }
   if (normalized === "short") {
     return "SHORT";
   }
-  return normalized.toUpperCase();
+  const fallback = String(side).trim();
+  return fallback ? fallback.toUpperCase() : "N/A";
 }
 
 function unrealizedPnlClass(value: number | null): string {
@@ -819,6 +827,7 @@ function DashboardContent(): JSX.Element {
   const positionUpnlBadgeText = positionSummaryBadgeText(hasOpenPosition, roiPercent);
   const showPositionUpnlBadge = positionUpnlBadgeText !== null;
   const positionUpnlBadgeClass = positionSummaryBadgeClass(hasOpenPosition, roiPercent);
+  const tradeSummaryDirectionSide = hasOpenPosition ? normalizePositionSide(openTradeSide) : null;
   const statusIntentText = statusIntentBadgeText(botStatus);
   const statusIntentClass = statusIntentBadgeClass(botStatus);
   const tradeProgress = computeTradeProgress(sl, entryPrice, tp, lastPrice);
@@ -904,7 +913,14 @@ function DashboardContent(): JSX.Element {
                   }
                 }}
               >
-                <span className="position-accordion-title">Current Trade</span>
+                <span className="position-summary-main">
+                  <span className="position-accordion-title">Current Trade</span>
+                  {tradeSummaryDirectionSide ? (
+                    <span className={positionSideBadgeClass(tradeSummaryDirectionSide)}>
+                      {formatPositionSide(tradeSummaryDirectionSide)}
+                    </span>
+                  ) : null}
+                </span>
                 <span className="position-summary-right">
                   <span className={positionSummaryPhraseClass}>
                     <span>{positionSummaryText}</span>
@@ -916,12 +932,6 @@ function DashboardContent(): JSX.Element {
               </summary>
               <div className="position-accordion-body">
                 <div className="trade-pulse-grid">
-                  <div className="kv-item metric-card">
-                    <span className="kv-label">Trade Side</span>
-                    <span className={positionSideBadgeClass(openTradeInfo?.side ?? data.current_position)}>
-                      {formatPositionSide(openTradeInfo?.side ?? data.current_position)}
-                    </span>
-                  </div>
                   <div className="kv-item metric-card">
                     <span className="kv-label">Entry Price</span>
                     <span className="metric-value">{formatPrice(entryPrice)}</span>
