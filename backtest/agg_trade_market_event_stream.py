@@ -4,11 +4,14 @@ import calendar
 import csv
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from email.utils import parsedate_to_datetime
 import heapq
 from io import BytesIO, TextIOWrapper
 import json
 import os
 from pathlib import Path
+import random
+import time
 from typing import Any, Iterable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -36,6 +39,26 @@ DEFAULT_AGG_TRADE_REST_BASE_URL = os.getenv(
 DEFAULT_AGG_TRADE_CACHE_DIR = os.getenv(
     "SCROOGE_AGG_TRADE_CACHE_DIR",
     "data/agg_trades",
+)
+DEFAULT_AGG_TRADE_REST_RETRY_ATTEMPTS = max(
+    1,
+    int(os.getenv("SCROOGE_AGG_TRADE_REST_RETRY_ATTEMPTS", "8")),
+)
+DEFAULT_AGG_TRADE_REST_RETRY_INITIAL_DELAY_SECONDS = max(
+    0.5,
+    float(os.getenv("SCROOGE_AGG_TRADE_REST_RETRY_INITIAL_DELAY_SECONDS", "5")),
+)
+DEFAULT_AGG_TRADE_REST_RETRY_MAX_DELAY_SECONDS = max(
+    DEFAULT_AGG_TRADE_REST_RETRY_INITIAL_DELAY_SECONDS,
+    float(os.getenv("SCROOGE_AGG_TRADE_REST_RETRY_MAX_DELAY_SECONDS", "90")),
+)
+DEFAULT_AGG_TRADE_REST_RETRY_BACKOFF_MULTIPLIER = max(
+    1.0,
+    float(os.getenv("SCROOGE_AGG_TRADE_REST_RETRY_BACKOFF_MULTIPLIER", "2.0")),
+)
+DEFAULT_AGG_TRADE_REST_RETRY_JITTER_SECONDS = max(
+    0.0,
+    float(os.getenv("SCROOGE_AGG_TRADE_REST_RETRY_JITTER_SECONDS", "1.0")),
 )
 MARKET_EVENT_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
 technical_logger = get_technical_logger()
@@ -484,8 +507,65 @@ def _download_rest_rows(
                 }
             )
             url = f"{base_url}/fapi/v1/aggTrades?{query}"
-            with urlopen(url) as response:  # noqa: S310
-                payload = json.loads(response.read().decode("utf-8"))
+            payload: Any | None = None
+            retry_delay_seconds = DEFAULT_AGG_TRADE_REST_RETRY_INITIAL_DELAY_SECONDS
+            for attempt in range(1, DEFAULT_AGG_TRADE_REST_RETRY_ATTEMPTS + 1):
+                try:
+                    with urlopen(url) as response:  # noqa: S310
+                        payload = json.loads(response.read().decode("utf-8"))
+                    break
+                except HTTPError as exc:
+                    if exc.code != 429 or attempt >= DEFAULT_AGG_TRADE_REST_RETRY_ATTEMPTS:
+                        raise
+                    retry_after_seconds = _parse_retry_after_seconds(
+                        exc.headers.get("Retry-After") if exc.headers is not None else None
+                    )
+                    wait_seconds = retry_after_seconds if retry_after_seconds is not None else retry_delay_seconds
+                    if DEFAULT_AGG_TRADE_REST_RETRY_JITTER_SECONDS > 0:
+                        wait_seconds += random.uniform(0.0, DEFAULT_AGG_TRADE_REST_RETRY_JITTER_SECONDS)
+                    wait_seconds = min(wait_seconds, DEFAULT_AGG_TRADE_REST_RETRY_MAX_DELAY_SECONDS)
+                    technical_logger.warning(
+                        "agg_trade_rest_retry_scheduled symbol=%s attempt=%s/%s retry_in_seconds=%.2f "
+                        "status=%s cursor=%s end_ms=%s error=%s",
+                        symbol,
+                        attempt,
+                        DEFAULT_AGG_TRADE_REST_RETRY_ATTEMPTS,
+                        wait_seconds,
+                        exc.code,
+                        cursor,
+                        end_ms,
+                        exc,
+                    )
+                    time.sleep(wait_seconds)
+                    retry_delay_seconds = min(
+                        DEFAULT_AGG_TRADE_REST_RETRY_MAX_DELAY_SECONDS,
+                        max(retry_delay_seconds, wait_seconds) * DEFAULT_AGG_TRADE_REST_RETRY_BACKOFF_MULTIPLIER,
+                    )
+                except (URLError, OSError) as exc:
+                    if attempt >= DEFAULT_AGG_TRADE_REST_RETRY_ATTEMPTS:
+                        raise
+                    wait_seconds = retry_delay_seconds
+                    if DEFAULT_AGG_TRADE_REST_RETRY_JITTER_SECONDS > 0:
+                        wait_seconds += random.uniform(0.0, DEFAULT_AGG_TRADE_REST_RETRY_JITTER_SECONDS)
+                    wait_seconds = min(wait_seconds, DEFAULT_AGG_TRADE_REST_RETRY_MAX_DELAY_SECONDS)
+                    technical_logger.warning(
+                        "agg_trade_rest_retry_scheduled symbol=%s attempt=%s/%s retry_in_seconds=%.2f "
+                        "status=network cursor=%s end_ms=%s error=%s",
+                        symbol,
+                        attempt,
+                        DEFAULT_AGG_TRADE_REST_RETRY_ATTEMPTS,
+                        wait_seconds,
+                        cursor,
+                        end_ms,
+                        exc,
+                    )
+                    time.sleep(wait_seconds)
+                    retry_delay_seconds = min(
+                        DEFAULT_AGG_TRADE_REST_RETRY_MAX_DELAY_SECONDS,
+                        retry_delay_seconds * DEFAULT_AGG_TRADE_REST_RETRY_BACKOFF_MULTIPLIER,
+                    )
+            if payload is None:
+                raise RuntimeError("agg trade REST retry loop exited without payload")
             if not isinstance(payload, list) or not payload:
                 break
 
@@ -518,6 +598,25 @@ def _download_rest_rows(
             cursor = batch_max_ts + 1
 
     return rows
+
+
+def _parse_retry_after_seconds(value: str | None) -> float | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
 
 
 def _normalize_trade_frame(df: pd.DataFrame) -> pd.DataFrame:
