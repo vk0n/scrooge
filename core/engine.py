@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
 import pandas as pd
@@ -11,13 +11,12 @@ from tqdm import tqdm
 from bot.event_log import emit_event, get_technical_logger
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.trade import can_open_trade, close_position, compute_qty, get_balance, open_position
-from core.feature_engine import FeatureEngine, floor_timestamp_ns, interval_to_ns
+from core.feature_engine import FeatureEngine, floor_ns, interval_to_ns
 from core.indicator_inputs import (
     INDICATOR_COLUMNS,
     IndicatorSelectionPlan,
     indicator_input_mode_for_column,
     indicator_selection_plan,
-    merge_indicator_decision_values,
     normalize_indicator_inputs,
     uses_realtime_indicator_inputs,
 )
@@ -303,6 +302,53 @@ def _event_ts_to_timestamp(value: Any) -> pd.Timestamp | None:
     return ts_value
 
 
+_EPOCH_ORDINAL = datetime(1970, 1, 1).toordinal()
+_NS_PER_SECOND = 1_000_000_000
+
+
+def _naive_datetime_to_ns(dt_value: datetime) -> int:
+    return (
+        ((dt_value.toordinal() - _EPOCH_ORDINAL) * 86_400)
+        + (dt_value.hour * 3_600)
+        + (dt_value.minute * 60)
+        + dt_value.second
+    ) * _NS_PER_SECOND + (dt_value.microsecond * 1_000)
+
+
+def _event_ts_to_ns(value: Any) -> int | None:
+    if isinstance(value, pd.Timestamp):
+        normalized = value.tz_convert(None) if value.tzinfo is not None else value
+        return int(normalized.value)
+
+    if isinstance(value, datetime):
+        normalized = (
+            value.astimezone(timezone.utc).replace(tzinfo=None)
+            if value.tzinfo is not None
+            else value
+        )
+        return _naive_datetime_to_ns(normalized)
+
+    if isinstance(value, (int, float)):
+        numeric_value = float(value)
+        if numeric_value > 10_000_000_000:
+            return int(numeric_value) * 1_000_000
+        return int(numeric_value * _NS_PER_SECOND)
+
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    try:
+        dt_value = datetime.fromisoformat(text_value)
+    except ValueError:
+        ts_value = _event_ts_to_timestamp(text_value)
+        if ts_value is None:
+            return None
+        return int(ts_value.value)
+    if dt_value.tzinfo is not None:
+        dt_value = dt_value.astimezone(timezone.utc).replace(tzinfo=None)
+    return _naive_datetime_to_ns(dt_value)
+
+
 def _interval_to_freq(interval: str) -> str:
     normalized = str(interval or "").strip().lower()
     if normalized.endswith("m"):
@@ -391,7 +437,6 @@ def _build_realtime_snapshot(
     *,
     event_ts: str,
     feature_engine: FeatureEngine,
-    indicator_inputs: dict[str, str],
     selection_plan: IndicatorSelectionPlan,
     discrete_indicator_values: dict[str, float | None] | None = None,
     fallback_small: dict[str, Any] | None = None,
@@ -401,25 +446,39 @@ def _build_realtime_snapshot(
         realtime_indicator_values = feature_engine.realtime_values(
             selected_keys=selection_plan.realtime_keys,
         )
-    indicator_values = merge_indicator_decision_values(
-        indicator_inputs=indicator_inputs,
-        discrete_values=discrete_indicator_values,
-        realtime_values=realtime_indicator_values,
-        selection_plan=selection_plan,
-    )
-    if indicator_values is None:
+    discrete_values = discrete_indicator_values
+    if selection_plan.requires_discrete and discrete_values is None:
+        return None
+    if selection_plan.requires_realtime and realtime_indicator_values is None:
         return None
     price = feature_engine.current_price()
     if price is None and fallback_small is not None:
         price = to_float(fallback_small.get("close"))
     if price is None:
         return None
-    lower = indicator_values["BBL"]
-    mid = indicator_values["BBM"]
-    upper = indicator_values["BBU"]
-    atr = indicator_values["ATR"]
-    rsi = indicator_values["RSI"]
-    ema = indicator_values["EMA"]
+    lower_source = realtime_indicator_values if selection_plan.bbl_mode == "intrabar" else discrete_values
+    mid_source = realtime_indicator_values if selection_plan.bbm_mode == "intrabar" else discrete_values
+    upper_source = realtime_indicator_values if selection_plan.bbu_mode == "intrabar" else discrete_values
+    atr_source = realtime_indicator_values if selection_plan.atr_mode == "intrabar" else discrete_values
+    rsi_source = realtime_indicator_values if selection_plan.rsi_mode == "intrabar" else discrete_values
+    ema_source = realtime_indicator_values if selection_plan.ema_mode == "intrabar" else discrete_values
+    if (
+        lower_source is None
+        or mid_source is None
+        or upper_source is None
+        or atr_source is None
+        or rsi_source is None
+        or ema_source is None
+    ):
+        return None
+    lower = lower_source.get("BBL")
+    mid = mid_source.get("BBM")
+    upper = upper_source.get("BBU")
+    atr = atr_source.get("ATR")
+    rsi = rsi_source.get("RSI")
+    ema = ema_source.get("EMA")
+    if lower is None or mid is None or upper is None or atr is None or rsi is None or ema is None:
+        return None
     return DiscreteRowSnapshot(
         raw_row=None,
         price=price,
@@ -2363,7 +2422,7 @@ def run_realtime_market_event_engine(
         intervals=intervals,
         limits=REALTIME_WARMUP_LIMITS,
     )
-    pending_small_candles: dict[tuple[str, str], CandleClosedEvent] = {}
+    pending_small_candles: dict[tuple[str, str], tuple[CandleClosedEvent, int | None]] = {}
     latest_discrete_indicator_values: dict[str, float | None] | None = None
     iterator = _iter_with_progress(
         market_events,
@@ -2396,16 +2455,20 @@ def run_realtime_market_event_engine(
                 continue
             feature_engine.on_candle_closed(timeframe=timeframe, event=event)
             if timeframe == "small":
-                pending_small_candles[(event.symbol, event.ts)] = event
+                pending_small_candles[(event.symbol, event.ts)] = (event, _event_ts_to_ns(event.open_time))
             continue
 
         if isinstance(event, IndicatorSnapshotEvent) and event.interval == "discrete_snapshot":
             latest_discrete_indicator_values = _indicator_values_from_snapshot_event(event)
             key = (event.symbol, event.ts)
-            pending_candle = pending_small_candles.pop(key, None)
-            if pending_candle is None:
+            pending_candle_entry = pending_small_candles.pop(key, None)
+            if pending_candle_entry is None:
                 continue
-            open_key = pd.Timestamp(pending_candle.open_time).value
+            pending_candle, open_key = pending_candle_entry
+            if open_key is None:
+                open_key = _event_ts_to_ns(pending_candle.open_time)
+            if open_key is None:
+                continue
             if emit_on_price_tick and open_key in tick_seen_small_open_times:
                 continue
             fallback_small = {
@@ -2417,9 +2480,8 @@ def run_realtime_market_event_engine(
                 "volume": float(pending_candle.volume),
             }
             snapshot = _build_realtime_snapshot(
-                event_ts=format_event_timestamp(event.ts),
+                event_ts=(event.ts if isinstance(event.ts, str) else format_event_timestamp(event.ts)),
                 feature_engine=feature_engine,
-                indicator_inputs=indicator_inputs,
                 selection_plan=selection_plan,
                 discrete_indicator_values=latest_discrete_indicator_values,
                 fallback_small=fallback_small,
@@ -2434,17 +2496,16 @@ def run_realtime_market_event_engine(
         if not isinstance(event, PriceTickEvent):
             continue
 
-        event_ts_value = _event_ts_to_timestamp(event.ts)
+        event_ts_ns = _event_ts_to_ns(event.ts)
         price = to_float(event.price)
-        if event_ts_value is None or price is None:
+        if event_ts_ns is None or price is None:
             continue
         processed_price_ticks += 1
-        tick_seen_small_open_times.add(floor_timestamp_ns(event_ts_value, interval_ns=small_interval_ns))
-        feature_engine.on_price_tick(ts_value=event_ts_value, price=price)
+        tick_seen_small_open_times.add(floor_ns(event_ts_ns, interval_ns=small_interval_ns))
+        feature_engine.on_price_tick(ts_ns=event_ts_ns, price=price)
         snapshot = _build_realtime_snapshot(
-            event_ts=format_event_timestamp(event.ts),
+            event_ts=(event.ts if isinstance(event.ts, str) else format_event_timestamp(event.ts)),
             feature_engine=feature_engine,
-            indicator_inputs=indicator_inputs,
             selection_plan=selection_plan,
             discrete_indicator_values=latest_discrete_indicator_values,
         )

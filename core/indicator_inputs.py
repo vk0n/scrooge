@@ -36,6 +36,12 @@ class IndicatorSelectionPlan:
     realtime_keys: tuple[str, ...]
     requires_discrete: bool
     requires_realtime: bool
+    bbl_mode: str
+    bbm_mode: str
+    bbu_mode: str
+    atr_mode: str
+    rsi_mode: str
+    ema_mode: str
 
 
 def _default_indicator_input_mode(strategy_mode: str | None) -> str:
@@ -125,6 +131,12 @@ def _cached_indicator_selection_plan(mode_key: tuple[str, ...]) -> IndicatorSele
         realtime_keys=realtime_keys,
         requires_discrete=any(mode == "closed" for _, mode in column_sources),
         requires_realtime=any(mode == "intrabar" for _, mode in column_sources),
+        bbl_mode=mode_by_key.get("bb", "closed"),
+        bbm_mode=mode_by_key.get("bb", "closed"),
+        bbu_mode=mode_by_key.get("bb", "closed"),
+        atr_mode=mode_by_key.get("atr", "closed"),
+        rsi_mode=mode_by_key.get("rsi", "closed"),
+        ema_mode=mode_by_key.get("ema", "closed"),
     )
 
 

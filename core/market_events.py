@@ -157,23 +157,25 @@ class JsonlMarketEventStore:
         if not self.path.exists():
             return
 
+        loads = json.loads
+        build_market_event = _build_market_event
+        warning = _logger().warning
         with self.path.open("r", encoding="utf-8", errors="replace") as file_obj:
             for line_number, raw_line in enumerate(file_obj, start=1):
-                text = raw_line.strip()
-                if not text:
+                if not raw_line or raw_line == "\n":
                     continue
                 try:
-                    payload = json.loads(text)
+                    payload = loads(raw_line)
                 except json.JSONDecodeError as exc:
-                    _logger().warning("market_event_line_malformed path=%s line=%s error=%s", self.path, line_number, exc)
+                    warning("market_event_line_malformed path=%s line=%s error=%s", self.path, line_number, exc)
                     continue
                 if not isinstance(payload, dict):
-                    _logger().warning("market_event_line_invalid path=%s line=%s expected=json_object", self.path, line_number)
+                    warning("market_event_line_invalid path=%s line=%s expected=json_object", self.path, line_number)
                     continue
                 try:
-                    yield _build_market_event(payload)
+                    yield build_market_event(payload)
                 except Exception as exc:  # noqa: BLE001
-                    _logger().warning("market_event_line_unreadable path=%s line=%s error=%s", self.path, line_number, exc)
+                    warning("market_event_line_unreadable path=%s line=%s error=%s", self.path, line_number, exc)
 
 
 def write_market_event_stream(path: str | Path, events: Iterable[MarketEvent]) -> Path:
@@ -187,85 +189,82 @@ def write_market_event_stream(path: str | Path, events: Iterable[MarketEvent]) -
 
 
 def _build_market_event(payload: dict[str, Any]) -> MarketEvent:
-    event_type = str(payload.get("event_type", "")).strip()
+    event_type = payload.get("event_type", "")
     if event_type == "price_tick":
         return PriceTickEvent(
-            symbol=str(payload["symbol"]),
-            ts=str(payload["ts"]),
-            price=float(payload["price"]),
-            source=str(payload.get("source", "last_price")),
+            symbol=payload["symbol"],
+            ts=payload["ts"],
+            price=payload["price"],
+            source=payload.get("source", "last_price"),
         )
     if event_type == "mark_price":
         return MarkPriceEvent(
-            symbol=str(payload["symbol"]),
-            ts=str(payload["ts"]),
-            mark_price=float(payload["mark_price"]),
-            funding_rate=(float(payload["funding_rate"]) if payload.get("funding_rate") is not None else None),
-            next_funding_time=(str(payload["next_funding_time"]) if payload.get("next_funding_time") else None),
+            symbol=payload["symbol"],
+            ts=payload["ts"],
+            mark_price=payload["mark_price"],
+            funding_rate=payload.get("funding_rate"),
+            next_funding_time=payload.get("next_funding_time"),
         )
     if event_type == "candle_closed":
         return CandleClosedEvent(
-            symbol=str(payload["symbol"]),
-            ts=str(payload["ts"]),
-            interval=str(payload["interval"]),
-            open_time=str(payload["open_time"]),
-            close_time=str(payload["close_time"]),
-            open=float(payload["open"]),
-            high=float(payload["high"]),
-            low=float(payload["low"]),
-            close=float(payload["close"]),
-            volume=float(payload["volume"]),
+            symbol=payload["symbol"],
+            ts=payload["ts"],
+            interval=payload["interval"],
+            open_time=payload["open_time"],
+            close_time=payload["close_time"],
+            open=payload["open"],
+            high=payload["high"],
+            low=payload["low"],
+            close=payload["close"],
+            volume=payload["volume"],
         )
     if event_type == "indicator_snapshot":
-        raw_values = payload.get("values") or {}
-        values = {
-            str(key): (float(value) if value is not None else None)
-            for key, value in raw_values.items()
-        }
+        raw_values = payload.get("values")
+        values = raw_values if isinstance(raw_values, dict) else {}
         return IndicatorSnapshotEvent(
-            symbol=str(payload["symbol"]),
-            ts=str(payload["ts"]),
-            interval=str(payload["interval"]),
+            symbol=payload["symbol"],
+            ts=payload["ts"],
+            interval=payload["interval"],
             values=values,
         )
     if event_type == "account_balance":
         return AccountBalanceEvent(
-            asset=str(payload["asset"]),
-            ts=str(payload["ts"]),
-            wallet_balance=float(payload["wallet_balance"]),
-            cross_wallet_balance=(float(payload["cross_wallet_balance"]) if payload.get("cross_wallet_balance") is not None else None),
-            balance_delta=(float(payload["balance_delta"]) if payload.get("balance_delta") is not None else None),
-            source=str(payload.get("source", "account_update")),
+            asset=payload["asset"],
+            ts=payload["ts"],
+            wallet_balance=payload["wallet_balance"],
+            cross_wallet_balance=payload.get("cross_wallet_balance"),
+            balance_delta=payload.get("balance_delta"),
+            source=payload.get("source", "account_update"),
         )
     if event_type == "position_snapshot":
         return PositionSnapshotEvent(
-            symbol=str(payload["symbol"]),
-            ts=str(payload["ts"]),
-            position_amt=float(payload["position_amt"]),
-            entry_price=(float(payload["entry_price"]) if payload.get("entry_price") is not None else None),
-            unrealized_pnl=(float(payload["unrealized_pnl"]) if payload.get("unrealized_pnl") is not None else None),
-            position_side=(str(payload["position_side"]) if payload.get("position_side") else None),
-            source=str(payload.get("source", "account_update")),
+            symbol=payload["symbol"],
+            ts=payload["ts"],
+            position_amt=payload["position_amt"],
+            entry_price=payload.get("entry_price"),
+            unrealized_pnl=payload.get("unrealized_pnl"),
+            position_side=payload.get("position_side"),
+            source=payload.get("source", "account_update"),
         )
     if event_type == "order_trade_update":
         return OrderTradeUpdateEvent(
-            symbol=str(payload["symbol"]),
-            ts=str(payload["ts"]),
-            order_side=(str(payload["order_side"]) if payload.get("order_side") else None),
-            order_type=(str(payload["order_type"]) if payload.get("order_type") else None),
-            execution_type=(str(payload["execution_type"]) if payload.get("execution_type") else None),
-            order_status=(str(payload["order_status"]) if payload.get("order_status") else None),
-            order_id=(int(payload["order_id"]) if payload.get("order_id") is not None else None),
-            trade_id=(int(payload["trade_id"]) if payload.get("trade_id") is not None else None),
-            last_filled_qty=(float(payload["last_filled_qty"]) if payload.get("last_filled_qty") is not None else None),
-            accumulated_filled_qty=(float(payload["accumulated_filled_qty"]) if payload.get("accumulated_filled_qty") is not None else None),
-            last_filled_price=(float(payload["last_filled_price"]) if payload.get("last_filled_price") is not None else None),
-            average_price=(float(payload["average_price"]) if payload.get("average_price") is not None else None),
-            realized_pnl=(float(payload["realized_pnl"]) if payload.get("realized_pnl") is not None else None),
-            commission_asset=(str(payload["commission_asset"]) if payload.get("commission_asset") else None),
-            commission=(float(payload["commission"]) if payload.get("commission") is not None else None),
-            reduce_only=bool(payload.get("reduce_only", False)),
-            source=str(payload.get("source", "order_trade_update")),
+            symbol=payload["symbol"],
+            ts=payload["ts"],
+            order_side=payload.get("order_side"),
+            order_type=payload.get("order_type"),
+            execution_type=payload.get("execution_type"),
+            order_status=payload.get("order_status"),
+            order_id=payload.get("order_id"),
+            trade_id=payload.get("trade_id"),
+            last_filled_qty=payload.get("last_filled_qty"),
+            accumulated_filled_qty=payload.get("accumulated_filled_qty"),
+            last_filled_price=payload.get("last_filled_price"),
+            average_price=payload.get("average_price"),
+            realized_pnl=payload.get("realized_pnl"),
+            commission_asset=payload.get("commission_asset"),
+            commission=payload.get("commission"),
+            reduce_only=payload.get("reduce_only", False),
+            source=payload.get("source", "order_trade_update"),
         )
     raise ValueError(f"Unknown market event type: {event_type or '<empty>'}")
 

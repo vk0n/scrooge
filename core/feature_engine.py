@@ -34,9 +34,8 @@ def interval_to_ns(interval: str) -> int:
     return pd.Timedelta(_interval_to_freq(interval)).value
 
 
-def floor_timestamp_ns(ts_value: pd.Timestamp, *, interval_ns: int) -> int:
-    normalized_ts = ts_value.tz_convert(None) if ts_value.tzinfo is not None else ts_value
-    return (normalized_ts.value // interval_ns) * interval_ns
+def floor_ns(ts_ns: int, *, interval_ns: int) -> int:
+    return (int(ts_ns) // interval_ns) * interval_ns
 
 
 def _to_float(value: Any) -> float | None:
@@ -119,8 +118,8 @@ class TimeframeState:
             self.forming = None
             self._forming_open_ns = None
 
-    def update_from_price_tick(self, ts_value: pd.Timestamp, price: float) -> None:
-        open_time_ns = floor_timestamp_ns(ts_value, interval_ns=self.interval_ns)
+    def update_from_price_tick(self, ts_ns: int, price: float) -> None:
+        open_time_ns = floor_ns(ts_ns, interval_ns=self.interval_ns)
         if self.forming is None or self._forming_open_ns != open_time_ns:
             self.forming = Candle(
                 open_time=pd.Timestamp(open_time_ns),
@@ -496,13 +495,11 @@ class FeatureEngine:
             timeframe_state = self.timeframes[binding.spec.timeframe]
             binding.runtime.bootstrap(_iter_feature_inputs(timeframe_state.closed, input_kind=binding.spec.input_kind))
 
-    def on_price_tick(self, *, ts_value: pd.Timestamp, price: float) -> None:
-        normalized_ts = ts_value if isinstance(ts_value, pd.Timestamp) else pd.Timestamp(ts_value)
-        if normalized_ts.tzinfo is not None:
-            normalized_ts = normalized_ts.tz_convert(None)
+    def on_price_tick(self, *, ts_ns: int, price: float) -> None:
+        normalized_ts_ns = int(ts_ns)
         price_value = float(price)
         for state in self.timeframes.values():
-            state.update_from_price_tick(normalized_ts, price_value)
+            state.update_from_price_tick(normalized_ts_ns, price_value)
 
     def on_candle_closed(self, *, timeframe: str, event: CandleClosedEvent) -> None:
         candle = Candle.from_event(event)
