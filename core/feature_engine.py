@@ -467,6 +467,7 @@ class FeatureEngine:
             binding.spec.key: binding
             for binding in self._features
         }
+        self._selected_bindings_cache: dict[tuple[str, ...], tuple[FeatureBinding, ...]] = {}
         self._features_by_timeframe: dict[str, tuple[FeatureBinding, ...]] = {
             timeframe: tuple(binding for binding in self._features if binding.spec.timeframe == timeframe)
             for timeframe in self.timeframes
@@ -517,41 +518,44 @@ class FeatureEngine:
         return None
 
     def closed_values(self) -> dict[str, float | None] | None:
-        return self._merge_binding_payloads(
-            self._features,
-            payload_builder=lambda binding: binding.runtime.closed_payload(),
-        )
+        values: dict[str, float | None] = {}
+        saw_value = False
+        for binding in self._features:
+            payload = binding.runtime.closed_payload()
+            if payload is None:
+                continue
+            for key, value in payload.items():
+                values[key] = value
+                saw_value = saw_value or value is not None
+        if not values or not saw_value:
+            return None
+        return values
 
     def realtime_values(
         self,
         *,
         selected_keys: tuple[str, ...] | None = None,
     ) -> dict[str, float | None] | None:
-        bindings = self._features if selected_keys is None else tuple(
-            self._feature_by_key[key]
-            for key in selected_keys
-            if key in self._feature_by_key
-        )
-        return self._merge_binding_payloads(
-            bindings,
-            payload_builder=lambda binding: binding.runtime.intrabar_payload(
+        if selected_keys is None:
+            bindings = self._features
+        else:
+            bindings = self._selected_bindings_cache.get(selected_keys)
+            if bindings is None:
+                bindings = tuple(
+                    self._feature_by_key[key]
+                    for key in selected_keys
+                    if key in self._feature_by_key
+                )
+                self._selected_bindings_cache[selected_keys] = bindings
+        values: dict[str, float | None] = {}
+        saw_value = False
+        for binding in bindings:
+            payload = binding.runtime.intrabar_payload(
                 _feature_input_from_forming_candle(
                     self.timeframes[binding.spec.timeframe].forming,
                     input_kind=binding.spec.input_kind,
                 )
-            ),
-        )
-
-    def _merge_binding_payloads(
-        self,
-        bindings: Iterable[FeatureBinding],
-        *,
-        payload_builder: Callable[[FeatureBinding], dict[str, float | None] | None],
-    ) -> dict[str, float | None] | None:
-        values: dict[str, float | None] = {}
-        saw_value = False
-        for binding in bindings:
-            payload = payload_builder(binding)
+            )
             if payload is None:
                 continue
             for key, value in payload.items():

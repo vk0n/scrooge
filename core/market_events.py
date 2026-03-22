@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 import json
 import logging
 import os
@@ -136,7 +136,105 @@ def resolve_market_event_stream_path(path: str | Path | None = None) -> Path:
 
 
 def market_event_to_dict(event: MarketEvent) -> dict[str, Any]:
-    return asdict(event)
+    event_type = getattr(event, "event_type", "")
+    if event_type == "price_tick":
+        return {
+            "symbol": event.symbol,
+            "ts": event.ts,
+            "price": event.price,
+            "source": event.source,
+            "schema_version": event.schema_version,
+            "event_type": event.event_type,
+        }
+    if event_type == "mark_price":
+        return {
+            "symbol": event.symbol,
+            "ts": event.ts,
+            "mark_price": event.mark_price,
+            "funding_rate": event.funding_rate,
+            "next_funding_time": event.next_funding_time,
+            "schema_version": event.schema_version,
+            "event_type": event.event_type,
+        }
+    if event_type == "candle_closed":
+        return {
+            "symbol": event.symbol,
+            "ts": event.ts,
+            "interval": event.interval,
+            "open_time": event.open_time,
+            "close_time": event.close_time,
+            "open": event.open,
+            "high": event.high,
+            "low": event.low,
+            "close": event.close,
+            "volume": event.volume,
+            "schema_version": event.schema_version,
+            "event_type": event.event_type,
+        }
+    if event_type == "indicator_snapshot":
+        return {
+            "symbol": event.symbol,
+            "ts": event.ts,
+            "interval": event.interval,
+            "values": dict(event.values),
+            "schema_version": event.schema_version,
+            "event_type": event.event_type,
+        }
+    if event_type == "account_balance":
+        return {
+            "asset": event.asset,
+            "ts": event.ts,
+            "wallet_balance": event.wallet_balance,
+            "cross_wallet_balance": event.cross_wallet_balance,
+            "balance_delta": event.balance_delta,
+            "source": event.source,
+            "schema_version": event.schema_version,
+            "event_type": event.event_type,
+        }
+    if event_type == "position_snapshot":
+        return {
+            "symbol": event.symbol,
+            "ts": event.ts,
+            "position_amt": event.position_amt,
+            "entry_price": event.entry_price,
+            "unrealized_pnl": event.unrealized_pnl,
+            "position_side": event.position_side,
+            "source": event.source,
+            "schema_version": event.schema_version,
+            "event_type": event.event_type,
+        }
+    if event_type == "order_trade_update":
+        return {
+            "symbol": event.symbol,
+            "ts": event.ts,
+            "order_side": event.order_side,
+            "order_type": event.order_type,
+            "execution_type": event.execution_type,
+            "order_status": event.order_status,
+            "order_id": event.order_id,
+            "trade_id": event.trade_id,
+            "last_filled_qty": event.last_filled_qty,
+            "accumulated_filled_qty": event.accumulated_filled_qty,
+            "last_filled_price": event.last_filled_price,
+            "average_price": event.average_price,
+            "realized_pnl": event.realized_pnl,
+            "commission_asset": event.commission_asset,
+            "commission": event.commission,
+            "reduce_only": event.reduce_only,
+            "source": event.source,
+            "schema_version": event.schema_version,
+            "event_type": event.event_type,
+        }
+    raise ValueError(f"Unknown market event type: {event_type or '<empty>'}")
+
+
+def serialize_market_event(event: MarketEvent) -> str:
+    return json.dumps(
+        market_event_to_dict(event),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=False,
+    )
 
 
 def market_event_from_dict(payload: dict[str, Any]) -> MarketEvent:
@@ -149,7 +247,7 @@ class JsonlMarketEventStore:
 
     def append(self, event: MarketEvent) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        serialized = json.dumps(market_event_to_dict(event), ensure_ascii=True, sort_keys=True)
+        serialized = serialize_market_event(event)
         with self.path.open("a", encoding="utf-8") as file_obj:
             file_obj.write(serialized + "\n")
 
@@ -181,9 +279,10 @@ class JsonlMarketEventStore:
 def write_market_event_stream(path: str | Path, events: Iterable[MarketEvent]) -> Path:
     target_path = Path(path).expanduser()
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    serialize = serialize_market_event
     with target_path.open("w", encoding="utf-8") as file_obj:
         for event in events:
-            file_obj.write(json.dumps(market_event_to_dict(event), ensure_ascii=True, sort_keys=True))
+            file_obj.write(serialize(event))
             file_obj.write("\n")
     return target_path
 

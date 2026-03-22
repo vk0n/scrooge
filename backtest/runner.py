@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import csv
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,7 +12,8 @@ import pandas as pd
 import backtest.dataset as dataset_module
 from backtest.agg_trade_market_event_stream import (
     AggTradeMarketEventStreamSummary,
-    write_historical_agg_trade_market_event_stream,
+    AggTradeMarketEventStreamSession,
+    build_historical_agg_trade_market_event_stream_session,
 )
 from backtest.discrete_event_stream import (
     write_discrete_market_event_stream,
@@ -312,6 +314,7 @@ def run_backtest(
     logger = technical_logger or get_technical_logger()
     market_event_projection: DiscreteTapeProjectionSummary | None = None
     agg_trade_stream_summary: AggTradeMarketEventStreamSummary | None = None
+    agg_trade_stream_session: AggTradeMarketEventStreamSession | None = None
     market_events: list[MarketEvent] | None = None
     market_event_iter_factory: Callable[[], Any] | None = None
     needs_reporting = bool(
@@ -435,7 +438,7 @@ def run_backtest(
         complete_stage()
         logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
     elif config.backtest_input_mode == "agg_trade_stream":
-        df, agg_trade_stream_summary = write_historical_agg_trade_market_event_stream(
+        agg_trade_stream_session = build_historical_agg_trade_market_event_stream_session(
             symbol=config.symbol,
             backtest_period_days=config.backtest_period_days,
             backtest_period_start_time=config.backtest_period_start_time,
@@ -450,34 +453,6 @@ def run_backtest(
             cache_dir=config.agg_trade_cache_dir,
             progress_reporter=progress_reporter,
         )
-        if agg_trade_stream_summary.total_events <= 0:
-            raise ValueError("No market events were built from historical aggTrades.")
-        market_event_iter_factory = lambda path=config.market_event_stream_path: iter_market_event_stream(path)
-        logger.info(
-            "backtest_agg_trade_market_event_stream_written source=%s cache_hit=%s cache_path=%s raw_trades=%s price_ticks=%s small_candles=%s medium_candles=%s big_candles=%s indicator_snapshots=%s total_events=%s path=%s",
-            agg_trade_stream_summary.source,
-            agg_trade_stream_summary.cache_hit,
-            agg_trade_stream_summary.cache_path,
-            agg_trade_stream_summary.raw_agg_trades,
-            agg_trade_stream_summary.price_ticks,
-            agg_trade_stream_summary.candle_events_small,
-            agg_trade_stream_summary.candle_events_medium,
-            agg_trade_stream_summary.candle_events_big,
-            agg_trade_stream_summary.indicator_snapshots,
-            agg_trade_stream_summary.total_events,
-            config.market_event_stream_path,
-        )
-        start_stage("Project Market Tape", 1)
-        tape = build_discrete_market_tape(df, symbol=config.symbol)
-        advance_stage()
-        complete_stage()
-        if not tape:
-            raise ValueError("Historical aggTrade stream produced no discrete tape rows.")
-        start_stage("Write Market Tape", 1)
-        write_discrete_market_tape(config.market_tape_path, tape)
-        advance_stage()
-        complete_stage()
-        logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
     else:
         start_stage("Dataset Build", 1)
         df = dataset_builder(
@@ -539,20 +514,68 @@ def run_backtest(
         or config.backtest_input_mode in {"market_event_stream", "agg_trade_stream"}
     ):
         if market_events is None and market_event_iter_factory is None:
-            raise ValueError("market event strategy runner requires a market event source")
-        start_stage("Strategy Replay", max(1, market_event_total or 0))
-        final_balance, trades, balance_history, state = market_event_strategy_runner(
-            market_events if market_events is not None else market_event_iter_factory(),
-            candle_interval=str(config.intervals["small"]),
-            intervals={key: str(value) for key, value in config.intervals.items()},
-            market_event_total=market_event_total,
-            strategy_mode=config.strategy_mode,
-            execution_mode=config.execution_mode,
-            strict_indicator_alignment=False,
-            progress_reporter=progress_reporter,
-            **strategy_kwargs,
-        )
-        complete_stage()
+            if agg_trade_stream_session is None:
+                raise ValueError("market event strategy runner requires a market event source")
+        replay_stage_label = "AggTrades + Replay" if agg_trade_stream_session is not None else "Strategy Replay"
+        replay_stage_total = market_event_total if market_event_total is not None else 0
+        start_stage(replay_stage_label, replay_stage_total)
+        if agg_trade_stream_session is not None:
+            with closing(agg_trade_stream_session.iter_events(report_progress=False)) as streamed_events:
+                final_balance, trades, balance_history, state = market_event_strategy_runner(
+                    streamed_events,
+                    candle_interval=str(config.intervals["small"]),
+                    intervals={key: str(value) for key, value in config.intervals.items()},
+                    market_event_total=None,
+                    strategy_mode=config.strategy_mode,
+                    execution_mode=config.execution_mode,
+                    strict_indicator_alignment=False,
+                    progress_reporter=progress_reporter,
+                    **strategy_kwargs,
+                )
+            complete_stage()
+            df = agg_trade_stream_session.indicator_frame
+            agg_trade_stream_summary = agg_trade_stream_session.summary
+            if agg_trade_stream_summary.total_events <= 0:
+                raise ValueError("No market events were built from historical aggTrades.")
+            logger.info(
+                "backtest_agg_trade_market_event_stream_written source=%s cache_hit=%s cache_path=%s raw_trades=%s price_ticks=%s small_candles=%s medium_candles=%s big_candles=%s indicator_snapshots=%s total_events=%s path=%s",
+                agg_trade_stream_summary.source,
+                agg_trade_stream_summary.cache_hit,
+                agg_trade_stream_summary.cache_path,
+                agg_trade_stream_summary.raw_agg_trades,
+                agg_trade_stream_summary.price_ticks,
+                agg_trade_stream_summary.candle_events_small,
+                agg_trade_stream_summary.candle_events_medium,
+                agg_trade_stream_summary.candle_events_big,
+                agg_trade_stream_summary.indicator_snapshots,
+                agg_trade_stream_summary.total_events,
+                config.market_event_stream_path,
+            )
+            market_event_iter_factory = lambda path=config.market_event_stream_path: iter_market_event_stream(path)
+            start_stage("Project Market Tape", 1)
+            tape = build_discrete_market_tape(df, symbol=config.symbol)
+            advance_stage()
+            complete_stage()
+            if not tape:
+                raise ValueError("Historical aggTrade stream produced no discrete tape rows.")
+            start_stage("Write Market Tape", 1)
+            write_discrete_market_tape(config.market_tape_path, tape)
+            advance_stage()
+            complete_stage()
+            logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
+        else:
+            final_balance, trades, balance_history, state = market_event_strategy_runner(
+                market_events if market_events is not None else market_event_iter_factory(),
+                candle_interval=str(config.intervals["small"]),
+                intervals={key: str(value) for key, value in config.intervals.items()},
+                market_event_total=market_event_total,
+                strategy_mode=config.strategy_mode,
+                execution_mode=config.execution_mode,
+                strict_indicator_alignment=False,
+                progress_reporter=progress_reporter,
+                **strategy_kwargs,
+            )
+            complete_stage()
     else:
         start_stage("Strategy Replay", max(1, len(tape) - 1))
         final_balance, trades, balance_history, state = strategy_runner(

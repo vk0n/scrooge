@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import calendar
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 import heapq
 from io import BytesIO, TextIOWrapper
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -22,7 +22,7 @@ from backtest.progress import BacktestProgressReporter
 from backtest.time_windows import resolve_backtest_time_range
 from bot.event_log import get_technical_logger
 from core.feature_engine import FeatureFrameBuilder, build_feature_frame, merge_feature_frames
-from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent, market_event_to_dict
+from core.market_events import CandleClosedEvent, IndicatorSnapshotEvent, MarketEvent, PriceTickEvent, serialize_market_event
 
 
 DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL = os.getenv(
@@ -56,6 +56,45 @@ class AggTradeMarketEventStreamSummary:
     total_events: int
     first_trade_ts: str | None
     last_trade_ts: str | None
+
+
+@dataclass(slots=True)
+class AggTradeMarketEventStreamSession:
+    symbol: str
+    backtest_period_days: int
+    backtest_period_end_time: str
+    backtest_period_start_time: str
+    intervals: dict[str, str]
+    output_path: str | Path
+    source: str = "archive"
+    tick_interval: str = "1s"
+    archive_base_url: str = DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL
+    rest_base_url: str = DEFAULT_AGG_TRADE_REST_BASE_URL
+    cache_enabled: bool = True
+    cache_dir: str | Path | None = DEFAULT_AGG_TRADE_CACHE_DIR
+    progress_reporter: BacktestProgressReporter | None = None
+    _indicator_frames: list[pd.DataFrame] = field(init=False, default_factory=list)
+    _indicator_df: pd.DataFrame | None = field(init=False, default=None)
+    _summary: AggTradeMarketEventStreamSummary | None = field(init=False, default=None)
+    _started: bool = field(init=False, default=False)
+
+    @property
+    def indicator_frame(self) -> pd.DataFrame:
+        if self._indicator_df is None:
+            raise RuntimeError("agg trade market event stream session has not completed")
+        return self._indicator_df
+
+    @property
+    def summary(self) -> AggTradeMarketEventStreamSummary:
+        if self._summary is None:
+            raise RuntimeError("agg trade market event stream session has not completed")
+        return self._summary
+
+    def iter_events(self, *, report_progress: bool = True) -> Iterator[MarketEvent]:
+        if self._started:
+            raise RuntimeError("agg trade market event stream session can only be iterated once")
+        self._started = True
+        yield from _iter_historical_agg_trade_market_events(self, report_progress=report_progress)
 
 
 def _format_ts(value: datetime | pd.Timestamp) -> str:
@@ -631,22 +670,88 @@ def write_historical_agg_trade_market_event_stream(
     cache_dir: str | Path | None = DEFAULT_AGG_TRADE_CACHE_DIR,
     progress_reporter: BacktestProgressReporter | None = None,
 ) -> tuple[pd.DataFrame, AggTradeMarketEventStreamSummary]:
-    archive_base_url = str(archive_base_url or DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL).strip().rstrip("/")
-    rest_base_url = str(rest_base_url or DEFAULT_AGG_TRADE_REST_BASE_URL).strip().rstrip("/")
-    time_range = resolve_backtest_time_range(
+    session = build_historical_agg_trade_market_event_stream_session(
+        symbol=symbol,
         backtest_period_days=backtest_period_days,
         backtest_period_end_time=backtest_period_end_time,
         backtest_period_start_time=backtest_period_start_time,
+        intervals=intervals,
+        output_path=output_path,
+        source=source,
+        tick_interval=tick_interval,
+        archive_base_url=archive_base_url,
+        rest_base_url=rest_base_url,
+        cache_enabled=cache_enabled,
+        cache_dir=cache_dir,
+        progress_reporter=progress_reporter,
+    )
+    for _ in session.iter_events(report_progress=True):
+        pass
+    return session.indicator_frame, session.summary
+
+
+def build_historical_agg_trade_market_event_stream_session(
+    *,
+    symbol: str,
+    backtest_period_days: int,
+    backtest_period_end_time: str,
+    backtest_period_start_time: str,
+    intervals: dict[str, str],
+    output_path: str | Path,
+    source: str = "archive",
+    tick_interval: str = "1s",
+    archive_base_url: str = DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL,
+    rest_base_url: str = DEFAULT_AGG_TRADE_REST_BASE_URL,
+    cache_enabled: bool = True,
+    cache_dir: str | Path | None = DEFAULT_AGG_TRADE_CACHE_DIR,
+    progress_reporter: BacktestProgressReporter | None = None,
+) -> AggTradeMarketEventStreamSession:
+    return AggTradeMarketEventStreamSession(
+        symbol=symbol,
+        backtest_period_days=backtest_period_days,
+        backtest_period_end_time=backtest_period_end_time,
+        backtest_period_start_time=backtest_period_start_time,
+        intervals={key: str(value) for key, value in intervals.items()},
+        output_path=output_path,
+        source=source,
+        tick_interval=tick_interval,
+        archive_base_url=archive_base_url,
+        rest_base_url=rest_base_url,
+        cache_enabled=cache_enabled,
+        cache_dir=cache_dir,
+        progress_reporter=progress_reporter,
+    )
+
+
+def _iter_historical_agg_trade_market_events(
+    session: AggTradeMarketEventStreamSession,
+    *,
+    report_progress: bool,
+) -> Iterator[MarketEvent]:
+    archive_base_url = str(session.archive_base_url or DEFAULT_AGG_TRADE_ARCHIVE_BASE_URL).strip().rstrip("/")
+    rest_base_url = str(session.rest_base_url or DEFAULT_AGG_TRADE_REST_BASE_URL).strip().rstrip("/")
+    time_range = resolve_backtest_time_range(
+        backtest_period_days=session.backtest_period_days,
+        backtest_period_end_time=session.backtest_period_end_time,
+        backtest_period_start_time=session.backtest_period_start_time,
     )
     start_time, end_time = time_range.start_time, time_range.end_time
     requested_days = _iter_requested_days(start_time, end_time)
+    empty_df = pd.DataFrame(
+        columns=["open_time", "open", "high", "low", "close", "volume", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"]
+    )
+    target_path = Path(session.output_path).expanduser()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    archive_cache_path = _resolve_archive_day_cache_dir(cache_dir=session.cache_dir, symbol=session.symbol)
+
     if not requested_days:
-        empty_df = pd.DataFrame(columns=["open_time", "open", "high", "low", "close", "volume", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"])
-        return empty_df, AggTradeMarketEventStreamSummary(
+        target_path.write_text("", encoding="utf-8")
+        session._indicator_df = empty_df.copy()
+        session._summary = AggTradeMarketEventStreamSummary(
             source="historical_agg_trade",
-            symbol=symbol,
+            symbol=session.symbol,
             cache_hit=False,
-            cache_path=str(_resolve_archive_day_cache_dir(cache_dir=cache_dir, symbol=symbol)) if cache_dir else None,
+            cache_path=str(archive_cache_path) if archive_cache_path is not None else None,
             raw_agg_trades=0,
             price_ticks=0,
             candle_events_small=0,
@@ -657,118 +762,121 @@ def write_historical_agg_trade_market_event_stream(
             first_trade_ts=None,
             last_trade_ts=None,
         )
+        return
 
-    small_interval = str(intervals["small"])
-    medium_interval = str(intervals["medium"])
-    big_interval = str(intervals["big"])
+    small_interval = str(session.intervals["small"])
+    medium_interval = str(session.intervals["medium"])
+    big_interval = str(session.intervals["big"])
 
-    indicator_frames: list[pd.DataFrame] = []
     raw_agg_trades = 0
     first_trade_ts: str | None = None
     last_trade_ts: str | None = None
     sources_seen: set[str] = set()
     all_days_from_cache = True
-    archive_cache_path = _resolve_archive_day_cache_dir(cache_dir=cache_dir, symbol=symbol)
     feature_builder = FeatureFrameBuilder()
-    empty_df = pd.DataFrame(
-        columns=["open_time", "open", "high", "low", "close", "volume", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"]
-    )
-    target_path = Path(output_path).expanduser()
-    target_path.parent.mkdir(parents=True, exist_ok=True)
     price_tick_count = 0
     small_candle_count = 0
     medium_candle_count = 0
     big_candle_count = 0
     indicator_snapshot_count = 0
+    progress_started = report_progress and session.progress_reporter is not None
 
-    with target_path.open("w", encoding="utf-8") as file_obj:
-        if progress_reporter is not None:
-            progress_reporter.start_stage("aggTrades Stream", len(requested_days))
-        with tqdm(requested_days, **_tqdm_kwargs(desc="aggTrades Stream", unit="day", disable=progress_reporter is not None)) as pass_days:
-            for day_value in pass_days:
-                day_df, cache_hit, day_source = _load_archive_trade_day_frame(
-                    symbol=symbol,
-                    day_value=day_value,
-                    start_time=start_time,
-                    end_time=end_time,
-                    source=source,
-                    archive_base_url=archive_base_url,
-                    rest_base_url=rest_base_url,
-                    cache_enabled=cache_enabled,
-                    cache_dir=cache_dir,
-                )
-                all_days_from_cache = all_days_from_cache and cache_hit
-                sources_seen.add(day_source)
-                if not day_df.empty:
-                    raw_agg_trades += len(day_df)
-                    first_trade_ts = first_trade_ts or _format_ts(day_df["ts"].iloc[0])
-                    last_trade_ts = _format_ts(day_df["ts"].iloc[-1])
-                    price_tick_events = _build_price_tick_events(
-                        day_df,
-                        symbol=symbol,
-                        tick_interval=tick_interval,
-                        source_label=f"historical_agg_trade_{day_source}",
+    if progress_started:
+        session.progress_reporter.start_stage("aggTrades Stream", len(requested_days))
+
+    try:
+        with target_path.open("w", encoding="utf-8") as file_obj:
+            with tqdm(
+                requested_days,
+                **_tqdm_kwargs(desc="aggTrades Stream", unit="day", disable=(not report_progress) or session.progress_reporter is not None),
+            ) as pass_days:
+                for day_value in pass_days:
+                    day_df, cache_hit, day_source = _load_archive_trade_day_frame(
+                        symbol=session.symbol,
+                        day_value=day_value,
+                        start_time=start_time,
+                        end_time=end_time,
+                        source=session.source,
+                        archive_base_url=archive_base_url,
+                        rest_base_url=rest_base_url,
+                        cache_enabled=session.cache_enabled,
+                        cache_dir=session.cache_dir,
                     )
-                else:
-                    price_tick_events = []
-                small_day = _resample_trade_frame_to_candles(day_df, interval=small_interval)
-                medium_day = _resample_candle_frame(small_day, interval=medium_interval)
-                big_day = _resample_candle_frame(small_day, interval=big_interval)
-                medium_feature_day = feature_builder.update_timeframe_frame(timeframe="medium", df=medium_day)
-                big_feature_day = feature_builder.update_timeframe_frame(timeframe="big", df=big_day)
-                indicator_day = merge_feature_frames(
-                    df_small=small_day,
-                    timeframe_feature_frames={
-                        "medium": medium_feature_day,
-                        "big": big_feature_day,
-                    },
-                    output_columns=feature_builder.output_columns,
-                )
-                if not indicator_day.empty:
-                    indicator_frames.append(indicator_day)
+                    all_days_from_cache = all_days_from_cache and cache_hit
+                    sources_seen.add(day_source)
+                    if not day_df.empty:
+                        raw_agg_trades += len(day_df)
+                        first_trade_ts = first_trade_ts or _format_ts(day_df["ts"].iloc[0])
+                        last_trade_ts = _format_ts(day_df["ts"].iloc[-1])
+                        price_tick_events = _build_price_tick_events(
+                            day_df,
+                            symbol=session.symbol,
+                            tick_interval=session.tick_interval,
+                            source_label=f"historical_agg_trade_{day_source}",
+                        )
+                    else:
+                        price_tick_events = []
+                    small_day = _resample_trade_frame_to_candles(day_df, interval=small_interval)
+                    medium_day = _resample_candle_frame(small_day, interval=medium_interval)
+                    big_day = _resample_candle_frame(small_day, interval=big_interval)
+                    medium_feature_day = feature_builder.update_timeframe_frame(timeframe="medium", df=medium_day)
+                    big_feature_day = feature_builder.update_timeframe_frame(timeframe="big", df=big_day)
+                    indicator_day = merge_feature_frames(
+                        df_small=small_day,
+                        timeframe_feature_frames={
+                            "medium": medium_feature_day,
+                            "big": big_feature_day,
+                        },
+                        output_columns=feature_builder.output_columns,
+                    )
+                    if not indicator_day.empty:
+                        session._indicator_frames.append(indicator_day)
 
-                small_candle_events = _build_candle_events(small_day, symbol=symbol, interval=small_interval)
-                medium_candle_events = _build_candle_events(medium_day, symbol=symbol, interval=medium_interval)
-                big_candle_events = _build_candle_events(big_day, symbol=symbol, interval=big_interval)
-                indicator_snapshot_events = _build_indicator_snapshot_events(
-                    indicator_day,
-                    symbol=symbol,
-                    small_interval=small_interval,
-                )
+                    small_candle_events = _build_candle_events(small_day, symbol=session.symbol, interval=small_interval)
+                    medium_candle_events = _build_candle_events(medium_day, symbol=session.symbol, interval=medium_interval)
+                    big_candle_events = _build_candle_events(big_day, symbol=session.symbol, interval=big_interval)
+                    indicator_snapshot_events = _build_indicator_snapshot_events(
+                        indicator_day,
+                        symbol=session.symbol,
+                        small_interval=small_interval,
+                    )
 
-                merged_day_events = heapq.merge(
-                    price_tick_events,
-                    small_candle_events,
-                    medium_candle_events,
-                    big_candle_events,
-                    indicator_snapshot_events,
-                    key=lambda event: (
-                        str(getattr(event, "ts", "")),
-                        _event_priority(
-                            event,
-                            small_interval=small_interval,
-                            medium_interval=medium_interval,
-                            big_interval=big_interval,
+                    merged_day_events = heapq.merge(
+                        price_tick_events,
+                        small_candle_events,
+                        medium_candle_events,
+                        big_candle_events,
+                        indicator_snapshot_events,
+                        key=lambda event: (
+                            str(getattr(event, "ts", "")),
+                            _event_priority(
+                                event,
+                                small_interval=small_interval,
+                                medium_interval=medium_interval,
+                                big_interval=big_interval,
+                            ),
                         ),
-                    ),
-                )
-                for event in merged_day_events:
-                    file_obj.write(json.dumps(market_event_to_dict(event), ensure_ascii=True, sort_keys=True))
-                    file_obj.write("\n")
-                price_tick_count += len(price_tick_events)
-                small_candle_count += len(small_candle_events)
-                medium_candle_count += len(medium_candle_events)
-                big_candle_count += len(big_candle_events)
-                indicator_snapshot_count += len(indicator_snapshot_events)
-                pass_days.set_postfix_str(f"{day_value.isoformat()} rows={raw_agg_trades}")
-                if progress_reporter is not None:
-                    progress_reporter.advance()
-        if progress_reporter is not None:
-            progress_reporter.complete_stage()
+                    )
+                    serialize = serialize_market_event
+                    for event in merged_day_events:
+                        file_obj.write(serialize(event))
+                        file_obj.write("\n")
+                        yield event
+                    price_tick_count += len(price_tick_events)
+                    small_candle_count += len(small_candle_events)
+                    medium_candle_count += len(medium_candle_events)
+                    big_candle_count += len(big_candle_events)
+                    indicator_snapshot_count += len(indicator_snapshot_events)
+                    pass_days.set_postfix_str(f"{day_value.isoformat()} rows={raw_agg_trades}")
+                    if progress_started:
+                        session.progress_reporter.advance()
+    finally:
+        if progress_started:
+            session.progress_reporter.complete_stage()
 
-    indicator_df = (
-        pd.concat(indicator_frames, ignore_index=True)
-        if indicator_frames
+    session._indicator_df = (
+        pd.concat(session._indicator_frames, ignore_index=True)
+        if session._indicator_frames
         else empty_df.copy()
     )
 
@@ -781,9 +889,9 @@ def write_historical_agg_trade_market_event_stream(
         else:
             source_label = "historical_agg_trade_archive+rest"
 
-    return indicator_df, AggTradeMarketEventStreamSummary(
+    session._summary = AggTradeMarketEventStreamSummary(
         source=source_label,
-        symbol=symbol,
+        symbol=session.symbol,
         cache_hit=all_days_from_cache,
         cache_path=str(archive_cache_path) if archive_cache_path is not None else None,
         raw_agg_trades=raw_agg_trades,

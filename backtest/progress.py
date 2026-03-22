@@ -46,7 +46,10 @@ class ScenarioProgressBar:
         normalized_total = max(0, int(total))
         self._stage_total = normalized_total
         self._stage_done = 0
-        self._bar.total = int(self._bar.total or 0) + normalized_total
+        if normalized_total > 0:
+            self._bar.total = int(self._bar.n) + normalized_total
+        else:
+            self._bar.total = None
         self._bar.set_description(f"[{self.scenario_name}] {label}")
         self._bar.refresh()
 
@@ -57,6 +60,9 @@ class ScenarioProgressBar:
         self._bar.update(int(amount))
 
     def complete_stage(self) -> None:
+        if self._stage_total <= 0:
+            self._stage_done = 0
+            return
         remaining = self._stage_total - self._stage_done
         if remaining > 0:
             self._bar.update(remaining)

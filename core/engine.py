@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Callable, Iterable
 
 import pandas as pd
@@ -315,6 +316,14 @@ def _naive_datetime_to_ns(dt_value: datetime) -> int:
     ) * _NS_PER_SECOND + (dt_value.microsecond * 1_000)
 
 
+@lru_cache(maxsize=1024)
+def _day_start_ns_from_text(day_text: str) -> int:
+    year = int(day_text[0:4])
+    month = int(day_text[5:7])
+    day = int(day_text[8:10])
+    return ((datetime(year, month, day).toordinal() - _EPOCH_ORDINAL) * 86_400) * _NS_PER_SECOND
+
+
 def _event_ts_to_ns(value: Any) -> int | None:
     if isinstance(value, pd.Timestamp):
         normalized = value.tz_convert(None) if value.tzinfo is not None else value
@@ -337,6 +346,22 @@ def _event_ts_to_ns(value: Any) -> int | None:
     text_value = str(value or "").strip()
     if not text_value:
         return None
+    if (
+        len(text_value) == 19
+        and text_value[4] == "-"
+        and text_value[7] == "-"
+        and text_value[10] == " "
+        and text_value[13] == ":"
+        and text_value[16] == ":"
+    ):
+        return _day_start_ns_from_text(text_value[:10]) + (
+            (
+                (int(text_value[11:13]) * 3_600)
+                + (int(text_value[14:16]) * 60)
+                + int(text_value[17:19])
+            )
+            * _NS_PER_SECOND
+        )
     try:
         dt_value = datetime.fromisoformat(text_value)
     except ValueError:
@@ -439,7 +464,7 @@ def _build_realtime_snapshot(
     feature_engine: FeatureEngine,
     selection_plan: IndicatorSelectionPlan,
     discrete_indicator_values: dict[str, float | None] | None = None,
-    fallback_small: dict[str, Any] | None = None,
+    current_price: float | None = None,
 ) -> DiscreteRowSnapshot | None:
     realtime_indicator_values = None
     if selection_plan.requires_realtime:
@@ -451,9 +476,9 @@ def _build_realtime_snapshot(
         return None
     if selection_plan.requires_realtime and realtime_indicator_values is None:
         return None
-    price = feature_engine.current_price()
-    if price is None and fallback_small is not None:
-        price = to_float(fallback_small.get("close"))
+    price = current_price
+    if price is None:
+        price = feature_engine.current_price()
     if price is None:
         return None
     lower_source = realtime_indicator_values if selection_plan.bbl_mode == "intrabar" else discrete_values
@@ -543,6 +568,12 @@ def status_from_code(code: str | None, labels: dict[str, str]) -> dict[str, str]
     return {"code": code or "", "label": label}
 
 
+_SEARCH_STATUS_BUY_CODE = "looking_for_buy_opportunity"
+_SEARCH_STATUS_SELL_CODE = "looking_for_sell_opportunity"
+_SEARCH_STATUS_BUY_LABEL = SEARCH_STATUS_LABELS[_SEARCH_STATUS_BUY_CODE]
+_SEARCH_STATUS_SELL_LABEL = SEARCH_STATUS_LABELS[_SEARCH_STATUS_SELL_CODE]
+
+
 def resolve_search_status(price: Any, ema: Any, previous_status: Any) -> dict[str, str] | None:
     price_value = to_float(price)
     ema_value = to_float(ema)
@@ -553,15 +584,35 @@ def resolve_search_status(price: Any, ema: Any, previous_status: Any) -> dict[st
             previous_code = raw_code
 
     if price_value is None or ema_value is None:
-        return status_from_code(previous_code, SEARCH_STATUS_LABELS) if previous_code else None
+        return previous_status if previous_code else None
 
     if price_value > ema_value:
-        return status_from_code("looking_for_buy_opportunity", SEARCH_STATUS_LABELS)
+        if previous_code == _SEARCH_STATUS_BUY_CODE:
+            return previous_status
+        return {"code": _SEARCH_STATUS_BUY_CODE, "label": _SEARCH_STATUS_BUY_LABEL}
     if price_value < ema_value:
-        return status_from_code("looking_for_sell_opportunity", SEARCH_STATUS_LABELS)
+        if previous_code == _SEARCH_STATUS_SELL_CODE:
+            return previous_status
+        return {"code": _SEARCH_STATUS_SELL_CODE, "label": _SEARCH_STATUS_SELL_LABEL}
     if previous_code:
-        return status_from_code(previous_code, SEARCH_STATUS_LABELS)
-    return status_from_code("looking_for_buy_opportunity", SEARCH_STATUS_LABELS)
+        return previous_status
+    return {"code": _SEARCH_STATUS_BUY_CODE, "label": _SEARCH_STATUS_BUY_LABEL}
+
+
+def _clear_position_runtime_metrics(position: dict[str, Any]) -> None:
+    position["unrealized_pnl"] = None
+    position["unrealized_pnl_pct"] = None
+    position["position_notional"] = None
+    position["margin_used"] = None
+    position["roi_pct"] = None
+    position["distance_to_sl_pct"] = None
+    position["distance_to_tp_pct"] = None
+
+
+def _to_float_fast(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return to_float(value)
 
 
 def normalize_manual_trade_suggestion(value: Any) -> dict[str, str | None] | None:
@@ -580,34 +631,31 @@ def normalize_manual_trade_suggestion(value: Any) -> dict[str, str | None] | Non
 
 
 def refresh_position_snapshot(position: dict[str, Any], price: Any, leverage: Any, ts_label: str) -> None:
-    position.pop("last_price", None)
-    position.pop("last_price_updated_at", None)
+    if "last_price" in position:
+        del position["last_price"]
+    if "last_price_updated_at" in position:
+        del position["last_price_updated_at"]
 
     if position.get("entry_time") is None and position.get("time") is not None:
         position["entry_time"] = position.get("time")
     if position.get("time") is None and position.get("entry_time") is not None:
         position["time"] = position.get("entry_time")
 
-    side = str(position.get("side", "")).strip().lower()
-    size = to_float(position.get("size")) or 0.0
-    entry_price = to_float(position.get("entry"))
-    mark_price = to_float(price)
-    sl_price = to_float(position.get("sl"))
-    tp_price = to_float(position.get("tp"))
+    side_raw = position.get("side", "")
+    side = side_raw if side_raw in {"long", "short"} else str(side_raw).strip().lower()
+    size = _to_float_fast(position.get("size")) or 0.0
+    entry_price = _to_float_fast(position.get("entry"))
+    mark_price = _to_float_fast(price)
+    sl_price = _to_float_fast(position.get("sl"))
+    tp_price = _to_float_fast(position.get("tp"))
 
     if mark_price is None:
         return
 
     position["updated_at"] = ts_label
-    position["unrealized_pnl"] = None
-    position["unrealized_pnl_pct"] = None
-    position["position_notional"] = None
-    position["margin_used"] = None
-    position["roi_pct"] = None
-    position["distance_to_sl_pct"] = None
-    position["distance_to_tp_pct"] = None
 
     if entry_price is None or entry_price <= 0 or size <= 0:
+        _clear_position_runtime_metrics(position)
         return
 
     notional = abs(size) * entry_price
@@ -616,9 +664,9 @@ def refresh_position_snapshot(position: dict[str, Any], price: Any, leverage: An
     else:
         unrealized_pnl = (mark_price - entry_price) * size
 
-    unrealized_pnl_pct = ratio_to_percent(unrealized_pnl, notional)
-    leverage_value = to_float(leverage)
+    leverage_value = _to_float_fast(leverage)
     margin_used = (notional / leverage_value) if leverage_value and leverage_value > 0 else None
+    unrealized_pnl_pct = ratio_to_percent(unrealized_pnl, notional)
     roi_pct = ratio_to_percent(unrealized_pnl, margin_used) if margin_used else None
 
     if side == "short":
@@ -879,13 +927,14 @@ def apply_market_event_runtime_sync(
     *,
     target_symbol: str | None,
 ) -> bool:
-    if isinstance(event, AccountBalanceEvent):
+    event_type = getattr(event, "event_type", "")
+    if event_type == "account_balance":
         _apply_account_balance_market_event(runtime, event)
         return True
-    if isinstance(event, PositionSnapshotEvent):
+    if event_type == "position_snapshot":
         _apply_position_snapshot_market_event(runtime, event, target_symbol=target_symbol)
         return True
-    if isinstance(event, OrderTradeUpdateEvent):
+    if event_type == "order_trade_update":
         _apply_order_trade_update_market_event(runtime, event, target_symbol=target_symbol)
         return True
     return False
@@ -1754,7 +1803,10 @@ def process_discrete_row(
 
     if live:
         refresh_market_snapshot(state, price, row_ts)
-    state["search_status"] = resolve_search_status(price, ema, state.get("search_status"))
+    previous_search_status = state.get("search_status")
+    next_search_status = resolve_search_status(price, ema, previous_search_status)
+    if next_search_status is not previous_search_status:
+        state["search_status"] = next_search_status
 
     if position is None:
         if observed_execution_mode:
@@ -2372,8 +2424,9 @@ def run_market_event_engine(
         event_symbol = getattr(event, "symbol", None)
         if target_symbol and str(event_symbol or "").strip().upper() != target_symbol:
             continue
+        event_type = getattr(event, "event_type", "")
 
-        if isinstance(event, CandleClosedEvent):
+        if event_type == "candle_closed":
             if event.interval != candle_interval:
                 continue
             key = (event.symbol, event.ts)
@@ -2381,7 +2434,7 @@ def run_market_event_engine(
             try_emit(event.symbol, event.ts)
             continue
 
-        if isinstance(event, IndicatorSnapshotEvent) and event.interval == "discrete_snapshot":
+        if event_type == "indicator_snapshot" and event.interval == "discrete_snapshot":
             key = (event.symbol, event.ts)
             pending_indicators[key] = event
             try_emit(event.symbol, event.ts)
@@ -2448,8 +2501,9 @@ def run_realtime_market_event_engine(
         event_symbol = getattr(event, "symbol", None)
         if target_symbol and str(event_symbol or "").strip().upper() != target_symbol:
             continue
+        event_type = getattr(event, "event_type", "")
 
-        if isinstance(event, CandleClosedEvent):
+        if event_type == "candle_closed":
             timeframe = resolve_timeframe(event.interval)
             if timeframe is None:
                 continue
@@ -2458,7 +2512,7 @@ def run_realtime_market_event_engine(
                 pending_small_candles[(event.symbol, event.ts)] = (event, _event_ts_to_ns(event.open_time))
             continue
 
-        if isinstance(event, IndicatorSnapshotEvent) and event.interval == "discrete_snapshot":
+        if event_type == "indicator_snapshot" and event.interval == "discrete_snapshot":
             latest_discrete_indicator_values = _indicator_values_from_snapshot_event(event)
             key = (event.symbol, event.ts)
             pending_candle_entry = pending_small_candles.pop(key, None)
@@ -2471,20 +2525,12 @@ def run_realtime_market_event_engine(
                 continue
             if emit_on_price_tick and open_key in tick_seen_small_open_times:
                 continue
-            fallback_small = {
-                "open_time": pd.Timestamp(pending_candle.open_time),
-                "open": float(pending_candle.open),
-                "high": float(pending_candle.high),
-                "low": float(pending_candle.low),
-                "close": float(pending_candle.close),
-                "volume": float(pending_candle.volume),
-            }
             snapshot = _build_realtime_snapshot(
                 event_ts=(event.ts if isinstance(event.ts, str) else format_event_timestamp(event.ts)),
                 feature_engine=feature_engine,
                 selection_plan=selection_plan,
                 discrete_indicator_values=latest_discrete_indicator_values,
-                fallback_small=fallback_small,
+                current_price=float(pending_candle.close),
             )
             if snapshot is None:
                 continue
@@ -2493,7 +2539,7 @@ def run_realtime_market_event_engine(
             emitted_snapshots += 1
             continue
 
-        if not isinstance(event, PriceTickEvent):
+        if event_type != "price_tick":
             continue
 
         event_ts_ns = _event_ts_to_ns(event.ts)
@@ -2508,6 +2554,7 @@ def run_realtime_market_event_engine(
             feature_engine=feature_engine,
             selection_plan=selection_plan,
             discrete_indicator_values=latest_discrete_indicator_values,
+            current_price=price,
         )
         if snapshot is None or not emit_on_price_tick:
             continue
