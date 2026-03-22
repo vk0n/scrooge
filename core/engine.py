@@ -11,10 +11,12 @@ from tqdm import tqdm
 from bot.event_log import emit_event, get_technical_logger
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.trade import can_open_trade, close_position, compute_qty, get_balance, open_position
-from core.feature_engine import FeatureEngine
+from core.feature_engine import FeatureEngine, floor_timestamp_ns, interval_to_ns
 from core.indicator_inputs import (
     INDICATOR_COLUMNS,
+    IndicatorSelectionPlan,
     indicator_input_mode_for_column,
+    indicator_selection_plan,
     merge_indicator_decision_values,
     normalize_indicator_inputs,
     uses_realtime_indicator_inputs,
@@ -390,14 +392,20 @@ def _build_realtime_snapshot(
     event_ts: str,
     feature_engine: FeatureEngine,
     indicator_inputs: dict[str, str],
+    selection_plan: IndicatorSelectionPlan,
     discrete_indicator_values: dict[str, float | None] | None = None,
     fallback_small: dict[str, Any] | None = None,
 ) -> DiscreteRowSnapshot | None:
-    realtime_indicator_values = feature_engine.realtime_values()
+    realtime_indicator_values = None
+    if selection_plan.requires_realtime:
+        realtime_indicator_values = feature_engine.realtime_values(
+            selected_keys=selection_plan.realtime_keys,
+        )
     indicator_values = merge_indicator_decision_values(
         indicator_inputs=indicator_inputs,
         discrete_values=discrete_indicator_values,
         realtime_values=realtime_indicator_values,
+        selection_plan=selection_plan,
     )
     if indicator_values is None:
         return None
@@ -406,25 +414,21 @@ def _build_realtime_snapshot(
         price = to_float(fallback_small.get("close"))
     if price is None:
         return None
-    row_payload = {
-        "open_time": event_ts,
-        "close": price,
-        "BBL": indicator_values["BBL"],
-        "BBM": indicator_values["BBM"],
-        "BBU": indicator_values["BBU"],
-        "ATR": indicator_values["ATR"],
-        "RSI": indicator_values["RSI"],
-        "EMA": indicator_values["EMA"],
-    }
+    lower = indicator_values["BBL"]
+    mid = indicator_values["BBM"]
+    upper = indicator_values["BBU"]
+    atr = indicator_values["ATR"]
+    rsi = indicator_values["RSI"]
+    ema = indicator_values["EMA"]
     return DiscreteRowSnapshot(
-        raw_row=row_payload,
+        raw_row=None,
         price=price,
-        lower=indicator_values["BBL"],
-        upper=indicator_values["BBU"],
-        mid=indicator_values["BBM"],
-        atr=indicator_values["ATR"],
-        rsi=indicator_values["RSI"],
-        ema=indicator_values["EMA"],
+        lower=lower,
+        upper=upper,
+        mid=mid,
+        atr=atr,
+        rsi=rsi,
+        ema=ema,
         row_ts=event_ts,
         log_ts=event_ts,
     )
@@ -2353,7 +2357,8 @@ def run_realtime_market_event_engine(
     symbol: str | None = None,
 ) -> tuple[float, pd.DataFrame, list[float], dict[str, Any]]:
     target_symbol = str(symbol or "").strip().upper() or None
-    interval_freqs = {key: _interval_to_freq(value) for key, value in intervals.items()}
+    small_interval_ns = interval_to_ns(intervals["small"])
+    selection_plan = indicator_selection_plan(indicator_inputs)
     feature_engine = FeatureEngine(
         intervals=intervals,
         limits=REALTIME_WARMUP_LIMITS,
@@ -2369,7 +2374,7 @@ def run_realtime_market_event_engine(
     )
     processed_price_ticks = 0
     emitted_snapshots = 0
-    tick_seen_small_open_times: set[str] = set()
+    tick_seen_small_open_times: set[int] = set()
 
     def resolve_timeframe(interval_value: str) -> str | None:
         for timeframe, configured in intervals.items():
@@ -2400,7 +2405,7 @@ def run_realtime_market_event_engine(
             pending_candle = pending_small_candles.pop(key, None)
             if pending_candle is None:
                 continue
-            open_key = str(pending_candle.open_time)
+            open_key = pd.Timestamp(pending_candle.open_time).value
             if emit_on_price_tick and open_key in tick_seen_small_open_times:
                 continue
             fallback_small = {
@@ -2415,6 +2420,7 @@ def run_realtime_market_event_engine(
                 event_ts=format_event_timestamp(event.ts),
                 feature_engine=feature_engine,
                 indicator_inputs=indicator_inputs,
+                selection_plan=selection_plan,
                 discrete_indicator_values=latest_discrete_indicator_values,
                 fallback_small=fallback_small,
             )
@@ -2433,12 +2439,13 @@ def run_realtime_market_event_engine(
         if event_ts_value is None or price is None:
             continue
         processed_price_ticks += 1
-        tick_seen_small_open_times.add(str(event_ts_value.floor(interval_freqs["small"])))
+        tick_seen_small_open_times.add(floor_timestamp_ns(event_ts_value, interval_ns=small_interval_ns))
         feature_engine.on_price_tick(ts_value=event_ts_value, price=price)
         snapshot = _build_realtime_snapshot(
             event_ts=format_event_timestamp(event.ts),
             feature_engine=feature_engine,
             indicator_inputs=indicator_inputs,
+            selection_plan=selection_plan,
             discrete_indicator_values=latest_discrete_indicator_values,
         )
         if snapshot is None or not emit_on_price_tick:

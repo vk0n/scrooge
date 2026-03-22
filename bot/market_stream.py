@@ -20,7 +20,7 @@ from bot.trade import (
 )
 from core.feature_engine import FeatureEngine
 from core.engine import refresh_runtime_state_from_price_tick
-from core.indicator_inputs import merge_indicator_decision_values
+from core.indicator_inputs import indicator_selection_plan, merge_indicator_decision_values
 from core.market_events import (
     AccountBalanceEvent,
     CandleClosedEvent,
@@ -228,6 +228,7 @@ class LiveMarketStream:
         self._save_state_fn = save_state_fn
         self._fetch_historical_fn = fetch_historical_fn
         self._indicator_inputs = dict(indicator_inputs or {})
+        self._indicator_selection_plan = indicator_selection_plan(self._indicator_inputs)
         self._get_balance_fn = get_balance_fn
         self._get_open_position_fn = get_open_position_fn
 
@@ -388,6 +389,7 @@ class LiveMarketStream:
         self._leverage = next_leverage
         if indicator_inputs is not None:
             self._indicator_inputs = dict(indicator_inputs)
+            self._indicator_selection_plan = indicator_selection_plan(self._indicator_inputs)
         if not symbol_changed and not intervals_changed and not limits_changed:
             return
 
@@ -456,11 +458,16 @@ class LiveMarketStream:
         )
         latest = df_small.iloc[-1]
         discrete_indicator_values = feature_engine.closed_values()
-        realtime_indicator_values = feature_engine.realtime_values()
+        realtime_indicator_values = None
+        if self._indicator_selection_plan.requires_realtime:
+            realtime_indicator_values = feature_engine.realtime_values(
+                selected_keys=self._indicator_selection_plan.realtime_keys,
+            )
         indicator_values = merge_indicator_decision_values(
             indicator_inputs=self._indicator_inputs,
             discrete_values=discrete_indicator_values,
             realtime_values=realtime_indicator_values,
+            selection_plan=self._indicator_selection_plan,
         )
         if indicator_values is None:
             return None

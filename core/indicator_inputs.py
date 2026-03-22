@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 
@@ -26,6 +28,14 @@ LEGACY_INDICATOR_MODE_ALIASES = {
     "discrete": "closed",
     "realtime": "intrabar",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class IndicatorSelectionPlan:
+    column_sources: tuple[tuple[str, str], ...]
+    realtime_keys: tuple[str, ...]
+    requires_discrete: bool
+    requires_realtime: bool
 
 
 def _default_indicator_input_mode(strategy_mode: str | None) -> str:
@@ -84,10 +94,42 @@ def indicator_input_mode_for_column(indicator_inputs: dict[str, str] | None, col
     return LEGACY_INDICATOR_MODE_ALIASES.get(mode, mode)
 
 
-def uses_realtime_indicator_inputs(indicator_inputs: dict[str, str] | None) -> bool:
+def indicator_selection_plan(indicator_inputs: dict[str, str] | None) -> IndicatorSelectionPlan:
     if indicator_inputs is None:
-        return False
-    return any(LEGACY_INDICATOR_MODE_ALIASES.get(mode, mode) == "intrabar" for mode in indicator_inputs.values())
+        mode_key = tuple("closed" for _ in INDICATOR_INPUT_KEYS)
+    else:
+        mode_key = tuple(
+            LEGACY_INDICATOR_MODE_ALIASES.get(
+                str(indicator_inputs.get(key, "closed")).strip().lower() or "closed",
+                str(indicator_inputs.get(key, "closed")).strip().lower() or "closed",
+            )
+            for key in INDICATOR_INPUT_KEYS
+        )
+    return _cached_indicator_selection_plan(mode_key)
+
+
+@lru_cache(maxsize=32)
+def _cached_indicator_selection_plan(mode_key: tuple[str, ...]) -> IndicatorSelectionPlan:
+    mode_by_key = dict(zip(INDICATOR_INPUT_KEYS, mode_key, strict=False))
+    realtime_keys = tuple(
+        key
+        for key in INDICATOR_INPUT_KEYS
+        if mode_by_key.get(key, "closed") == "intrabar"
+    )
+    column_sources = tuple(
+        (column, mode_by_key.get(INDICATOR_KEY_BY_COLUMN[column], "closed"))
+        for column in INDICATOR_COLUMNS
+    )
+    return IndicatorSelectionPlan(
+        column_sources=column_sources,
+        realtime_keys=realtime_keys,
+        requires_discrete=any(mode == "closed" for _, mode in column_sources),
+        requires_realtime=any(mode == "intrabar" for _, mode in column_sources),
+    )
+
+
+def uses_realtime_indicator_inputs(indicator_inputs: dict[str, str] | None) -> bool:
+    return indicator_selection_plan(indicator_inputs).requires_realtime
 
 
 def merge_indicator_decision_values(
@@ -95,18 +137,19 @@ def merge_indicator_decision_values(
     indicator_inputs: dict[str, str],
     discrete_values: dict[str, float | None] | None,
     realtime_values: dict[str, float | None] | None,
+    selection_plan: IndicatorSelectionPlan | None = None,
 ) -> dict[str, float | None] | None:
+    plan = selection_plan or indicator_selection_plan(indicator_inputs)
+    if plan.requires_discrete and discrete_values is None:
+        return None
+    if plan.requires_realtime and realtime_values is None:
+        return None
     selected: dict[str, float | None] = {}
-    for column in INDICATOR_COLUMNS:
-        mode = indicator_input_mode_for_column(indicator_inputs, column)
-        if mode == "intrabar":
-            if realtime_values is None:
-                return None
-            selected[column] = realtime_values.get(column)
-        else:
-            if discrete_values is None:
-                return None
-            selected[column] = discrete_values.get(column)
+    for column, mode in plan.column_sources:
+        source = realtime_values if mode == "intrabar" else discrete_values
+        if source is None:
+            return None
+        selected[column] = source.get(column)
 
     if any(value is None for value in selected.values()):
         return None

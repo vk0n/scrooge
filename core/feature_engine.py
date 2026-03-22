@@ -30,6 +30,15 @@ def _interval_to_freq(interval: str) -> str:
     raise ValueError(f"Unsupported interval for feature engine: {interval}")
 
 
+def interval_to_ns(interval: str) -> int:
+    return pd.Timedelta(_interval_to_freq(interval)).value
+
+
+def floor_timestamp_ns(ts_value: pd.Timestamp, *, interval_ns: int) -> int:
+    normalized_ts = ts_value.tz_convert(None) if ts_value.tzinfo is not None else ts_value
+    return (normalized_ts.value // interval_ns) * interval_ns
+
+
 def _to_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -88,13 +97,16 @@ class TimeframeState:
     def __init__(self, *, interval: str, limit: int) -> None:
         self.interval = str(interval)
         self.freq = _interval_to_freq(self.interval)
+        self.interval_ns = interval_to_ns(self.interval)
         self.limit = max(1, int(limit))
         self.closed: deque[Candle] = deque(maxlen=self.limit)
         self.forming: Candle | None = None
+        self._forming_open_ns: int | None = None
 
     def bootstrap(self, candles: Iterable[Candle]) -> None:
         self.closed.clear()
         self.forming = None
+        self._forming_open_ns = None
         for candle in candles:
             self.upsert_closed(candle)
 
@@ -103,20 +115,22 @@ class TimeframeState:
             self.closed[-1] = candle
         else:
             self.closed.append(candle)
-        if self.forming is not None and self.forming.open_time <= candle.open_time:
+        if self.forming is not None and self._forming_open_ns is not None and self._forming_open_ns <= candle.open_time.value:
             self.forming = None
+            self._forming_open_ns = None
 
     def update_from_price_tick(self, ts_value: pd.Timestamp, price: float) -> None:
-        open_time = ts_value.floor(self.freq)
-        if self.forming is None or self.forming.open_time != open_time:
+        open_time_ns = floor_timestamp_ns(ts_value, interval_ns=self.interval_ns)
+        if self.forming is None or self._forming_open_ns != open_time_ns:
             self.forming = Candle(
-                open_time=open_time,
+                open_time=pd.Timestamp(open_time_ns),
                 open=price,
                 high=price,
                 low=price,
                 close=price,
                 volume=0.0,
             )
+            self._forming_open_ns = open_time_ns
             return
         self.forming.high = max(self.forming.high, price)
         self.forming.low = min(self.forming.low, price)
@@ -125,19 +139,25 @@ class TimeframeState:
     def set_forming_from_small_frame(self, df_small: pd.DataFrame) -> None:
         if df_small is None or df_small.empty:
             self.forming = None
+            self._forming_open_ns = None
             return
         normalized = _normalized_frame(df_small)
         if normalized.empty:
             self.forming = None
+            self._forming_open_ns = None
             return
-        current_open_time = normalized["open_time"].iloc[-1].floor(self.freq)
+        open_time_ns = (normalized["open_time"].astype("int64") // self.interval_ns) * self.interval_ns
+        current_open_ns = int(open_time_ns.iloc[-1])
+        current_open_time = pd.Timestamp(current_open_ns)
         latest_closed_open_time = self.closed[-1].open_time if self.closed else None
         if latest_closed_open_time is not None and latest_closed_open_time == current_open_time:
             self.forming = None
+            self._forming_open_ns = None
             return
-        current_slice = normalized[normalized["open_time"].dt.floor(self.freq) == current_open_time]
+        current_slice = normalized[open_time_ns == current_open_ns]
         candle = _aggregate_frame_to_candle(current_slice, open_time=current_open_time)
         self.forming = candle
+        self._forming_open_ns = current_open_ns
 
 
 class OnlineFeatureRuntime(Protocol):
@@ -444,6 +464,10 @@ class FeatureEngine:
             FeatureBinding(spec=spec, runtime=spec.factory())
             for spec in specs
         )
+        self._feature_by_key: dict[str, FeatureBinding] = {
+            binding.spec.key: binding
+            for binding in self._features
+        }
         self._features_by_timeframe: dict[str, tuple[FeatureBinding, ...]] = {
             timeframe: tuple(binding for binding in self._features if binding.spec.timeframe == timeframe)
             for timeframe in self.timeframes
@@ -473,11 +497,12 @@ class FeatureEngine:
             binding.runtime.bootstrap(_iter_feature_inputs(timeframe_state.closed, input_kind=binding.spec.input_kind))
 
     def on_price_tick(self, *, ts_value: pd.Timestamp, price: float) -> None:
-        normalized_ts = pd.Timestamp(ts_value)
+        normalized_ts = ts_value if isinstance(ts_value, pd.Timestamp) else pd.Timestamp(ts_value)
         if normalized_ts.tzinfo is not None:
             normalized_ts = normalized_ts.tz_convert(None)
+        price_value = float(price)
         for state in self.timeframes.values():
-            state.update_from_price_tick(normalized_ts, float(price))
+            state.update_from_price_tick(normalized_ts, price_value)
 
     def on_candle_closed(self, *, timeframe: str, event: CandleClosedEvent) -> None:
         candle = Candle.from_event(event)
@@ -495,21 +520,49 @@ class FeatureEngine:
         return None
 
     def closed_values(self) -> dict[str, float | None] | None:
-        return _merge_feature_payloads(
-            binding.runtime.closed_payload()
-            for binding in self._features
+        return self._merge_binding_payloads(
+            self._features,
+            payload_builder=lambda binding: binding.runtime.closed_payload(),
         )
 
-    def realtime_values(self) -> dict[str, float | None] | None:
-        return _merge_feature_payloads(
-            binding.runtime.intrabar_payload(
+    def realtime_values(
+        self,
+        *,
+        selected_keys: tuple[str, ...] | None = None,
+    ) -> dict[str, float | None] | None:
+        bindings = self._features if selected_keys is None else tuple(
+            self._feature_by_key[key]
+            for key in selected_keys
+            if key in self._feature_by_key
+        )
+        return self._merge_binding_payloads(
+            bindings,
+            payload_builder=lambda binding: binding.runtime.intrabar_payload(
                 _feature_input_from_forming_candle(
                     self.timeframes[binding.spec.timeframe].forming,
                     input_kind=binding.spec.input_kind,
                 )
-            )
-            for binding in self._features
+            ),
         )
+
+    def _merge_binding_payloads(
+        self,
+        bindings: Iterable[FeatureBinding],
+        *,
+        payload_builder: Callable[[FeatureBinding], dict[str, float | None] | None],
+    ) -> dict[str, float | None] | None:
+        values: dict[str, float | None] = {}
+        saw_value = False
+        for binding in bindings:
+            payload = payload_builder(binding)
+            if payload is None:
+                continue
+            for key, value in payload.items():
+                values[key] = value
+                saw_value = saw_value or value is not None
+        if not values or not saw_value:
+            return None
+        return values
 
 
 class FeatureFrameBuilder:
@@ -586,20 +639,6 @@ def _feature_input_from_forming_candle(candle: Candle | None, *, input_kind: str
     if candle is None:
         return None
     return candle.close
-
-
-def _merge_feature_payloads(payloads: Iterable[dict[str, float | None] | None]) -> dict[str, float | None] | None:
-    values: dict[str, float | None] = {}
-    saw_value = False
-    for payload in payloads:
-        if payload is None:
-            continue
-        for key, value in payload.items():
-            values[key] = value
-            saw_value = saw_value or value is not None
-    if not values or not saw_value:
-        return None
-    return values
 
 
 def _resolve_output_columns(feature_specs: Iterable[FeatureSpec]) -> tuple[str, ...]:
