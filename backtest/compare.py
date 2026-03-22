@@ -405,6 +405,28 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _compute_compare_score(
+    *,
+    initial_balance: float | None,
+    final_balance: float | None,
+    profit_factor: float | None,
+) -> float | None:
+    if (
+        initial_balance is None
+        or final_balance is None
+        or initial_balance <= 0
+        or profit_factor is None
+        or math.isnan(profit_factor)
+    ):
+        return None
+    balance_ratio = final_balance / initial_balance
+    # A no-loss sieve can legitimately report Profit Factor=inf. Treat that as a
+    # special case so a single one-trade winner does not dominate the ranking.
+    if math.isinf(profit_factor):
+        return balance_ratio
+    return profit_factor * balance_ratio
+
+
 def _summarize_result(
     *,
     name: str,
@@ -421,9 +443,11 @@ def _summarize_result(
     initial_balance = _float_or_none(stats.get("Initial Balance"))
     final_balance = _float_or_none(stats.get("Final Balance"))
     profit_factor = _float_or_none(stats.get("Profit Factor"))
-    score: float | None = None
-    if initial_balance is not None and final_balance is not None and initial_balance > 0 and profit_factor is not None:
-        score = profit_factor * (final_balance / initial_balance)
+    score = _compute_compare_score(
+        initial_balance=initial_balance,
+        final_balance=final_balance,
+        profit_factor=profit_factor,
+    )
 
     return CompareScenarioSummary(
         name=name,
@@ -828,6 +852,7 @@ def _write_compare_sieve_table(path: Path, aggregates: list[CompareSieveAggregat
         "180d Bull %",
         "180d Bear %",
         "180d Neutral %",
+        "180d Score",
         "Avg Score",
         "Min Score",
         "Avg %",
@@ -844,6 +869,7 @@ def _write_compare_sieve_table(path: Path, aggregates: list[CompareSieveAggregat
         month_returns = item.stage_returns.get("month", {})
         quarter_returns = item.stage_returns.get("quarter", {})
         half_year_returns = item.stage_returns.get("half_year", {})
+        half_year_avg_score = item.stage_avg_score.get("half_year")
         lines.append(
             "| "
             + " | ".join(
@@ -867,6 +893,7 @@ def _write_compare_sieve_table(path: Path, aggregates: list[CompareSieveAggregat
                     _format_cell(half_year_returns.get("bull")),
                     _format_cell(half_year_returns.get("bear")),
                     _format_cell(half_year_returns.get("neutral")),
+                    _format_cell(half_year_avg_score),
                     _format_cell(item.avg_score),
                     _format_cell(item.min_score),
                     _format_cell(item.avg_return_pct),
