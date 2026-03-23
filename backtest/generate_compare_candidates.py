@@ -98,6 +98,14 @@ def _slugify_name(value: str) -> str:
     return slug or "candidate"
 
 
+def _format_signature_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
 def generate_compare_config(
     *,
     compare_template_path: Path,
@@ -114,6 +122,7 @@ def generate_compare_config(
     )
 
     keys = list(param_grid.keys())
+    variable_keys = [key for key in keys if len(param_grid[key]) > 1]
     combinations = list(itertools.product(*(param_grid[key] for key in keys)))
     scenarios: list[dict[str, Any]] = []
     template_names: list[str] = []
@@ -131,7 +140,18 @@ def generate_compare_config(
 
         for index, combo in enumerate(combinations, start=1):
             params = dict(zip(keys, combo))
-            scenario_overrides = _deep_merge_dicts(overrides, {"params": params})
+            candidate_label = f"{index:04d}"
+            param_signature = " / ".join(
+                _format_signature_value(params[key]) for key in variable_keys
+            )
+            scenario_overrides = _deep_merge_dicts(
+                overrides,
+                {
+                    "params": params,
+                    "__compare_candidate_label": candidate_label,
+                    "__compare_candidate_param_signature": param_signature,
+                },
+            )
             scenarios.append(
                 {
                     "name": _scenario_name(template_prefix, index),
@@ -144,6 +164,7 @@ def generate_compare_config(
     generated["generated_from_param_grid"] = str(param_grid_path)
     generated["generated_candidate_count"] = len(scenarios)
     generated["generated_template_scenario_names"] = template_names
+    generated["generated_variable_param_keys"] = variable_keys
     generated["scenarios"] = scenarios
     generated.pop("candidate_template", None)
 

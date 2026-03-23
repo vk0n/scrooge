@@ -60,6 +60,10 @@ DEFAULT_AGG_TRADE_REST_RETRY_JITTER_SECONDS = max(
     0.0,
     float(os.getenv("SCROOGE_AGG_TRADE_REST_RETRY_JITTER_SECONDS", "1.0")),
 )
+DEFAULT_AGG_TRADE_REST_HTTP_TIMEOUT_SECONDS = max(
+    1.0,
+    float(os.getenv("SCROOGE_AGG_TRADE_REST_HTTP_TIMEOUT_SECONDS", "15")),
+)
 MARKET_EVENT_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
 technical_logger = get_technical_logger()
 
@@ -511,7 +515,7 @@ def _download_rest_rows(
             retry_delay_seconds = DEFAULT_AGG_TRADE_REST_RETRY_INITIAL_DELAY_SECONDS
             for attempt in range(1, DEFAULT_AGG_TRADE_REST_RETRY_ATTEMPTS + 1):
                 try:
-                    with urlopen(url) as response:  # noqa: S310
+                    with urlopen(url, timeout=DEFAULT_AGG_TRADE_REST_HTTP_TIMEOUT_SECONDS) as response:  # noqa: S310
                         payload = json.loads(response.read().decode("utf-8"))
                     break
                 except HTTPError as exc:

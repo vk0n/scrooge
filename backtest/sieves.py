@@ -89,6 +89,18 @@ SIEVE_PRESETS: dict[str, list[CompareSieve]] = {
             description="Representative 180-day neutral accumulation/chop regime.",
         ),
     ],
+    "btcusdt-one-sieve-365-2022-2023-v1": [
+        CompareSieve(
+            stage_name="year",
+            name="mixed",
+            start_time="2022-06-01T00:00:00",
+            end_time="2023-05-31T23:59:59",
+            description=(
+                "Single 365-day mixed-regime window spanning the 2022 bear, "
+                "sideways bottoming, and early 2023 bull recovery."
+            ),
+        ),
+    ],
 }
 
 

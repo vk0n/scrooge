@@ -49,6 +49,22 @@ _COMPARE_ENV_KEYS = (
     "SCROOGE_TQDM_DESC_PREFIX",
 )
 
+_COMPARE_SUMMARY_FILENAME = "compare_scenario_summary.json"
+_BACKTEST_STAT_LOG_PATTERN = re.compile(r"backtest_stat (?P<key>[^=]+)=(?P<value>.+)$")
+_COMPARE_COMPLETED_LOG_PATTERN = re.compile(
+    r"compare_scenario_completed name=(?P<name>\S+) "
+    r"duration_seconds=(?P<duration_seconds>-?\d+(?:\.\d+)?) "
+    r"final_balance=(?P<final_balance>-?\d+(?:\.\d+)?) "
+    r"return_pct=(?P<return_pct>-?\d+(?:\.\d+)?) "
+    r"trades=(?P<trades>\d+)"
+)
+_AGG_TRADE_SUMMARY_LOG_PATTERN = re.compile(
+    r"backtest_agg_trade_market_event_stream_written .*"
+    r"raw_trades=(?P<raw_trades>\d+) .*"
+    r"price_ticks=(?P<price_ticks>\d+) .*"
+    r"total_events=(?P<total_events>\d+)"
+)
+
 
 @dataclass(slots=True)
 class CompareScenario:
@@ -77,6 +93,8 @@ class CompareConfig:
 class CompareScenarioSummary:
     name: str
     base_name: str | None
+    candidate_label: str | None
+    param_signature: str | None
     sieve_stage: str | None
     sieve_name: str | None
     status: str
@@ -216,6 +234,10 @@ def _resolve_compare_run_dir(raw_run_dir: str, root_dir: Path) -> Path:
     run_dir = Path(raw_run_dir).expanduser()
     if run_dir.is_absolute():
         return run_dir
+    if run_dir.parts:
+        first_part = run_dir.parts[0]
+        if first_part in {"api", "backtest", "bot", "config", "core", "data", "docker", "frontend", "requirements", "runtime"}:
+            return (PROJECT_ROOT / run_dir).resolve()
     return (root_dir / run_dir).resolve()
 
 
@@ -242,7 +264,9 @@ def load_compare_config(path: str | Path | None = None) -> CompareConfig:
         raise ValueError("compare config requires base_backtest_config_path")
     base_backtest_config_path = _resolve_path(raw_base_path, base_dir=raw_path.parent)
 
-    compare_run_dir = str(config.get("compare_run_dir", "auto") or "").strip() or "auto"
+    compare_run_dir = str(
+        os.getenv("SCROOGE_COMPARE_RUN_DIR", config.get("compare_run_dir", "auto")) or ""
+    ).strip() or "auto"
     raw_compare_run_root = str(config.get("compare_run_root", str(DEFAULT_COMPARE_RUN_ROOT)) or "").strip()
     compare_run_root = _resolve_path(raw_compare_run_root, base_dir=raw_path.parent)
     compare_parallel = bool(config.get("compare_parallel", True))
@@ -405,6 +429,171 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _read_json_mapping(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _load_persisted_compare_summary(scenario_dir: Path) -> CompareScenarioSummary | None:
+    payload = _read_json_mapping(scenario_dir / _COMPARE_SUMMARY_FILENAME)
+    if not payload:
+        return None
+    try:
+        return CompareScenarioSummary(**payload)
+    except TypeError:
+        return None
+
+
+def _persist_compare_summary(scenario_dir: Path, summary: CompareScenarioSummary) -> None:
+    _write_json(scenario_dir / _COMPARE_SUMMARY_FILENAME, asdict(summary))
+
+
+def _scenario_resume_matches(
+    *,
+    scenario_dir: Path,
+    config_payload: dict[str, Any],
+) -> bool:
+    existing_payload = _read_json_mapping(scenario_dir / "backtest_config.resolved.yaml")
+    if existing_payload is None:
+        existing_path = scenario_dir / "backtest_config.resolved.yaml"
+        if not existing_path.exists():
+            return False
+        try:
+            existing_loaded = _load_yaml_mapping(existing_path)
+        except (OSError, ValueError, yaml.YAMLError):
+            return False
+        existing_payload = existing_loaded
+
+    comparable_keys = (
+        "symbol",
+        "strategy_mode",
+        "execution_mode",
+        "backtest_input_mode",
+        "agg_trade_tick_interval",
+        "backtest_period_days",
+        "backtest_period_start_time",
+        "backtest_period_end_time",
+    )
+    for key in comparable_keys:
+        if existing_payload.get(key) != config_payload.get(key):
+            return False
+    if existing_payload.get("indicator_inputs") != config_payload.get("indicator_inputs"):
+        return False
+    if existing_payload.get("params") != config_payload.get("params"):
+        return False
+    return True
+
+
+def _load_completed_summary_from_artifacts(
+    *,
+    name: str,
+    run_dir: Path,
+    config_payload: dict[str, Any],
+) -> CompareScenarioSummary | None:
+    log_path = run_dir / "compare_worker.log"
+    if not log_path.exists():
+        return None
+
+    try:
+        log_lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+
+    completed_match: re.Match[str] | None = None
+    stats: dict[str, str] = {}
+    agg_trade_summary: dict[str, str] = {}
+    for line in log_lines:
+        completed = _COMPARE_COMPLETED_LOG_PATTERN.search(line)
+        if completed and completed.group("name") == name:
+            completed_match = completed
+        stat_match = _BACKTEST_STAT_LOG_PATTERN.search(line)
+        if stat_match:
+            stats[stat_match.group("key").strip()] = stat_match.group("value").strip()
+        agg_match = _AGG_TRADE_SUMMARY_LOG_PATTERN.search(line)
+        if agg_match:
+            agg_trade_summary = agg_match.groupdict()
+
+    if completed_match is None:
+        return None
+
+    initial_balance = _float_or_none(stats.get("Initial Balance"))
+    final_balance = _float_or_none(stats.get("Final Balance")) or _float_or_none(completed_match.group("final_balance"))
+    profit_factor = _float_or_none(stats.get("Profit Factor"))
+    score = _compute_compare_score(
+        initial_balance=initial_balance,
+        final_balance=final_balance,
+        profit_factor=profit_factor,
+    )
+    replay_payload = _read_json_mapping(run_dir / "replay_summary.json") or {}
+    execution_payload = _read_json_mapping(run_dir / "market_event_execution_summary.json") or {}
+    alignment_payload = _read_json_mapping(run_dir / "market_event_trade_alignment_summary.json") or {}
+
+    return CompareScenarioSummary(
+        name=name,
+        base_name=str(config_payload.get("__compare_base_name") or "").strip() or name,
+        candidate_label=str(config_payload.get("__compare_candidate_label") or "").strip() or None,
+        param_signature=str(config_payload.get("__compare_candidate_param_signature") or "").strip() or None,
+        sieve_stage=str(config_payload.get("__compare_sieve_stage") or "").strip() or None,
+        sieve_name=str(config_payload.get("__compare_sieve_name") or "").strip() or None,
+        status="ok",
+        error=None,
+        duration_seconds=float(completed_match.group("duration_seconds")),
+        run_dir=str(run_dir),
+        symbol=str(config_payload.get("symbol") or "").strip().upper() or None,
+        strategy_mode=str(config_payload.get("strategy_mode") or "").strip().lower() or None,
+        execution_mode=str(config_payload.get("execution_mode") or "").strip().lower() or None,
+        backtest_input_mode=str(config_payload.get("backtest_input_mode") or "").strip().lower() or None,
+        agg_trade_tick_interval=str(config_payload.get("agg_trade_tick_interval") or "").strip().lower() or None,
+        backtest_period_days=_int_or_none(config_payload.get("backtest_period_days")),
+        backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or "").strip() or None,
+        backtest_period_end_time=str(config_payload.get("backtest_period_end_time") or "").strip() or None,
+        initial_balance=initial_balance,
+        final_balance=final_balance,
+        score=score,
+        total_return_pct=_float_or_none(stats.get("Total Return %")) or _float_or_none(completed_match.group("return_pct")),
+        number_of_trades=_int_or_none(stats.get("Number of Trades")) or _int_or_none(completed_match.group("trades")),
+        win_rate_pct=_float_or_none(stats.get("Win Rate %")),
+        total_fee=_float_or_none(stats.get("Total Fee")),
+        profit_factor=profit_factor,
+        max_drawdown_pct=_float_or_none(stats.get("Max Drawdown %")),
+        replay_closed_trades=_int_or_none(replay_payload.get("closed_trades")),
+        replay_net_pnl=_float_or_none(replay_payload.get("net_pnl")),
+        execution_events=_int_or_none(execution_payload.get("execution_events")),
+        observed_trades=_int_or_none(execution_payload.get("observed_total_trades")),
+        realized_pnl=_float_or_none(execution_payload.get("realized_pnl_total")),
+        alignment_paired_trades=_int_or_none(alignment_payload.get("paired_trades")),
+        alignment_pnl_delta=_float_or_none(alignment_payload.get("pnl_delta")),
+        agg_trade_raw_trades=_int_or_none(agg_trade_summary.get("raw_trades")),
+        agg_trade_total_events=_int_or_none(agg_trade_summary.get("total_events")),
+        agg_trade_price_ticks=_int_or_none(agg_trade_summary.get("price_ticks")),
+    )
+
+
+def _load_resumable_summary(
+    *,
+    name: str,
+    scenario_dir: Path,
+    config_payload: dict[str, Any],
+) -> CompareScenarioSummary | None:
+    if not scenario_dir.exists():
+        return None
+    if not _scenario_resume_matches(scenario_dir=scenario_dir, config_payload=config_payload):
+        return None
+    persisted = _load_persisted_compare_summary(scenario_dir)
+    if persisted is not None:
+        return persisted
+    return _load_completed_summary_from_artifacts(
+        name=name,
+        run_dir=scenario_dir,
+        config_payload=config_payload,
+    )
+
+
 def _compute_compare_score(
     *,
     initial_balance: float | None,
@@ -452,6 +641,8 @@ def _summarize_result(
     return CompareScenarioSummary(
         name=name,
         base_name=str(config_payload.get("__compare_base_name") or "").strip() or name,
+        candidate_label=str(config_payload.get("__compare_candidate_label") or "").strip() or None,
+        param_signature=str(config_payload.get("__compare_candidate_param_signature") or "").strip() or None,
         sieve_stage=str(config_payload.get("__compare_sieve_stage") or "").strip() or None,
         sieve_name=str(config_payload.get("__compare_sieve_name") or "").strip() or None,
         status="ok",
@@ -499,6 +690,8 @@ def _summarize_error(
     return CompareScenarioSummary(
         name=name,
         base_name=str(config_payload.get("__compare_base_name") or "").strip() or name,
+        candidate_label=str(config_payload.get("__compare_candidate_label") or "").strip() or None,
+        param_signature=str(config_payload.get("__compare_candidate_param_signature") or "").strip() or None,
         sieve_stage=str(config_payload.get("__compare_sieve_stage") or "").strip() or None,
         sieve_name=str(config_payload.get("__compare_sieve_name") or "").strip() or None,
         status="failed",
@@ -545,6 +738,8 @@ def _summarize_skipped(
     return CompareScenarioSummary(
         name=name,
         base_name=str(config_payload.get("__compare_base_name") or "").strip() or name,
+        candidate_label=str(config_payload.get("__compare_candidate_label") or "").strip() or None,
+        param_signature=str(config_payload.get("__compare_candidate_param_signature") or "").strip() or None,
         sieve_stage=str(config_payload.get("__compare_sieve_stage") or "").strip() or None,
         sieve_name=str(config_payload.get("__compare_sieve_name") or "").strip() or None,
         status="skipped",
@@ -759,58 +954,115 @@ def _format_cell(value: Any, *, digits: int = 2) -> str:
     return str(value)
 
 
+def _compare_table_sort_key(item: CompareScenarioSummary) -> tuple[float | int | str, ...]:
+    status_order = {
+        "ok": 0,
+        "failed": 1,
+        "skipped": 2,
+    }
+    score = item.score if item.score is not None else float("-inf")
+    total_return_pct = item.total_return_pct if item.total_return_pct is not None else float("-inf")
+    final_balance = item.final_balance if item.final_balance is not None else float("-inf")
+    win_rate_pct = item.win_rate_pct if item.win_rate_pct is not None else float("-inf")
+    label = item.candidate_label or item.name
+    return (
+        status_order.get(item.status, 3),
+        -score,
+        -total_return_pct,
+        -final_balance,
+        -win_rate_pct,
+        label,
+    )
+
+
+def _has_param_signatures(scenarios: list[CompareScenarioSummary]) -> bool:
+    return any(bool(item.param_signature) for item in scenarios)
+
+
+def _display_scenario_label(item: CompareScenarioSummary) -> str:
+    label = item.candidate_label or item.name
+    if item.status == "ok":
+        return label
+    return f"{label} ({item.status})"
+
+
 def _write_compare_table(path: Path, scenarios: list[CompareScenarioSummary]) -> None:
-    header = [
-        "Scenario",
-        "Status",
-        "Mode",
-        "Input",
-        "Exec",
-        "Stage",
-        "Sieve",
-        "Days",
-        "Tick",
-        "Score",
-        "Return %",
-        "Final Balance",
-        "Trades",
-        "Win Rate %",
-        "Fee",
-        "Profit Factor",
-        "Max DD %",
-    ]
+    sorted_scenarios = sorted(scenarios, key=_compare_table_sort_key)
+    compact_params_mode = _has_param_signatures(sorted_scenarios)
+    if compact_params_mode:
+        header = [
+            "Scenario",
+            "Params",
+            "Score",
+            "Return %",
+            "Final Balance",
+            "Trades",
+            "Win Rate %",
+            "Fee",
+            "Profit Factor",
+            "Max DD %",
+        ]
+    else:
+        header = [
+            "Scenario",
+            "Status",
+            "Mode",
+            "Input",
+            "Exec",
+            "Stage",
+            "Sieve",
+            "Days",
+            "Tick",
+            "Score",
+            "Return %",
+            "Final Balance",
+            "Trades",
+            "Win Rate %",
+            "Fee",
+            "Profit Factor",
+            "Max DD %",
+        ]
     lines = [
         "# Compare Results",
         "",
         "| " + " | ".join(header) + " |",
         "| " + " | ".join("---" for _ in header) + " |",
     ]
-    for item in scenarios:
-        lines.append(
-            "| "
-            + " | ".join(
-                [
-                    item.name,
-                    item.status,
-                    item.strategy_mode or "-",
-                    item.backtest_input_mode or "-",
-                    item.execution_mode or "-",
-                    item.sieve_stage or "-",
-                    item.sieve_name or "-",
-                    _format_cell(item.backtest_period_days, digits=0),
-                    item.agg_trade_tick_interval or "-",
-                    _format_cell(item.score),
-                    _format_cell(item.total_return_pct),
-                    _format_cell(item.final_balance),
-                    _format_cell(item.number_of_trades, digits=0),
-                    _format_cell(item.win_rate_pct),
-                    _format_cell(item.total_fee),
-                    _format_cell(item.profit_factor),
-                    _format_cell(item.max_drawdown_pct),
-                ]
-            )
-            + " |"
-        )
+    for item in sorted_scenarios:
+        if compact_params_mode:
+            row = [
+                _display_scenario_label(item),
+                item.param_signature or "-",
+                _format_cell(item.score),
+                _format_cell(item.total_return_pct),
+                _format_cell(item.final_balance),
+                _format_cell(item.number_of_trades, digits=0),
+                _format_cell(item.win_rate_pct),
+                _format_cell(item.total_fee),
+                _format_cell(item.profit_factor),
+                _format_cell(item.max_drawdown_pct),
+            ]
+        else:
+            row = [
+                item.name,
+                item.status,
+                item.strategy_mode or "-",
+                item.backtest_input_mode or "-",
+                item.execution_mode or "-",
+                item.sieve_stage or "-",
+                item.sieve_name or "-",
+                _format_cell(item.backtest_period_days, digits=0),
+                item.agg_trade_tick_interval or "-",
+                _format_cell(item.score),
+                _format_cell(item.total_return_pct),
+                _format_cell(item.final_balance),
+                _format_cell(item.number_of_trades, digits=0),
+                _format_cell(item.win_rate_pct),
+                _format_cell(item.total_fee),
+                _format_cell(item.profit_factor),
+                _format_cell(item.max_drawdown_pct),
+            ]
+        lines.append("| " + " | ".join(row) + " |")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -906,6 +1158,26 @@ def _write_compare_sieve_table(path: Path, aggregates: list[CompareSieveAggregat
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _sieve_aggregate_sort_key(item: CompareSieveAggregate) -> tuple[float, ...]:
+    final_stage_name = "half_year"
+    final_stage_avg_score = item.stage_avg_score.get(final_stage_name)
+    final_stage_min_score = item.stage_min_score.get(final_stage_name)
+    final_stage_avg_return_pct = item.stage_avg_return_pct.get(final_stage_name)
+    final_stage_min_return_pct = item.stage_min_return_pct.get(final_stage_name)
+    passed_stage_count = sum(1 for passed in item.stage_passes.values() if passed)
+    return (
+        0 if item.overall_pass else 1,
+        0 if item.stage_passes.get(final_stage_name, False) else 1,
+        -passed_stage_count,
+        -(final_stage_avg_score if final_stage_avg_score is not None else float("-inf")),
+        -(final_stage_avg_return_pct if final_stage_avg_return_pct is not None else float("-inf")),
+        -(final_stage_min_score if final_stage_min_score is not None else float("-inf")),
+        -(final_stage_min_return_pct if final_stage_min_return_pct is not None else float("-inf")),
+        -(item.avg_score if item.avg_score is not None else float("-inf")),
+        -(item.avg_return_pct if item.avg_return_pct is not None else float("-inf")),
+    )
 
 
 def _aggregate_sieves(scenarios: list[CompareScenarioSummary]) -> list[CompareSieveAggregate]:
@@ -1004,15 +1276,7 @@ def _aggregate_sieves(scenarios: list[CompareScenarioSummary]) -> list[CompareSi
                 overall_pass=all(stage_passes.get(stage, False) for stage in ("month", "quarter", "half_year")),
             )
         )
-    return sorted(
-        aggregates,
-        key=lambda item: (
-            0 if item.overall_pass else 1,
-            -sum(1 for passed in item.stage_passes.values() if passed),
-            -(item.avg_score if item.avg_score is not None else float("-inf")),
-            -(item.avg_return_pct if item.avg_return_pct is not None else float("-inf")),
-        ),
-    )
+    return sorted(aggregates, key=_sieve_aggregate_sort_key)
 
 
 def _prepare_compare_run_dir(config: CompareConfig) -> Path:
@@ -1276,6 +1540,7 @@ def _run_compare_scenario_task(task: dict[str, Any]) -> dict[str, Any]:
         finally:
             scenario_progress.close()
 
+    _persist_compare_summary(scenario_dir, summary)
     return {
         "index": int(task["index"]),
         "summary": asdict(summary),
@@ -1312,6 +1577,7 @@ def run_compare(
     summaries_by_index: dict[int, CompareScenarioSummary] = {}
     stage_decisions: list[CompareStageDecision] = []
     next_index = 1
+    resumed_scenarios = 0
 
     if config.sieves:
         scenario_lookup = {scenario.name: scenario for scenario in config.scenarios}
@@ -1329,6 +1595,7 @@ def run_compare(
                 len(stage_sieves),
             )
             task_payloads: list[dict[str, Any]] = []
+            stage_results: dict[int, CompareScenarioSummary] = {}
             for scenario in active_scenarios:
                 for sieve in stage_sieves:
                     index = next_index
@@ -1347,6 +1614,15 @@ def run_compare(
                         sieve=sieve,
                         anchor_end_time=anchor_end_time,
                     )
+                    existing_summary = _load_resumable_summary(
+                        name=scenario_name,
+                        scenario_dir=scenario_dir,
+                        config_payload=merged_config,
+                    )
+                    if existing_summary is not None:
+                        stage_results[index] = existing_summary
+                        resumed_scenarios += 1
+                        continue
                     task_payloads.append(
                         _scenario_task_payload(
                             index=index,
@@ -1358,12 +1634,15 @@ def run_compare(
                         )
                     )
 
-            stage_results = _execute_compare_task_payloads(
-                task_payloads=task_payloads,
-                logger=logger,
-                compare_parallel=config.compare_parallel,
-                compare_max_workers=config.compare_max_workers,
-            )
+            executed_stage_results: dict[int, CompareScenarioSummary] = {}
+            if task_payloads:
+                executed_stage_results = _execute_compare_task_payloads(
+                    task_payloads=task_payloads,
+                    logger=logger,
+                    compare_parallel=config.compare_parallel,
+                    compare_max_workers=config.compare_max_workers,
+                )
+            stage_results.update(executed_stage_results)
             for index, summary in stage_results.items():
                 summaries_by_index[index] = summary
 
@@ -1424,6 +1703,7 @@ def run_compare(
             ]
     else:
         task_payloads: list[dict[str, Any]] = []
+        preloaded_results: dict[int, CompareScenarioSummary] = {}
         for scenario in config.scenarios:
             index = next_index
             next_index += 1
@@ -1440,6 +1720,15 @@ def run_compare(
                 sieve=None,
                 anchor_end_time=anchor_end_time,
             )
+            existing_summary = _load_resumable_summary(
+                name=scenario.name,
+                scenario_dir=scenario_dir,
+                config_payload=merged_config,
+            )
+            if existing_summary is not None:
+                preloaded_results[index] = existing_summary
+                resumed_scenarios += 1
+                continue
             task_payloads.append(
                 _scenario_task_payload(
                     index=index,
@@ -1450,14 +1739,21 @@ def run_compare(
                     quiet_console_info=False,
                 )
             )
-        stage_results = _execute_compare_task_payloads(
-            task_payloads=task_payloads,
-            logger=logger,
-            compare_parallel=config.compare_parallel,
-            compare_max_workers=config.compare_max_workers,
-        )
+        stage_results = dict(preloaded_results)
+        executed_stage_results: dict[int, CompareScenarioSummary] = {}
+        if task_payloads:
+            executed_stage_results = _execute_compare_task_payloads(
+                task_payloads=task_payloads,
+                logger=logger,
+                compare_parallel=config.compare_parallel,
+                compare_max_workers=config.compare_max_workers,
+            )
+        stage_results.update(executed_stage_results)
         for index, summary in stage_results.items():
             summaries_by_index[index] = summary
+
+    if resumed_scenarios:
+        logger.info("compare_resume_reused_scenarios count=%s", resumed_scenarios)
 
     summaries = [summaries_by_index[index] for index in sorted(summaries_by_index)]
 
