@@ -219,6 +219,29 @@ def _ensure_runtime_log_file() -> None:
         technical_logger.warning("runtime_log_init_failed path=%s error=%s", log_path, exc)
 
 
+def _resolve_runtime_event_log_file() -> Path:
+    raw_event_log_path = str(os.getenv("SCROOGE_EVENT_LOG_FILE", "") or "").strip()
+    if raw_event_log_path:
+        return Path(raw_event_log_path).expanduser()
+
+    log_path = Path(os.getenv("SCROOGE_LOG_FILE", "runtime/trading_log.txt")).expanduser()
+    return log_path.parent / "event_history.jsonl"
+
+
+def _ensure_runtime_event_log_file() -> None:
+    """
+    Ensure canonical event log path is always a real file under the runtime directory.
+    """
+    event_log_path = _resolve_runtime_event_log_file()
+    os.environ["SCROOGE_EVENT_LOG_FILE"] = str(event_log_path)
+    try:
+        event_log_path.parent.mkdir(parents=True, exist_ok=True)
+        event_log_path.touch(exist_ok=True)
+        reset_event_store(event_log_path)
+    except OSError as exc:
+        technical_logger.warning("runtime_event_log_init_failed path=%s error=%s", event_log_path, exc)
+
+
 def _parse_open_time_to_ms(value: Any) -> int | None:
     if value is None:
         return None
@@ -427,6 +450,7 @@ if __name__ == "__main__":
             )
 
     _ensure_runtime_log_file()
+    _ensure_runtime_event_log_file()
 
     symbol = cfg["symbol"]
     lvrg = cfg["leverage"]

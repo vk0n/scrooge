@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from bot.event_log import get_technical_logger
+from bot.event_log import emit_event, get_technical_logger
 from bot.state import update_balance, update_position
 from bot.trade import (
     clear_runtime_account_cache,
@@ -956,9 +956,42 @@ class LiveMarketStream:
                         position_amt,
                         entry_price,
                     )
+                    emit_event(
+                        code="position_sync_unmanaged",
+                        category="error",
+                        ts=ts_label,
+                        level="warning",
+                        notify=True,
+                        persist_ui=True,
+                        runtime_mode="live",
+                        ui_message=(
+                            f"The exchange reported a live {self._symbol} position of {position_amt:.4f}, "
+                            "but I had no local position in state. Please inspect the office ledger."
+                        ),
+                        symbol=self._symbol,
+                        position_amt=position_amt,
+                        entry=entry_price,
+                    )
                 return
 
             if abs(position_amt) <= 1e-12:
+                emit_event(
+                    code="position_sync_cleared",
+                    category="error",
+                    ts=ts_label,
+                    level="warning",
+                    notify=True,
+                    persist_ui=True,
+                    runtime_mode="live",
+                    ui_message=(
+                        f"The exchange reported {self._symbol} as flat, so I cleared the local "
+                        f"{str(current_position.get('side') or 'position')} from state without a matched close event. "
+                        "Please inspect fills and the ledger."
+                    ),
+                    symbol=self._symbol,
+                    side=current_position.get("side"),
+                    entry=current_position.get("entry"),
+                )
                 update_position(state, None)
                 return
 

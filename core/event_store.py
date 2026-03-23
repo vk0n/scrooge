@@ -9,7 +9,7 @@ from uuid import uuid4
 
 
 EVENT_SCHEMA_VERSION = 1
-EVENT_LOG_FILE = os.getenv("SCROOGE_EVENT_LOG_FILE", "runtime/event_history.jsonl")
+EVENT_LOG_FILE = (str(os.getenv("SCROOGE_EVENT_LOG_FILE", "") or "").strip() or "runtime/event_history.jsonl")
 DEFAULT_RUNTIME_MODE = os.getenv("SCROOGE_RUNTIME_MODE", "").strip() or None
 DEFAULT_STRATEGY_MODE = os.getenv("SCROOGE_STRATEGY_MODE", "").strip() or None
 EVENT_STORE_LOGGER_NAME = "scrooge.event_store"
@@ -42,8 +42,20 @@ def _logger() -> logging.Logger:
 
 
 def resolve_event_log_path(path: str | Path | None = None) -> Path:
-    raw_path = Path(path or os.getenv("SCROOGE_EVENT_LOG_FILE", EVENT_LOG_FILE)).expanduser()
-    return raw_path
+    if path is not None:
+        explicit_path = str(path).strip()
+        if explicit_path:
+            return Path(explicit_path).expanduser()
+
+    env_path = str(os.getenv("SCROOGE_EVENT_LOG_FILE", "") or "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+
+    ui_log_path = str(os.getenv("SCROOGE_LOG_FILE", "") or "").strip()
+    if ui_log_path:
+        return Path(ui_log_path).expanduser().parent / "event_history.jsonl"
+
+    return Path(EVENT_LOG_FILE).expanduser()
 
 
 def build_event_record(
