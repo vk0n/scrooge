@@ -932,8 +932,8 @@ function DashboardContent(): JSX.Element {
                     {formatPositionSide(tradeSummaryDirectionSide)}
                   </span>
                 ) : null}
-                <span className="position-summary-phrase-wrap">
-                  <span className={positionSummaryPhraseClass}>
+                <span className={`position-summary-phrase-wrap${!hasOpenPosition ? " position-summary-phrase-wrap-empty" : ""}`}>
+                  <span className={`${positionSummaryPhraseClass}${!hasOpenPosition ? " position-summary-phrase-empty" : ""}`}>
                     <span>{positionSummaryText}</span>
                   </span>
                 </span>
@@ -1211,18 +1211,6 @@ function DashboardContent(): JSX.Element {
                   Close the Floor
                 </button>
               ) : null}
-              <button
-                type="button"
-                className="dialog-user-btn"
-                onClick={() =>
-                  void runControlAction("restart", {
-                    confirmMessage: "Rewind the office engine?"
-                  })
-                }
-                disabled={busyAction !== null}
-              >
-                Wind It Again
-              </button>
               {busyAction ? <span className="dialog-scrooge dialog-scrooge-compact">Executing {busyAction}...</span> : null}
             </div>
           </div>
