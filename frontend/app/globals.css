@@ -367,6 +367,10 @@ pre {
   display: inline;
 }
 
+.status-helper-separator {
+  display: inline;
+}
+
 .status-helper-value {
   color: #edf0f7;
 }
@@ -2243,6 +2247,10 @@ pre {
   .status-helper-last-price {
     display: block;
     margin-top: 0.08rem;
+  }
+
+  .status-helper-separator {
+    display: none;
   }
 
   .position-accordion-summary::after {

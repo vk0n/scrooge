@@ -900,6 +900,10 @@ function DashboardContent(): JSX.Element {
                 <span className="status-helper-value">{formatLeverage(data.leverage)}</span>
               </span>
               <span className="status-helper-last-price">
+                <span className="status-helper-separator" aria-hidden="true">
+                  {" "}
+                  •{" "}
+                </span>
                 Last Price: <span className="status-helper-value">{formatPrice(lastPrice)}</span>
               </span>
             </p>
