@@ -918,22 +918,20 @@ function DashboardContent(): JSX.Element {
                   }
                 }}
               >
-                <span className="position-summary-main">
-                  <span className="position-accordion-title">Current Trade</span>
-                  {tradeSummaryDirectionSide ? (
-                    <span className={positionSideBadgeClass(tradeSummaryDirectionSide)}>
-                      {formatPositionSide(tradeSummaryDirectionSide)}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="position-summary-right">
+                <span className="position-summary-title">Current Trade</span>
+                {tradeSummaryDirectionSide ? (
+                  <span className={`position-summary-side ${positionSideBadgeClass(tradeSummaryDirectionSide)}`}>
+                    {formatPositionSide(tradeSummaryDirectionSide)}
+                  </span>
+                ) : null}
+                <span className="position-summary-phrase-wrap">
                   <span className={positionSummaryPhraseClass}>
                     <span>{positionSummaryText}</span>
                   </span>
-                  {showPositionUpnlBadge ? (
-                    <span className={positionUpnlBadgeClass}>{positionUpnlBadgeText}</span>
-                  ) : null}
                 </span>
+                {showPositionUpnlBadge ? (
+                  <span className={`position-summary-pnl ${positionUpnlBadgeClass}`}>{positionUpnlBadgeText}</span>
+                ) : null}
               </summary>
               <div className="position-accordion-body">
                 <div className="trade-pulse-grid">

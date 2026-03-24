@@ -1139,10 +1139,14 @@ pre {
 }
 
 .position-accordion-summary {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "title side chevron"
+    "phrase pnl chevron";
   align-items: center;
-  justify-content: flex-start;
-  gap: 0.65rem;
+  column-gap: 0.65rem;
+  row-gap: 0.42rem;
   cursor: pointer;
   list-style: none;
 }
@@ -1155,6 +1159,9 @@ pre {
   content: "▾";
   color: #a8b5c8;
   font-size: 0.78rem;
+  grid-area: chevron;
+  justify-self: end;
+  align-self: center;
   transform-origin: center;
   transition: transform 140ms ease;
 }
@@ -1173,11 +1180,34 @@ pre {
   letter-spacing: 0.01em;
 }
 
+.position-summary-title {
+  grid-area: title;
+  min-width: 0;
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.position-summary-side {
+  grid-area: side;
+  justify-self: end;
+}
+
+.position-summary-phrase-wrap {
+  grid-area: phrase;
+  min-width: 0;
+}
+
+.position-summary-pnl {
+  grid-area: pnl;
+  justify-self: end;
+}
+
 .position-summary-main {
   display: inline-flex;
   align-items: center;
-  gap: 0.42rem;
   min-width: 0;
+  gap: 0.42rem;
   flex: 1 1 auto;
 }
 
@@ -2158,45 +2188,47 @@ pre {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
-      "main main"
-      "right chevron";
-    align-items: center;
+      "title side"
+      "phrase pnl"
+      "chevron chevron";
+    align-items: start;
     column-gap: 0.42rem;
     row-gap: 0.42rem;
   }
 
-  .position-summary-main {
-    display: flex;
-    grid-area: main;
-    width: calc(100% - 1.4rem);
-    max-width: calc(100% - 1.4rem);
-    flex-wrap: nowrap;
+  .position-summary-title {
+    align-self: center;
   }
 
-  .position-accordion-title {
-    margin-right: auto;
+  .position-summary-side,
+  .position-summary-pnl {
+    justify-self: end;
+    align-self: center;
   }
 
-  .position-summary-right {
-    grid-area: right;
-    margin-left: 0;
+  .position-summary-phrase-wrap {
     width: 100%;
-    justify-content: space-between;
-    flex-wrap: nowrap;
-    order: 1;
   }
 
   .position-summary-phrase {
-    max-width: calc(100% - 5.8rem);
-    overflow: hidden;
-    text-overflow: ellipsis;
+    display: inline-flex;
+    max-width: none;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
   }
 
   .position-accordion-summary::after {
     grid-area: chevron;
-    justify-self: end;
-    align-self: center;
-    margin-left: 0;
+    justify-self: center;
+    align-self: start;
+    margin-top: 0.08rem;
+    transform: none;
+  }
+
+  .position-accordion:not([open]) .position-accordion-summary::after {
+    transform: none;
   }
 
   .position-control-item button,
