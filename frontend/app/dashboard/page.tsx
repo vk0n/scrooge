@@ -895,9 +895,13 @@ function DashboardContent(): JSX.Element {
               </div>
             </div>
             <p className="status-helper">
-              Ticker: <span className="status-helper-value">{displayValue(data.symbol)}</span> • Leverage:{" "}
-              <span className="status-helper-value">{formatLeverage(data.leverage)}</span> • Last Price:{" "}
-              <span className="status-helper-value">{formatPrice(lastPrice)}</span>
+              <span className="status-helper-primary">
+                Ticker: <span className="status-helper-value">{displayValue(data.symbol)}</span> • Leverage:{" "}
+                <span className="status-helper-value">{formatLeverage(data.leverage)}</span>
+              </span>
+              <span className="status-helper-last-price">
+                Last Price: <span className="status-helper-value">{formatPrice(lastPrice)}</span>
+              </span>
             </p>
             <details
               className="position-accordion position-accordion-featured"
