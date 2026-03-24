@@ -2155,12 +2155,19 @@ pre {
   }
 
   .position-accordion-summary {
-    flex-wrap: wrap;
-    align-items: flex-start;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "main main"
+      "right chevron";
+    align-items: center;
+    column-gap: 0.42rem;
+    row-gap: 0.42rem;
   }
 
   .position-summary-main {
     display: flex;
+    grid-area: main;
     width: calc(100% - 1.4rem);
     max-width: calc(100% - 1.4rem);
     flex-wrap: nowrap;
@@ -2171,6 +2178,7 @@ pre {
   }
 
   .position-summary-right {
+    grid-area: right;
     margin-left: 0;
     width: 100%;
     justify-content: space-between;
@@ -2185,7 +2193,10 @@ pre {
   }
 
   .position-accordion-summary::after {
-    margin-left: auto;
+    grid-area: chevron;
+    justify-self: end;
+    align-self: center;
+    margin-left: 0;
   }
 
   .position-control-item button,

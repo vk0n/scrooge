@@ -1,6 +1,8 @@
 import os
 import tempfile
 import webbrowser
+import json
+from typing import TYPE_CHECKING
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from backtest.discrete_tape import build_discrete_market_tape
 from backtest.dataset import fetch_historical_paginated, prepare_multi_tf
 from backtest.stats import compute_stats
 from bot.event_log import get_technical_logger
@@ -18,7 +21,12 @@ from bot.state import (
     load_trade_history,
 )
 from core.binance_retry import create_binance_client, run_binance_with_retries
-from core.engine import run_strategy
+from core.engine import run_strategy_on_market_events, run_strategy_on_tape
+from core.indicator_inputs import uses_realtime_indicator_inputs
+from core.market_events import iter_market_event_stream, market_event_from_dict
+
+if TYPE_CHECKING:
+    from backtest.runner import BacktestConfig
 
 
 def _ensure_matplotlib_cache_dir() -> None:
@@ -35,10 +43,20 @@ import matplotlib.pyplot as plt
 
 _client = None
 _rw_df = None
+_rw_market_event_path = None
+_rw_market_event_day_ranges = None
+_rw_mode = None
 _rw_start_time = None
 _rw_k_days = None
 _rw_start_balance = None
 _rw_strategy_kwargs = None
+_rw_symbol = None
+_rw_candle_interval = None
+_rw_intervals = None
+_rw_strategy_mode = None
+_rw_execution_mode = None
+_rw_indicator_inputs = None
+_rw_runtime_mode = None
 technical_logger = get_technical_logger()
 
 
@@ -53,48 +71,240 @@ def _get_client():
     return _client
 
 
-def _rw_init(df, start_time, k_days, start_balance, strategy_kwargs):
-    global _rw_df, _rw_start_time, _rw_k_days, _rw_start_balance, _rw_strategy_kwargs
+def _rw_init(
+    mode,
+    df,
+    market_event_path,
+    market_event_day_ranges,
+    start_time,
+    k_days,
+    start_balance,
+    strategy_kwargs,
+    symbol,
+    candle_interval,
+    intervals,
+    strategy_mode,
+    execution_mode,
+    indicator_inputs,
+    runtime_mode,
+):
+    global _rw_df, _rw_market_event_path, _rw_market_event_day_ranges, _rw_mode, _rw_start_time, _rw_k_days, _rw_start_balance, _rw_strategy_kwargs
+    global _rw_symbol, _rw_candle_interval, _rw_intervals, _rw_strategy_mode, _rw_execution_mode, _rw_indicator_inputs, _rw_runtime_mode
     _rw_df = df
+    _rw_market_event_path = market_event_path
+    _rw_market_event_day_ranges = market_event_day_ranges
+    _rw_mode = mode
     _rw_start_time = start_time
     _rw_k_days = k_days
     _rw_start_balance = start_balance
     _rw_strategy_kwargs = strategy_kwargs
+    _rw_symbol = symbol
+    _rw_candle_interval = candle_interval
+    _rw_intervals = intervals
+    _rw_strategy_mode = strategy_mode
+    _rw_execution_mode = execution_mode
+    _rw_indicator_inputs = indicator_inputs
+    _rw_runtime_mode = runtime_mode
+
+
+def _extract_event_day(raw_line: bytes) -> str | None:
+    marker = b'"ts":"'
+    position = raw_line.find(marker)
+    if position < 0:
+        return None
+    start = position + len(marker)
+    end = start + 10
+    if end > len(raw_line):
+        return None
+    try:
+        return raw_line[start:end].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+
+
+def _build_market_event_day_ranges(path) -> list[tuple[str, int, int]]:
+    target_path = Path(path).expanduser()
+    if not target_path.exists():
+        return []
+
+    day_ranges: list[tuple[str, int, int]] = []
+    current_day: str | None = None
+    current_start = 0
+    offset = 0
+    with target_path.open("rb") as file_obj:
+        while True:
+            line_start = offset
+            raw_line = file_obj.readline()
+            if not raw_line:
+                break
+            offset += len(raw_line)
+            if not raw_line.strip():
+                continue
+            event_day = _extract_event_day(raw_line)
+            if event_day is None:
+                continue
+            if current_day is None:
+                current_day = event_day
+                current_start = line_start
+                continue
+            if event_day != current_day:
+                day_ranges.append((current_day, current_start, line_start))
+                current_day = event_day
+                current_start = line_start
+
+    if current_day is not None:
+        day_ranges.append((current_day, current_start, offset))
+
+    return day_ranges
+
+
+def _resolve_market_event_byte_range(day_ranges, window_start, window_end):
+    if not day_ranges:
+        return None
+    start_day = window_start.strftime("%Y-%m-%d")
+    end_day = (window_end - pd.Timedelta(microseconds=1)).strftime("%Y-%m-%d")
+    selected_start = None
+    selected_end = None
+    for event_day, day_start, day_end in day_ranges:
+        if event_day < start_day:
+            continue
+        if event_day > end_day:
+            break
+        if selected_start is None:
+            selected_start = day_start
+        selected_end = day_end
+    if selected_start is None or selected_end is None:
+        return None
+    return selected_start, selected_end
+
+
+def _iter_market_events_in_window(path, window_start, window_end, day_ranges=None):
+    byte_range = _resolve_market_event_byte_range(day_ranges, window_start, window_end) if day_ranges else None
+    if byte_range is not None:
+        start_offset, end_offset = byte_range
+        with Path(path).expanduser().open("rb") as file_obj:
+            file_obj.seek(start_offset)
+            while file_obj.tell() < end_offset:
+                raw_line = file_obj.readline()
+                if not raw_line:
+                    break
+                if not raw_line.strip():
+                    continue
+                try:
+                    payload = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                event = market_event_from_dict(payload)
+                event_ts = pd.to_datetime(getattr(event, "ts", None), errors="coerce")
+                if pd.isna(event_ts):
+                    continue
+                if event_ts < window_start:
+                    continue
+                if event_ts >= window_end:
+                    break
+                yield event
+        return
+
+    for event in iter_market_event_stream(path):
+        event_ts = pd.to_datetime(getattr(event, "ts", None), errors="coerce")
+        if pd.isna(event_ts):
+            continue
+        if event_ts < window_start:
+            continue
+        if event_ts >= window_end:
+            break
+        yield event
+
+
+def _run_window_backtest(
+    *,
+    mode,
+    df,
+    market_event_path,
+    market_event_day_ranges,
+    window_start,
+    window_end,
+    start_balance,
+    strategy_kwargs,
+    symbol,
+    candle_interval,
+    intervals,
+    strategy_mode,
+    execution_mode,
+    indicator_inputs,
+    runtime_mode,
+):
+    if mode == "market_events":
+        final_balance, trades, balance_history, _ = run_strategy_on_market_events(
+            _iter_market_events_in_window(
+                market_event_path,
+                window_start,
+                window_end,
+                day_ranges=market_event_day_ranges,
+            ),
+            candle_interval=candle_interval,
+            intervals=intervals,
+            market_event_total=None,
+            strategy_mode=strategy_mode,
+            execution_mode=execution_mode,
+            strict_indicator_alignment=False,
+            show_progress=False,
+            enable_logs=False,
+            use_state=False,
+            runtime_mode=runtime_mode,
+            indicator_inputs=indicator_inputs,
+            initial_balance=start_balance,
+            **strategy_kwargs,
+        )
+    else:
+        df_window = df[(df["open_time"] >= window_start) & (df["open_time"] < window_end)]
+        if df_window.empty:
+            return None
+        tape_window = build_discrete_market_tape(df_window, symbol=symbol)
+        if not tape_window:
+            return None
+        final_balance, trades, balance_history, _ = run_strategy_on_tape(
+            tape_window,
+            show_progress=False,
+            enable_logs=False,
+            use_state=False,
+            runtime_mode=runtime_mode,
+            indicator_inputs=indicator_inputs,
+            initial_balance=start_balance,
+            **strategy_kwargs,
+        )
+
+    stats = compute_stats(start_balance, final_balance, trades, balance_history)
+    return (
+        final_balance,
+        float(stats["Total Return %"]),
+        float(stats["Win Rate %"]),
+        float(stats["Max Drawdown %"]),
+    )
 
 
 def _rw_worker(offset):
     window_start = _rw_start_time + pd.Timedelta(days=offset)
     window_end = window_start + pd.Timedelta(days=_rw_k_days)
-    df_window = _rw_df[(_rw_df["open_time"] >= window_start) & (_rw_df["open_time"] < window_end)]
-    if df_window.empty:
-        return None
-
-    final_balance, trades, balance_history, _ = run_strategy(
-        df_window,
-        live=False,
-        initial_balance=_rw_start_balance,
-        use_state=False,
-        enable_logs=False,
-        show_progress=False,
-        **_rw_strategy_kwargs
+    return _run_window_backtest(
+        mode=_rw_mode,
+        df=_rw_df,
+        market_event_path=_rw_market_event_path,
+        market_event_day_ranges=_rw_market_event_day_ranges,
+        window_start=window_start,
+        window_end=window_end,
+        start_balance=_rw_start_balance,
+        strategy_kwargs=_rw_strategy_kwargs,
+        symbol=_rw_symbol,
+        candle_interval=_rw_candle_interval,
+        intervals=_rw_intervals,
+        strategy_mode=_rw_strategy_mode,
+        execution_mode=_rw_execution_mode,
+        indicator_inputs=_rw_indicator_inputs,
+        runtime_mode=_rw_runtime_mode,
     )
-    pnl_pct = (final_balance - _rw_start_balance) / _rw_start_balance * 100
-
-    if trades is not None and len(trades) > 0:
-        wins = trades[trades["net_pnl"] > 0]
-        win_rate = len(wins) / len(trades) * 100
-    else:
-        win_rate = 0
-
-    equity = np.array(balance_history)
-    if len(equity) > 0:
-        rolling_max = np.maximum.accumulate(equity)
-        drawdowns = (equity - rolling_max) / rolling_max
-        max_drawdown = drawdowns.min() * 100
-    else:
-        max_drawdown = 0
-
-    return final_balance, pnl_pct, win_rate, max_drawdown
 
 def load_state():
     state = load_runtime_state(include_history=False)
@@ -370,50 +580,54 @@ def _build_interactive_figure(df, trades, equity_series):
         row=1,
         col=1
     )
-    fig.add_trace(
-        go.Scatter(
-            x=df["open_time"],
-            y=df["BBL"],
-            mode="lines",
-            name="Lower BB",
-            line=dict(color="red", dash="dash")
-        ),
-        row=1,
-        col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["open_time"],
-            y=df["BBM"],
-            mode="lines",
-            name="Middle BB",
-            line=dict(color="black", dash="dash")
-        ),
-        row=1,
-        col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["open_time"],
-            y=df["BBU"],
-            mode="lines",
-            name="Upper BB",
-            line=dict(color="green", dash="dash")
-        ),
-        row=1,
-        col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["open_time"],
-            y=df["EMA"],
-            mode="lines",
-            name="EMA",
-            line=dict(color="purple")
-        ),
-        row=1,
-        col=1
-    )
+    if "BBL" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df["open_time"],
+                y=df["BBL"],
+                mode="lines",
+                name="Lower BB",
+                line=dict(color="red", dash="dash")
+            ),
+            row=1,
+            col=1
+        )
+    if "BBM" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df["open_time"],
+                y=df["BBM"],
+                mode="lines",
+                name="Middle BB",
+                line=dict(color="black", dash="dash")
+            ),
+            row=1,
+            col=1
+        )
+    if "BBU" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df["open_time"],
+                y=df["BBU"],
+                mode="lines",
+                name="Upper BB",
+                line=dict(color="green", dash="dash")
+            ),
+            row=1,
+            col=1
+        )
+    if "EMA" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df["open_time"],
+                y=df["EMA"],
+                mode="lines",
+                name="EMA",
+                line=dict(color="purple")
+            ),
+            row=1,
+            col=1
+        )
 
     if trades is not None and not trades.empty:
         entries = trades[pd.notna(trades["entry"])]
@@ -539,7 +753,7 @@ def plot_results_interactive(df, trades, balance_history, split_by_year=True):
         _write_plotly_fullscreen_html(fig, f"Interactive Backtest (Zoom/Pan) - {year}")
 
 
-def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000, horizon_months=None, block_len=3, show_plot=True):
+def run_monte_carlo(df, balance_history, start_balance=10000, sims=10000, horizon_months=None, block_len=3, show_plot=False):
     """
     Advanced Monte Carlo stress test based on monthly equity returns.
     Includes CAGR, Volatility and Sharpe Ratio metrics.
@@ -630,13 +844,47 @@ def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000
     return summary
 
 
+def monte_carlo_from_equity(df, balance_history, start_balance=10000, sims=10000, horizon_months=None, block_len=3, show_plot=False):
+    return run_monte_carlo(
+        df,
+        balance_history,
+        start_balance=start_balance,
+        sims=sims,
+        horizon_months=horizon_months,
+        block_len=block_len,
+        show_plot=show_plot,
+    )
+
+
+def run_rolling_window_backtest_distribution(
+    config: "BacktestConfig",
+    df: pd.DataFrame,
+    *,
+    k_days: int,
+    n_days: int | None = None,
+    start_balance: float = 10000,
+    show_plot: bool = False,
+    max_workers: int | None = None,
+):
+    return rolling_window_backtest_distribution(
+        df,
+        k_days=k_days,
+        n_days=n_days,
+        start_balance=start_balance,
+        show_plot=show_plot,
+        max_workers=max_workers,
+        config=config,
+    )
+
+
 def rolling_window_backtest_distribution(
     df,
     k_days,
     n_days=None,
     start_balance=10000,
-    show_plot=True,
+    show_plot=False,
     max_workers=None,
+    config: "BacktestConfig | None" = None,
     **strategy_kwargs
 ):
     """
@@ -663,6 +911,66 @@ def rolling_window_backtest_distribution(
         technical_logger.warning("rolling_window_invalid_n_days n_days=%s k_days=%s", n_days, k_days)
         return {}
 
+    strategy_kwargs = dict(strategy_kwargs)
+    rolling_mode = "discrete_tape"
+    market_event_path = None
+    market_event_day_ranges = None
+    candle_interval = "1m"
+    intervals = {
+        "small": "1m",
+        "medium": "1h",
+        "big": "4h",
+    }
+    strategy_mode = "discrete"
+    execution_mode = "simulated"
+    indicator_inputs = None
+    runtime_mode = "backtest"
+    symbol = str(strategy_kwargs.get("symbol", "BTCUSDT"))
+    indicator_inputs = strategy_kwargs.pop("indicator_inputs", None)
+    runtime_mode = str(strategy_kwargs.pop("runtime_mode", runtime_mode) or runtime_mode)
+    strategy_mode = str(strategy_kwargs.pop("strategy_mode", strategy_mode) or strategy_mode)
+    execution_mode = str(strategy_kwargs.pop("execution_mode", execution_mode) or execution_mode)
+    strategy_kwargs.pop("initial_balance", None)
+    strategy_kwargs.pop("show_progress", None)
+    strategy_kwargs.pop("enable_logs", None)
+    strategy_kwargs.pop("use_state", None)
+    strategy_kwargs.pop("live", None)
+
+    if config is not None:
+        symbol = config.symbol
+        candle_interval = str(config.intervals["small"])
+        intervals = {key: str(value) for key, value in config.intervals.items()}
+        strategy_mode = config.strategy_mode
+        execution_mode = config.execution_mode
+        indicator_inputs = config.indicator_inputs
+        runtime_mode = config.runtime_mode
+        strategy_kwargs = {
+            "qty": config.qty,
+            "symbol": config.symbol,
+            "leverage": config.leverage,
+            "use_full_balance": config.use_full_balance,
+            **config.params,
+        }
+        if (
+            config.strategy_mode == "realtime"
+            or uses_realtime_indicator_inputs(config.indicator_inputs)
+            or config.backtest_input_mode in {"market_event_stream", "agg_trade_stream"}
+        ):
+            market_event_path = config.market_event_stream_path
+            if not market_event_path.exists():
+                technical_logger.warning(
+                    "rolling_window_missing_market_events path=%s",
+                    market_event_path,
+                )
+                return {}
+            rolling_mode = "market_events"
+            market_event_day_ranges = _build_market_event_day_ranges(market_event_path)
+            technical_logger.info(
+                "rolling_window_market_event_day_index_ready days=%s path=%s",
+                len(market_event_day_ranges),
+                market_event_path,
+            )
+
     final_balances = []
     pnl_pcts = []
     win_rates = []
@@ -676,41 +984,51 @@ def rolling_window_backtest_distribution(
         for offset in tqdm(range(total_windows), desc="Rolling Backtest", ncols=100):
             window_start = start_time + pd.Timedelta(days=offset)
             window_end = window_start + pd.Timedelta(days=k_days)
-            df_window = df[(df["open_time"] >= window_start) & (df["open_time"] < window_end)]
-
-            if df_window.empty:
-                continue
-
-            final_balance, trades, balance_history, _ = run_strategy(
-                df_window,
-                live=False,
-                initial_balance=start_balance,
-                use_state=False,
-                enable_logs=False,
-                show_progress=False,
-                **strategy_kwargs
+            result = _run_window_backtest(
+                mode=rolling_mode,
+                df=df,
+                market_event_path=market_event_path,
+                market_event_day_ranges=market_event_day_ranges,
+                window_start=window_start,
+                window_end=window_end,
+                start_balance=start_balance,
+                strategy_kwargs=strategy_kwargs,
+                symbol=symbol,
+                candle_interval=candle_interval,
+                intervals=intervals,
+                strategy_mode=strategy_mode,
+                execution_mode=execution_mode,
+                indicator_inputs=indicator_inputs,
+                runtime_mode=runtime_mode,
             )
+            if result is None:
+                continue
+            final_balance, pnl_pct, win_rate, max_drawdown = result
             final_balances.append(final_balance)
-            pnl_pcts.append((final_balance - start_balance) / start_balance * 100)
-
-            if trades is not None and len(trades) > 0:
-                wins = trades[trades["net_pnl"] > 0]
-                win_rates.append(len(wins) / len(trades) * 100)
-            else:
-                win_rates.append(0)
-
-            equity = np.array(balance_history)
-            if len(equity) > 0:
-                rolling_max = np.maximum.accumulate(equity)
-                drawdowns = (equity - rolling_max) / rolling_max
-                max_drawdowns.append(drawdowns.min() * 100)
-            else:
-                max_drawdowns.append(0)
+            pnl_pcts.append(pnl_pct)
+            win_rates.append(win_rate)
+            max_drawdowns.append(max_drawdown)
     else:
         with ProcessPoolExecutor(
             max_workers=max_workers,
             initializer=_rw_init,
-            initargs=(df, start_time, k_days, start_balance, strategy_kwargs)
+            initargs=(
+                rolling_mode,
+                None if rolling_mode == "market_events" else df,
+                market_event_path,
+                market_event_day_ranges,
+                start_time,
+                k_days,
+                start_balance,
+                strategy_kwargs,
+                symbol,
+                candle_interval,
+                intervals,
+                strategy_mode,
+                execution_mode,
+                indicator_inputs,
+                runtime_mode,
+            ),
         ) as executor:
             futures = [executor.submit(_rw_worker, offset) for offset in range(total_windows)]
             for fut in tqdm(as_completed(futures), total=total_windows, desc="Rolling Backtest", ncols=100):
