@@ -1140,13 +1140,12 @@ pre {
 
 .position-accordion-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   grid-template-areas:
-    "title side chevron"
-    "phrase pnl chevron";
+    "title phrase side pnl chevron";
   align-items: center;
-  column-gap: 0.65rem;
-  row-gap: 0.42rem;
+  column-gap: 0.58rem;
+  row-gap: 0;
   cursor: pointer;
   list-style: none;
 }
@@ -1186,6 +1185,7 @@ pre {
   font-size: 1.02rem;
   font-weight: 600;
   letter-spacing: 0.01em;
+  padding-left: 0.16rem;
 }
 
 .position-summary-side {
@@ -1222,19 +1222,23 @@ pre {
 }
 
 .position-summary-phrase {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.32rem;
-  border: 1px solid #51324c;
-  border-radius: 999px;
-  padding: 0.16rem 0.56rem;
-  background: linear-gradient(180deg, rgba(57, 13, 37, 0.86), rgba(40, 13, 28, 0.94));
+  display: block;
+  max-width: 100%;
+  border: 1px solid rgba(104, 48, 75, 0.58);
+  border-radius: 10px;
+  padding: 0.18rem 0.54rem 0.18rem 0.16rem;
+  background:
+    linear-gradient(180deg, rgba(46, 17, 34, 0.9), rgba(30, 12, 23, 0.96)),
+    radial-gradient(circle at top right, rgba(112, 30, 58, 0.12), transparent 44%);
   color: #f8dde8;
   font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
   font-size: 0.83rem;
   line-height: 1.2;
   white-space: nowrap;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
 .position-upnl-badge {
@@ -1279,6 +1283,16 @@ pre {
   border-color: #8d6b2f;
   background: rgba(141, 107, 47, 0.2);
   color: #ffe0ab;
+}
+
+.position-summary-side > .badge {
+  min-width: 3.7rem;
+  justify-content: center;
+}
+
+.position-summary-pnl > .position-upnl-badge {
+  min-width: 5.7rem;
+  justify-content: center;
 }
 
 .position-accordion-status {
@@ -2193,7 +2207,7 @@ pre {
       "chevron chevron";
     align-items: start;
     column-gap: 0.42rem;
-    row-gap: 0.42rem;
+    row-gap: 0.24rem;
   }
 
   .position-summary-title {
@@ -2211,19 +2225,21 @@ pre {
   }
 
   .position-summary-phrase {
-    display: inline-flex;
-    max-width: none;
-    white-space: normal;
-    overflow: visible;
-    text-overflow: clip;
-    overflow-wrap: anywhere;
+    max-width: 100%;
+    padding: 0.16rem 0.48rem 0.16rem 0.16rem;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .position-accordion-summary::after {
     grid-area: chevron;
     justify-self: center;
     align-self: start;
-    margin-top: 0.08rem;
+    margin-top: 0.02rem;
+    font-size: 0.62rem;
+    line-height: 1;
     transform: none;
   }
 
