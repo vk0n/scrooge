@@ -218,6 +218,18 @@ def _iter_market_events_in_window(path, window_start, window_end, day_ranges=Non
         yield event
 
 
+def _run_with_event_persistence_suppressed(callback):
+    previous = os.getenv("SCROOGE_DISABLE_EVENT_PERSISTENCE")
+    os.environ["SCROOGE_DISABLE_EVENT_PERSISTENCE"] = "1"
+    try:
+        return callback()
+    finally:
+        if previous is None:
+            os.environ.pop("SCROOGE_DISABLE_EVENT_PERSISTENCE", None)
+        else:
+            os.environ["SCROOGE_DISABLE_EVENT_PERSISTENCE"] = previous
+
+
 def _run_window_backtest(
     *,
     mode,
@@ -237,26 +249,28 @@ def _run_window_backtest(
     runtime_mode,
 ):
     if mode == "market_events":
-        final_balance, trades, balance_history, _ = run_strategy_on_market_events(
-            _iter_market_events_in_window(
-                market_event_path,
-                window_start,
-                window_end,
-                day_ranges=market_event_day_ranges,
-            ),
-            candle_interval=candle_interval,
-            intervals=intervals,
-            market_event_total=None,
-            strategy_mode=strategy_mode,
-            execution_mode=execution_mode,
-            strict_indicator_alignment=False,
-            show_progress=False,
-            enable_logs=False,
-            use_state=False,
-            runtime_mode=runtime_mode,
-            indicator_inputs=indicator_inputs,
-            initial_balance=start_balance,
-            **strategy_kwargs,
+        final_balance, trades, balance_history, _ = _run_with_event_persistence_suppressed(
+            lambda: run_strategy_on_market_events(
+                _iter_market_events_in_window(
+                    market_event_path,
+                    window_start,
+                    window_end,
+                    day_ranges=market_event_day_ranges,
+                ),
+                candle_interval=candle_interval,
+                intervals=intervals,
+                market_event_total=None,
+                strategy_mode=strategy_mode,
+                execution_mode=execution_mode,
+                strict_indicator_alignment=False,
+                show_progress=False,
+                enable_logs=False,
+                use_state=False,
+                runtime_mode=runtime_mode,
+                indicator_inputs=indicator_inputs,
+                initial_balance=start_balance,
+                **strategy_kwargs,
+            )
         )
     else:
         df_window = df[(df["open_time"] >= window_start) & (df["open_time"] < window_end)]
@@ -265,15 +279,17 @@ def _run_window_backtest(
         tape_window = build_discrete_market_tape(df_window, symbol=symbol)
         if not tape_window:
             return None
-        final_balance, trades, balance_history, _ = run_strategy_on_tape(
-            tape_window,
-            show_progress=False,
-            enable_logs=False,
-            use_state=False,
-            runtime_mode=runtime_mode,
-            indicator_inputs=indicator_inputs,
-            initial_balance=start_balance,
-            **strategy_kwargs,
+        final_balance, trades, balance_history, _ = _run_with_event_persistence_suppressed(
+            lambda: run_strategy_on_tape(
+                tape_window,
+                show_progress=False,
+                enable_logs=False,
+                use_state=False,
+                runtime_mode=runtime_mode,
+                indicator_inputs=indicator_inputs,
+                initial_balance=start_balance,
+                **strategy_kwargs,
+            )
         )
 
     stats = compute_stats(start_balance, final_balance, trades, balance_history)

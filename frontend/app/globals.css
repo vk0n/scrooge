@@ -1178,6 +1178,11 @@ pre {
   cursor: default;
 }
 
+.position-accordion-summary-empty {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "title phrase chevron";
+}
+
 .position-accordion:not([open]) .position-accordion-summary::after {
   transform: rotate(-90deg);
 }
@@ -2217,6 +2222,13 @@ pre {
     align-items: start;
     column-gap: 0.42rem;
     row-gap: 0.24rem;
+  }
+
+  .position-accordion-summary-empty {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "title phrase"
+      "chevron chevron";
   }
 
   .position-summary-title {

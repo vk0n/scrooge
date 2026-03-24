@@ -323,9 +323,9 @@ def run_backtest(
         or config.run_rolling_window_backtest_distribution
     )
     report_module: Any | None = None
-    monte_carlo_from_equity: Callable[..., Any] | None = None
+    run_monte_carlo: Callable[..., Any] | None = None
     plot_results_interactive: Callable[..., Any] | None = None
-    rolling_window_backtest_distribution: Callable[..., Any] | None = None
+    run_rolling_window_backtest_distribution: Callable[..., Any] | None = None
 
     if config.client is not None:
         dataset_module.set_client(config.client)
@@ -345,15 +345,15 @@ def run_backtest(
     if needs_reporting:
         import backtest.reporting as report_module_import
         from backtest.reporting import (
-            monte_carlo_from_equity as monte_carlo_from_equity_import,
             plot_results_interactive as plot_results_interactive_import,
-            rolling_window_backtest_distribution as rolling_window_backtest_distribution_import,
+            run_monte_carlo as run_monte_carlo_import,
+            run_rolling_window_backtest_distribution as run_rolling_window_backtest_distribution_import,
         )
 
         report_module = report_module_import
-        monte_carlo_from_equity = monte_carlo_from_equity_import
+        run_monte_carlo = run_monte_carlo_import
         plot_results_interactive = plot_results_interactive_import
-        rolling_window_backtest_distribution = rolling_window_backtest_distribution_import
+        run_rolling_window_backtest_distribution = run_rolling_window_backtest_distribution_import
 
         if config.client is not None:
             report_module.set_client(config.client)
@@ -694,21 +694,26 @@ def run_backtest(
         plot_results_interactive(df, trades, balance_history, split_by_year=config.plot_split_by_year)
 
     if config.run_monte_carlo:
-        if monte_carlo_from_equity is None:
-            raise RuntimeError("monte_carlo_from_equity is unavailable because reporting helpers were not loaded")
-        monte_carlo_from_equity(df, balance_history, start_balance=config.initial_balance)
+        if run_monte_carlo is None:
+            raise RuntimeError("run_monte_carlo is unavailable because reporting helpers were not loaded")
+        run_monte_carlo(
+            df,
+            balance_history,
+            start_balance=config.initial_balance,
+            show_plot=config.enable_plot,
+        )
 
     if config.run_rolling_window_backtest_distribution:
-        if rolling_window_backtest_distribution is None:
-            raise RuntimeError("rolling_window_backtest_distribution is unavailable because reporting helpers were not loaded")
-        rolling_window_backtest_distribution(
+        if run_rolling_window_backtest_distribution is None:
+            raise RuntimeError("run_rolling_window_backtest_distribution is unavailable because reporting helpers were not loaded")
+        run_rolling_window_backtest_distribution(
+            config,
             df,
             k_days=config.rolling_window_days,
             n_days=config.backtest_period_days,
             start_balance=config.initial_balance,
+            show_plot=config.enable_plot,
             max_workers=config.rolling_window_workers,
-            leverage=config.leverage,
-            **config.params,
         )
 
     return BacktestResult(

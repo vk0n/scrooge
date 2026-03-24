@@ -323,6 +323,8 @@ def get_technical_logger() -> logging.Logger:
 
 
 def _should_emit_event_to_stdout(event: dict[str, Any]) -> bool:
+    if _env_flag("SCROOGE_DISABLE_EVENT_PERSISTENCE", False):
+        return False
     runtime_mode = str(event.get("runtime_mode") or "").strip().lower()
     if runtime_mode == "backtest":
         return _env_flag("SCROOGE_BACKTEST_EVENT_STDOUT_ENABLED", False)
@@ -393,12 +395,14 @@ def emit_event(
 
     logger = _ensure_technical_logger()
     log_level = getattr(logging, str(level).upper(), logging.INFO)
-    try:
-        get_event_store().append(event)
-    except OSError:
-        logger.exception("Failed to append canonical event record")
+    event_persistence_disabled = _env_flag("SCROOGE_DISABLE_EVENT_PERSISTENCE", False)
+    if not event_persistence_disabled:
+        try:
+            get_event_store().append(event)
+        except OSError:
+            logger.exception("Failed to append canonical event record")
+        if dispatch_event_push is not None:
+            dispatch_event_push(event)
     if _should_emit_event_to_stdout(event):
         logger.log(log_level, json.dumps(event, ensure_ascii=True, sort_keys=True, default=str))
-    if dispatch_event_push is not None:
-        dispatch_event_push(event)
     return event

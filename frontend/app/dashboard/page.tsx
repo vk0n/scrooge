@@ -152,13 +152,13 @@ function statusBadgeClass(status: UiStatus | null): string {
 
 function statusIntentBadgeClass(status: UiStatus | null): string | null {
   if (status?.code === "looking_for_buy_opportunity") {
-    return "position-upnl-badge position-upnl-badge-positive";
+    return "badge badge-good";
   }
   if (status?.code === "looking_for_sell_opportunity") {
-    return "position-upnl-badge position-upnl-badge-negative";
+    return "badge badge-bad";
   }
   if (status?.code === "resting") {
-    return "position-upnl-badge position-upnl-badge-paused";
+    return "badge badge-muted";
   }
   return null;
 }
@@ -919,7 +919,7 @@ function DashboardContent(): JSX.Element {
               }}
             >
               <summary
-                className={`position-accordion-summary${!hasOpenPosition ? " position-accordion-summary-disabled" : ""}`}
+                className={`position-accordion-summary${!hasOpenPosition ? " position-accordion-summary-disabled position-accordion-summary-empty" : ""}`}
                 onClick={(event) => {
                   if (!hasOpenPosition) {
                     event.preventDefault();

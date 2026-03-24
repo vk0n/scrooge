@@ -9,6 +9,7 @@ base_backtest_overrides:
   backtest_period_start_time: '2022-06-01T00:00:00'
   backtest_period_end_time: '2023-05-31T23:59:59'
   backtest_period_days: 365
+  run_rolling_window_backtest_distribution: false
 scenarios:
   - name: prod-discrete-closed-365d
     overrides:
