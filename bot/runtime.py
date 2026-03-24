@@ -762,7 +762,7 @@ if __name__ == "__main__":
                             technical_logger.debug("live_no_open_positions symbol=%s", symbol)
 
                         if debug_strategy_ticks:
-                            technical_logger.info(
+                            technical_logger.debug(
                                 "live_strategy_events count=%s trading_enabled=%s has_position=%s",
                                 len(events),
                                 trading_enabled,
