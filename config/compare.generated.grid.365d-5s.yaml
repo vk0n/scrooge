@@ -1,0 +1,253 @@
+base_backtest_config_path: config/backtest.yaml
+compare_run_dir: auto
+compare_run_root: runtime/compare
+compare_parallel: true
+compare_max_workers: 12
+base_backtest_overrides:
+  execution_mode: simulated
+  backtest_period_days: 365
+  backtest_period_start_time: '2022-06-01T00:00:00'
+  backtest_period_end_time: '2023-05-31T23:59:59'
+generated_from_compare_template: config/compare.grid.365d-5s.yaml
+generated_from_param_grid: config/param_grid.yaml
+generated_candidate_count: 9
+generated_template_scenario_names:
+- realtime-5s-grid-365
+generated_variable_param_keys:
+- rsi_long_close_threshold
+- rsi_short_close_threshold
+scenarios:
+- name: realtime-5s-grid-365-0001
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar
+    params:
+      sl_mult: 3.8
+      tp_mult: 1.8
+      rsi_extreme_long: 91
+      rsi_extreme_short: 7
+      rsi_long_open_threshold: 80
+      rsi_long_qty_threshold: 32
+      rsi_long_tp_threshold: 57
+      rsi_long_close_threshold: 65
+      rsi_short_open_threshold: 20
+      rsi_short_qty_threshold: 68
+      rsi_short_tp_threshold: 41
+      rsi_short_close_threshold: 25
+      trail_atr_mult: 0.04
+    __compare_candidate_label: '0001'
+    __compare_candidate_param_signature: 65 / 25
+- name: realtime-5s-grid-365-0002
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar
+    params:
+      sl_mult: 3.8
+      tp_mult: 1.8
+      rsi_extreme_long: 91
+      rsi_extreme_short: 7
+      rsi_long_open_threshold: 80
+      rsi_long_qty_threshold: 32
+      rsi_long_tp_threshold: 57
+      rsi_long_close_threshold: 65
+      rsi_short_open_threshold: 20
+      rsi_short_qty_threshold: 68
+      rsi_short_tp_threshold: 41
+      rsi_short_close_threshold: 30
+      trail_atr_mult: 0.04
+    __compare_candidate_label: '0002'
+    __compare_candidate_param_signature: 65 / 30
+- name: realtime-5s-grid-365-0003
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar
+    params:
+      sl_mult: 3.8
+      tp_mult: 1.8
+      rsi_extreme_long: 91
+      rsi_extreme_short: 7
+      rsi_long_open_threshold: 80
+      rsi_long_qty_threshold: 32
+      rsi_long_tp_threshold: 57
+      rsi_long_close_threshold: 65
+      rsi_short_open_threshold: 20
+      rsi_short_qty_threshold: 68
+      rsi_short_tp_threshold: 41
+      rsi_short_close_threshold: 35
+      trail_atr_mult: 0.04
+    __compare_candidate_label: '0003'
+    __compare_candidate_param_signature: 65 / 35
+- name: realtime-5s-grid-365-0004
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar
+    params:
+      sl_mult: 3.8
+      tp_mult: 1.8
+      rsi_extreme_long: 91
+      rsi_extreme_short: 7
+      rsi_long_open_threshold: 80
+      rsi_long_qty_threshold: 32
+      rsi_long_tp_threshold: 57
+      rsi_long_close_threshold: 70
+      rsi_short_open_threshold: 20
+      rsi_short_qty_threshold: 68
+      rsi_short_tp_threshold: 41
+      rsi_short_close_threshold: 25
+      trail_atr_mult: 0.04
+    __compare_candidate_label: '0004'
+    __compare_candidate_param_signature: 70 / 25
+- name: realtime-5s-grid-365-0005
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar
+    params:
+      sl_mult: 3.8
+      tp_mult: 1.8
+      rsi_extreme_long: 91
+      rsi_extreme_short: 7
+      rsi_long_open_threshold: 80
+      rsi_long_qty_threshold: 32
+      rsi_long_tp_threshold: 57
+      rsi_long_close_threshold: 70
+      rsi_short_open_threshold: 20
+      rsi_short_qty_threshold: 68
+      rsi_short_tp_threshold: 41
+      rsi_short_close_threshold: 30
+      trail_atr_mult: 0.04
+    __compare_candidate_label: '0005'
+    __compare_candidate_param_signature: 70 / 30
+- name: realtime-5s-grid-365-0006
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar
+    params:
+      sl_mult: 3.8
+      tp_mult: 1.8
+      rsi_extreme_long: 91
+      rsi_extreme_short: 7
+      rsi_long_open_threshold: 80
+      rsi_long_qty_threshold: 32
+      rsi_long_tp_threshold: 57
+      rsi_long_close_threshold: 70
+      rsi_short_open_threshold: 20
+      rsi_short_qty_threshold: 68
+      rsi_short_tp_threshold: 41
+      rsi_short_close_threshold: 35
+      trail_atr_mult: 0.04
+    __compare_candidate_label: '0006'
+    __compare_candidate_param_signature: 70 / 35
+- name: realtime-5s-grid-365-0007
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar
+    params:
+      sl_mult: 3.8
+      tp_mult: 1.8
+      rsi_extreme_long: 91
+      rsi_extreme_short: 7
+      rsi_long_open_threshold: 80
+      rsi_long_qty_threshold: 32
+      rsi_long_tp_threshold: 57
+      rsi_long_close_threshold: 75
+      rsi_short_open_threshold: 20
+      rsi_short_qty_threshold: 68
+      rsi_short_tp_threshold: 41
+      rsi_short_close_threshold: 25
+      trail_atr_mult: 0.04
+    __compare_candidate_label: '0007'
+    __compare_candidate_param_signature: 75 / 25
+- name: realtime-5s-grid-365-0008
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar
+    params:
+      sl_mult: 3.8
+      tp_mult: 1.8
+      rsi_extreme_long: 91
+      rsi_extreme_short: 7
+      rsi_long_open_threshold: 80
+      rsi_long_qty_threshold: 32
+      rsi_long_tp_threshold: 57
+      rsi_long_close_threshold: 75
+      rsi_short_open_threshold: 20
+      rsi_short_qty_threshold: 68
+      rsi_short_tp_threshold: 41
+      rsi_short_close_threshold: 30
+      trail_atr_mult: 0.04
+    __compare_candidate_label: 0008
+    __compare_candidate_param_signature: 75 / 30
+- name: realtime-5s-grid-365-0009
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar
+    params:
+      sl_mult: 3.8
+      tp_mult: 1.8
+      rsi_extreme_long: 91
+      rsi_extreme_short: 7
+      rsi_long_open_threshold: 80
+      rsi_long_qty_threshold: 32
+      rsi_long_tp_threshold: 57
+      rsi_long_close_threshold: 75
+      rsi_short_open_threshold: 20
+      rsi_short_qty_threshold: 68
+      rsi_short_tp_threshold: 41
+      rsi_short_close_threshold: 35
+      trail_atr_mult: 0.04
+    __compare_candidate_label: 0009
+    __compare_candidate_param_signature: 75 / 35

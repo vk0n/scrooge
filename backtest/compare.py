@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import closing
 import json
+import hashlib
 import logging
 import math
 from multiprocessing import RLock
@@ -19,6 +21,7 @@ from typing import Any, Callable, Iterator
 import backtest.dataset as dataset_module
 import bot.trade as trade_module
 import yaml
+from backtest.agg_trade_market_event_stream import build_historical_agg_trade_market_event_stream_session
 from backtest.progress import ScenarioProgressBar
 from backtest.runner import BacktestResult, build_backtest_config, run_backtest
 from backtest.sieves import CompareSieve, resolve_compare_sieves
@@ -50,6 +53,8 @@ _COMPARE_ENV_KEYS = (
 )
 
 _COMPARE_SUMMARY_FILENAME = "compare_scenario_summary.json"
+_SHARED_MARKET_EVENT_CONFIG_FILENAME = "shared_market_event_source.json"
+_SHARED_MARKET_EVENT_SUMMARY_FILENAME = "shared_market_event_summary.json"
 _BACKTEST_STAT_LOG_PATTERN = re.compile(r"backtest_stat (?P<key>[^=]+)=(?P<value>.+)$")
 _COMPARE_COMPLETED_LOG_PATTERN = re.compile(
     r"compare_scenario_completed name=(?P<name>\S+) "
@@ -547,7 +552,7 @@ def _load_completed_summary_from_artifacts(
         symbol=str(config_payload.get("symbol") or "").strip().upper() or None,
         strategy_mode=str(config_payload.get("strategy_mode") or "").strip().lower() or None,
         execution_mode=str(config_payload.get("execution_mode") or "").strip().lower() or None,
-        backtest_input_mode=str(config_payload.get("backtest_input_mode") or "").strip().lower() or None,
+        backtest_input_mode=_summary_backtest_input_mode(config_payload),
         agg_trade_tick_interval=str(config_payload.get("agg_trade_tick_interval") or "").strip().lower() or None,
         backtest_period_days=_int_or_none(config_payload.get("backtest_period_days")),
         backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or "").strip() or None,
@@ -616,6 +621,14 @@ def _compute_compare_score(
     return profit_factor * balance_ratio
 
 
+def _summary_backtest_input_mode(config_payload: dict[str, Any]) -> str | None:
+    original = str(config_payload.get("__compare_original_backtest_input_mode") or "").strip().lower()
+    if original:
+        return original
+    resolved = str(config_payload.get("backtest_input_mode") or "").strip().lower()
+    return resolved or None
+
+
 def _summarize_result(
     *,
     name: str,
@@ -652,7 +665,7 @@ def _summarize_result(
         symbol=str(config_payload.get("symbol") or "").strip().upper() or None,
         strategy_mode=str(config_payload.get("strategy_mode") or "").strip().lower() or None,
         execution_mode=str(config_payload.get("execution_mode") or "").strip().lower() or None,
-        backtest_input_mode=str(config_payload.get("backtest_input_mode") or "").strip().lower() or None,
+        backtest_input_mode=_summary_backtest_input_mode(config_payload),
         agg_trade_tick_interval=str(config_payload.get("agg_trade_tick_interval") or "").strip().lower() or None,
         backtest_period_days=_int_or_none(config_payload.get("backtest_period_days")),
         backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or "").strip() or None,
@@ -701,7 +714,7 @@ def _summarize_error(
         symbol=str(config_payload.get("symbol") or "").strip().upper() or None,
         strategy_mode=str(config_payload.get("strategy_mode") or "").strip().lower() or None,
         execution_mode=str(config_payload.get("execution_mode") or "").strip().lower() or None,
-        backtest_input_mode=str(config_payload.get("backtest_input_mode") or "").strip().lower() or None,
+        backtest_input_mode=_summary_backtest_input_mode(config_payload),
         agg_trade_tick_interval=str(config_payload.get("agg_trade_tick_interval") or "").strip().lower() or None,
         backtest_period_days=_int_or_none(config_payload.get("backtest_period_days")),
         backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or "").strip() or None,
@@ -749,7 +762,7 @@ def _summarize_skipped(
         symbol=str(config_payload.get("symbol") or "").strip().upper() or None,
         strategy_mode=str(config_payload.get("strategy_mode") or "").strip().lower() or None,
         execution_mode=str(config_payload.get("execution_mode") or "").strip().lower() or None,
-        backtest_input_mode=str(config_payload.get("backtest_input_mode") or "").strip().lower() or None,
+        backtest_input_mode=_summary_backtest_input_mode(config_payload),
         agg_trade_tick_interval=str(config_payload.get("agg_trade_tick_interval") or "").strip().lower() or None,
         backtest_period_days=_int_or_none(config_payload.get("backtest_period_days")),
         backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or "").strip() or None,
@@ -954,6 +967,28 @@ def _format_cell(value: Any, *, digits: int = 2) -> str:
     return str(value)
 
 
+def _avg_trade_pct(item: CompareScenarioSummary) -> float | None:
+    if item.total_return_pct is None or item.number_of_trades is None:
+        return None
+    if item.number_of_trades <= 0:
+        return None
+    return float(item.total_return_pct) / float(item.number_of_trades)
+
+
+def _fee_load_pct(item: CompareScenarioSummary) -> float | None:
+    if item.total_fee is None:
+        return None
+    net_pnl = item.replay_net_pnl
+    if net_pnl is None and item.final_balance is not None and item.initial_balance is not None:
+        net_pnl = float(item.final_balance) - float(item.initial_balance)
+    if net_pnl is None:
+        return None
+    denominator = abs(float(net_pnl))
+    if denominator <= 1e-12:
+        return None
+    return (float(item.total_fee) / denominator) * 100.0
+
+
 def _compare_table_sort_key(item: CompareScenarioSummary) -> tuple[float | int | str, ...]:
     status_order = {
         "ok": 0,
@@ -975,10 +1010,6 @@ def _compare_table_sort_key(item: CompareScenarioSummary) -> tuple[float | int |
     )
 
 
-def _has_param_signatures(scenarios: list[CompareScenarioSummary]) -> bool:
-    return any(bool(item.param_signature) for item in scenarios)
-
-
 def _display_scenario_label(item: CompareScenarioSummary) -> str:
     label = item.candidate_label or item.name
     if item.status == "ok":
@@ -988,40 +1019,19 @@ def _display_scenario_label(item: CompareScenarioSummary) -> str:
 
 def _write_compare_table(path: Path, scenarios: list[CompareScenarioSummary]) -> None:
     sorted_scenarios = sorted(scenarios, key=_compare_table_sort_key)
-    compact_params_mode = _has_param_signatures(sorted_scenarios)
-    if compact_params_mode:
-        header = [
-            "Scenario",
-            "Params",
-            "Score",
-            "Return %",
-            "Final Balance",
-            "Trades",
-            "Win Rate %",
-            "Fee",
-            "Profit Factor",
-            "Max DD %",
-        ]
-    else:
-        header = [
-            "Scenario",
-            "Status",
-            "Mode",
-            "Input",
-            "Exec",
-            "Stage",
-            "Sieve",
-            "Days",
-            "Tick",
-            "Score",
-            "Return %",
-            "Final Balance",
-            "Trades",
-            "Win Rate %",
-            "Fee",
-            "Profit Factor",
-            "Max DD %",
-        ]
+    header = [
+        "Scenario",
+        "Score",
+        "Return %",
+        "Final Balance",
+        "Trades",
+        "Avg Trade %",
+        "Win Rate %",
+        "Fee",
+        "Fee Load %",
+        "Profit Factor",
+        "Max DD %",
+    ]
     lines = [
         "# Compare Results",
         "",
@@ -1029,39 +1039,19 @@ def _write_compare_table(path: Path, scenarios: list[CompareScenarioSummary]) ->
         "| " + " | ".join("---" for _ in header) + " |",
     ]
     for item in sorted_scenarios:
-        if compact_params_mode:
-            row = [
-                _display_scenario_label(item),
-                item.param_signature or "-",
-                _format_cell(item.score),
-                _format_cell(item.total_return_pct),
-                _format_cell(item.final_balance),
-                _format_cell(item.number_of_trades, digits=0),
-                _format_cell(item.win_rate_pct),
-                _format_cell(item.total_fee),
-                _format_cell(item.profit_factor),
-                _format_cell(item.max_drawdown_pct),
-            ]
-        else:
-            row = [
-                item.name,
-                item.status,
-                item.strategy_mode or "-",
-                item.backtest_input_mode or "-",
-                item.execution_mode or "-",
-                item.sieve_stage or "-",
-                item.sieve_name or "-",
-                _format_cell(item.backtest_period_days, digits=0),
-                item.agg_trade_tick_interval or "-",
-                _format_cell(item.score),
-                _format_cell(item.total_return_pct),
-                _format_cell(item.final_balance),
-                _format_cell(item.number_of_trades, digits=0),
-                _format_cell(item.win_rate_pct),
-                _format_cell(item.total_fee),
-                _format_cell(item.profit_factor),
-                _format_cell(item.max_drawdown_pct),
-            ]
+        row = [
+            _display_scenario_label(item),
+            _format_cell(item.score),
+            _format_cell(item.total_return_pct),
+            _format_cell(item.final_balance),
+            _format_cell(item.number_of_trades, digits=0),
+            _format_cell(_avg_trade_pct(item)),
+            _format_cell(item.win_rate_pct),
+            _format_cell(item.total_fee),
+            _format_cell(_fee_load_pct(item)),
+            _format_cell(item.profit_factor),
+            _format_cell(item.max_drawdown_pct),
+        ]
         lines.append("| " + " | ".join(row) + " |")
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1287,6 +1277,204 @@ def _prepare_compare_run_dir(config: CompareConfig) -> Path:
     return run_dir
 
 
+def _shared_market_event_signature(config_payload: dict[str, Any]) -> dict[str, Any] | None:
+    input_mode = str(config_payload.get("backtest_input_mode") or "").strip().lower()
+    if input_mode != "agg_trade_stream":
+        return None
+
+    intervals = config_payload.get("intervals")
+    if not isinstance(intervals, dict) or not intervals:
+        return None
+
+    normalized_intervals = {
+        str(key): str(value)
+        for key, value in sorted(intervals.items(), key=lambda item: str(item[0]))
+    }
+    resolved_time_range = resolve_backtest_time_range(
+        backtest_period_days=int(config_payload.get("backtest_period_days") or 0),
+        backtest_period_start_time=str(config_payload.get("backtest_period_start_time") or ""),
+        backtest_period_end_time=str(config_payload.get("backtest_period_end_time") or ""),
+    )
+    return {
+        "symbol": str(config_payload.get("symbol") or "").strip().upper(),
+        "agg_trade_source": str(config_payload.get("agg_trade_source") or "archive").strip().lower() or "archive",
+        "agg_trade_tick_interval": str(config_payload.get("agg_trade_tick_interval") or "1s").strip().lower() or "1s",
+        "agg_trade_archive_base_url": str(config_payload.get("agg_trade_archive_base_url") or "").strip(),
+        "agg_trade_rest_base_url": str(config_payload.get("agg_trade_rest_base_url") or "").strip(),
+        "agg_trade_cache_enabled": bool(config_payload.get("agg_trade_cache_enabled", True)),
+        "agg_trade_cache_dir": str(config_payload.get("agg_trade_cache_dir") or "").strip(),
+        "intervals": normalized_intervals,
+        "backtest_period_days": int(config_payload.get("backtest_period_days") or 0),
+        "backtest_period_start_time": str(config_payload.get("backtest_period_start_time") or "").strip(),
+        "backtest_period_end_time": str(config_payload.get("backtest_period_end_time") or "").strip(),
+        "resolved_start_time": resolved_time_range.start_time.isoformat(),
+        "resolved_end_time": resolved_time_range.end_time.isoformat(),
+        "resolved_cache_key": resolved_time_range.cache_key,
+    }
+
+
+def _shared_market_event_signature_hash(signature: dict[str, Any]) -> str:
+    payload = json.dumps(signature, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _shared_market_event_paths(
+    *,
+    compare_run_dir: Path,
+    signature: dict[str, Any],
+) -> tuple[Path, Path, Path]:
+    resource_dir = compare_run_dir / "shared_market_events" / _shared_market_event_signature_hash(signature)
+    return (
+        resource_dir / "market_events.jsonl",
+        resource_dir / _SHARED_MARKET_EVENT_CONFIG_FILENAME,
+        resource_dir / _SHARED_MARKET_EVENT_SUMMARY_FILENAME,
+    )
+
+
+def _shared_market_event_stream_ready(
+    *,
+    compare_run_dir: Path,
+    signature: dict[str, Any],
+) -> Path | None:
+    event_path, config_path, summary_path = _shared_market_event_paths(
+        compare_run_dir=compare_run_dir,
+        signature=signature,
+    )
+    existing_config = _read_json_mapping(config_path)
+    if existing_config != signature:
+        return None
+    if not event_path.exists() or not summary_path.exists():
+        return None
+    return event_path
+
+
+def _build_shared_market_event_stream(
+    *,
+    compare_run_dir: Path,
+    signature: dict[str, Any],
+    representative_config: dict[str, Any],
+    logger: Any,
+    scenario_count: int,
+) -> Path:
+    event_path, config_path, summary_path = _shared_market_event_paths(
+        compare_run_dir=compare_run_dir,
+        signature=signature,
+    )
+    ready_path = _shared_market_event_stream_ready(
+        compare_run_dir=compare_run_dir,
+        signature=signature,
+    )
+    signature_key = _shared_market_event_signature_hash(signature)
+    if ready_path is not None:
+        existing_summary = _read_json_mapping(summary_path) or {}
+        logger.info(
+            "compare_shared_market_event_stream_reused key=%s scenarios=%s total_events=%s path=%s",
+            signature_key,
+            scenario_count,
+            existing_summary.get("total_events"),
+            ready_path,
+        )
+        return ready_path
+
+    logger.info(
+        "compare_shared_market_event_stream_build_started key=%s scenarios=%s symbol=%s tick=%s range=%s..%s path=%s",
+        signature_key,
+        scenario_count,
+        signature.get("symbol"),
+        signature.get("agg_trade_tick_interval"),
+        signature.get("backtest_period_start_time"),
+        signature.get("backtest_period_end_time"),
+        event_path,
+    )
+    load_dotenv()
+    session = build_historical_agg_trade_market_event_stream_session(
+        symbol=str(representative_config.get("symbol") or ""),
+        backtest_period_days=int(representative_config.get("backtest_period_days") or 0),
+        backtest_period_start_time=str(representative_config.get("backtest_period_start_time") or ""),
+        backtest_period_end_time=str(representative_config.get("backtest_period_end_time") or ""),
+        intervals={str(key): str(value) for key, value in dict(representative_config.get("intervals") or {}).items()},
+        output_path=event_path,
+        source=str(representative_config.get("agg_trade_source") or "archive").strip().lower() or "archive",
+        tick_interval=str(representative_config.get("agg_trade_tick_interval") or "1s").strip().lower() or "1s",
+        archive_base_url=str(representative_config.get("agg_trade_archive_base_url") or "").strip(),
+        rest_base_url=str(representative_config.get("agg_trade_rest_base_url") or "").strip(),
+        cache_enabled=bool(representative_config.get("agg_trade_cache_enabled", True)),
+        cache_dir=str(representative_config.get("agg_trade_cache_dir") or "").strip() or None,
+        progress_reporter=None,
+    )
+    event_iterator = session.iter_events(report_progress=True)
+    with closing(event_iterator):
+        for _ in event_iterator:
+            pass
+    summary = session.summary
+    _write_json(config_path, signature)
+    _write_json(summary_path, asdict(summary))
+    logger.info(
+        "compare_shared_market_event_stream_build_completed key=%s scenarios=%s total_events=%s raw_trades=%s path=%s",
+        signature_key,
+        scenario_count,
+        summary.total_events,
+        summary.raw_agg_trades,
+        event_path,
+    )
+    return event_path
+
+
+def _prepare_shared_market_event_task_payloads(
+    *,
+    task_payloads: list[dict[str, Any]],
+    compare_run_dir: Path,
+    logger: Any,
+) -> list[dict[str, Any]]:
+    grouped_tasks: dict[str, list[dict[str, Any]]] = {}
+    grouped_signatures: dict[str, dict[str, Any]] = {}
+    for task_payload in task_payloads:
+        signature = _shared_market_event_signature(dict(task_payload["config"]))
+        if signature is None:
+            continue
+        signature_key = _shared_market_event_signature_hash(signature)
+        grouped_tasks.setdefault(signature_key, []).append(task_payload)
+        grouped_signatures[signature_key] = signature
+
+    if not grouped_tasks:
+        return task_payloads
+
+    for signature_key, grouped in grouped_tasks.items():
+        signature = grouped_signatures[signature_key]
+        ready_path = _shared_market_event_stream_ready(
+            compare_run_dir=compare_run_dir,
+            signature=signature,
+        )
+        if len(grouped) <= 1 and ready_path is None:
+            continue
+
+        shared_event_path = _build_shared_market_event_stream(
+            compare_run_dir=compare_run_dir,
+            signature=signature,
+            representative_config=dict(grouped[0]["config"]),
+            logger=logger,
+            scenario_count=len(grouped),
+        )
+        for task_payload in grouped:
+            updated_config = copy.deepcopy(dict(task_payload["config"]))
+            updated_config["__compare_original_backtest_input_mode"] = (
+                str(updated_config.get("backtest_input_mode") or "").strip().lower() or "agg_trade_stream"
+            )
+            updated_config["backtest_input_mode"] = "market_event_stream"
+            updated_config["market_event_input_path"] = str(shared_event_path)
+            updated_config["__compare_shared_market_event_stream_path"] = str(shared_event_path)
+            task_payload["config"] = updated_config
+
+        logger.info(
+            "compare_shared_market_event_stream_applied key=%s scenarios=%s path=%s",
+            signature_key,
+            len(grouped),
+            shared_event_path,
+        )
+
+    return task_payloads
+
+
 def _apply_compare_end_time_anchor(
     payload: dict[str, Any],
     *,
@@ -1354,10 +1542,16 @@ def _build_merged_compare_config(
 def _execute_compare_task_payloads(
     *,
     task_payloads: list[dict[str, Any]],
+    compare_run_dir: Path,
     logger: Any,
     compare_parallel: bool,
     compare_max_workers: int,
 ) -> dict[int, CompareScenarioSummary]:
+    task_payloads = _prepare_shared_market_event_task_payloads(
+        task_payloads=task_payloads,
+        compare_run_dir=compare_run_dir,
+        logger=logger,
+    )
     summaries_by_index: dict[int, CompareScenarioSummary] = {}
     parallel_enabled = compare_parallel and len(task_payloads) > 1
     max_workers = max(1, min(compare_max_workers, len(task_payloads)))
@@ -1638,6 +1832,7 @@ def run_compare(
             if task_payloads:
                 executed_stage_results = _execute_compare_task_payloads(
                     task_payloads=task_payloads,
+                    compare_run_dir=compare_run_dir,
                     logger=logger,
                     compare_parallel=config.compare_parallel,
                     compare_max_workers=config.compare_max_workers,
@@ -1744,6 +1939,7 @@ def run_compare(
         if task_payloads:
             executed_stage_results = _execute_compare_task_payloads(
                 task_payloads=task_payloads,
+                compare_run_dir=compare_run_dir,
                 logger=logger,
                 compare_parallel=config.compare_parallel,
                 compare_max_workers=config.compare_max_workers,

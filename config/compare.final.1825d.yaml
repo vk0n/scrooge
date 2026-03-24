@@ -1,0 +1,59 @@
+base_backtest_config_path: config/backtest.yaml
+compare_run_dir: auto
+compare_run_root: runtime/compare
+compare_parallel: true
+compare_max_workers: 2
+base_backtest_overrides:
+  execution_mode: simulated
+  leverage: 3
+  backtest_period_start_time: '2021-03-24T00:00:00'
+  backtest_period_end_time: '2026-03-22T23:59:59'
+  backtest_period_days: 1825
+scenarios:
+  - name: prod-discrete-closed-1825d
+    overrides:
+      strategy_mode: discrete
+      backtest_input_mode: build
+      indicator_inputs:
+        ema: closed
+        rsi: closed
+        bb: closed
+        atr: closed
+      params:
+        sl_mult: 3.7
+        tp_mult: 1.9
+        rsi_extreme_long: 90
+        rsi_extreme_short: 10
+        rsi_long_open_threshold: 75
+        rsi_long_qty_threshold: 35
+        rsi_long_tp_threshold: 58
+        rsi_long_close_threshold: 70
+        rsi_short_open_threshold: 25
+        rsi_short_qty_threshold: 65
+        rsi_short_tp_threshold: 42
+        rsi_short_close_threshold: 30
+        trail_atr_mult: 0.04
+  - name: tuned-realtime-1s-1825d
+    overrides:
+      strategy_mode: realtime
+      backtest_input_mode: agg_trade_stream
+      agg_trade_tick_interval: 1s
+      indicator_inputs:
+        ema: intrabar
+        rsi: closed
+        bb: closed
+        atr: intrabar
+      params:
+        sl_mult: 3.8
+        tp_mult: 1.8
+        rsi_extreme_long: 91
+        rsi_extreme_short: 7
+        rsi_long_open_threshold: 80
+        rsi_long_qty_threshold: 32
+        rsi_long_tp_threshold: 57
+        rsi_long_close_threshold: 70
+        rsi_short_open_threshold: 20
+        rsi_short_qty_threshold: 68
+        rsi_short_tp_threshold: 41
+        rsi_short_close_threshold: 30
+        trail_atr_mult: 0.04

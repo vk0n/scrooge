@@ -1,0 +1,21 @@
+base_backtest_config_path: config/backtest.yaml
+compare_run_dir: auto
+compare_run_root: runtime/compare
+compare_parallel: true
+compare_max_workers: 12
+base_backtest_overrides:
+  execution_mode: simulated
+  backtest_period_days: 365
+  backtest_period_start_time: '2022-06-01T00:00:00'
+  backtest_period_end_time: '2023-05-31T23:59:59'
+candidate_template:
+  name: realtime-5s-grid-365
+  overrides:
+    strategy_mode: realtime
+    backtest_input_mode: agg_trade_stream
+    agg_trade_tick_interval: 5s
+    indicator_inputs:
+      ema: intrabar
+      rsi: closed
+      bb: closed
+      atr: intrabar

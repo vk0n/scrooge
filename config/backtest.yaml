@@ -38,16 +38,16 @@ backtest_period_end_time: ''
 backtest_period_start_time: ''
 backtest_period_days: 30
 params:
-  sl_mult: 3.7
-  tp_mult: 1.9
-  rsi_extreme_long: 90
-  rsi_extreme_short: 10
-  rsi_long_open_threshold: 75
-  rsi_long_qty_threshold: 35
-  rsi_long_tp_threshold: 58
+  sl_mult: 3.8
+  tp_mult: 1.8
+  rsi_extreme_long: 91
+  rsi_extreme_short: 7
+  rsi_long_open_threshold: 80
+  rsi_long_qty_threshold: 32
+  rsi_long_tp_threshold: 57
   rsi_long_close_threshold: 70
-  rsi_short_open_threshold: 25
-  rsi_short_qty_threshold: 65
-  rsi_short_tp_threshold: 42
+  rsi_short_open_threshold: 20
+  rsi_short_qty_threshold: 68
+  rsi_short_tp_threshold: 41
   rsi_short_close_threshold: 30
   trail_atr_mult: 0.04
