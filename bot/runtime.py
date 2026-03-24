@@ -774,6 +774,20 @@ if __name__ == "__main__":
                                 realtime_processor.process_event(event)
                             state = realtime_processor.runtime.state
                             runtime_context["state"] = state
+                            chart_balance = state.get("balance")
+                        chart_row = live_market_stream.take_ready_strategy_row() if live_market_stream is not None else None
+                        if chart_row is not None:
+                            try:
+                                chart_balance_value = float(chart_balance) if chart_balance is not None else None
+                            except (TypeError, ValueError):
+                                chart_balance_value = None
+                            last_chart_dataset_ts_ms = _append_latest_chart_candle(
+                                row=chart_row,
+                                symbol=symbol,
+                                path=chart_dataset_path,
+                                last_ts_ms=last_chart_dataset_ts_ms,
+                                balance=chart_balance_value,
+                            )
                         continue
 
                     row = live_market_stream.take_ready_strategy_row() if live_market_stream is not None else None

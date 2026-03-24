@@ -528,10 +528,21 @@ def _fetch_candles(
         end_ms=end_ms,
     )
     if dataset_candles:
-        return dataset_candles, dataset_warnings, "dataset", interval
+        if end_ms is None:
+            interval_ms = _parse_interval_to_ms(interval)
+            stale_after_ms = max(interval_ms * 3, _INTERVAL_TO_MS["1m"] * 5)
+            dataset_last_ts_ms = int(dataset_candles[-1]["ts_ms"])
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            if (now_ms - dataset_last_ts_ms) <= stale_after_ms:
+                return dataset_candles, dataset_warnings, "dataset", interval
+        else:
+            return dataset_candles, dataset_warnings, "dataset", interval
 
     warnings = list(dataset_warnings)
-    warnings.append("Falling back to Binance candles.")
+    if dataset_candles and end_ms is None:
+        warnings.append("Dataset candles look stale for live view; falling back to Binance candles.")
+    else:
+        warnings.append("Falling back to Binance candles.")
     fallback_interval, fallback_warnings = _resolve_chart_interval(
         period_ms=period_ms,
         requested_interval=interval,
