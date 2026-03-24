@@ -1178,6 +1178,7 @@ pre {
   align-items: center;
   gap: 0.42rem;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .position-summary-right {
@@ -1203,6 +1204,7 @@ pre {
   font-size: 0.83rem;
   line-height: 1.2;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .position-upnl-badge {
@@ -2158,16 +2160,28 @@ pre {
   }
 
   .position-summary-main {
+    display: flex;
+    width: calc(100% - 1.4rem);
     max-width: calc(100% - 1.4rem);
     flex-wrap: nowrap;
+  }
+
+  .position-accordion-title {
+    margin-right: auto;
   }
 
   .position-summary-right {
     margin-left: 0;
     width: 100%;
-    justify-content: flex-start;
+    justify-content: space-between;
     flex-wrap: nowrap;
     order: 1;
+  }
+
+  .position-summary-phrase {
+    max-width: calc(100% - 5.8rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .position-accordion-summary::after {

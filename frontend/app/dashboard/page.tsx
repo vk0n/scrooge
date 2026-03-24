@@ -235,10 +235,10 @@ function formatPositionSide(side: unknown): string {
   }
   const normalized = normalizePositionSide(side);
   if (normalized === "long") {
-    return "LONG";
+    return "BUY";
   }
   if (normalized === "short") {
-    return "SHORT";
+    return "SELL";
   }
   const fallback = String(side).trim();
   return fallback ? fallback.toUpperCase() : "N/A";
@@ -540,6 +540,7 @@ function DashboardContent(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [wsFallbackActive, setWsFallbackActive] = useState<boolean>(false);
   const [busyAction, setBusyAction] = useState<ControlEndpoint | null>(null);
   const [controlError, setControlError] = useState<string | null>(null);
   const [commandResult, setCommandResult] = useState<ControlResponse | null>(null);
@@ -700,6 +701,7 @@ function DashboardContent(): JSX.Element {
     const creds = getSavedBasicCredentials();
     if (!creds) {
       setWsConnected(false);
+      setWsFallbackActive(false);
       return () => undefined;
     }
 
@@ -716,6 +718,7 @@ function DashboardContent(): JSX.Element {
       socket = new WebSocket(wsUrl);
       socket.onopen = () => {
         setWsConnected(true);
+        setWsFallbackActive(false);
       };
       socket.onmessage = (event: MessageEvent<string>) => {
         try {
@@ -732,11 +735,13 @@ function DashboardContent(): JSX.Element {
       socket.onclose = () => {
         setWsConnected(false);
         if (!closedByUser) {
+          setWsFallbackActive(true);
           reconnectTimer = window.setTimeout(connect, WS_RECONNECT_MS);
         }
       };
       socket.onerror = () => {
         setWsConnected(false);
+        setWsFallbackActive(true);
       };
     };
 
@@ -854,7 +859,7 @@ function DashboardContent(): JSX.Element {
 
   return (
     <section className="panel page-shell office-panel">
-      {!wsConnected ? (
+      {wsFallbackActive ? (
         <p className="dialog-scrooge dialog-scrooge-warning">
           Wire is down (WebSocket disconnected). Courier polling every {POLL_MS / 1000}s.
         </p>
