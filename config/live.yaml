@@ -1,4 +1,5 @@
 live: true
+strategy_mode: realtime
 symbol: BTCUSDT
 leverage: 3
 use_full_balance: true

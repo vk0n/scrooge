@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import json
 import os
 import threading
@@ -27,6 +28,7 @@ from core.market_events import (
     IndicatorSnapshotEvent,
     JsonlMarketEventStore,
     MarkPriceEvent,
+    MarketEvent,
     OrderTradeUpdateEvent,
     PriceTickEvent,
     PositionSnapshotEvent,
@@ -248,6 +250,8 @@ class LiveMarketStream:
             if MARKET_EVENT_STREAM_ENABLED and MARKET_EVENT_STREAM_FILE
             else None
         )
+        self._runtime_event_lock = threading.RLock()
+        self._runtime_event_queue: deque[MarketEvent] = deque()
 
         self._cache_lock = threading.RLock()
         self._small_df = _empty_candle_frame()
@@ -266,6 +270,10 @@ class LiveMarketStream:
         self._user_socket_thread: threading.Thread | None = None
         self._user_keepalive_thread: threading.Thread | None = None
         self._user_stop_event = threading.Event()
+        self._user_stream_connected = False
+        self._last_user_stream_message_monotonic: float | None = None
+        self._last_user_stream_connected_monotonic: float | None = None
+        self._last_user_stream_disconnected_monotonic: float | None = None
         self._last_ticker_price: float | None = None
         self._last_mark_price: float | None = None
         self._last_persist_monotonic: float | None = None
@@ -336,6 +344,15 @@ class LiveMarketStream:
     def is_running(self) -> bool:
         return self._running
 
+    def is_user_stream_connected(self) -> bool:
+        return self._user_stream_connected
+
+    def get_user_stream_message_age_seconds(self) -> float | None:
+        last_message = self._last_user_stream_message_monotonic
+        if last_message is None:
+            return None
+        return max(0.0, time.monotonic() - last_message)
+
     def stop(self) -> None:
         twm = self._twm
         market_stream_name = self._market_stream_name
@@ -345,6 +362,8 @@ class LiveMarketStream:
         self._market_stream_name = None
         self._user_stream_name = None
         self._last_persist_monotonic = None
+        self._user_stream_connected = False
+        self._last_user_stream_disconnected_monotonic = time.monotonic()
         self._stop_user_stream()
 
         if twm is None:
@@ -490,6 +509,25 @@ class LiveMarketStream:
             "ATR": indicator_values["ATR"],
         }
 
+    def take_pending_market_events(self, *, limit: int | None = None) -> list[MarketEvent]:
+        with self._runtime_event_lock:
+            if not self._runtime_event_queue:
+                return []
+            if limit is None or limit <= 0 or limit >= len(self._runtime_event_queue):
+                events = list(self._runtime_event_queue)
+                self._runtime_event_queue.clear()
+                return events
+            events = [self._runtime_event_queue.popleft() for _ in range(limit)]
+            return events
+
+    def snapshot_candle_frames(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        with self._cache_lock:
+            return (
+                self._small_df.copy(),
+                self._medium_df.copy(),
+                self._big_df.copy(),
+            )
+
     def _append_market_event(
         self,
         event: (
@@ -502,6 +540,8 @@ class LiveMarketStream:
             | OrderTradeUpdateEvent
         ),
     ) -> None:
+        with self._runtime_event_lock:
+            self._runtime_event_queue.append(event)
         if self._market_event_store is None:
             return
         try:
@@ -730,9 +770,13 @@ class LiveMarketStream:
                         pass
 
     def _handle_user_socket_open(self, ws_app: Any) -> None:  # noqa: ARG002
+        self._user_stream_connected = True
+        self._last_user_stream_connected_monotonic = time.monotonic()
         technical_logger.info("user_stream_connected symbol=%s", self._symbol)
 
     def _handle_user_socket_message(self, ws_app: Any, raw_message: Any) -> None:  # noqa: ARG002
+        self._user_stream_connected = True
+        self._last_user_stream_message_monotonic = time.monotonic()
         try:
             message = json.loads(raw_message) if isinstance(raw_message, str) else raw_message
         except json.JSONDecodeError:
@@ -743,11 +787,15 @@ class LiveMarketStream:
     def _handle_user_socket_error(self, ws_app: Any, error: Any) -> None:  # noqa: ARG002
         if self._user_stop_event.is_set():
             return
+        self._user_stream_connected = False
+        self._last_user_stream_disconnected_monotonic = time.monotonic()
         technical_logger.warning("user_stream_socket_error symbol=%s error=%s", self._symbol, error)
 
     def _handle_user_socket_close(self, ws_app: Any, status_code: Any, message: Any) -> None:  # noqa: ARG002
         if self._user_stop_event.is_set():
             return
+        self._user_stream_connected = False
+        self._last_user_stream_disconnected_monotonic = time.monotonic()
         technical_logger.warning(
             "user_stream_disconnected symbol=%s status=%s message=%s",
             self._symbol,

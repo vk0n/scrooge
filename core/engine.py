@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Callable, Iterable
@@ -106,6 +106,115 @@ class StrategyConfig:
     runtime_mode: str
     strategy_mode: str
     indicator_inputs: dict[str, str]
+
+
+@dataclass(slots=True)
+class RealtimeStrategyProcessor:
+    runtime: StrategyRuntime
+    feature_engine: FeatureEngine
+    selection_plan: IndicatorSelectionPlan
+    emit_on_price_tick: bool
+    on_row: Callable[[DiscreteRowSnapshot, StrategyRuntime], None]
+    target_symbol: str | None
+    intervals: dict[str, str]
+    latest_discrete_indicator_values: dict[str, float | None] | None
+    pending_small_candles: dict[tuple[str, str], tuple[CandleClosedEvent, int | None]]
+    small_interval_ns: int
+    processed_price_ticks: int = 0
+    emitted_snapshots: int = 0
+    tick_seen_small_open_times: set[int] = field(default_factory=set)
+
+    def bootstrap_from_frames(
+        self,
+        *,
+        df_small: pd.DataFrame,
+        df_medium: pd.DataFrame,
+        df_big: pd.DataFrame,
+    ) -> None:
+        self.feature_engine.bootstrap_from_frames(
+            df_small=df_small,
+            df_medium=df_medium,
+            df_big=df_big,
+        )
+        self.latest_discrete_indicator_values = self.feature_engine.closed_values()
+
+    def _resolve_timeframe(self, interval_value: str) -> str | None:
+        for timeframe, configured in self.intervals.items():
+            if configured == interval_value:
+                return timeframe
+        return None
+
+    def _emit_snapshot(self, snapshot: DiscreteRowSnapshot | None) -> None:
+        if snapshot is None:
+            return
+        self.on_row(snapshot, self.runtime)
+        if not self.runtime.live:
+            self.runtime.balance_history.append(self.runtime.balance)
+        self.emitted_snapshots += 1
+
+    def process_event(self, event: MarketEvent) -> None:
+        if apply_market_event_runtime_sync(self.runtime, event, target_symbol=self.target_symbol):
+            return
+
+        event_symbol = getattr(event, "symbol", None)
+        if self.target_symbol and str(event_symbol or "").strip().upper() != self.target_symbol:
+            return
+        event_type = getattr(event, "event_type", "")
+
+        if event_type == "candle_closed":
+            timeframe = self._resolve_timeframe(event.interval)
+            if timeframe is None:
+                return
+            self.feature_engine.on_candle_closed(timeframe=timeframe, event=event)
+            if timeframe == "small":
+                self.pending_small_candles[(event.symbol, event.ts)] = (event, _event_ts_to_ns(event.open_time))
+            return
+
+        if event_type == "indicator_snapshot" and event.interval == "discrete_snapshot":
+            self.latest_discrete_indicator_values = _indicator_values_from_snapshot_event(event)
+            key = (event.symbol, event.ts)
+            pending_candle_entry = self.pending_small_candles.pop(key, None)
+            if pending_candle_entry is None:
+                return
+            pending_candle, open_key = pending_candle_entry
+            if open_key is None:
+                open_key = _event_ts_to_ns(pending_candle.open_time)
+            if open_key is None:
+                return
+            if self.emit_on_price_tick and open_key in self.tick_seen_small_open_times:
+                return
+            self._emit_snapshot(
+                _build_realtime_snapshot(
+                    event_ts=(event.ts if isinstance(event.ts, str) else format_event_timestamp(event.ts)),
+                    feature_engine=self.feature_engine,
+                    selection_plan=self.selection_plan,
+                    discrete_indicator_values=self.latest_discrete_indicator_values,
+                    current_price=float(pending_candle.close),
+                )
+            )
+            return
+
+        if event_type != "price_tick":
+            return
+
+        event_ts_ns = _event_ts_to_ns(event.ts)
+        price = to_float(event.price)
+        if event_ts_ns is None or price is None:
+            return
+        self.processed_price_ticks += 1
+        self.tick_seen_small_open_times.add(floor_ns(event_ts_ns, interval_ns=self.small_interval_ns))
+        self.feature_engine.on_price_tick(ts_ns=event_ts_ns, price=price)
+        if not self.emit_on_price_tick:
+            return
+        self._emit_snapshot(
+            _build_realtime_snapshot(
+                event_ts=(event.ts if isinstance(event.ts, str) else format_event_timestamp(event.ts)),
+                feature_engine=self.feature_engine,
+                selection_plan=self.selection_plan,
+                discrete_indicator_values=self.latest_discrete_indicator_values,
+                current_price=price,
+            )
+        )
 
 
 @dataclass(slots=True)
@@ -515,6 +624,103 @@ def _build_realtime_snapshot(
         ema=ema,
         row_ts=event_ts,
         log_ts=event_ts,
+    )
+
+
+def initialize_realtime_strategy_processor(
+    *,
+    live: bool,
+    initial_balance: float,
+    qty: float | None,
+    sl_mult: float,
+    tp_mult: float,
+    symbol: str,
+    leverage: float,
+    use_full_balance: bool,
+    fee_rate: float,
+    state: dict[str, Any] | None,
+    use_state: bool,
+    enable_logs: bool,
+    rsi_extreme_long: float,
+    rsi_extreme_short: float,
+    rsi_long_open_threshold: float,
+    rsi_long_qty_threshold: float,
+    rsi_long_tp_threshold: float,
+    rsi_long_close_threshold: float,
+    rsi_short_open_threshold: float,
+    rsi_short_qty_threshold: float,
+    rsi_short_tp_threshold: float,
+    rsi_short_close_threshold: float,
+    trail_atr_mult: float,
+    allow_entries: bool,
+    execution_mode: str,
+    runtime_mode: str | None,
+    indicator_inputs: dict[str, str] | None,
+    intervals: dict[str, str],
+    target_symbol: str | None = None,
+    emit_on_price_tick: bool = True,
+) -> RealtimeStrategyProcessor:
+    normalized_runtime_mode = str(
+        runtime_mode or os.getenv("SCROOGE_RUNTIME_MODE", "live" if live else "backtest")
+    ).strip().lower() or ("live" if live else "backtest")
+    runtime = initialize_strategy_runtime(
+        live=live,
+        initial_balance=initial_balance,
+        use_state=use_state,
+        execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
+        load_state_fn=load_state,
+        provided_state=state,
+    )
+    runtime.enable_logs = enable_logs
+    normalized_indicator_inputs = normalize_indicator_inputs(
+        indicator_inputs,
+        strategy_mode="realtime",
+    )
+    config = StrategyConfig(
+        qty=qty,
+        sl_mult=sl_mult,
+        tp_mult=tp_mult,
+        symbol=symbol,
+        leverage=leverage,
+        use_full_balance=use_full_balance,
+        fee_rate=fee_rate,
+        rsi_extreme_long=rsi_extreme_long,
+        rsi_extreme_short=rsi_extreme_short,
+        rsi_long_open_threshold=rsi_long_open_threshold,
+        rsi_long_qty_threshold=rsi_long_qty_threshold,
+        rsi_long_tp_threshold=rsi_long_tp_threshold,
+        rsi_long_close_threshold=rsi_long_close_threshold,
+        rsi_short_open_threshold=rsi_short_open_threshold,
+        rsi_short_qty_threshold=rsi_short_qty_threshold,
+        rsi_short_tp_threshold=rsi_short_tp_threshold,
+        rsi_short_close_threshold=rsi_short_close_threshold,
+        trail_atr_mult=trail_atr_mult,
+        allow_entries=allow_entries,
+        execution_mode=str(execution_mode or "simulated").strip().lower() or "simulated",
+        runtime_mode=normalized_runtime_mode,
+        strategy_mode="realtime",
+        indicator_inputs=normalized_indicator_inputs,
+    )
+    technical_logger = get_technical_logger()
+
+    def on_row(snapshot: DiscreteRowSnapshot, row_runtime: StrategyRuntime) -> None:
+        config.allow_entries = bool(row_runtime.state.get("trading_enabled", True))
+        process_discrete_row(snapshot, row_runtime, config, technical_logger)
+
+    return RealtimeStrategyProcessor(
+        runtime=runtime,
+        feature_engine=FeatureEngine(
+            intervals=intervals,
+            limits=REALTIME_WARMUP_LIMITS,
+        ),
+        selection_plan=indicator_selection_plan(normalized_indicator_inputs),
+        emit_on_price_tick=emit_on_price_tick,
+        on_row=on_row,
+        target_symbol=str(target_symbol or symbol or "").strip().upper() or None,
+        intervals=dict(intervals),
+        latest_discrete_indicator_values=None,
+        pending_small_candles={},
+        small_interval_ns=interval_to_ns(intervals["small"]),
     )
 
 
@@ -2469,14 +2675,21 @@ def run_realtime_market_event_engine(
     symbol: str | None = None,
 ) -> tuple[float, pd.DataFrame, list[float], dict[str, Any]]:
     target_symbol = str(symbol or "").strip().upper() or None
-    small_interval_ns = interval_to_ns(intervals["small"])
-    selection_plan = indicator_selection_plan(indicator_inputs)
-    feature_engine = FeatureEngine(
+    processor = RealtimeStrategyProcessor(
+        runtime=runtime,
+        feature_engine=FeatureEngine(
+            intervals=intervals,
+            limits=REALTIME_WARMUP_LIMITS,
+        ),
+        selection_plan=indicator_selection_plan(indicator_inputs),
+        emit_on_price_tick=emit_on_price_tick,
+        on_row=on_row,
+        target_symbol=target_symbol,
         intervals=intervals,
-        limits=REALTIME_WARMUP_LIMITS,
+        latest_discrete_indicator_values=None,
+        pending_small_candles={},
+        small_interval_ns=interval_to_ns(intervals["small"]),
     )
-    pending_small_candles: dict[tuple[str, str], tuple[CandleClosedEvent, int | None]] = {}
-    latest_discrete_indicator_values: dict[str, float | None] | None = None
     iterator = _iter_with_progress(
         market_events,
         show_progress=show_progress,
@@ -2484,88 +2697,13 @@ def run_realtime_market_event_engine(
         total=market_event_total,
         progress_reporter=progress_reporter,
     )
-    processed_price_ticks = 0
-    emitted_snapshots = 0
-    tick_seen_small_open_times: set[int] = set()
-
-    def resolve_timeframe(interval_value: str) -> str | None:
-        for timeframe, configured in intervals.items():
-            if configured == interval_value:
-                return timeframe
-        return None
 
     for event in iterator:
-        if apply_market_event_runtime_sync(runtime, event, target_symbol=target_symbol):
-            continue
+        processor.process_event(event)
 
-        event_symbol = getattr(event, "symbol", None)
-        if target_symbol and str(event_symbol or "").strip().upper() != target_symbol:
-            continue
-        event_type = getattr(event, "event_type", "")
-
-        if event_type == "candle_closed":
-            timeframe = resolve_timeframe(event.interval)
-            if timeframe is None:
-                continue
-            feature_engine.on_candle_closed(timeframe=timeframe, event=event)
-            if timeframe == "small":
-                pending_small_candles[(event.symbol, event.ts)] = (event, _event_ts_to_ns(event.open_time))
-            continue
-
-        if event_type == "indicator_snapshot" and event.interval == "discrete_snapshot":
-            latest_discrete_indicator_values = _indicator_values_from_snapshot_event(event)
-            key = (event.symbol, event.ts)
-            pending_candle_entry = pending_small_candles.pop(key, None)
-            if pending_candle_entry is None:
-                continue
-            pending_candle, open_key = pending_candle_entry
-            if open_key is None:
-                open_key = _event_ts_to_ns(pending_candle.open_time)
-            if open_key is None:
-                continue
-            if emit_on_price_tick and open_key in tick_seen_small_open_times:
-                continue
-            snapshot = _build_realtime_snapshot(
-                event_ts=(event.ts if isinstance(event.ts, str) else format_event_timestamp(event.ts)),
-                feature_engine=feature_engine,
-                selection_plan=selection_plan,
-                discrete_indicator_values=latest_discrete_indicator_values,
-                current_price=float(pending_candle.close),
-            )
-            if snapshot is None:
-                continue
-            on_row(snapshot, runtime)
-            runtime.balance_history.append(runtime.balance)
-            emitted_snapshots += 1
-            continue
-
-        if event_type != "price_tick":
-            continue
-
-        event_ts_ns = _event_ts_to_ns(event.ts)
-        price = to_float(event.price)
-        if event_ts_ns is None or price is None:
-            continue
-        processed_price_ticks += 1
-        tick_seen_small_open_times.add(floor_ns(event_ts_ns, interval_ns=small_interval_ns))
-        feature_engine.on_price_tick(ts_ns=event_ts_ns, price=price)
-        snapshot = _build_realtime_snapshot(
-            event_ts=(event.ts if isinstance(event.ts, str) else format_event_timestamp(event.ts)),
-            feature_engine=feature_engine,
-            selection_plan=selection_plan,
-            discrete_indicator_values=latest_discrete_indicator_values,
-            current_price=price,
-        )
-        if snapshot is None or not emit_on_price_tick:
-            continue
-
-        on_row(snapshot, runtime)
-        runtime.balance_history.append(runtime.balance)
-        emitted_snapshots += 1
-
-    if processed_price_ticks == 0 and emitted_snapshots == 0:
+    if processor.processed_price_ticks == 0 and processor.emitted_snapshots == 0:
         raise ValueError("Realtime market event replay requires at least one price_tick event.")
-    if emitted_snapshots == 0:
+    if processor.emitted_snapshots == 0:
         raise ValueError("Realtime market event replay produced no valid snapshots; check warmup history and indicator coverage.")
 
     return finalize_strategy_runtime(

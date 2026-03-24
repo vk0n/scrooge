@@ -80,6 +80,7 @@ class EditableConfigPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     live: bool | None = None
+    strategy_mode: str | None = None
     symbol: str | None = Field(default=None, min_length=3, max_length=20)
     leverage: int | None = Field(default=None, ge=1, le=125)
     initial_balance: float | None = Field(default=None, gt=0)
@@ -99,6 +100,16 @@ class EditableConfigPayload(BaseModel):
             raise ValueError("symbol cannot be empty")
         if not re.fullmatch(r"[A-Z0-9]{3,20}", normalized):
             raise ValueError("symbol must match [A-Z0-9]{3,20}")
+        return normalized
+
+    @field_validator("strategy_mode")
+    @classmethod
+    def validate_strategy_mode(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized not in {"discrete", "realtime"}:
+            raise ValueError("strategy_mode must be either discrete or realtime")
         return normalized
 
 

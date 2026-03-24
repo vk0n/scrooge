@@ -29,6 +29,7 @@ export type EditableIndicatorInputs = {
 
 export type EditableConfig = {
   live: boolean | null;
+  strategy_mode?: string | null;
   symbol: string | null;
   leverage: number | null;
   initial_balance: number | null;
@@ -96,6 +97,14 @@ function indicatorInputDisplay(value: unknown): string {
   return "closed-candle";
 }
 
+function strategyModeDisplay(value: unknown): string {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "realtime") {
+    return "realtime event-driven";
+  }
+  return "discrete minute-snapshot";
+}
+
 export function buildContractParagraphs(config: EditableConfig): ContractParagraph[] {
   const intervals = config.intervals ?? {};
   const indicatorInputs = config.indicator_inputs ?? {};
@@ -117,6 +126,8 @@ export function buildContractParagraphs(config: EditableConfig): ContractParagra
       valueSegment("symbol", config.symbol),
       textSegment(" futures with leverage "),
       valueSegment("leverage", config.leverage),
+      textSegment(". Strategic decisions shall follow "),
+      valueSegment("strategy_mode", strategyModeDisplay(config.strategy_mode)),
       textSegment(". Position sizing shall follow all-in mode "),
       valueSegment("use_full_balance", config.use_full_balance),
       ...sizingTail,

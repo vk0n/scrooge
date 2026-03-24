@@ -16,7 +16,7 @@ def _project_root() -> Path:
 
 CONFIG_PATH = Path(os.getenv("SCROOGE_CONFIG_PATH", str(_project_root() / "config" / "live.yaml"))).expanduser()
 
-EDITABLE_TOP_LEVEL_KEYS = ("live", "symbol", "leverage", "initial_balance", "use_full_balance", "qty")
+EDITABLE_TOP_LEVEL_KEYS = ("live", "strategy_mode", "symbol", "leverage", "initial_balance", "use_full_balance", "qty")
 EDITABLE_INTERVAL_KEYS = ("small", "medium", "big")
 EDITABLE_INDICATOR_INPUT_KEYS = ("ema", "rsi", "bb", "atr")
 EDITABLE_PARAM_KEYS = (
@@ -139,6 +139,7 @@ def extract_editable_config(config: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "live": config.get("live"),
+        "strategy_mode": strategy_mode,
         "symbol": config.get("symbol"),
         "leverage": config.get("leverage"),
         "initial_balance": config.get("initial_balance"),
@@ -251,6 +252,11 @@ def update_editable_config(patch: dict[str, Any]) -> dict[str, Any]:
         new_value = patch[key]
         if key != "qty" and new_value is None:
             raise ValueError(f"{key} cannot be null")
+        if key == "strategy_mode":
+            normalized = str(new_value or "").strip().lower()
+            if normalized not in {"discrete", "realtime"}:
+                raise ValueError("strategy_mode must be one of: discrete, realtime")
+            new_value = normalized
         if updated.get(key) != new_value:
             updated[key] = new_value
             changed_fields.append(key)

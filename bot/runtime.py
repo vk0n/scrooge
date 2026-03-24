@@ -30,7 +30,7 @@ from bot.trade import (
     set_leverage,
 )
 from core.event_store import reset_event_store
-from core.engine import run_strategy_on_snapshot
+from core.engine import initialize_realtime_strategy_processor, run_strategy_on_snapshot
 from core.indicator_inputs import normalize_indicator_inputs
 from core.binance_retry import create_binance_client
 
@@ -428,10 +428,19 @@ def _build_command_kwargs(symbol: str) -> dict[str, Any]:
     }
 
 
-def _resolve_live_indicator_inputs(cfg: dict[str, Any]) -> dict[str, str]:
+def _resolve_strategy_mode(cfg: dict[str, Any]) -> str:
+    normalized = str(
+        cfg.get("strategy_mode", os.getenv("SCROOGE_STRATEGY_MODE", "discrete"))
+    ).strip().lower() or "discrete"
+    if normalized not in {"discrete", "realtime"}:
+        raise ValueError("strategy_mode must be one of: discrete, realtime")
+    return normalized
+
+
+def _resolve_live_indicator_inputs(cfg: dict[str, Any], *, strategy_mode: str) -> dict[str, str]:
     return normalize_indicator_inputs(
         cfg.get("indicator_inputs"),
-        strategy_mode="discrete",
+        strategy_mode=strategy_mode,
     )
 
 
@@ -457,9 +466,10 @@ if __name__ == "__main__":
     initial_balance = cfg.get("initial_balance")
     qty = cfg["qty"]
     use_full_balance = cfg["use_full_balance"]
+    strategy_mode = _resolve_strategy_mode(cfg)
 
     intervals = cfg["intervals"]
-    indicator_inputs = _resolve_live_indicator_inputs(cfg)
+    indicator_inputs = _resolve_live_indicator_inputs(cfg, strategy_mode=strategy_mode)
 
     params = cfg["params"]
 
@@ -498,7 +508,12 @@ if __name__ == "__main__":
         command_kwargs = _build_command_kwargs(symbol)
         runtime_context: dict[str, Any] = {"state": state}
 
-        technical_logger.info("bot_mode_live_started symbol=%s leverage=%s", symbol, lvrg)
+        technical_logger.info(
+            "bot_mode_live_started symbol=%s leverage=%s strategy_mode=%s",
+            symbol,
+            lvrg,
+            strategy_mode,
+        )
         set_leverage(symbol, lvrg)
         live_market_stream = LiveMarketStream(
             api_key=api_key,
@@ -520,16 +535,20 @@ if __name__ == "__main__":
         def resolve_live_balance() -> float:
             cached_balance = get_cached_balance()
             cache_age = get_cached_balance_age_seconds()
+            user_stream_connected = live_market_stream.is_user_stream_connected() if live_market_stream is not None else False
             if (
                 cached_balance is not None
-                and cache_age is not None
-                and cache_age <= user_stream_stale_after_seconds
+                and (
+                    user_stream_connected
+                    or (cache_age is not None and cache_age <= user_stream_stale_after_seconds)
+                )
             ):
                 if cache_health_flags["balance_cache_stale_logged"]:
                     technical_logger.info(
-                        "user_stream_balance_cache_restored age=%.2f threshold=%.2f",
-                        cache_age,
+                        "user_stream_balance_cache_restored age=%.2f threshold=%.2f connected=%s",
+                        -1.0 if cache_age is None else cache_age,
                         user_stream_stale_after_seconds,
+                        user_stream_connected,
                     )
                     cache_health_flags["balance_cache_stale_logged"] = False
                 return cached_balance
@@ -537,6 +556,7 @@ if __name__ == "__main__":
             if (
                 cached_balance is not None
                 and cache_age is not None
+                and not user_stream_connected
                 and not cache_health_flags["balance_cache_stale_logged"]
             ):
                 technical_logger.warning(
@@ -551,17 +571,21 @@ if __name__ == "__main__":
         def resolve_live_position(current_symbol: str, expect_position: bool) -> dict[str, Any] | None:
             cached_position = get_cached_open_position(current_symbol)
             cache_age = get_cached_position_age_seconds(current_symbol)
+            user_stream_connected = live_market_stream.is_user_stream_connected() if live_market_stream is not None else False
             if (
                 cached_position is not None
-                and cache_age is not None
-                and cache_age <= user_stream_stale_after_seconds
+                and (
+                    user_stream_connected
+                    or (cache_age is not None and cache_age <= user_stream_stale_after_seconds)
+                )
             ):
                 if cache_health_flags["position_cache_stale_logged"]:
                     technical_logger.info(
-                        "user_stream_position_cache_restored symbol=%s age=%.2f threshold=%.2f",
+                        "user_stream_position_cache_restored symbol=%s age=%.2f threshold=%.2f connected=%s",
                         current_symbol,
-                        cache_age,
+                        -1.0 if cache_age is None else cache_age,
                         user_stream_stale_after_seconds,
+                        user_stream_connected,
                     )
                     cache_health_flags["position_cache_stale_logged"] = False
                 return cached_position
@@ -570,6 +594,7 @@ if __name__ == "__main__":
                 cached_position is not None
                 and cache_age is not None
                 and expect_position
+                and not user_stream_connected
                 and not cache_health_flags["position_cache_stale_logged"]
             ):
                 technical_logger.warning(
@@ -584,6 +609,56 @@ if __name__ == "__main__":
             if pos is not None:
                 cache_health_flags["position_cache_stale_logged"] = False
             return pos
+
+        def initialize_live_realtime_processor(current_state: dict[str, Any]) -> Any:
+            if live_market_stream is None:
+                raise RuntimeError("Live market stream must be running before realtime strategy initialization.")
+            current_balance = resolve_live_balance()
+            processor = initialize_realtime_strategy_processor(
+                live=True,
+                initial_balance=current_balance,
+                qty=qty,
+                sl_mult=params["sl_mult"],
+                tp_mult=params["tp_mult"],
+                symbol=symbol,
+                leverage=lvrg,
+                use_full_balance=use_full_balance,
+                fee_rate=0.0005,
+                state=current_state,
+                use_state=True,
+                enable_logs=True,
+                rsi_extreme_long=params["rsi_extreme_long"],
+                rsi_extreme_short=params["rsi_extreme_short"],
+                rsi_long_open_threshold=params["rsi_long_open_threshold"],
+                rsi_long_qty_threshold=params["rsi_long_qty_threshold"],
+                rsi_long_tp_threshold=params["rsi_long_tp_threshold"],
+                rsi_long_close_threshold=params["rsi_long_close_threshold"],
+                rsi_short_open_threshold=params["rsi_short_open_threshold"],
+                rsi_short_qty_threshold=params["rsi_short_qty_threshold"],
+                rsi_short_tp_threshold=params["rsi_short_tp_threshold"],
+                rsi_short_close_threshold=params["rsi_short_close_threshold"],
+                trail_atr_mult=params["trail_atr_mult"],
+                allow_entries=bool(current_state.get("trading_enabled", True)),
+                execution_mode="simulated",
+                runtime_mode="live",
+                indicator_inputs=indicator_inputs,
+                intervals={key: str(value) for key, value in intervals.items()},
+                target_symbol=symbol,
+                emit_on_price_tick=True,
+            )
+            df_small, df_medium, df_big = live_market_stream.snapshot_candle_frames()
+            processor.bootstrap_from_frames(
+                df_small=df_small,
+                df_medium=df_medium,
+                df_big=df_big,
+            )
+            return processor
+
+        realtime_processor = (
+            initialize_live_realtime_processor(state)
+            if strategy_mode == "realtime"
+            else None
+        )
 
         try:
             while True:
@@ -607,8 +682,9 @@ if __name__ == "__main__":
                         lvrg = cfg["leverage"]
                         qty = cfg["qty"]
                         use_full_balance = cfg["use_full_balance"]
+                        strategy_mode = _resolve_strategy_mode(cfg)
                         intervals = cfg["intervals"]
-                        indicator_inputs = _resolve_live_indicator_inputs(cfg)
+                        indicator_inputs = _resolve_live_indicator_inputs(cfg, strategy_mode=strategy_mode)
                         params = cfg["params"]
                         set_leverage(symbol, lvrg)
                         command_kwargs = _build_command_kwargs(symbol)
@@ -621,12 +697,23 @@ if __name__ == "__main__":
                             )
                             if not live_market_stream.is_running():
                                 raise RuntimeError("Live market stream failed to restart after config reload.")
+                            live_market_stream.take_pending_market_events()
+                        realtime_processor = (
+                            initialize_live_realtime_processor(state)
+                            if strategy_mode == "realtime"
+                            else None
+                        )
                         restart_requested = False
                         cache_health_flags["balance_cache_stale_logged"] = False
                         cache_health_flags["position_cache_stale_logged"] = False
                         last_balance_refresh_monotonic = 0.0
                         last_strategy_candle_open_time = None
-                        technical_logger.info("config_restart_applied symbol=%s leverage=%s", symbol, lvrg)
+                        technical_logger.info(
+                            "config_restart_applied symbol=%s leverage=%s strategy_mode=%s",
+                            symbol,
+                            lvrg,
+                            strategy_mode,
+                        )
 
                     with state_lock:
                         trading_enabled = bool(state.get("trading_enabled", True))
@@ -647,6 +734,47 @@ if __name__ == "__main__":
                             runtime_context["state"] = state
                         last_balance_refresh_monotonic = now_monotonic
                         technical_logger.debug("live_balance balance=%.2f", current_balance)
+
+                    if strategy_mode == "realtime":
+                        if realtime_processor is None:
+                            raise RuntimeError("Realtime live strategy processor is not initialized.")
+                        events = live_market_stream.take_pending_market_events() if live_market_stream is not None else []
+                        if not events:
+                            time.sleep(control_poll_slice_seconds)
+                            continue
+
+                        with state_lock:
+                            trading_enabled = bool(state.get("trading_enabled", True))
+                            has_position = isinstance(state.get("position"), dict)
+
+                        pos = resolve_live_position(symbol, has_position)
+                        if pos:
+                            with state_lock:
+                                position = state.get("position") if isinstance(state.get("position"), dict) else {}
+                            technical_logger.debug(
+                                "live_open_position amount=%s symbol=%s tp=%s sl=%s",
+                                pos.get("positionAmt"),
+                                pos.get("symbol"),
+                                position.get("tp", "n/a"),
+                                position.get("sl", "n/a"),
+                            )
+                        else:
+                            technical_logger.debug("live_no_open_positions symbol=%s", symbol)
+
+                        if debug_strategy_ticks:
+                            technical_logger.info(
+                                "live_strategy_events count=%s trading_enabled=%s has_position=%s",
+                                len(events),
+                                trading_enabled,
+                                has_position,
+                            )
+
+                        with state_lock:
+                            for event in events:
+                                realtime_processor.process_event(event)
+                            state = realtime_processor.runtime.state
+                            runtime_context["state"] = state
+                        continue
 
                     row = live_market_stream.take_ready_strategy_row() if live_market_stream is not None else None
                     if row is None:
