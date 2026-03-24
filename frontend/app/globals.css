@@ -1142,7 +1142,7 @@ pre {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   grid-template-areas:
-    "title phrase side pnl chevron";
+    "title side phrase pnl chevron";
   align-items: center;
   column-gap: 0.58rem;
   row-gap: 0;
@@ -1225,7 +1225,7 @@ pre {
   display: block;
   max-width: 100%;
   border: 1px solid rgba(104, 48, 75, 0.58);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 0.18rem 0.54rem 0.18rem 0.16rem;
   background:
     linear-gradient(180deg, rgba(46, 17, 34, 0.9), rgba(30, 12, 23, 0.96)),
