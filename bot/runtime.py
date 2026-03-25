@@ -122,16 +122,16 @@ def _resolve_backtest_run_dir(cfg: dict[str, Any]) -> Path | None:
         return None
 
     if raw_run_dir.lower() != "auto":
-        return Path(raw_run_dir).expanduser()
+        return Path(raw_run_dir).expanduser().resolve()
 
-    root_dir = Path(raw_root_dir or "runtime/backtests").expanduser()
+    root_dir = Path(raw_root_dir or "runtime/backtests").expanduser().resolve()
     root_dir.mkdir(parents=True, exist_ok=True)
     run_dir = root_dir / _backtest_run_timestamp()
     return run_dir
 
 
 def _apply_backtest_run_dir(run_dir: Path, cfg: dict[str, Any]) -> tuple[Path, bool]:
-    resolved_run_dir = run_dir.expanduser()
+    resolved_run_dir = run_dir.expanduser().resolve()
     resolved_run_dir.mkdir(parents=True, exist_ok=True)
     os.environ["SCROOGE_BACKTEST_RUN_DIR"] = str(resolved_run_dir)
 
@@ -146,7 +146,7 @@ def _apply_backtest_run_dir(run_dir: Path, cfg: dict[str, Any]) -> tuple[Path, b
     reset_event_store(os.environ["SCROOGE_EVENT_LOG_FILE"])
 
     raw_root_dir = str(os.getenv("SCROOGE_BACKTEST_ROOT", cfg.get("backtest_run_root", "runtime/backtests")) or "").strip()
-    root_dir = Path(raw_root_dir or "runtime/backtests").expanduser()
+    root_dir = Path(raw_root_dir or "runtime/backtests").expanduser().resolve()
     latest_updated = False
     try:
         if resolved_run_dir.parent == root_dir or resolved_run_dir.is_relative_to(root_dir):

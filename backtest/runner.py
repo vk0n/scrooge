@@ -68,7 +68,6 @@ class BacktestConfig:
     backtest_period_start_time: str
     backtest_period_end_time: str
     enable_plot: bool
-    plot_split_by_year: bool
     run_monte_carlo: bool
     run_rolling_window_backtest_distribution: bool
     rolling_window_days: int
@@ -182,7 +181,6 @@ def build_backtest_config(
         backtest_period_start_time=str(cfg.get("backtest_period_start_time", "")),
         backtest_period_end_time=str(cfg.get("backtest_period_end_time", "")),
         enable_plot=bool(cfg["enable_plot"]),
-        plot_split_by_year=bool(cfg.get("plot_split_by_year", True)),
         run_monte_carlo=bool(cfg["run_monte_carlo"]),
         run_rolling_window_backtest_distribution=bool(cfg["run_rolling_window_backtest_distribution"]),
         rolling_window_days=int(cfg["rolling_window_days"]),
@@ -324,8 +322,8 @@ def run_backtest(
     )
     report_module: Any | None = None
     run_monte_carlo: Callable[..., Any] | None = None
-    plot_results_interactive: Callable[..., Any] | None = None
     run_rolling_window_backtest_distribution: Callable[..., Any] | None = None
+    write_backtest_report: Callable[..., Any] | None = None
 
     if config.client is not None:
         dataset_module.set_client(config.client)
@@ -345,15 +343,15 @@ def run_backtest(
     if needs_reporting:
         import backtest.reporting as report_module_import
         from backtest.reporting import (
-            plot_results_interactive as plot_results_interactive_import,
             run_monte_carlo as run_monte_carlo_import,
             run_rolling_window_backtest_distribution as run_rolling_window_backtest_distribution_import,
+            write_backtest_report as write_backtest_report_import,
         )
 
         report_module = report_module_import
         run_monte_carlo = run_monte_carlo_import
-        plot_results_interactive = plot_results_interactive_import
         run_rolling_window_backtest_distribution = run_rolling_window_backtest_distribution_import
+        write_backtest_report = write_backtest_report_import
 
         if config.client is not None:
             report_module.set_client(config.client)
@@ -688,32 +686,44 @@ def run_backtest(
     advance_stage()
     complete_stage()
 
-    if config.enable_plot:
-        if plot_results_interactive is None:
-            raise RuntimeError("plot_results_interactive is unavailable because reporting helpers were not loaded")
-        plot_results_interactive(df, trades, balance_history, split_by_year=config.plot_split_by_year)
+    monte_carlo_report: dict[str, Any] | None = None
+    rolling_window_report: dict[str, Any] | None = None
 
     if config.run_monte_carlo:
         if run_monte_carlo is None:
             raise RuntimeError("run_monte_carlo is unavailable because reporting helpers were not loaded")
-        run_monte_carlo(
+        monte_carlo_report = run_monte_carlo(
             df,
             balance_history,
             start_balance=config.initial_balance,
-            show_plot=config.enable_plot,
+            show_plot=False,
         )
 
     if config.run_rolling_window_backtest_distribution:
         if run_rolling_window_backtest_distribution is None:
             raise RuntimeError("run_rolling_window_backtest_distribution is unavailable because reporting helpers were not loaded")
-        run_rolling_window_backtest_distribution(
+        rolling_window_report = run_rolling_window_backtest_distribution(
             config,
             df,
             k_days=config.rolling_window_days,
             n_days=config.backtest_period_days,
             start_balance=config.initial_balance,
-            show_plot=config.enable_plot,
+            show_plot=False,
             max_workers=config.rolling_window_workers,
+        )
+
+    if needs_reporting:
+        if write_backtest_report is None:
+            raise RuntimeError("write_backtest_report is unavailable because reporting helpers were not loaded")
+        write_backtest_report(
+            config,
+            df,
+            trades,
+            balance_history,
+            stats,
+            monte_carlo_report=monte_carlo_report,
+            rolling_window_report=rolling_window_report,
+            include_html=config.enable_plot,
         )
 
     return BacktestResult(
