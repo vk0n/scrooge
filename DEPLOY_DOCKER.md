@@ -1,33 +1,24 @@
 # Scrooge Docker Deploy
 
-Scrooge uses Docker Compose profiles for three main modes:
+Scrooge uses Docker Compose profiles for:
 - control plane only
 - live trading runtime
-- one-shot backtest jobs
+- one-shot backtests
 
-The stack is built from:
-- `api` — FastAPI control plane backend
-- `frontend` — Next.js UI
-- `proxy` — nginx public entrypoint
+The stack consists of:
 - `redis` — command queue and command status storage
+- `api` — FastAPI control plane backend
+- `frontend` — Next.js control plane UI
+- `proxy` — nginx public entrypoint
 - `bot` — live trading runtime (`profile: live`)
 - `backtest` — one-shot backtest runner (`profile: backtest`)
 - `watchtower` — optional auto-update service (`profile: watchtower`)
 
-All services share the Docker volume `scrooge_runtime`.
+Persistent runtime state lives in the `scrooge_runtime` Docker volume.
 
 ## Config Files
 
-Live trading config:
-- `config/live.yaml`
-
-Backtest config:
-- `config/backtest.yaml`
-
-Optimization grid:
-- `config/param_grid.yaml`
-
-Compose mounts:
+Main mounted configs:
 - `config/live.yaml -> /runtime/config.yaml`
 - `config/backtest.yaml -> /runtime/config.backtest.yaml`
 
@@ -46,7 +37,13 @@ SCROOGE_GUI_USERNAME=admin
 SCROOGE_GUI_PASSWORD=strong_password_here
 ```
 
-For registry-based deploys also set image refs:
+Optional control token:
+
+```env
+SCROOGE_CONTROL_TOKEN=...
+```
+
+Optional image refs for registry deploys:
 
 ```env
 SCROOGE_BOT_IMAGE=vk0n/scrooge-bot:latest
@@ -56,7 +53,18 @@ SCROOGE_FRONTEND_IMAGE=vk0n/scrooge-frontend:latest
 SCROOGE_PROXY_IMAGE=nginx:1.27-alpine
 ```
 
-Optional Watchtower settings:
+Optional push notifications:
+
+```env
+SCROOGE_PUSH_ENABLED=1
+SCROOGE_PUSH_VAPID_SUBJECT=mailto:you@example.com
+SCROOGE_PUSH_VAPID_PRIVATE_KEY=
+SCROOGE_PUSH_VAPID_PUBLIC_KEY=
+```
+
+These variables are supported by the API/runtime code, but if you use plain Compose you should pass them into the `api` and `bot` services through an override file or explicit `environment:` entries.
+
+Optional Watchtower:
 
 ```env
 SCROOGE_WATCHTOWER_SCOPE=scrooge
@@ -64,7 +72,7 @@ SCROOGE_WATCHTOWER_POLL_INTERVAL=300
 SCROOGE_WATCHTOWER_HTTP_API_TOKEN=
 ```
 
-If your registry requires auth, log in on the deployment host first:
+If your registry requires auth:
 
 ```bash
 docker login
@@ -78,19 +86,19 @@ Control plane only:
 docker compose up -d --build
 ```
 
-Control plane with Watchtower:
+Control plane + Watchtower:
 
 ```bash
 docker compose --profile watchtower up -d
 ```
 
-Control plane with live bot:
+Control plane + live bot:
 
 ```bash
 docker compose --profile live up -d --build
 ```
 
-Control plane with live bot and Watchtower:
+Control plane + live bot + Watchtower:
 
 ```bash
 docker compose --profile live --profile watchtower up -d
@@ -110,13 +118,13 @@ http://<host>:3000
 
 ## Updating
 
-### Local build on host
+### Build on host
 
 ```bash
 docker compose --profile live up -d --build --force-recreate
 ```
 
-### Registry-based deploy
+### Pull from registry
 
 ```bash
 docker compose --profile live pull
@@ -131,23 +139,36 @@ docker compose --profile live --profile watchtower up -d --force-recreate
 ```
 
 Notes:
-- `--force-recreate` recreates containers from the images you already have locally
-- it does not fetch newer remote images by itself
-- for registry deploys, run `pull` first
+- `--force-recreate` recreates containers from already-present images
+- it does not fetch new remote images by itself
+- for registry deploys, `pull` first
 
 ## Live Runtime Notes
+
+Compose mounts [config/live.yaml](config/live.yaml) into the bot and API runtime volume.
 
 Current live runtime is:
 - websocket-driven for market data
 - websocket-driven for user/account updates
-- still `strategy_mode=discrete` by default
+- event-driven when `strategy_mode: realtime`
+- command-driven via Redis queue for control actions
 
-Useful live knobs from `.env`:
+Important:
+- `config/live.yaml` is currently the main source of truth for live `strategy_mode`
+- the Compose env var `SCROOGE_STRATEGY_MODE` is still available as an override, but if `strategy_mode` is set in the YAML config, the YAML value wins
+- the checked-in live preset currently runs the tuned realtime winner:
+  - `strategy_mode: realtime`
+  - `indicator_inputs`: `ema=intrabar`, `rsi=closed`, `bb=closed`, `atr=intrabar`
+  - tuned params from `config/live.yaml`
+
+Useful live env knobs:
 
 ```env
 SCROOGE_MARKET_STREAM_ENABLED=1
 SCROOGE_MARKET_STREAM_PERSIST_INTERVAL_SECONDS=1
 SCROOGE_MARKET_STREAM_SETTLE_SECONDS=1.5
+SCROOGE_MARKET_EVENT_STREAM_ENABLED=1
+SCROOGE_MARKET_EVENT_STREAM_FILE=/runtime/market_events.jsonl
 SCROOGE_USER_STREAM_ENABLED=1
 SCROOGE_USER_STREAM_KEEPALIVE_SECONDS=1800
 SCROOGE_USER_STREAM_RECONNECT_SECONDS=5
@@ -155,18 +176,18 @@ SCROOGE_USER_STREAM_STALE_AFTER_SECONDS=120
 SCROOGE_FUTURES_REST_BASE_URL=https://fapi.binance.com
 SCROOGE_FUTURES_WS_BASE_URL=wss://fstream.binance.com/ws
 SCROOGE_RUNTIME_MODE=live
-SCROOGE_STRATEGY_MODE=discrete
+SCROOGE_STRATEGY_MODE=realtime
 SCROOGE_DEBUG_STRATEGY_TICKS=0
 ```
 
 Behavior:
-- market sockets drive live price and closed-candle triggers
-- user stream drives faster balance and position updates
+- market sockets drive price ticks and candle-close updates
+- user stream drives balance, position, and order updates
 - if user-stream cache goes stale, the bot falls back to REST reads until freshness is restored
 
 ## Runtime Artifacts
 
-Live runtime writes into `/runtime`:
+Live services write into `/runtime`:
 - `state.json`
 - `trade_history.jsonl`
 - `balance_history.jsonl`
@@ -174,11 +195,13 @@ Live runtime writes into `/runtime`:
 - `event_history.jsonl`
 - `market_events.jsonl`
 - `chart_dataset.csv`
+- `push_subscriptions.json`
+- generated VAPID key files when push is enabled and keys are not pre-supplied
 
 Notes:
 - `event_history.jsonl` is the canonical append-only event log
-- `market_events.jsonl` now carries both market data and account/execution events for future replay paths
-- existing runtime artifacts remain compatible across normal upgrades as long as the `scrooge_runtime` volume is preserved
+- `market_events.jsonl` carries both market and account/execution events
+- runtime artifacts survive normal upgrades as long as the `scrooge_runtime` volume is preserved
 
 ## Backtest Artifacts
 
@@ -186,72 +209,64 @@ Backtest runs write into:
 - `/runtime/backtests/<run_id>/...`
 - symlink `/runtime/backtests/latest`
 
-Local backtests can use the same pattern through `config/backtest.yaml`:
-- `backtest_run_dir: auto`
-- `backtest_run_root: runtime/backtests`
-
 If host export is enabled:
-- set `export_artifacts_to_host: true` in `config/backtest.yaml`
-- host bind target is controlled by:
+- set `export_artifacts_to_host: true` in [config/backtest.yaml](config/backtest.yaml)
+- host bind target comes from:
   - `SCROOGE_HOST_BACKTEST_ARTIFACTS_DIR=./backtest_artifacts`
 
 Exported output appears in:
 - `./backtest_artifacts/<run_id>/...`
 - symlink `./backtest_artifacts/latest`
 
-Each backtest run emits:
+Typical run artifacts:
 - `state.json`
 - `trade_history.jsonl`
 - `balance_history.jsonl`
 - `trading_log.txt`
+- `event_history.jsonl`
 - `market_tape.jsonl`
 - `market_events.jsonl`
+- `chart_dataset.csv`
+- `replay_summary.json`
+- `replay_trades.jsonl`
 - `market_event_execution_summary.json`
 - `market_event_execution_events.jsonl`
 - `market_event_execution_fills.jsonl`
 - `market_event_execution_trades.jsonl`
 - `market_event_trade_alignment_summary.json`
 - `market_event_trade_alignment_pairs.jsonl`
-- `event_history.jsonl`
-- `chart_dataset.csv`
-- `replay_summary.json`
-- `replay_trades.jsonl`
+- `report.json`
+- `report.html` when `enable_plot: true`
 
 Notes:
-- `market_event_execution_summary.json` summarizes the active execution path (`observed` from replayed market events, or `simulated` from synthetic engine fills)
-- `market_event_execution_events.jsonl` stores the filtered account/order execution slice for replay/debugging
-- `market_event_execution_fills.jsonl` stores observed fills reconstructed from `order_trade_update`
-- `market_event_execution_trades.jsonl` stores observed execution trades reconstructed from those fills
-- `market_event_trade_alignment_summary.json` compares strategy trades against observed execution trades
-- `market_event_trade_alignment_pairs.jsonl` stores per-trade alignment rows
+- `market_event_execution_summary.json` summarizes the active execution path
+- `market_event_trade_alignment_summary.json` compares strategy trades to observed execution trades
+- `report.json` is the machine-readable summary
+- `report.html` is the unified human-readable report page
 
 Backtest input modes:
-- `backtest_input_mode: build` builds fresh dataset/tape from Binance history and also synthesizes a historical realtime-grade `market_events.jsonl`
-- `backtest_input_mode: discrete_tape` starts directly from an existing `market_tape.jsonl` and also synthesizes a historical realtime-grade `market_events.jsonl`
-- `backtest_input_mode: market_event_stream` starts directly from an existing `market_events.jsonl` and also writes a projected `market_tape.jsonl`
-- `backtest_input_mode: agg_trade_stream` fetches historical Binance Futures `aggTrades` and builds a native historical `market_events.jsonl`
-- synthetic historical `market_events.jsonl` includes intrabar `price_tick`, `1m/1h/4h candle_closed`, and `indicator_snapshot` events
-- `agg_trade_stream` includes compressed `price_tick` events from public `aggTrades`, plus rebuilt `1m/1h/4h candle_closed` and `indicator_snapshot` events
-- `strategy_mode: realtime` can run either on those historical synthetic streams or on live-captured `market_events.jsonl`
-- `execution_mode: observed` is available only with `backtest_input_mode: market_event_stream`
-- use `market_tape_input_path` or `market_event_input_path` in `config/backtest.yaml` when replaying from stored input artifacts
-- use `agg_trade_source` and `agg_trade_tick_interval` in `config/backtest.yaml` when building from Binance historical `aggTrades`
-- `agg_trade_tick_interval` supports `raw` or second buckets like `1s`, `5s`, `15s`, `30s`; for BTCUSDT, `5s` or `15s` are often much more practical than `1s`
-- raw `aggTrades` are cached by default under `data/agg_trades`
-- archive-based `aggTrades` are cached per UTC day under `data/agg_trades/<symbol>/archive_daily`, so overlapping `last N days` runs reuse most of the same files
-- older whole-window cache files are still accepted as a bootstrap source and get split into daily shards on reuse
-- tune this with `agg_trade_cache_enabled` and `agg_trade_cache_dir`
-- `state.json` will also capture `execution_sync`, `exchange_balance`, `exchange_position`, and `last_order_trade_update` when those events exist in the replay stream
+- `build`
+- `discrete_tape`
+- `market_event_stream`
+- `agg_trade_stream`
+
+`agg_trade_stream` notes:
+- historical Binance `aggTrades` are cached under `data/agg_trades`
+- archive cache is sharded per UTC day under `data/agg_trades/<symbol>/archive_daily`
+- overlapping windows reuse the same raw day files
 
 ## Control Behavior
 
-`/api/control/*` commands are queued through Redis.
+`/api/control/*` commands are queued through Redis and executed asynchronously by the bot.
 
 Important:
-- commands are processed only when `bot` is running with `--profile live`
-- `start` resumes trading
-- `stop` pauses trading
-- `restart` resumes trading and reloads config
+- commands are processed only when the `bot` service is running with `--profile live`
+- `start` = resume trading
+- `stop` = pause trading
+- `restart` = resume trading + reload config
+- `close-position` = close active position
+- `suggest-trade` = queue a manual buy/sell suggestion
+- `update-sl` / `update-tp` = update active levels
 
 ## Stop / Cleanup
 

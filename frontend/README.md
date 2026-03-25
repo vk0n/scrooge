@@ -1,6 +1,13 @@
 # Scrooge Control Frontend
 
-Next.js frontend for the Scrooge control plane.
+Next.js control plane UI for Scrooge.
+
+The frontend is the operator surface for:
+- login and auth persistence
+- dashboard status and control actions
+- chart/replay inspection
+- live log viewing
+- push notification setup
 
 ## Run
 
@@ -10,39 +17,102 @@ npm install
 npm run dev
 ```
 
-Optional for split local run (frontend on `3000`, api on `8000`):
+Optional for split local dev:
+
 ```bash
 export NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ```
-This is also required for direct WebSocket live updates in split local mode.
 
-For Docker Compose 3+1 run, frontend uses internal rewrite target from:
+In Docker Compose the frontend uses:
+
 ```bash
 INTERNAL_API_BASE_URL=http://api:8000
 ```
 
-Open `http://localhost:3000`.
+Open:
 
-Authentication:
-- Open `/login`
-- Enter `Basic` credentials
-- Save credentials (stored in browser localStorage)
+```text
+http://localhost:3000
+```
 
-Pages:
-- `/dashboard` uses live WebSocket updates (`/ws/status`) with polling fallback to `GET /api/status`
-  - includes runtime controls (`start` / `stop` / `restart`)
-  - includes config quick editor backed by `GET /api/config/editable` and `POST /api/config/editable`
-    - editable fields: `symbol`, `leverage`, `qty`, `use_full_balance`
-    - supports `Save` and `Save & Restart`
-    - strategy params are intentionally hidden in UI
-  - includes open-position controls (`close-position`, `update-sl`, `update-tp`)
-  - command execution status is shown inline in dashboard
-- `/chart` reads `GET /api/chart` and renders Plotly candlesticks, trade markers, indicators, and equity curve
-- `/logs` uses live WebSocket updates (`/ws/status?lines=N`) with polling fallback to `GET /api/logs?lines=N`
-- `/config` redirects to `/dashboard` (legacy route kept for compatibility)
-- `/controls` redirects to `/dashboard` (legacy route kept for compatibility)
+## Auth
 
-UX notes:
-- mobile-friendly layout (compact cards, responsive toolbars/forms)
-- sticky top navigation + bottom mobile navigation for primary pages
-- touch-friendly controls and readable log/config/chart blocks on phone screens
+- `/login` stores HTTP Basic credentials in browser local storage
+- authenticated pages are wrapped by `AuthGate`
+- top navigation shows `Step Out` to clear saved credentials
+
+## Main Pages
+
+Primary navigation:
+- `Office` → `/dashboard`
+- `Market Map` → `/chart`
+- `Ledger` → `/logs`
+
+Legacy compatibility routes:
+- `/config` redirects to `/dashboard`
+- `/controls` redirects to `/dashboard`
+
+### Office / Dashboard
+
+`/dashboard` shows:
+- runtime status
+- balance / leverage / symbol / last price
+- current trade summary
+- trailing state
+- config editing
+- live control actions
+- inline command status feedback
+- contract text built from the editable config
+
+It prefers websocket updates from `/ws/status` and falls back to polling `GET /api/status`.
+
+### Market Map
+
+`/chart` renders Plotly charts using `GET /api/chart`.
+
+Features:
+- candlesticks
+- trade entry/exit markers
+- equity curve
+- RSI
+- shared x-axis sync
+- fullscreen chart mode
+- mobile-friendly controls
+
+### Ledger
+
+`/logs` shows live runtime logs using:
+- websocket updates when available
+- polling fallback to `GET /api/logs`
+
+Features:
+- adjustable row count
+- auto-tail toggle
+- newest-first toggle
+
+## Push Notifications
+
+The bell control in navigation and panel mode:
+- checks browser support
+- requests permission
+- subscribes through `/api/notifications/subscribe`
+- sends a test push through `/api/notifications/test`
+- unregisters through `/api/notifications/unsubscribe`
+
+It depends on:
+- browser service workers
+- `frontend/public/sw.js`
+- server-side VAPID configuration in the API/runtime environment
+
+## UX Notes
+
+The current UI is optimized for:
+- desktop control-plane usage
+- compact mobile inspection
+- sticky top navigation
+- bottom mobile navigation
+- Scrooge-style copy and compact dashboard cards
+
+Realtime status UX is intentionally conservative:
+- websocket mode is preferred
+- fallback banners only appear on actual fallback, not on every initial load

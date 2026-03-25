@@ -1,135 +1,159 @@
-# Scrooge — Binance Futures Runtime, Control Plane, and Replayable Backtests
+# Scrooge
 
-Scrooge is an event-driven trading system for Binance Futures with three cooperating layers:
-- `bot/` for live runtime, exchange integration, and stateful execution
-- `core/` for shared strategy and event logic
-- `backtest/` for dataset building, discrete backtest running, replay, reporting, and optimization
+Scrooge is an event-driven Binance Futures trading system with:
+- a live runtime in `bot/`
+- shared strategy and event logic in `core/`
+- replayable backtests, compare runs, reporting, and optimization in `backtest/`
+- a local control plane in `api/` + `frontend/`
 
-It currently supports:
-- live trading with websocket-driven market and account updates
-- a local control plane (`api/` + `frontend/`)
-- discrete backtests
-- canonical event logging and replay artifacts
-- a canonical discrete market tape for backtest runs
-- a realtime-grade market event stream path for both historical and live replay
+Today the project is centered on realtime execution and realtime-grade historical replay:
+- live trading can run in `strategy_mode: realtime`
+- backtests can replay native historical `market_events.jsonl`
+- historical Binance Futures `aggTrades` can be converted into realtime-style event streams
+- control actions go through a Redis-backed command channel instead of mutating bot state directly
 
-## Project Structure
+## Structure
 
 ```text
 scrooge/
 ├── api/                     # FastAPI control plane backend
 ├── frontend/                # Next.js control plane frontend
-├── bot/                     # Live runtime adapters and side effects
-│   ├── runtime.py
-│   ├── market_stream.py
-│   ├── control_channel.py
-│   ├── event_log.py
-│   ├── state.py
-│   └── trade.py
-├── core/                    # Shared engine and canonical event storage
-│   ├── engine.py
-│   ├── market_events.py
-│   └── event_store.py
-├── backtest/                # Dataset building, backtest runner/tape/event-stream, replay, reporting, optimization
-│   ├── dataset.py
-│   ├── agg_trade_market_event_stream.py
-│   ├── discrete_event_stream.py
-│   ├── discrete_tape.py
-│   ├── historical_market_event_stream.py
-│   ├── market_event_projection.py
-│   ├── compare.py
-│   ├── runner.py
-│   ├── replay.py
-│   ├── reporting.py
-│   └── optimize.py
-├── config/
-│   ├── live.yaml
-│   ├── backtest.yaml
-│   ├── compare.yaml
-│   └── param_grid.yaml
-├── requirements/
-│   ├── bot.txt
-│   ├── backtest.txt
-│   └── full.txt
-├── runtime/                 # Local default runtime artifacts (gitignored)
-├── docker/
-├── main.py                  # Thin entry shim; keeps the Scrooge greeting
-└── docker-compose.yml
+├── bot/                     # Live runtime, control polling, state persistence, exchange adapters
+├── core/                    # Shared engine, event model, indicator-input selection, event store
+├── backtest/                # Dataset build, event-stream build, compare, optimize, reporting
+├── config/                  # Live/backtest/compare/grid configs
+├── docker/                  # Dockerfiles and entrypoints
+├── requirements/            # Split dependency sets
+├── runtime/                 # Local runtime/backtest artifacts (gitignored)
+├── docker-compose.yml
+└── main.py                  # Thin entry shim
 ```
+
+## Key Concepts
+
+### Strategy Modes
+
+- `strategy_mode: discrete`
+  - legacy minute-snapshot style evaluation
+  - decisions are taken once per closed `small` candle
+- `strategy_mode: realtime`
+  - event-driven evaluation on `price_tick`, `candle_closed`, `indicator_snapshot`, and account/order events
+  - used both in live mode and in realtime historical replay
+
+### Indicator Inputs
+
+Strategy timing and strategy decision values are separated:
+- `strategy_mode` decides **when** the strategy evaluates
+- `indicator_inputs` decide **which indicator values** are used for the decision
+
+Supported `indicator_inputs` keys:
+- `ema`
+- `rsi`
+- `bb`
+- `atr`
+
+Supported modes:
+- `closed` — use the last closed-candle indicator value
+- `intrabar` — use the current intrabar/realtime indicator value
+
+### Backtest Input Modes
+
+- `build`
+  - fetch historical candles, build dataset, derive tape, synthesize a historical event stream
+- `discrete_tape`
+  - replay from an existing `market_tape.jsonl`
+- `market_event_stream`
+  - replay directly from an existing `market_events.jsonl`
+- `agg_trade_stream`
+  - build a native historical market-event stream from Binance Futures `aggTrades`
 
 ## Installation
 
-### 1. Clone
+### Python runtime and backtest stack
 
 ```bash
 git clone https://github.com/vk0n/scrooge.git
 cd scrooge
-```
 
-### 2. Create a virtual environment
-
-```bash
 python -m venv scrooge-env
 source scrooge-env/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
 pip install -r requirements/full.txt
 ```
 
-Notes:
-- `requirements/full.txt` is the full local toolchain
-- `docker/bot.Dockerfile` installs `requirements/bot.txt`
-- `docker/backtest.Dockerfile` installs `requirements/backtest.txt`
+### Frontend
 
-### 4. Create `.env`
+```bash
+cd frontend
+npm install
+```
 
-At minimum:
+### Environment
+
+Create `.env` with at least:
 
 ```env
 BINANCE_API_KEY=your_api_key
 BINANCE_API_SECRET=your_api_secret
-```
-
-If you run the control plane locally, also set:
-
-```env
 SCROOGE_GUI_USERNAME=admin
 SCROOGE_GUI_PASSWORD=strong_password_here
 ```
 
-## Configuration
+Optional machine-to-machine control token:
 
-Live trading config:
-- [live.yaml](config/live.yaml)
+```env
+SCROOGE_CONTROL_TOKEN=...
+```
 
-Backtest config:
-- [backtest.yaml](config/backtest.yaml)
+Optional push notifications:
 
-Compare matrix:
-- [compare.yaml](config/compare.yaml)
+```env
+SCROOGE_PUSH_ENABLED=1
+SCROOGE_PUSH_VAPID_SUBJECT=mailto:you@example.com
+SCROOGE_PUSH_VAPID_PRIVATE_KEY=
+SCROOGE_PUSH_VAPID_PUBLIC_KEY=
+```
 
-Optimization grid:
-- [param_grid.yaml](config/param_grid.yaml)
+## Config Files
 
-Current canonical timeframe setup is:
-- `small`: price/decision frame
-- `medium`: Bollinger Bands + ATR frame
-- `big`: RSI + EMA frame
+Primary working configs:
+- [config/live.yaml](config/live.yaml)
+- [config/backtest.yaml](config/backtest.yaml)
+- [config/compare.yaml](config/compare.yaml)
+- [config/param_grid.yaml](config/param_grid.yaml)
 
-## Usage
+Treat checked-in configs as working presets:
+- they are meant to be copied, edited, and compared
+- they are not a promise that every checked-in file is the final production strategy preset
+- the currently checked-in `live.yaml` and `backtest.yaml` already point to the tuned realtime winner:
+  - `strategy_mode: realtime`
+  - `indicator_inputs`: `ema=intrabar`, `rsi=closed`, `bb=closed`, `atr=intrabar`
 
-### Local live runtime
+## Running Scrooge
 
-Uses `config/live.yaml` by default:
+### Live runtime
+
+By default:
+- `main.py` loads `config/live.yaml`
+- `config/live.yaml` currently runs `strategy_mode: realtime`
+- the checked-in live preset also uses the tuned realtime indicator-input mix:
+  - `ema: intrabar`
+  - `rsi: closed`
+  - `bb: closed`
+  - `atr: intrabar`
+
+Run locally:
 
 ```bash
 python main.py
 ```
 
-Local runtime artifacts will appear under:
+Equivalent direct entry:
+
+```bash
+python -m bot.runtime
+```
+
+Default live artifacts:
 - `runtime/state.json`
 - `runtime/trading_log.txt`
 - `runtime/trade_history.jsonl`
@@ -138,11 +162,49 @@ Local runtime artifacts will appear under:
 - `runtime/market_events.jsonl`
 - `runtime/chart_dataset.csv`
 
-`runtime/market_events.jsonl` now carries:
-- market data events (`price_tick`, `mark_price`, `candle_closed`, `indicator_snapshot`)
-- account/execution events (`account_balance`, `position_snapshot`, `order_trade_update`)
+Live runtime behavior:
+- websocket-driven market stream
+- websocket-driven user/account stream
+- canonical append-only event log
+- Redis-backed control command queue
+- push notifications via web push when configured
 
-### Local backtest
+### Local control plane
+
+API:
+
+```bash
+cd api
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open:
+- `http://localhost:3000`
+
+Primary pages:
+- `Office` → `/dashboard`
+- `Market Map` → `/chart`
+- `Ledger` → `/logs`
+
+The control plane provides:
+- status and open-trade visibility
+- config editing
+- manual control commands
+- live/polling updates
+- charting from runtime/backtest artifacts
+- push notification subscription management
+
+### Local backtests
 
 Run against `config/backtest.yaml`:
 
@@ -150,202 +212,167 @@ Run against `config/backtest.yaml`:
 SCROOGE_CONFIG_PATH=config/backtest.yaml python main.py
 ```
 
-With the default config, local backtests now create an isolated run directory automatically:
-- `backtest_run_dir: auto`
-- `backtest_run_root: runtime/backtests`
-- symlink `runtime/backtests/latest`
+Equivalent direct entry:
 
-Backtest outputs include:
-- runtime artifacts for the run
+```bash
+SCROOGE_CONFIG_PATH=config/backtest.yaml python -m bot.runtime
+```
+
+Backtest runs automatically isolate artifacts when `backtest_run_dir: auto`:
+- `runtime/backtests/<run_id>/...`
+- `runtime/backtests/latest`
+
+The checked-in backtest preset mirrors the tuned realtime baseline:
+- `strategy_mode: realtime`
+- `backtest_input_mode: agg_trade_stream`
+- `agg_trade_tick_interval: 5s`
+- `indicator_inputs`: `ema=intrabar`, `rsi=closed`, `bb=closed`, `atr=intrabar`
+
+Typical backtest artifacts:
+- `state.json`
+- `trade_history.jsonl`
+- `balance_history.jsonl`
+- `trading_log.txt`
+- `event_history.jsonl`
 - `market_tape.jsonl`
 - `market_events.jsonl`
+- `chart_dataset.csv`
+- `replay_summary.json`
+- `replay_trades.jsonl`
 - `market_event_execution_summary.json`
 - `market_event_execution_events.jsonl`
 - `market_event_execution_fills.jsonl`
 - `market_event_execution_trades.jsonl`
 - `market_event_trade_alignment_summary.json`
 - `market_event_trade_alignment_pairs.jsonl`
-- canonical `event_history.jsonl`
-- `replay_summary.json`
-- `replay_trades.jsonl`
 
-The execution artifacts are derived from the active execution path:
-- from replayed `market_events.jsonl` when `execution_mode: observed`
-- from synthetic execution events emitted by the engine when `execution_mode: simulated`
+### Historical aggTrades replay
 
-They summarize/filter:
-- account balance snapshots
-- position snapshots
-- order trade updates
-- observed fills reconstructed from `order_trade_update`
-- observed execution trades reconstructed from those fills
-- alignment between strategy trades and observed execution trades
-
-The backtest execution path is now owned by:
-- `backtest/runner.py`
-- `backtest/discrete_tape.py`
-- `backtest/market_event_projection.py`
-
-The realtime-grade stream path is owned by:
-- `backtest/agg_trade_market_event_stream.py`
-- `backtest/historical_market_event_stream.py`
-- `core/market_events.py`
-
-Backtest input modes:
-- `backtest_input_mode: build` — fetch/build dataset, derive `market_tape.jsonl`, and synthesize a historical `market_events.jsonl`
-- `backtest_input_mode: discrete_tape` — start from an existing `market_tape.jsonl` and synthesize a historical `market_events.jsonl`
-- `backtest_input_mode: market_event_stream` — start directly from an existing `market_events.jsonl`, while also projecting `market_tape.jsonl` as an artifact
-- `backtest_input_mode: agg_trade_stream` — fetch historical Binance Futures `aggTrades`, compress them into `price_tick` events, synthesize `1m/1h/4h candle_closed` plus `indicator_snapshot`, and write a native historical `market_events.jsonl`
-
-Historical `market_events.jsonl` synthesized from candles includes:
-- intrabar `price_tick` events derived from the `1m` OHLC path
-- `candle_closed` events for `1m`, `1h`, and `4h`
-- `indicator_snapshot` events for discrete replay compatibility
-
-Historical `market_events.jsonl` synthesized from `aggTrades` includes:
-- `price_tick` events derived from public Binance Futures aggregate trades
-- by default, tick compression to `1s` so the stream stays practical for local replay
-- `candle_closed` events for `1m`, `1h`, and `4h` rebuilt from those trades
-- `indicator_snapshot` events rebuilt from the resulting candle history
-
-When replaying from `market_event_stream`, the resulting `state.json` also carries execution-sync context when available:
-- `execution_sync`
-- `exchange_balance`
-- `exchange_position`
-- `last_order_trade_update`
-
-Strategy modes:
-- `strategy_mode: discrete` — canonical baseline
-- `strategy_mode: realtime` — event-driven evaluation on a realtime-grade `market_events.jsonl` built from history or captured live
-
-Execution modes:
-- `execution_mode: simulated` — strategy fills/balance are simulated by the engine
-- `execution_mode: observed` — balance and position are taken from `account_balance` / `position_snapshot` events; requires `backtest_input_mode: market_event_stream`
-
-To replay from an existing tape, set in `config/backtest.yaml`:
-
-```yaml
-backtest_input_mode: discrete_tape
-market_tape_input_path: /path/to/market_tape.jsonl
-```
-
-To replay from an existing market event stream:
-
-```yaml
-backtest_input_mode: market_event_stream
-execution_mode: observed
-market_event_input_path: /path/to/market_events.jsonl
-```
-
-That `market_events.jsonl` can come either from:
-- a backtest-generated historical realtime stream
-- or a live bot runtime captured at `runtime/market_events.jsonl`
-
-To build a historical event stream from Binance `aggTrades`:
+Example:
 
 ```yaml
 backtest_input_mode: agg_trade_stream
 strategy_mode: realtime
 execution_mode: simulated
 agg_trade_source: archive
-agg_trade_tick_interval: 1s
+agg_trade_tick_interval: 5s
 ```
 
 Notes:
-- `agg_trade_source: archive` uses Binance public data and automatically fills the latest missing tail through REST when needed
-- `agg_trade_source: rest` is available, but it is practical only for shorter windows
-- `agg_trade_tick_interval` accepts `raw` or any second bucket like `1s`, `5s`, `15s`, `30s`
-- `agg_trade_tick_interval: 1s` is the closest to realtime; `5s` or `15s` are often much more practical for iteration on BTCUSDT
-- raw agg-trade downloads are cached by default under `data/agg_trades/`
-- archive-based `aggTrades` are sharded by UTC day under `data/agg_trades/<symbol>/archive_daily/`, which makes overlapping `last N days` runs reuse the same days efficiently
-- older whole-window cache files are still accepted as a bootstrap source and are automatically split into daily shards when reused
-- control this with `agg_trade_cache_enabled` and `agg_trade_cache_dir`
+- `archive` is the main long-range source
+- `rest` is mostly useful for short windows or the latest missing tail
+- `agg_trade_tick_interval` supports `raw`, `1s`, `5s`, `15s`, `30s`, `60s`, ...
+- raw archive data is cached under `data/agg_trades`
+- archive cache is sharded per UTC day under `data/agg_trades/<symbol>/archive_daily`
 
-### Compare multiple backtests
+## Compare Runs and Sieves
 
-Run a scenario matrix from `config/compare.yaml`:
+Run a compare matrix:
 
 ```bash
 python -m backtest.compare
 ```
 
-By default it:
-- loads `config/compare.yaml`
-- uses `config/backtest.yaml` as the base config
-- applies scenario-specific overrides
-- runs each scenario in its own isolated directory under `runtime/compare/<timestamp>/scenarios/`
-- can run scenarios in parallel via separate worker processes with `compare_parallel` / `compare_max_workers`
+Compare runs:
+- use `config/backtest.yaml` as a base
+- apply scenario overrides
+- store one artifact set per scenario under `runtime/compare/<run_id>/scenarios/`
+- can run scenarios in parallel worker processes
 
-Compare outputs include:
+Main compare artifacts:
 - `compare_summary.json`
 - `compare_runs.jsonl`
 - `compare_table.md`
-- `compare_config.resolved.yaml`
-- one resolved backtest config and full artifact set per scenario
+- `compare_stage_decisions.json`
+- `compare_sieves_summary.json`
+- `compare_sieves_table.md`
 
-Typical compare use cases:
-- `discrete` vs `realtime`
-- `5s` vs `30s`
-- different `execution_mode`
-- fixed-window benchmarks with the same symbol and params
+Current compare flow also supports multi-stage sieve screening:
+- `month`
+- `quarter`
+- `half_year`
 
-### Replay a canonical event log
+Candidates that fail an earlier stage are skipped for later stages.
+
+### Generate large candidate matrices
 
 ```bash
-python -m backtest.replay /path/to/event_history.jsonl --runtime-mode backtest --strategy-mode discrete
+python -m backtest.generate_compare_candidates \
+  --compare-template config/compare.yaml \
+  --scenario-template-name realtime-30d-5s-closed \
+  --param-grid config/param_grid.yaml \
+  --output /tmp/scrooge.compare.generated.yaml \
+  --candidate-prefix candidate
 ```
 
-### Parameter optimization
+This clones one scenario from `config/compare.yaml`, expands the parameter grid from `config/param_grid.yaml`, and writes a generated compare config you can run with:
+
+```bash
+SCROOGE_COMPARE_CONFIG_PATH=/tmp/scrooge.compare.generated.yaml python -m backtest.compare
+```
+
+## Optimization
+
+Run optimizer:
 
 ```bash
 python -m backtest.optimize
 ```
 
 The optimizer reads:
-- `config/param_grid.yaml`
+- [config/param_grid.yaml](config/param_grid.yaml)
 
-### Docker / Compose
+## Reporting
 
-For current compose-based deploy flow, profiles, and runtime model, see:
+Backtests can emit unified run reports from [backtest/reporting.py](backtest/reporting.py).
+
+When reporting is enabled, outputs are written alongside the run artifacts:
+- `report.json`
+- `report.html` when `enable_plot: true`
+
+Current report surface includes:
+- overview chart
+- trade diagnostics
+- monthly returns heatmap
+- drawdown diagnostics
+- Monte Carlo summary
+- rolling-window distribution
+- rolling-window timeline
+- yearly breakdown
+- collapsible trade history
+
+## Docker / Compose
+
+For the compose deploy model, live profile, backtest profile, runtime volumes, and update flow, see:
 - [DEPLOY_DOCKER.md](DEPLOY_DOCKER.md)
 
-## Strategy Outline
+API details:
+- [api/README.md](api/README.md)
 
-Scrooge currently runs a multi-timeframe discrete strategy:
-- entries are evaluated from the `small` frame with `medium` and `big` filters
-- stop loss and take profit are ATR-based
-- trailing protection can activate after price moves beyond the base target
-- state, trade history, balance history, UI log, and canonical event history are persisted
+Frontend details:
+- [frontend/README.md](frontend/README.md)
 
-The longer-term direction of the project is:
-- keep `discrete` mode as the stable baseline
-- build toward shared-core replay/backtest infrastructure
-- later add a separate `realtime` strategy mode without losing the ability to compare it against the discrete baseline
+## Current Architecture Summary
+
+Scrooge is no longer just a discrete minute-polling bot.
+
+The project now has:
+- a realtime live path driven by exchange events
+- a historical realtime replay path driven by stored or reconstructed `market_events.jsonl`
+- a shared engine for live and replay execution
+- a control plane that talks to the bot through queued commands
+- a reporting/compare workflow for tuning and validation
+
+The main practical split is now:
+- `5s` replay for research and tuning
+- `1s` replay for higher-fidelity validation
 
 ## Disclaimer
 
-Scrooge is provided for educational and research purposes only.  
-Cryptocurrency trading involves substantial risk and may result in total capital loss.  
+Scrooge is provided for educational and research purposes only.
+Cryptocurrency trading involves substantial risk and may result in total capital loss.
 Use this software at your own discretion.
 
 ## License
 
 MIT License
-
-
-## Philosophy of Scrooge
-
-Scrooge is not human — and that’s his greatest strength.
-He does not hope, fear, hesitate, or overthink.
-Where humans trade with emotion, Scrooge trades with mathematics.
-
-He sees the market as a field of probabilities, not possibilities.
-He doesn’t chase euphoria or revenge after loss.
-Every position is just data, every outcome a statistical event.
-
-While traders battle psychology, Scrooge operates in logic.
-He never over-leverages from greed, never panics on a red candle.
-He acts only when signals align, exits only when math demands it.
-
-Scrooge represents the elimination of emotion and the automation of discipline.
-His only loyalty is to the algorithm — consistent, adaptive, and entirely emotionless.
