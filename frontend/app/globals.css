@@ -2945,16 +2945,31 @@ pre {
   }
 
   .trade-history-toolbar {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "indicator indicator"
+      "later earlier";
     gap: 0.5rem;
   }
 
+  .trade-history-summary {
+    padding: 0.78rem 0.9rem;
+  }
+
+  .trade-history-summary-copy {
+    display: none;
+  }
+
+  .trade-history-summary-main {
+    gap: 0;
+  }
+
   .trade-history-nav-button:first-of-type {
-    order: 1;
+    grid-area: later;
   }
 
   .trade-history-page-indicator {
-    order: 0;
+    grid-area: indicator;
     text-align: center;
   }
 
@@ -2965,7 +2980,7 @@ pre {
   }
 
   .trade-history-nav-button:last-of-type {
-    order: 2;
+    grid-area: earlier;
   }
 
   .config-toolbar {

@@ -98,6 +98,7 @@ type LiveOpenTradeInfo = {
   entry_time: string;
   unrealized_pnl: number | null;
   unrealized_pnl_pct: number | null;
+  roi_pct: number | null;
 };
 
 type LiveTrailingState = {
@@ -262,8 +263,8 @@ function buildLivePriceAnnotations(
   const tone = resolveLivePriceTone(openTrade.unrealized_pnl);
   const color = resolveLivePriceColor(tone);
   const pnlText = formatSignedUsd(openTrade.unrealized_pnl);
-  const pnlPctText = formatSignedPercent(openTrade.unrealized_pnl_pct);
-  const text = pnlPctText ? `${pnlText}  ${pnlPctText}` : pnlText;
+  const roiText = formatSignedPercent(openTrade.roi_pct ?? openTrade.unrealized_pnl_pct);
+  const text = roiText ? `${pnlText}  ROI ${roiText}` : pnlText;
 
   return [
     {
