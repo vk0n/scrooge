@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
-import { buildContractParagraphs, type EditableConfig } from "../../lib/contract";
+import { buildContractParagraphs, type ContractParagraph, type EditableConfig } from "../../lib/contract";
 import { formatDateTimeEu } from "../../lib/datetime";
 
 type StatusPayload = {
@@ -91,6 +91,35 @@ type RawConfigResponse = {
   path: string;
 };
 
+type TradeHistoryItem = {
+  side: PositionSide;
+  size: number | null;
+  entry: number | null;
+  sl: number | null;
+  tp: number | null;
+  liq_price?: number | null;
+  trail_active?: boolean | null;
+  trail_price?: number | null;
+  time?: string | null;
+  entry_time: string | null;
+  exit: number | null;
+  exit_time: string | null;
+  exit_reason: string | null;
+  net_pnl: number | null;
+  gross_pnl?: number | null;
+  fee: number | null;
+};
+
+type TradeHistoryResponse = {
+  path: string;
+  requested_limit: number | null;
+  lookback_days_applied: number | null;
+  total_trades: number;
+  returned_trades: number;
+  trades: TradeHistoryItem[];
+  warnings: string[];
+};
+
 type SaveRawConfigResponse = {
   updated: boolean;
   restart_required: boolean;
@@ -103,6 +132,9 @@ type SaveRawConfigResponse = {
 const POLL_MS = 60000;
 const WS_RECONNECT_MS = 5000;
 const COMMAND_POLL_MS = 2000;
+const TRADE_HISTORY_PAGE_SIZE = 3;
+const TRADE_HISTORY_LOOKBACK_DAYS = 90;
+const TRADE_HISTORY_LOOKBACK_LABEL = "last 3 months";
 const COMMON_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "EUR", "TRY", "USD"];
 
 function formatNumberValue(
@@ -455,6 +487,112 @@ function formatPercent(value: number | null): string {
   return "0.00%";
 }
 
+function parseTradeTimestamp(value: string | null | undefined): number | null {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(" ", "T");
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatTradeDuration(entryTime: string | null | undefined, exitTime: string | null | undefined): string {
+  const entryTimestamp = parseTradeTimestamp(entryTime);
+  const exitTimestamp = parseTradeTimestamp(exitTime);
+  if (entryTimestamp === null || exitTimestamp === null || exitTimestamp <= entryTimestamp) {
+    return "N/A";
+  }
+
+  const durationSeconds = Math.round((exitTimestamp - entryTimestamp) / 1000);
+  const durationMinutes = Math.floor(durationSeconds / 60);
+  const days = Math.floor(durationMinutes / 1440);
+  const hours = Math.floor((durationMinutes % 1440) / 60);
+  const minutes = durationMinutes % 60;
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${Math.max(1, minutes)}m`;
+}
+
+function tradeHistoryToneClass(netPnl: number | null): string {
+  if (netPnl === null || !Number.isFinite(netPnl)) {
+    return "trade-history-item trade-history-item-neutral";
+  }
+  if (netPnl > 0) {
+    return "trade-history-item trade-history-item-positive";
+  }
+  if (netPnl < 0) {
+    return "trade-history-item trade-history-item-negative";
+  }
+  return "trade-history-item trade-history-item-neutral";
+}
+
+function tradeHistoryPnlPillClass(netPnl: number | null): string {
+  if (netPnl === null || !Number.isFinite(netPnl)) {
+    return "trade-history-pnl trade-history-pnl-neutral";
+  }
+  if (netPnl > 0) {
+    return "trade-history-pnl trade-history-pnl-positive";
+  }
+  if (netPnl < 0) {
+    return "trade-history-pnl trade-history-pnl-negative";
+  }
+  return "trade-history-pnl trade-history-pnl-neutral";
+}
+
+function formatSignedUsd(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  const absolute = formatNumberValue(Math.abs(value), {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+  if (value > 0) {
+    return `+$${absolute}`;
+  }
+  if (value < 0) {
+    return `-$${absolute}`;
+  }
+  return "$0.00";
+}
+
+function formatExitReason(value: string | null | undefined): string {
+  if (!value || typeof value !== "string") {
+    return "N/A";
+  }
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function contractParagraphToPlainText(paragraph: ContractParagraph): string {
+  return paragraph
+    .map((segment) => ("display" in segment ? segment.display : segment.text))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildContractTeaser(paragraphs: ContractParagraph[]): string {
+  const firstParagraph = paragraphs[0];
+  if (!firstParagraph) {
+    return "No covenant is loaded yet.";
+  }
+
+  const firstText = contractParagraphToPlainText(firstParagraph);
+  if (firstText.length <= 152) {
+    return firstText;
+  }
+  return `${firstText.slice(0, 149).trimEnd()}...`;
+}
+
 type TargetPnlPreview = {
   pnlUsd: number;
   tone: "positive" | "negative" | "neutral";
@@ -557,6 +695,12 @@ function DashboardContent(): JSX.Element {
   const [configError, setConfigError] = useState<string | null>(null);
   const [configInfo, setConfigInfo] = useState<string | null>(null);
   const [positionExpanded, setPositionExpanded] = useState<boolean>(false);
+  const [tradeHistory, setTradeHistory] = useState<TradeHistoryItem[]>([]);
+  const [tradeHistoryError, setTradeHistoryError] = useState<string | null>(null);
+  const [tradeHistoryLoading, setTradeHistoryLoading] = useState<boolean>(true);
+  const [tradeHistoryPage, setTradeHistoryPage] = useState<number>(0);
+  const [tradeHistoryTotal, setTradeHistoryTotal] = useState<number>(0);
+  const [contractExpanded, setContractExpanded] = useState<boolean>(false);
 
   async function loadStatus(silent = false): Promise<void> {
     if (!silent) {
@@ -571,6 +715,26 @@ function DashboardContent(): JSX.Element {
     } finally {
       if (!silent) {
         setLoading(false);
+      }
+    }
+  }
+
+  async function loadTradeHistory(silent = false): Promise<void> {
+    if (!silent) {
+      setTradeHistoryLoading(true);
+    }
+    try {
+      const payload = await fetchApi<TradeHistoryResponse>(
+        `/api/history/trades?lookback_days=${TRADE_HISTORY_LOOKBACK_DAYS}`
+      );
+      setTradeHistory(payload.trades);
+      setTradeHistoryTotal(payload.total_trades);
+      setTradeHistoryError(null);
+    } catch (err) {
+      setTradeHistoryError(err instanceof Error ? err.message : "Failed to load trade history");
+    } finally {
+      if (!silent) {
+        setTradeHistoryLoading(false);
       }
     }
   }
@@ -763,6 +927,22 @@ function DashboardContent(): JSX.Element {
   }, []);
 
   useEffect((): (() => void) => {
+    void loadTradeHistory(false);
+    const intervalId = window.setInterval(() => {
+      void loadTradeHistory(true);
+    }, POLL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  useEffect(() => {
+    const maxPageIndex = Math.max(0, Math.ceil(tradeHistory.length / TRADE_HISTORY_PAGE_SIZE) - 1);
+    setTradeHistoryPage((currentPage) => Math.min(currentPage, maxPageIndex));
+  }, [tradeHistory.length]);
+
+  useEffect((): (() => void) => {
     void loadStatus(false);
     if (wsConnected) {
       return () => undefined;
@@ -807,6 +987,7 @@ function DashboardContent(): JSX.Element {
     }
     if (commandStatus.status === "completed") {
       void loadStatus(true);
+      void loadTradeHistory(true);
     }
   }, [commandStatus]);
 
@@ -827,6 +1008,13 @@ function DashboardContent(): JSX.Element {
   const botStatus = data?.bot_status ?? null;
   const tradeStatus = data?.trade_status ?? null;
   const contractParagraphs = editableConfig ? buildContractParagraphs(editableConfig) : [];
+  const contractTeaser = buildContractTeaser(contractParagraphs);
+  const tradeHistoryPageCount = Math.max(1, Math.ceil(tradeHistory.length / TRADE_HISTORY_PAGE_SIZE));
+  const tradeHistoryPageIndex = Math.min(tradeHistoryPage, tradeHistoryPageCount - 1);
+  const pagedTrades = tradeHistory.slice(
+    tradeHistoryPageIndex * TRADE_HISTORY_PAGE_SIZE,
+    tradeHistoryPageIndex * TRADE_HISTORY_PAGE_SIZE + TRADE_HISTORY_PAGE_SIZE
+  );
   const positionSummaryText = tradeSummaryText(tradeStatus);
   const positionSummaryPhraseClass = tradeSummaryPhraseClass(tradeStatus);
   const positionUpnlBadgeText = positionSummaryBadgeText(hasOpenPosition, roiPercent);
@@ -1214,6 +1402,132 @@ function DashboardContent(): JSX.Element {
               {busyAction ? <span className="dialog-scrooge dialog-scrooge-compact">Executing {busyAction}...</span> : null}
             </div>
           </div>
+          <p className="dialog-scrooge">My previous trades:</p>
+          <div className="section-block">
+            {tradeHistoryLoading ? (
+              <p className="dialog-scrooge dialog-scrooge-compact">Opening the ledger...</p>
+            ) : tradeHistoryError ? (
+              <p className="dialog-scrooge dialog-scrooge-error">{tradeHistoryError}</p>
+            ) : tradeHistory.length === 0 ? (
+              <div className="trade-history-empty-sheet">
+                No closed trades. I have not sealed any bargains to recount yet.
+              </div>
+            ) : (
+              <div className="trade-history-stack">
+                {pagedTrades.map((trade, index) => {
+                  const isPositive = typeof trade.net_pnl === "number" && trade.net_pnl > 0;
+                  const isNegative = typeof trade.net_pnl === "number" && trade.net_pnl < 0;
+                  const sideClass = positionSideBadgeClass(trade.side);
+                  const sideLabel = formatPositionSide(trade.side);
+                  const summaryTime = formatDateTimeEu(trade.exit_time ?? trade.entry_time ?? trade.time ?? null);
+                  const durationLabel = formatTradeDuration(trade.entry_time ?? trade.time ?? null, trade.exit_time);
+
+                  return (
+                    <details
+                      key={`recent-trade-${index}-${trade.entry_time ?? "na"}-${trade.exit_time ?? "na"}`}
+                      className={tradeHistoryToneClass(trade.net_pnl)}
+                    >
+                      <summary className="trade-history-summary">
+                        <span className="trade-history-summary-main">
+                          <span className={`trade-history-side ${sideClass}`}>{sideLabel}</span>
+                          <span className="trade-history-summary-copy">
+                            <span className="trade-history-summary-title">
+                              {formatExitReason(trade.exit_reason)} at {formatPrice(trade.exit)}
+                            </span>
+                            <span className="trade-history-summary-meta">
+                              {summaryTime} • Entry {formatPrice(trade.entry)}
+                            </span>
+                          </span>
+                        </span>
+                        <span className={tradeHistoryPnlPillClass(trade.net_pnl)}>{formatSignedUsd(trade.net_pnl)}</span>
+                      </summary>
+                      <div className="trade-history-body">
+                        <div className="trade-history-detail-grid">
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Entry</span>
+                            <strong>{formatPrice(trade.entry)}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Exit</span>
+                            <strong>{formatPrice(trade.exit)}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Opened</span>
+                            <strong>{formatDateTimeEu(trade.entry_time ?? trade.time ?? null)}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Closed</span>
+                            <strong>{summaryTime}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Duration</span>
+                            <strong>{durationLabel}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Size</span>
+                            <strong>{formatAssetAmount(trade.size, data?.symbol)}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Fee</span>
+                            <strong>{formatUsd(trade.fee)}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Exit Reason</span>
+                            <strong>{formatExitReason(trade.exit_reason)}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Safety Net</span>
+                            <strong>{formatPrice(trade.sl)}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Treasure Mark</span>
+                            <strong>{formatPrice(trade.tp)}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Tail Guard</span>
+                            <strong>{trade.trail_active ? "Armed" : "Off"}</strong>
+                          </div>
+                          <div className="trade-history-detail">
+                            <span className="trade-history-detail-label">Outcome</span>
+                            <strong className={isPositive ? "value-positive" : isNegative ? "value-negative" : "value-neutral"}>
+                              {formatSignedUsd(trade.net_pnl)}
+                            </strong>
+                          </div>
+                        </div>
+                      </div>
+                    </details>
+                  );
+                })}
+                {tradeHistory.length > TRADE_HISTORY_PAGE_SIZE ? (
+                  <div className="toolbar trade-history-toolbar">
+                    <button
+                      type="button"
+                      className="dialog-user-btn trade-history-nav-button"
+                      onClick={() => setTradeHistoryPage((currentPage) => Math.max(0, currentPage - 1))}
+                      disabled={tradeHistoryPageIndex === 0}
+                    >
+                      Later
+                    </button>
+                    <span className="trade-history-page-indicator">
+                      Showing {tradeHistoryPageIndex * TRADE_HISTORY_PAGE_SIZE + 1}-
+                      {Math.min((tradeHistoryPageIndex + 1) * TRADE_HISTORY_PAGE_SIZE, tradeHistory.length)} of{" "}
+                      {tradeHistoryTotal} for {TRADE_HISTORY_LOOKBACK_LABEL}
+                    </span>
+                    <button
+                      type="button"
+                      className="dialog-user-btn trade-history-nav-button"
+                      onClick={() =>
+                        setTradeHistoryPage((currentPage) => Math.min(tradeHistoryPageCount - 1, currentPage + 1))
+                      }
+                      disabled={tradeHistoryPageIndex >= tradeHistoryPageCount - 1}
+                    >
+                      Earlier
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
           <p className="dialog-scrooge">My contract:</p>
           <div className="section-block">
             {configLoading || !editableConfig ? (
@@ -1234,28 +1548,55 @@ function DashboardContent(): JSX.Element {
                 </label>
               </div>
             ) : (
-              <div className="contract-sheet" aria-label="My contract">
-                {contractParagraphs.map((paragraph, paragraphIndex) => (
-                  <p key={`contract-paragraph-${paragraphIndex}`}>
-                    {paragraph.map((segment, segmentIndex) =>
-                      segment.kind === "value" ? (
-                        <span
-                          key={`contract-segment-${paragraphIndex}-${segmentIndex}`}
-                          className="contract-value"
-                          title={segment.path}
-                        >
-                          {segment.display}
-                        </span>
-                      ) : segment.kind === "term" ? (
-                        <span key={`contract-segment-${paragraphIndex}-${segmentIndex}`} className="contract-term">
-                          {segment.text}
-                        </span>
-                      ) : (
-                        <span key={`contract-segment-${paragraphIndex}-${segmentIndex}`}>{segment.text}</span>
-                      )
-                    )}
-                  </p>
-                ))}
+              <div className={`contract-scroll${contractExpanded ? " contract-scroll-open" : ""}`}>
+                <button
+                  type="button"
+                  className="contract-scroll-toggle"
+                  onClick={() => setContractExpanded((current) => !current)}
+                  aria-expanded={contractExpanded}
+                  aria-controls="contract-scroll-body"
+                >
+                  <span className="contract-scroll-toggle-copy">
+                    <span className="contract-scroll-toggle-label">
+                      {contractExpanded ? "Roll the parchment back up" : "Unroll the parchment"}
+                    </span>
+                    <span className="contract-scroll-toggle-teaser">
+                      {contractExpanded
+                        ? `${contractParagraphs.length} clauses are open for inspection.`
+                        : contractTeaser}
+                    </span>
+                  </span>
+                  <span className="contract-scroll-toggle-icon" aria-hidden="true">
+                    ▾
+                  </span>
+                </button>
+                <div className="contract-scroll-body-shell" id="contract-scroll-body">
+                  <div className="contract-scroll-body">
+                    <div className="contract-sheet" aria-label="My contract">
+                      {contractParagraphs.map((paragraph, paragraphIndex) => (
+                        <p key={`contract-paragraph-${paragraphIndex}`}>
+                          {paragraph.map((segment, segmentIndex) =>
+                            segment.kind === "value" ? (
+                              <span
+                                key={`contract-segment-${paragraphIndex}-${segmentIndex}`}
+                                className="contract-value"
+                                title={segment.path}
+                              >
+                                {segment.display}
+                              </span>
+                            ) : segment.kind === "term" ? (
+                              <span key={`contract-segment-${paragraphIndex}-${segmentIndex}`} className="contract-term">
+                                {segment.text}
+                              </span>
+                            ) : (
+                              <span key={`contract-segment-${paragraphIndex}-${segmentIndex}`}>{segment.text}</span>
+                            )
+                          )}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
             <div className="toolbar config-toolbar">
@@ -1289,6 +1630,7 @@ function DashboardContent(): JSX.Element {
                   onClick={() => {
                     setRawConfigDraft(rawConfigText);
                     setContractEditing(true);
+                    setContractExpanded(true);
                     setConfigError(null);
                     setConfigInfo(null);
                   }}

@@ -96,6 +96,8 @@ type LiveOpenTradeInfo = {
   trail_active: boolean;
   trail_price: number | null;
   entry_time: string;
+  unrealized_pnl: number | null;
+  unrealized_pnl_pct: number | null;
 };
 
 type LiveTrailingState = {
@@ -148,7 +150,52 @@ const CHART_THEME = {
   rsiUpper: "#ef4444",
   rsiLower: "#22c55e",
   livePrice: "#d8dee8",
+  livePricePositive: "#34d399",
+  livePriceNegative: "#fb7185",
 } as const;
+
+function formatSignedUsd(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "PnL N/A";
+  }
+  const absValue = Math.abs(value);
+  const formatted = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(absValue);
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `PnL ${sign}$${formatted}`;
+}
+
+function formatSignedPercent(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  const absValue = Math.abs(value);
+  const formatted = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(absValue);
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${formatted}%`;
+}
+
+function resolveLivePriceTone(unrealizedPnl: number | null | undefined): "neutral" | "positive" | "negative" {
+  if (typeof unrealizedPnl !== "number" || !Number.isFinite(unrealizedPnl) || unrealizedPnl === 0) {
+    return "neutral";
+  }
+  return unrealizedPnl > 0 ? "positive" : "negative";
+}
+
+function resolveLivePriceColor(tone: "neutral" | "positive" | "negative"): string {
+  if (tone === "positive") {
+    return CHART_THEME.livePricePositive;
+  }
+  if (tone === "negative") {
+    return CHART_THEME.livePriceNegative;
+  }
+  return CHART_THEME.livePrice;
+}
 
 function getTradeTriangleSymbol(side?: string | null): "triangle-up" | "triangle-down" {
   return String(side || "").trim().toLowerCase() === "short" ? "triangle-down" : "triangle-up";
@@ -168,7 +215,8 @@ function buildTradeEntryMarker(side: string | null | undefined, size: number): {
 
 function buildCurrentLevelShapes(
   levels: Array<{ type: string; price: number }>,
-  currentPrice: number | null
+  currentPrice: number | null,
+  currentPriceColor: string = CHART_THEME.livePrice
 ): Array<Record<string, unknown>> {
   const shapes: Array<Record<string, unknown>> = levels.map((level) => ({
     type: "line",
@@ -193,7 +241,7 @@ function buildCurrentLevelShapes(
       y0: currentPrice,
       y1: currentPrice,
       line: {
-        color: CHART_THEME.livePrice,
+        color: currentPriceColor,
         width: 1,
         dash: "dot",
       },
@@ -201,6 +249,49 @@ function buildCurrentLevelShapes(
   }
 
   return shapes;
+}
+
+function buildLivePriceAnnotations(
+  currentPrice: number | null,
+  openTrade: LiveOpenTradeInfo | null | undefined
+): Array<Record<string, unknown>> {
+  if (typeof currentPrice !== "number" || !Number.isFinite(currentPrice) || !openTrade) {
+    return [];
+  }
+
+  const tone = resolveLivePriceTone(openTrade.unrealized_pnl);
+  const color = resolveLivePriceColor(tone);
+  const pnlText = formatSignedUsd(openTrade.unrealized_pnl);
+  const pnlPctText = formatSignedPercent(openTrade.unrealized_pnl_pct);
+  const text = pnlPctText ? `${pnlText}  ${pnlPctText}` : pnlText;
+
+  return [
+    {
+      xref: "paper",
+      x: 0,
+      xanchor: "left",
+      xshift: 10,
+      yref: "y",
+      y: currentPrice,
+      yanchor: "middle",
+      text,
+      showarrow: false,
+      align: "left",
+      font: {
+        color: tone === "neutral" ? CHART_THEME.text : "#f4fbff",
+        size: 11,
+      },
+      bordercolor: color,
+      borderwidth: 1,
+      borderpad: 5,
+      bgcolor:
+        tone === "positive"
+          ? "rgba(20, 62, 44, 0.92)"
+          : tone === "negative"
+            ? "rgba(77, 24, 30, 0.92)"
+            : "rgba(25, 32, 44, 0.9)",
+    },
+  ];
 }
 
 function resolveLiveLevels(data: ChartPayload | null, liveStatus: LiveStatusPayload | null): Array<{ type: string; price: number }> | null {
@@ -1065,13 +1156,22 @@ function ChartContent(): JSX.Element {
         return;
       }
 
-      const liveCurrentPrice =
-        liveStatus?.symbol?.trim().toUpperCase() === data.symbol.trim().toUpperCase()
-          ? liveStatus.last_price ?? null
-          : null;
-      const activeLevels = resolveLiveLevels(data, liveStatus) ?? data.current_levels;
-      const priceShapes = buildCurrentLevelShapes(activeLevels, liveCurrentPrice);
-      await Plotly.relayout(priceChartRef.current, { shapes: priceShapes });
+      const liveSymbol = liveStatus?.symbol?.trim().toUpperCase();
+      const chartSymbol = data.symbol.trim().toUpperCase();
+      const liveSymbolMatchesChart = liveSymbol === chartSymbol;
+      const liveCurrentPrice = liveSymbolMatchesChart ? liveStatus?.last_price ?? null : null;
+      const liveOpenTrade = liveSymbolMatchesChart ? liveStatus?.open_trade_info ?? null : null;
+      const priceTone = resolveLivePriceTone(liveOpenTrade?.unrealized_pnl);
+      const priceShapes = buildCurrentLevelShapes(
+        resolveLiveLevels(data, liveStatus) ?? data.current_levels,
+        liveCurrentPrice,
+        resolveLivePriceColor(priceTone)
+      );
+      const priceAnnotations = buildLivePriceAnnotations(liveCurrentPrice, liveOpenTrade);
+      await Plotly.relayout(priceChartRef.current, {
+        shapes: priceShapes,
+        annotations: priceAnnotations,
+      });
     };
 
     void applyLiveOverlay();

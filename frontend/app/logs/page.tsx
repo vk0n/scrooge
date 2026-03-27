@@ -14,9 +14,68 @@ type LogsPayload = {
   warnings?: string[];
 };
 
+type ParsedLogLine = {
+  raw: string;
+  timestamp: string | null;
+  message: string;
+  tone: "neutral" | "open" | "positive" | "negative";
+  resultText: string | null;
+  messageLead: string;
+};
+
 const DEFAULT_LINES = 200;
 const POLL_MS = 60000;
 const WS_RECONNECT_MS = 5000;
+
+function classifyLogTone(message: string): ParsedLogLine["tone"] {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) {
+    return "neutral";
+  }
+  if (normalized.includes("i have opened ")) {
+    return "open";
+  }
+  if (normalized.includes("has been liquidated")) {
+    return "negative";
+  }
+  if (normalized.includes("i have closed ")) {
+    if (normalized.includes("result: +")) {
+      return "positive";
+    }
+    if (normalized.includes("result: -")) {
+      return "negative";
+    }
+  }
+  return "neutral";
+}
+
+function parseLogLine(line: string): ParsedLogLine {
+  const match = /^\[([^\]]+)\]\s*(.*)$/.exec(line);
+  const baseMessage = match ? (match[2] ?? "") : line;
+  const resultMatch = /(.*?)(Result:\s*[^\n]+)$/i.exec(baseMessage);
+  const messageLead = resultMatch ? (resultMatch[1] ?? "").trimEnd() : baseMessage;
+  const resultText = resultMatch ? (resultMatch[2] ?? null) : null;
+  if (!match) {
+    return {
+      raw: line,
+      timestamp: null,
+      message: baseMessage,
+      tone: classifyLogTone(baseMessage),
+      resultText,
+      messageLead,
+    };
+  }
+
+  const message = baseMessage;
+  return {
+    raw: line,
+    timestamp: match[1] ?? null,
+    message,
+    tone: classifyLogTone(message),
+    resultText,
+    messageLead,
+  };
+}
 
 function LogsContent(): JSX.Element {
   const [data, setData] = useState<LogsPayload | null>(null);
@@ -128,6 +187,7 @@ function LogsContent(): JSX.Element {
   }, [autoRefresh, lineCount, wsConnected]);
 
   const displayedLines = data ? (newestFirst ? [...data.lines].reverse() : data.lines) : [];
+  const parsedLines = displayedLines.map(parseLogLine);
 
   return (
     <section className="panel page-shell">
@@ -201,7 +261,22 @@ function LogsContent(): JSX.Element {
               ))}
             </ul>
           ) : null}
-          <pre className={`log-box${newestFirst ? " log-box-newest-first" : ""}`}>{displayedLines.join("\n")}</pre>
+          <div className={`log-box log-feed${newestFirst ? " log-box-newest-first" : ""}`}>
+            {parsedLines.map((line, index) => (
+              <article key={`${line.raw}-${index}`} className={`log-line log-line-${line.tone}`}>
+                {line.timestamp ? <span className="log-line-timestamp">[{line.timestamp}]</span> : null}
+                <span className="log-line-message">
+                  {line.messageLead}
+                  {line.resultText ? (
+                    <>
+                      {line.messageLead ? " " : ""}
+                      <span className={`log-line-result log-line-result-${line.tone}`}>{line.resultText}</span>
+                    </>
+                  ) : null}
+                </span>
+              </article>
+            ))}
+          </div>
         </>
       ) : null}
     </section>

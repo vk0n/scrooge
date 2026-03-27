@@ -860,6 +860,106 @@ pre {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
+.contract-scroll {
+  display: grid;
+  gap: 0.62rem;
+}
+
+.contract-scroll-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.72rem;
+  width: 100%;
+  border: 1px solid rgba(131, 103, 49, 0.36);
+  border-radius: 1rem;
+  padding: 0.78rem 0.92rem;
+  background:
+    radial-gradient(circle at top right, rgba(224, 177, 79, 0.12), transparent 36%),
+    linear-gradient(180deg, rgba(33, 27, 17, 0.94), rgba(19, 16, 11, 0.98));
+  color: #f3e7ca;
+  text-align: left;
+  cursor: pointer;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 235, 192, 0.02),
+    0 14px 32px rgba(7, 7, 10, 0.2);
+  transition:
+    border-color 180ms ease,
+    background 180ms ease,
+    transform 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.contract-scroll-toggle:hover {
+  border-color: rgba(178, 141, 71, 0.46);
+  background:
+    radial-gradient(circle at top right, rgba(238, 194, 99, 0.14), transparent 36%),
+    linear-gradient(180deg, rgba(40, 32, 20, 0.96), rgba(24, 20, 14, 0.99));
+  transform: translateY(-1px);
+}
+
+.contract-scroll-toggle-copy {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.contract-scroll-toggle-label {
+  color: #ffe4a5;
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.contract-scroll-toggle-teaser {
+  color: #eee3cd;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.contract-scroll-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid rgba(181, 144, 72, 0.38);
+  border-radius: 999px;
+  background: rgba(72, 54, 20, 0.26);
+  color: #ffdea0;
+  font-size: 0.92rem;
+  line-height: 1;
+  transform: rotate(-90deg);
+  transition: transform 220ms ease;
+}
+
+.contract-scroll-open .contract-scroll-toggle-icon {
+  transform: rotate(0deg);
+}
+
+.contract-scroll-body-shell {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition:
+    grid-template-rows 280ms ease,
+    opacity 220ms ease;
+  opacity: 0.75;
+}
+
+.contract-scroll-open .contract-scroll-body-shell {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.contract-scroll-body {
+  overflow: hidden;
+}
+
+.contract-scroll-open .contract-sheet {
+  animation: contract-sheet-unroll 260ms ease;
+}
+
 .contract-sheet > p {
   margin: 0;
   color: #dfe6f0;
@@ -931,6 +1031,17 @@ pre {
   font-size: 0.92rem;
   line-height: 1.56;
   font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+}
+
+@keyframes contract-sheet-unroll {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .chart-controls-grid {
@@ -1386,6 +1497,188 @@ pre {
   margin-top: 0.72rem;
   padding-top: 0.74rem;
   border-top: 1px solid rgba(115, 127, 146, 0.24);
+}
+
+.trade-history-stack {
+  display: grid;
+  gap: 0.72rem;
+}
+
+.trade-history-empty-sheet {
+  display: block;
+  border: 1px solid rgba(104, 48, 75, 0.58);
+  border-radius: 8px;
+  padding: 0.38rem 0.72rem;
+  background:
+    linear-gradient(180deg, rgba(46, 17, 34, 0.9), rgba(30, 12, 23, 0.96)),
+    radial-gradient(circle at top right, rgba(112, 30, 58, 0.12), transparent 44%);
+  color: #f8dde8;
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.trade-history-item {
+  border: 1px solid rgba(98, 111, 131, 0.3);
+  border-radius: 1.2rem;
+  background:
+    radial-gradient(circle at top right, rgba(214, 170, 81, 0.06), transparent 38%),
+    linear-gradient(180deg, rgba(18, 21, 28, 0.9) 0%, rgba(12, 15, 21, 0.96) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.02),
+    0 14px 30px rgba(5, 8, 12, 0.26);
+}
+
+.trade-history-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  list-style: none;
+  cursor: pointer;
+  padding: 0.88rem 1rem;
+}
+
+.trade-history-summary::-webkit-details-marker {
+  display: none;
+}
+
+.trade-history-item-positive {
+  border-color: rgba(46, 155, 110, 0.34);
+  background:
+    radial-gradient(circle at top right, rgba(53, 196, 128, 0.08), transparent 36%),
+    linear-gradient(180deg, rgba(18, 28, 24, 0.92) 0%, rgba(12, 18, 16, 0.97) 100%);
+}
+
+.trade-history-item-negative {
+  border-color: rgba(191, 84, 99, 0.34);
+  background:
+    radial-gradient(circle at top right, rgba(205, 90, 105, 0.08), transparent 36%),
+    linear-gradient(180deg, rgba(31, 20, 24, 0.92) 0%, rgba(19, 13, 16, 0.97) 100%);
+}
+
+.trade-history-item-neutral {
+  border-color: rgba(98, 111, 131, 0.3);
+}
+
+.trade-history-summary-main {
+  display: flex;
+  align-items: center;
+  gap: 0.72rem;
+  min-width: 0;
+}
+
+.trade-history-side {
+  min-width: 3.9rem;
+  justify-content: center;
+}
+
+.trade-history-summary-copy {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.trade-history-summary-title {
+  color: #eef3fb;
+  font-size: 0.98rem;
+  line-height: 1.25;
+}
+
+.trade-history-summary-meta {
+  color: #aab4c6;
+  font-size: 0.83rem;
+  line-height: 1.25;
+}
+
+.trade-history-pnl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 6.3rem;
+  border: 1px solid #5b6678;
+  border-radius: 999px;
+  padding: 0.18rem 0.58rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 0.82rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.trade-history-pnl-positive {
+  border-color: rgba(41, 153, 107, 0.72);
+  background: rgba(29, 93, 67, 0.24);
+  color: var(--value-positive-surface);
+}
+
+.trade-history-pnl-negative {
+  border-color: rgba(193, 81, 97, 0.74);
+  background: rgba(101, 29, 43, 0.24);
+  color: var(--value-negative-surface);
+}
+
+.trade-history-pnl-neutral {
+  border-color: rgba(97, 113, 135, 0.56);
+  background: rgba(97, 113, 135, 0.2);
+  color: #dce4f1;
+}
+
+.trade-history-body {
+  display: grid;
+  gap: 0.78rem;
+  padding: 0 1rem 1rem;
+  border-top: 1px solid rgba(115, 127, 146, 0.22);
+}
+
+.trade-history-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.62rem;
+  padding-top: 0.78rem;
+}
+
+.trade-history-detail {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.68rem 0.78rem;
+  border: 1px solid rgba(95, 108, 128, 0.28);
+  border-radius: 0.95rem;
+  background: rgba(13, 16, 22, 0.58);
+}
+
+.trade-history-detail-label {
+  color: #9eabbe;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.trade-history-detail strong {
+  color: #eef3fb;
+  font-weight: 500;
+}
+
+.trade-history-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.72rem;
+  margin-top: 0.12rem;
+}
+
+.trade-history-page-indicator {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  color: #aab4c6;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.trade-history-nav-button {
+  min-width: 7.8rem;
+  justify-content: center;
 }
 
 .trade-pulse-grid {
@@ -1855,6 +2148,93 @@ pre {
   scrollbar-gutter: stable;
 }
 
+.log-feed {
+  display: grid;
+  gap: 0.38rem;
+  padding: 0.34rem;
+  overflow-y: auto;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.72rem;
+  padding: 0.5rem 0.62rem;
+  border: 1px solid rgba(110, 122, 142, 0.16);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(19, 24, 33, 0.9), rgba(13, 17, 24, 0.96));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.015);
+}
+
+.log-line-timestamp {
+  color: #9eb1c8;
+  white-space: nowrap;
+  opacity: 0.92;
+}
+
+.log-line-message {
+  min-width: 0;
+  color: #e6edf6;
+  white-space: pre-wrap;
+}
+
+.log-line-result {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.2rem;
+  padding: 0.08rem 0.38rem;
+  border: 1px solid rgba(140, 151, 170, 0.22);
+  border-radius: 999px;
+  background: rgba(26, 32, 43, 0.58);
+  font-size: 0.95em;
+}
+
+.log-line-result-positive {
+  border-color: rgba(44, 181, 112, 0.34);
+  background: rgba(20, 62, 44, 0.5);
+  color: #bff4dc;
+}
+
+.log-line-result-negative {
+  border-color: rgba(220, 72, 82, 0.34);
+  background: rgba(77, 24, 30, 0.5);
+  color: #ffc2c7;
+}
+
+.log-line-open {
+  border-color: rgba(255, 176, 32, 0.34);
+  background:
+    linear-gradient(180deg, rgba(48, 32, 10, 0.82), rgba(25, 19, 10, 0.94)),
+    radial-gradient(circle at left center, rgba(255, 176, 32, 0.08), transparent 36%);
+}
+
+.log-line-open .log-line-message {
+  color: #ffe0ac;
+}
+
+.log-line-positive {
+  border-color: rgba(44, 181, 112, 0.3);
+  background:
+    linear-gradient(180deg, rgba(15, 40, 29, 0.84), rgba(10, 24, 19, 0.96)),
+    radial-gradient(circle at left center, rgba(52, 211, 153, 0.08), transparent 36%);
+}
+
+.log-line-positive .log-line-message {
+  color: #bff4dc;
+}
+
+.log-line-negative {
+  border-color: rgba(220, 72, 82, 0.3);
+  background:
+    linear-gradient(180deg, rgba(45, 16, 20, 0.84), rgba(25, 11, 14, 0.96)),
+    radial-gradient(circle at left center, rgba(248, 113, 113, 0.08), transparent 36%);
+}
+
+.log-line-negative .log-line-message {
+  color: #ffc2c7;
+}
+
 .log-box-newest-first {
   border-top-color: rgba(57, 151, 113, 0.44);
   box-shadow:
@@ -2188,6 +2568,15 @@ pre {
   .json-box,
   .log-box {
     max-height: 340px;
+  }
+
+  .log-line {
+    grid-template-columns: 1fr;
+    gap: 0.28rem;
+  }
+
+  .log-line-timestamp {
+    white-space: normal;
   }
 
   body {
@@ -2555,11 +2944,54 @@ pre {
     width: 100%;
   }
 
+  .trade-history-toolbar {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+
+  .trade-history-nav-button:first-of-type {
+    order: 1;
+  }
+
+  .trade-history-page-indicator {
+    order: 0;
+    text-align: center;
+  }
+
+  .trade-history-nav-button:last-of-type,
+  .trade-history-nav-button:first-of-type {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .trade-history-nav-button:last-of-type {
+    order: 2;
+  }
+
   .config-toolbar {
     width: 100%;
     margin-left: 0;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.36rem;
+  }
+
+  .contract-scroll-toggle {
+    padding: 0.72rem 0.78rem;
+    gap: 0.62rem;
+  }
+
+  .contract-scroll-toggle-label {
+    font-size: 0.76rem;
+  }
+
+  .contract-scroll-toggle-teaser {
+    font-size: 0.87rem;
+    line-height: 1.45;
+  }
+
+  .contract-scroll-toggle-icon {
+    width: 1.8rem;
+    height: 1.8rem;
   }
 
   .notifications-panel {
