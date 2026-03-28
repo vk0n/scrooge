@@ -1580,6 +1580,10 @@ pre {
   min-width: 0;
 }
 
+.trade-history-summary-closed-mobile {
+  display: none;
+}
+
 .trade-history-summary-title {
   color: #eef3fb;
   font-size: 0.98rem;
@@ -2961,7 +2965,17 @@ pre {
   }
 
   .trade-history-summary-main {
-    gap: 0;
+    gap: 0.55rem;
+  }
+
+  .trade-history-summary-closed-mobile {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    color: #aab4c6;
+    font-size: 0.78rem;
+    line-height: 1.2;
+    white-space: nowrap;
   }
 
   .trade-history-nav-button:first-of-type {

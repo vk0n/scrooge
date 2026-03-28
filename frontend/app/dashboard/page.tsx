@@ -572,6 +572,20 @@ function formatExitReason(value: string | null | undefined): string {
     .join(" ");
 }
 
+function formatDateTimeEuCompact(value: unknown, fallback = "N/A"): string {
+  const formatted = formatDateTimeEu(value, fallback);
+  if (formatted === fallback) {
+    return fallback;
+  }
+
+  const fullMatch = formatted.match(/^(\d{2})\.(\d{2})\.\d{4}\s(\d{2}:\d{2}):\d{2}$/);
+  if (fullMatch) {
+    return `${fullMatch[1]}.${fullMatch[2]} ${fullMatch[3]}`;
+  }
+
+  return formatted.replace(/:\d{2}$/, "");
+}
+
 function contractParagraphToPlainText(paragraph: ContractParagraph): string {
   return paragraph
     .map((segment) => ("display" in segment ? segment.display : segment.text))
@@ -1420,6 +1434,9 @@ function DashboardContent(): JSX.Element {
                   const sideClass = positionSideBadgeClass(trade.side);
                   const sideLabel = formatPositionSide(trade.side);
                   const summaryTime = formatDateTimeEu(trade.exit_time ?? trade.entry_time ?? trade.time ?? null);
+                  const summaryTimeCompact = formatDateTimeEuCompact(
+                    trade.exit_time ?? trade.entry_time ?? trade.time ?? null
+                  );
                   const durationLabel = formatTradeDuration(trade.entry_time ?? trade.time ?? null, trade.exit_time);
 
                   return (
@@ -1430,6 +1447,7 @@ function DashboardContent(): JSX.Element {
                       <summary className="trade-history-summary">
                         <span className="trade-history-summary-main">
                           <span className={`trade-history-side ${sideClass}`}>{sideLabel}</span>
+                          <span className="trade-history-summary-closed-mobile">{summaryTimeCompact}</span>
                           <span className="trade-history-summary-copy">
                             <span className="trade-history-summary-title">
                               {formatExitReason(trade.exit_reason)} at {formatPrice(trade.exit)}
