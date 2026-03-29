@@ -5,6 +5,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any, Callable
 from bot.event_log import emit_event, get_technical_logger
+from core.engine import sanitize_trade_for_history
 
 try:
     import redis
@@ -74,6 +75,9 @@ def _manual_close_trade_pnl(
     exit_price: float | None,
     fee_rate: float | None,
     leverage: float | None,
+    entry_fee_paid: float | None = None,
+    realized_pnl: float | None = None,
+    exit_commission: float | None = None,
 ) -> tuple[float | None, float | None, float | None, float | None]:
     side = str(position.get("side", "")).strip().lower()
     size = _as_float(position.get("size"))
@@ -88,15 +92,20 @@ def _manual_close_trade_pnl(
         return None, None, None, margin_used
 
     position_value = entry_price * size
-    if side == "long":
+    if realized_pnl is not None:
+        gross_pnl = realized_pnl
+    elif side == "long":
         gross_pnl = (exit_price - entry_price) * size
     else:
         gross_pnl = (entry_price - exit_price) * size
 
     fee_total = None
-    fee_rate_value = _as_float(fee_rate)
-    if fee_rate_value is not None and fee_rate_value >= 0:
-        fee_total = position_value * fee_rate_value * 2.0
+    if entry_fee_paid is not None and exit_commission is not None:
+        fee_total = entry_fee_paid + exit_commission
+    else:
+        fee_rate_value = _as_float(fee_rate)
+        if fee_rate_value is not None and fee_rate_value >= 0:
+            fee_total = position_value * fee_rate_value * 2.0
 
     net_pnl = gross_pnl - fee_total if fee_total is not None else gross_pnl
     return net_pnl, gross_pnl, fee_total, margin_used
@@ -214,6 +223,7 @@ def process_pending_commands(
     update_position_fn: Callable[[dict[str, Any], dict[str, Any] | None], None] | None = None,
     update_balance_fn: Callable[[dict[str, Any], float], None] | None = None,
     add_closed_trade_fn: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
+    get_order_execution_summary_fn: Callable[[str, Any], dict[str, Any] | None] | None = None,
     leverage: float | None = None,
     fee_rate: float | None = None,
 ) -> tuple[dict[str, Any], bool]:
@@ -381,6 +391,8 @@ def process_pending_commands(
                 has_exchange_position = isinstance(exchange_position, dict)
                 if not has_local_position and not has_exchange_position:
                     message = "Skipped: no open position to close."
+                elif has_local_position and bool(local_position.get("close_pending")):
+                    message = "Close request already in flight; awaiting exchange confirmation."
                 else:
                     previous_balance = _as_float(state.get("balance"))
                     fallback_exit_price = _as_float(exchange_position.get("markPrice")) if has_exchange_position else None
@@ -388,37 +400,56 @@ def process_pending_commands(
                     if has_exchange_position and order_result is None:
                         raise RuntimeError("Exchange close request did not return order confirmation")
 
-                    if has_local_position and update_position_fn is not None:
-                        update_position_fn(state, None)
-                    elif has_local_position:
-                        state["position"] = None
-                        save_state_fn(state)
-
                     latest_balance = None
                     if get_balance_fn is not None:
                         latest_balance = _as_float(get_balance_fn())
-                        if latest_balance is not None and update_balance_fn is not None:
-                            update_balance_fn(state, latest_balance)
-                        elif latest_balance is not None:
-                            state["balance"] = latest_balance
-                            save_state_fn(state)
 
-                    if has_local_position and add_closed_trade_fn is not None and isinstance(local_position, dict):
+                    if has_local_position and isinstance(local_position, dict):
                         trade_record = dict(local_position)
                         trade_record["exit_reason"] = "manual_close"
                         trade_record["exit_time"] = datetime.now().strftime(TRADE_TIMESTAMP_FORMAT)
+                        execution_summary = (
+                            get_order_execution_summary_fn(symbol, order_result)
+                            if get_order_execution_summary_fn is not None
+                            else None
+                        )
+                        if isinstance(execution_summary, dict) and execution_summary.get("update_time_ms") is not None:
+                            try:
+                                trade_record["exit_time"] = datetime.fromtimestamp(
+                                    int(execution_summary["update_time_ms"]) / 1000
+                                ).strftime(TRADE_TIMESTAMP_FORMAT)
+                            except (TypeError, ValueError, OSError):
+                                pass
                         exit_price = _extract_exit_price(order_result)
+                        if isinstance(execution_summary, dict):
+                            summary_exit_price = _as_float(execution_summary.get("avg_price"))
+                            if summary_exit_price is not None and summary_exit_price > 0:
+                                exit_price = summary_exit_price
                         if exit_price is None:
                             exit_price = fallback_exit_price
                         if exit_price is None:
                             exit_price = _as_float(local_position.get("entry"))
                         if exit_price is not None:
                             trade_record["exit"] = exit_price
+                        entry_fee_paid = _as_float(local_position.get("entry_fee_paid"))
+                        realized_pnl = (
+                            _as_float(execution_summary.get("realized_pnl"))
+                            if isinstance(execution_summary, dict)
+                            else None
+                        )
+                        exit_commission = (
+                            _as_float(execution_summary.get("commission"))
+                            if isinstance(execution_summary, dict)
+                            else None
+                        )
                         computed_net_pnl, computed_gross_pnl, computed_fee_total, margin_used = _manual_close_trade_pnl(
                             local_position,
                             exit_price=exit_price,
                             fee_rate=fee_rate,
                             leverage=leverage,
+                            entry_fee_paid=entry_fee_paid,
+                            realized_pnl=realized_pnl,
+                            exit_commission=exit_commission,
                         )
                         if computed_net_pnl is not None:
                             trade_record["net_pnl"] = computed_net_pnl
@@ -430,25 +461,53 @@ def process_pending_commands(
                             trade_record["fee"] = computed_fee_total
                         if margin_used is not None:
                             trade_record["margin_used"] = margin_used
-                        add_closed_trade_fn(state, trade_record)
-                        emit_event(
-                            code="trade_closed_manual",
-                            category="trade",
-                            ts=event_ts,
-                            level="info",
-                            notify=True,
-                            persist_ui=True,
-                            symbol=symbol,
-                            side=local_position.get("side"),
-                            exit=trade_record.get("exit"),
-                            net_pnl=trade_record.get("net_pnl"),
-                            roi_pct=_ratio_to_percent(
+                        if entry_fee_paid is not None:
+                            trade_record["entry_fee"] = entry_fee_paid
+                        if exit_commission is not None:
+                            trade_record["exit_fee"] = exit_commission
+                        if isinstance(execution_summary, dict):
+                            trade_record["exit_order_id"] = execution_summary.get("order_id")
+                        pending_position = dict(local_position)
+                        pending_position["close_pending"] = True
+                        pending_position["close_requested_at"] = event_ts
+                        pending_position["pending_close_trade"] = sanitize_trade_for_history(trade_record)
+                        pending_position["pending_close_event"] = {
+                            "code": "trade_closed_manual",
+                            "category": "trade",
+                            "level": "info",
+                            "notify": True,
+                            "symbol": symbol,
+                            "side": local_position.get("side"),
+                            "exit": trade_record.get("exit"),
+                            "net_pnl": trade_record.get("net_pnl"),
+                            "roi_pct": _ratio_to_percent(
                                 trade_record.get("net_pnl"),
-                                local_position.get("margin_used"),
+                                trade_record.get("margin_used"),
                             ),
-                        )
+                        }
+                        pending_position["pending_close_event_ts"] = str(trade_record.get("exit_time") or event_ts)
+                        pending_position["pending_close_runtime_mode"] = "live"
+                        pending_position["pending_close_strategy_mode"] = None
+                        if isinstance(execution_summary, dict):
+                            pending_position["pending_close_order_id"] = execution_summary.get("order_id")
+                        state["position"] = pending_position
+                        if latest_balance is not None and update_balance_fn is not None:
+                            update_balance_fn(state, latest_balance)
+                        else:
+                            if latest_balance is not None:
+                                state["balance"] = latest_balance
+                            if update_position_fn is not None:
+                                update_position_fn(state, pending_position)
+                            else:
+                                save_state_fn(state)
+                    else:
+                        if latest_balance is not None and update_balance_fn is not None:
+                            update_balance_fn(state, latest_balance)
+                        elif latest_balance is not None:
+                            state["balance"] = latest_balance
+                            save_state_fn(state)
 
-                    message = "Manual close command executed."
+                    message = "Manual close submitted; awaiting exchange confirmation."
                     if not has_local_position and has_exchange_position:
                         message = "Closed exchange position; local state had no open position."
             else:

@@ -27,6 +27,7 @@ from bot.trade import (
     get_cached_open_position,
     get_cached_position_age_seconds,
     get_open_position,
+    get_order_execution_summary,
     set_leverage,
 )
 from core.event_store import reset_event_store
@@ -425,6 +426,7 @@ def _build_command_kwargs(symbol: str, *, leverage: float, fee_rate: float) -> d
         "update_position_fn": update_position,
         "update_balance_fn": update_balance,
         "add_closed_trade_fn": add_closed_trade,
+        "get_order_execution_summary_fn": get_order_execution_summary,
         "leverage": leverage,
         "fee_rate": fee_rate,
     }

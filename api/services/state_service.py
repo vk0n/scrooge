@@ -155,6 +155,7 @@ def _extract_exchange_position_snapshot(
                 "size": abs(position_amt),
                 "entry": entry_price,
                 "unrealized_pnl": unrealized_pnl,
+                "margin_used": _maybe_float(state_exchange.get("isolated_margin")),
                 "updated_at": _maybe_text(state_exchange.get("updated_at")),
             }
 
@@ -166,6 +167,7 @@ def _extract_exchange_position_snapshot(
             "size": abs(position_amt),
             "entry": _maybe_float(position.get("exchange_entry_price")),
             "unrealized_pnl": _maybe_float(position.get("exchange_unrealized_pnl")),
+            "margin_used": _maybe_float(position.get("exchange_isolated_margin")),
             "updated_at": _maybe_text(position.get("exchange_position_updated_at")),
         }
 
@@ -249,6 +251,8 @@ def resolve_open_trade_info(
         return None
 
     exchange_snapshot = _extract_exchange_position_snapshot(position, state=state)
+    if bool(position.get("open_pending")) and exchange_snapshot is None:
+        return None
 
     side = (
         (exchange_snapshot.get("side") if isinstance(exchange_snapshot, dict) else None)
@@ -282,7 +286,13 @@ def resolve_open_trade_info(
 
     position_notional = abs(size) * entry
     leverage_value = _maybe_float(leverage)
-    margin_used = (position_notional / leverage_value) if leverage_value is not None and leverage_value > 0 else _maybe_float(position.get("margin_used"))
+    margin_used = (
+        (exchange_snapshot.get("margin_used") if isinstance(exchange_snapshot, dict) else None)
+        if isinstance(exchange_snapshot, dict)
+        else None
+    )
+    if margin_used is None:
+        margin_used = (position_notional / leverage_value) if leverage_value is not None and leverage_value > 0 else _maybe_float(position.get("margin_used"))
     unrealized_pnl_pct = _ratio_to_percent(unrealized_pnl, position_notional)
     roi_pct = _ratio_to_percent(unrealized_pnl, margin_used)
     if current_price is not None and current_price > 0:

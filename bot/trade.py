@@ -14,6 +14,20 @@ _cached_balance_updated_at = None
 _cached_positions = None
 _cached_positions_updated_at = None
 
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 def set_client(client):
     global _client
     _client = client
@@ -118,6 +132,137 @@ def get_cached_position_age_seconds(symbol):
     if updated_at is None:
         return None
     return max(0.0, time.time() - updated_at)
+
+
+def get_order_execution_summary(
+    symbol: str,
+    order_response: Any,
+    *,
+    timeout_seconds: float = 2.5,
+    poll_interval_seconds: float = 0.2,
+) -> dict[str, Any] | None:
+    order_id = _as_int(order_response.get("orderId")) if isinstance(order_response, dict) else None
+    if order_id is None:
+        return None
+
+    client = _get_client()
+    symbol_key = str(symbol or "").upper().strip()
+    if not symbol_key:
+        return None
+
+    order_snapshot = dict(order_response) if isinstance(order_response, dict) else {}
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+
+    while time.monotonic() <= deadline:
+        try:
+            latest_order = client.futures_get_order(symbol=symbol_key, orderId=order_id)
+        except Exception as exc:  # noqa: BLE001
+            technical_logger.warning(
+                "order_execution_summary_order_fetch_failed symbol=%s order_id=%s error=%s",
+                symbol_key,
+                order_id,
+                exc,
+            )
+            latest_order = None
+
+        if isinstance(latest_order, dict):
+            order_snapshot = latest_order
+
+        status = str(order_snapshot.get("status", "")).strip().upper()
+        executed_qty = _as_float(order_snapshot.get("executedQty"))
+        if status == "FILLED" or (executed_qty is not None and executed_qty > 0):
+            break
+        time.sleep(max(0.05, poll_interval_seconds))
+
+    trades: list[dict[str, Any]] = []
+    while time.monotonic() <= deadline and not trades:
+        try:
+            raw_trades = client.futures_account_trades(symbol=symbol_key, orderId=order_id)
+            if isinstance(raw_trades, list):
+                trades = [item for item in raw_trades if isinstance(item, dict)]
+        except Exception as exc:  # noqa: BLE001
+            technical_logger.warning(
+                "order_execution_summary_trades_fetch_failed symbol=%s order_id=%s error=%s",
+                symbol_key,
+                order_id,
+                exc,
+            )
+            break
+        if trades:
+            break
+        time.sleep(max(0.05, poll_interval_seconds))
+
+    executed_qty = _as_float(order_snapshot.get("executedQty"))
+    avg_price = _as_float(order_snapshot.get("avgPrice"))
+    quote_qty = _as_float(order_snapshot.get("cumQuote"))
+    commission = None
+    realized_pnl = None
+    update_time_ms = _as_int(order_snapshot.get("updateTime"))
+
+    if trades:
+        total_qty = 0.0
+        weighted_notional = 0.0
+        total_quote_qty = 0.0
+        total_commission = 0.0
+        total_realized_pnl = 0.0
+        saw_commission = False
+        saw_realized_pnl = False
+        last_trade_time_ms = None
+
+        for item in trades:
+            qty = _as_float(item.get("qty"))
+            price = _as_float(item.get("price"))
+            quote = _as_float(item.get("quoteQty"))
+            if qty is not None and qty > 0:
+                total_qty += qty
+                if price is not None:
+                    weighted_notional += price * qty
+                if quote is not None:
+                    total_quote_qty += quote
+                elif price is not None:
+                    total_quote_qty += price * qty
+            commission_value = _as_float(item.get("commission"))
+            if commission_value is not None:
+                total_commission += commission_value
+                saw_commission = True
+            realized_value = _as_float(item.get("realizedPnl"))
+            if realized_value is not None:
+                total_realized_pnl += realized_value
+                saw_realized_pnl = True
+            trade_time_ms = _as_int(item.get("time"))
+            if trade_time_ms is not None:
+                last_trade_time_ms = max(last_trade_time_ms or trade_time_ms, trade_time_ms)
+
+        if total_qty > 0:
+            executed_qty = total_qty
+            quote_qty = total_quote_qty if total_quote_qty > 0 else quote_qty
+            avg_price = (weighted_notional / total_qty) if weighted_notional > 0 else avg_price
+        if saw_commission:
+            commission = total_commission
+        if saw_realized_pnl:
+            realized_pnl = total_realized_pnl
+        if last_trade_time_ms is not None:
+            update_time_ms = last_trade_time_ms
+
+    if avg_price is None and executed_qty is not None and executed_qty > 0 and quote_qty is not None:
+        avg_price = quote_qty / executed_qty
+
+    status = str(order_snapshot.get("status", "")).strip().upper() or None
+    if executed_qty is None and avg_price is None and commission is None and realized_pnl is None and status is None:
+        return None
+
+    return {
+        "order_id": order_id,
+        "status": status,
+        "executed_qty": executed_qty,
+        "avg_price": avg_price,
+        "quote_qty": quote_qty,
+        "commission": commission,
+        "realized_pnl": realized_pnl,
+        "update_time_ms": update_time_ms,
+        "raw_order": order_snapshot,
+        "raw_trades": trades,
+    }
 
 # --- Utility functions --- #
 def set_leverage(symbol, leverage):
@@ -365,7 +510,7 @@ def open_position(symbol, side, qty, sl=None, tp=None, leverage=10):
     Wrapper to open a new trade.
     Uses the universal open_or_close_trade function.
     """
-    open_or_close_trade(symbol, side, qty, sl, tp, leverage)
+    return open_or_close_trade(symbol, side, qty, sl, tp, leverage)
 
 
 def close_position(symbol):

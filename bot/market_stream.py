@@ -13,7 +13,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from bot.event_log import emit_event, get_technical_logger
-from bot.state import update_balance, update_position
+from bot.state import add_closed_trade, update_balance, update_position
 from bot.trade import (
     clear_runtime_account_cache,
     set_cached_balance,
@@ -985,6 +985,7 @@ class LiveMarketStream:
                 "entryPrice": entry_price,
                 "unRealizedProfit": _to_float(position_update.get("up")),
                 "positionSide": position_update.get("ps"),
+                "isolatedWallet": _to_float(position_update.get("iw")),
             }
             set_cached_position(self._symbol, cached_position)
 
@@ -1001,6 +1002,7 @@ class LiveMarketStream:
                 "entry_price": entry_price,
                 "unrealized_pnl": _to_float(position_update.get("up")),
                 "position_side": position_update.get("ps"),
+                "isolated_margin": _to_float(position_update.get("iw")),
                 "updated_at": ts_label,
                 "source": "user_stream_account_update",
             }
@@ -1034,6 +1036,50 @@ class LiveMarketStream:
                 return
 
             if abs(position_amt) <= 1e-12:
+                if bool(current_position.get("open_pending")):
+                    emit_event(
+                        code="position_sync_cleared",
+                        category="error",
+                        ts=ts_label,
+                        level="warning",
+                        notify=True,
+                        persist_ui=True,
+                        runtime_mode="live",
+                        ui_message=(
+                            f"The exchange still reports {self._symbol} as flat after an open request, "
+                            "so I cleared the pending local position from state. Please inspect fills and the ledger."
+                        ),
+                        symbol=self._symbol,
+                        side=current_position.get("side"),
+                        entry=current_position.get("entry"),
+                    )
+                    update_position(state, None)
+                    return
+                if bool(current_position.get("close_pending")):
+                    pending_trade = current_position.get("pending_close_trade")
+                    pending_event = current_position.get("pending_close_event")
+                    pending_event_ts = str(
+                        current_position.get("pending_close_event_ts")
+                        or (pending_trade.get("exit_time") if isinstance(pending_trade, dict) else "")
+                        or ts_label
+                    )
+                    state["position"] = None
+                    if isinstance(pending_trade, dict):
+                        add_closed_trade(state, pending_trade)
+                    else:
+                        update_position(state, None)
+                    if isinstance(pending_event, dict):
+                        emit_event(
+                            ts=pending_event_ts,
+                            runtime_mode=str(current_position.get("pending_close_runtime_mode") or "live"),
+                            strategy_mode=(
+                                str(current_position.get("pending_close_strategy_mode")).strip()
+                                if current_position.get("pending_close_strategy_mode") is not None
+                                else None
+                            ),
+                            **pending_event,
+                        )
+                    return
                 emit_event(
                     code="position_sync_cleared",
                     category="error",
@@ -1056,10 +1102,19 @@ class LiveMarketStream:
 
             side = "short" if position_amt < 0 else "long"
             next_position = dict(current_position)
+            was_open_pending = bool(next_position.get("open_pending"))
+            pending_open_event = next_position.get("pending_open_event") if was_open_pending else None
+            pending_open_event_ts = str(next_position.get("pending_open_event_ts") or ts_label) if was_open_pending else ts_label
             next_position["side"] = side
             next_position["size"] = abs(position_amt)
             if entry_price is not None and entry_price > 0:
                 next_position["entry"] = entry_price
+            next_position["exchange_position_amt"] = position_amt
+            next_position["exchange_entry_price"] = entry_price
+            next_position["exchange_unrealized_pnl"] = _to_float(position_update.get("up"))
+            next_position["exchange_position_side"] = position_update.get("ps")
+            next_position["exchange_isolated_margin"] = _to_float(position_update.get("iw"))
+            next_position["exchange_position_updated_at"] = ts_label
             next_position.setdefault("time", next_position.get("entry_time") or ts_label)
             next_position.setdefault("entry_time", next_position.get("time") or ts_label)
 
@@ -1082,7 +1137,33 @@ class LiveMarketStream:
                 )
                 next_position = state.get("position")
 
+            if isinstance(next_position, dict) and was_open_pending:
+                next_position.pop("open_pending", None)
+                next_position.pop("open_requested_at", None)
+                next_position.pop("pending_open_runtime_mode", None)
+                next_position.pop("pending_open_strategy_mode", None)
+                next_position.pop("pending_open_order_id", None)
+                next_position.pop("pending_open_event_ts", None)
+                next_position.pop("pending_open_event", None)
             update_position(state, next_position if isinstance(next_position, dict) else current_position)
+            if was_open_pending and isinstance(pending_open_event, dict):
+                pending_open_event = dict(pending_open_event)
+                pending_open_event["entry"] = (
+                    float(entry_price)
+                    if entry_price is not None and entry_price > 0
+                    else pending_open_event.get("entry")
+                )
+                pending_open_event["size"] = abs(position_amt)
+                emit_event(
+                    ts=pending_open_event_ts,
+                    runtime_mode=str(current_position.get("pending_open_runtime_mode") or "live"),
+                    strategy_mode=(
+                        str(current_position.get("pending_open_strategy_mode")).strip()
+                        if current_position.get("pending_open_strategy_mode") is not None
+                        else None
+                    ),
+                    **pending_open_event,
+                )
 
     def _handle_message(self, message: Any) -> None:
         if not isinstance(message, dict):

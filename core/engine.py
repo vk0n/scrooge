@@ -10,8 +10,15 @@ import pandas as pd
 from tqdm import tqdm
 
 from bot.event_log import emit_event, get_technical_logger
-from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
-from bot.trade import can_open_trade, close_position, compute_qty, get_balance, open_position
+from bot.state import load_state, save_state, update_balance, update_position
+from bot.trade import (
+    can_open_trade,
+    close_position,
+    compute_qty,
+    get_balance,
+    get_order_execution_summary,
+    open_position,
+)
 from core.feature_engine import FeatureEngine, floor_ns, interval_to_ns
 from core.indicator_inputs import (
     INDICATOR_COLUMNS,
@@ -295,6 +302,22 @@ _TRANSIENT_POSITION_FIELDS = {
     "exchange_unrealized_pnl",
     "exchange_position_side",
     "exchange_position_updated_at",
+    "exchange_isolated_margin",
+    "close_pending",
+    "close_requested_at",
+    "pending_close_trade",
+    "pending_close_event",
+    "pending_close_event_ts",
+    "pending_close_runtime_mode",
+    "pending_close_strategy_mode",
+    "pending_close_order_id",
+    "open_pending",
+    "open_requested_at",
+    "pending_open_event",
+    "pending_open_event_ts",
+    "pending_open_runtime_mode",
+    "pending_open_strategy_mode",
+    "pending_open_order_id",
 }
 
 
@@ -1505,6 +1528,100 @@ def build_position_from_entry(decision: EntryDecision, *, row_ts: str) -> dict[s
     }
 
 
+def _execution_summary_ts(summary: dict[str, Any] | None, fallback: str) -> str:
+    if not isinstance(summary, dict):
+        return fallback
+    return format_event_timestamp(summary.get("update_time_ms")) if summary.get("update_time_ms") is not None else fallback
+
+
+def _apply_entry_execution_summary(
+    position: dict[str, Any],
+    summary: dict[str, Any] | None,
+    *,
+    side: str,
+    fallback_ts: str,
+) -> None:
+    if not isinstance(summary, dict):
+        return
+
+    avg_price = to_float(summary.get("avg_price"))
+    executed_qty = to_float(summary.get("executed_qty"))
+    commission = to_float(summary.get("commission"))
+    order_id = summary.get("order_id")
+    ts_label = _execution_summary_ts(summary, fallback=fallback_ts)
+
+    if avg_price is not None and avg_price > 0:
+        position["entry"] = avg_price
+        position["exchange_entry_price"] = avg_price
+    if executed_qty is not None and executed_qty > 0:
+        position["size"] = executed_qty
+        position["exchange_position_amt"] = executed_qty if side == "long" else -executed_qty
+    if commission is not None:
+        position["entry_fee_paid"] = commission
+    if order_id is not None:
+        position["entry_order_id"] = order_id
+    position["entry_time"] = ts_label
+    position["time"] = ts_label
+    position["entry_execution_time"] = ts_label
+    position["exchange_position_side"] = "LONG" if side == "long" else "SHORT"
+    position["exchange_position_updated_at"] = ts_label
+
+
+def _apply_exit_execution_summary(
+    trade: dict[str, Any],
+    position: dict[str, Any],
+    summary: dict[str, Any] | None,
+    *,
+    fee_rate: float,
+) -> float:
+    entry_fee_paid = to_float(position.get("entry_fee_paid"))
+    if entry_fee_paid is None:
+        entry_fee_paid = _position_entry_fee(position, fee_rate)
+
+    if not isinstance(summary, dict):
+        return float(trade["net_pnl"])
+
+    avg_price = to_float(summary.get("avg_price"))
+    close_commission = to_float(summary.get("commission"))
+    realized_pnl = to_float(summary.get("realized_pnl"))
+    executed_qty = to_float(summary.get("executed_qty"))
+    order_id = summary.get("order_id")
+    execution_ts = _execution_summary_ts(summary, fallback=str(trade.get("exit_time") or ""))
+
+    if avg_price is not None and avg_price > 0:
+        trade["exit"] = avg_price
+    if executed_qty is not None and executed_qty > 0:
+        trade["exit_execution_qty"] = executed_qty
+    if order_id is not None:
+        trade["exit_order_id"] = order_id
+    trade["exit_time"] = execution_ts
+    trade["exit_execution_time"] = execution_ts
+    if entry_fee_paid is not None:
+        trade["entry_fee"] = entry_fee_paid
+    if close_commission is not None:
+        trade["exit_fee"] = close_commission
+
+    gross_pnl = realized_pnl if realized_pnl is not None else to_float(trade.get("gross_pnl"))
+    if gross_pnl is not None:
+        trade["gross_pnl"] = gross_pnl
+
+    total_fee = None
+    if entry_fee_paid is not None and close_commission is not None:
+        total_fee = entry_fee_paid + close_commission
+    elif to_float(trade.get("fee")) is not None:
+        total_fee = to_float(trade.get("fee"))
+
+    if total_fee is not None:
+        trade["fee"] = total_fee
+
+    if gross_pnl is not None and total_fee is not None:
+        trade["net_pnl"] = gross_pnl - total_fee
+    elif gross_pnl is not None and close_commission is None and entry_fee_paid is not None:
+        trade["net_pnl"] = gross_pnl - entry_fee_paid
+
+    return float(trade["net_pnl"])
+
+
 def sanitize_trade_for_history(trade: dict[str, Any]) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
     for key, value in trade.items():
@@ -1512,6 +1629,50 @@ def sanitize_trade_for_history(trade: dict[str, Any]) -> dict[str, Any]:
             continue
         sanitized[key] = value
     return sanitized
+
+
+def _mark_position_close_pending(
+    position: dict[str, Any],
+    *,
+    trade: dict[str, Any],
+    event_payload: dict[str, Any],
+    event_ts: str,
+    runtime_mode: str,
+    strategy_mode: str | None,
+    order_id: Any = None,
+) -> dict[str, Any]:
+    pending_position = dict(position)
+    pending_position["close_pending"] = True
+    pending_position["close_requested_at"] = event_ts
+    pending_position["pending_close_trade"] = sanitize_trade_for_history(trade)
+    pending_position["pending_close_event"] = dict(event_payload)
+    pending_position["pending_close_event_ts"] = str(trade.get("exit_time") or event_ts)
+    pending_position["pending_close_runtime_mode"] = runtime_mode
+    pending_position["pending_close_strategy_mode"] = strategy_mode
+    if order_id is not None:
+        pending_position["pending_close_order_id"] = order_id
+    return pending_position
+
+
+def _mark_position_open_pending(
+    position: dict[str, Any],
+    *,
+    event_payload: dict[str, Any],
+    event_ts: str,
+    runtime_mode: str,
+    strategy_mode: str | None,
+    order_id: Any = None,
+) -> dict[str, Any]:
+    pending_position = dict(position)
+    pending_position["open_pending"] = True
+    pending_position["open_requested_at"] = event_ts
+    pending_position["pending_open_event"] = dict(event_payload)
+    pending_position["pending_open_event_ts"] = event_ts
+    pending_position["pending_open_runtime_mode"] = runtime_mode
+    pending_position["pending_open_strategy_mode"] = strategy_mode
+    if order_id is not None:
+        pending_position["pending_open_order_id"] = order_id
+    return pending_position
 
 
 def build_exit_trade(
@@ -1948,17 +2109,38 @@ def apply_exit_decision(
     config: StrategyConfig,
     row_ts: str,
     log_ts: str,
-) -> tuple[float, None]:
+) -> tuple[float, dict[str, Any] | None]:
     if live:
         trade = build_exit_trade(position, decision, row_ts=row_ts)
+        close_order = None
         if decision.reason != "liquidation":
-            close_position(config.symbol)
+            close_order = close_position(config.symbol)
+            execution_summary = get_order_execution_summary(config.symbol, close_order)
+            _apply_exit_execution_summary(
+                trade,
+                position,
+                execution_summary,
+                fee_rate=config.fee_rate,
+            )
         current_balance = get_balance()
         balance = current_balance
-        update_position(state, None)
+        pending_event = build_exit_event_payload(
+            decision,
+            symbol=config.symbol,
+            net_pnl=float(trade["net_pnl"]),
+        )
+        pending_position = _mark_position_close_pending(
+            position,
+            trade=trade,
+            event_payload=pending_event,
+            event_ts=log_ts,
+            runtime_mode=config.runtime_mode,
+            strategy_mode=config.strategy_mode,
+            order_id=(close_order.get("orderId") if isinstance(close_order, dict) else None),
+        )
+        state["position"] = pending_position
         update_balance(state, balance)
-        add_closed_trade(state, sanitize_trade_for_history(trade))
-        emit_exit_event(log_buffer, config, log_ts, decision, decision.net_pnl)
+        position = pending_position
     else:
         balance, _ = apply_backtest_exit_transition(
             balance,
@@ -1979,7 +2161,7 @@ def apply_exit_decision(
                 balance_after=balance,
             )
 
-    return balance, None
+    return balance, position if live else None
 
 
 def process_discrete_row(
@@ -2057,18 +2239,12 @@ def process_discrete_row(
         elif isinstance(entry_decision, EntryDecision):
             position = build_position_from_entry(entry_decision, row_ts=row_ts)
             refresh_position_snapshot(position, price, config.leverage, row_ts)
-            event_kwargs = build_trade_opened_event_payload(
-                entry_decision,
-                symbol=config.symbol,
-                leverage=config.leverage,
-                fee=entry_decision.size * price * config.fee_rate,
-                rsi=rsi,
-            )
+            entry_fee = entry_decision.size * price * config.fee_rate
 
             if live:
                 if can_open_trade(config.symbol, entry_decision.size, config.leverage):
                     side_command = "BUY" if entry_decision.side == "long" else "SELL"
-                    open_position(
+                    open_order = open_position(
                         config.symbol,
                         side_command,
                         entry_decision.size,
@@ -2076,18 +2252,47 @@ def process_discrete_row(
                         entry_decision.tp,
                         config.leverage,
                     )
+                    execution_summary = get_order_execution_summary(config.symbol, open_order)
+                    _apply_entry_execution_summary(
+                        position,
+                        execution_summary,
+                        side=entry_decision.side,
+                        fallback_ts=row_ts,
+                    )
+                    refresh_position_snapshot(position, price, config.leverage, row_ts)
+                    factual_entry_fee = to_float(position.get("entry_fee_paid"))
+                    if factual_entry_fee is not None:
+                        entry_fee = factual_entry_fee
                     balance = get_balance()
-                    update_position(state, position)
+                    event_kwargs = build_trade_opened_event_payload(
+                        entry_decision,
+                        symbol=config.symbol,
+                        leverage=config.leverage,
+                        fee=entry_fee,
+                        rsi=rsi,
+                    )
+                    event_kwargs["entry"] = float(position["entry"])
+                    event_kwargs["size"] = float(position["size"])
+                    pending_position = _mark_position_open_pending(
+                        position,
+                        event_payload=event_kwargs,
+                        event_ts=log_ts,
+                        runtime_mode=config.runtime_mode,
+                        strategy_mode=config.strategy_mode,
+                        order_id=(open_order.get("orderId") if isinstance(open_order, dict) else None),
+                    )
+                    state["position"] = pending_position
                     update_balance(state, balance)
-                emit_event(
-                    ts=log_ts,
-                    log_buffer=log_buffer,
-                    runtime_mode=config.runtime_mode,
-                    strategy_mode=config.strategy_mode,
-                    **event_kwargs,
-                )
+                    position = pending_position
             else:
                 balance -= _position_entry_fee(position, config.fee_rate)
+                event_kwargs = build_trade_opened_event_payload(
+                    entry_decision,
+                    symbol=config.symbol,
+                    leverage=config.leverage,
+                    fee=entry_fee,
+                    rsi=rsi,
+                )
                 emit_event(
                     ts=log_ts,
                     log_buffer=log_buffer,
@@ -2109,10 +2314,18 @@ def process_discrete_row(
             runtime.balance = balance
             runtime.position = position
             return
+        if live and bool(position.get("open_pending")):
+            runtime.balance = balance
+            runtime.position = position
+            return
         side = position["side"]
         refresh_position_snapshot(position, price, config.leverage, row_ts)
         if live:
             update_position(state, position)
+        if live and bool(position.get("close_pending")):
+            runtime.balance = balance
+            runtime.position = position
+            return
         metrics = build_position_metrics(
             position,
             snapshot,
