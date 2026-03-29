@@ -504,6 +504,12 @@ def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10)
         except Exception as e:
             technical_logger.exception("position_open_failed symbol=%s side=%s quantity=%s error=%s", symbol, side, qty, e)
 
+    else:
+        technical_logger.warning(
+            "position_close_skipped_no_exchange_position symbol=%s",
+            symbol,
+        )
+
 
 def open_position(symbol, side, qty, sl=None, tp=None, leverage=10):
     """

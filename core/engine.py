@@ -159,7 +159,20 @@ class RealtimeStrategyProcessor:
             self.runtime.balance_history.append(self.runtime.balance)
         self.emitted_snapshots += 1
 
+    def _sync_runtime_from_state(self) -> None:
+        state = self.runtime.state
+        if not isinstance(state, dict):
+            return
+
+        balance_value = to_float(state.get("balance"))
+        if balance_value is not None:
+            self.runtime.balance = balance_value
+
+        position_value = state.get("position")
+        self.runtime.position = position_value if isinstance(position_value, dict) else None
+
     def process_event(self, event: MarketEvent) -> None:
+        self._sync_runtime_from_state()
         if apply_market_event_runtime_sync(self.runtime, event, target_symbol=self.target_symbol):
             return
 
@@ -1894,7 +1907,7 @@ def resolve_management_decision(
     atr = float(snapshot.atr)
     rsi = float(snapshot.rsi)
 
-    if side == "long" and price < metrics.liquidation_price:
+    if side == "long" and price <= metrics.liquidation_price:
         return ExitDecision(
             event_code="trade_liquidated",
             category="risk",
@@ -1907,7 +1920,7 @@ def resolve_management_decision(
             liq_price=metrics.liquidation_price,
         )
 
-    if side == "short" and price > metrics.liquidation_price:
+    if side == "short" and price >= metrics.liquidation_price:
         return ExitDecision(
             event_code="trade_liquidated",
             category="risk",
@@ -1994,7 +2007,7 @@ def resolve_management_decision(
                     via_tail_guard=True,
                 )
 
-        if price < metrics.base_sl:
+        if price <= metrics.base_sl:
             fee_total = metrics.fee_close * 2
             net_pnl = metrics.gross_pnl - fee_total
             return ExitDecision(
@@ -2085,7 +2098,7 @@ def resolve_management_decision(
                 via_tail_guard=True,
             )
 
-    if price > metrics.base_sl:
+    if price >= metrics.base_sl:
         fee_total = metrics.fee_close * 2
         net_pnl = metrics.gross_pnl - fee_total
         return ExitDecision(
@@ -2123,6 +2136,33 @@ def apply_exit_decision(
         close_order = None
         if decision.reason != "liquidation":
             close_order = close_position(config.symbol)
+            if not isinstance(close_order, dict) or close_order.get("orderId") is None:
+                emit_event(
+                    code="trade_close_submission_failed",
+                    category="error",
+                    ts=log_ts,
+                    level="error",
+                    notify=True,
+                    persist_ui=True,
+                    runtime_mode=config.runtime_mode,
+                    strategy_mode=config.strategy_mode,
+                    symbol=config.symbol,
+                    side=position.get("side"),
+                    exit_reason=decision.reason,
+                    ui_message=(
+                        f"I tried to close the {str(position.get('side') or 'position')} on {config.symbol} "
+                        f"by {decision.reason}, but the exchange gave me no order confirmation. "
+                        "I shall keep the position active and try again on the next qualifying tick."
+                    ),
+                )
+                technical_logger.error(
+                    "live_exit_submission_failed symbol=%s reason=%s side=%s close_order=%s",
+                    config.symbol,
+                    decision.reason,
+                    position.get("side"),
+                    close_order,
+                )
+                return balance, position
             execution_summary = get_order_execution_summary(config.symbol, close_order)
             _apply_exit_execution_summary(
                 trade,
