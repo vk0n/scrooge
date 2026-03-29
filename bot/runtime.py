@@ -416,7 +416,7 @@ def _append_latest_chart_candle(
         return last_ts_ms
 
 
-def _build_command_kwargs(symbol: str) -> dict[str, Any]:
+def _build_command_kwargs(symbol: str, *, leverage: float, fee_rate: float) -> dict[str, Any]:
     return {
         "symbol": symbol,
         "close_position_fn": close_position,
@@ -425,6 +425,8 @@ def _build_command_kwargs(symbol: str) -> dict[str, Any]:
         "update_position_fn": update_position,
         "update_balance_fn": update_balance,
         "add_closed_trade_fn": add_closed_trade,
+        "leverage": leverage,
+        "fee_rate": fee_rate,
     }
 
 
@@ -505,7 +507,7 @@ if __name__ == "__main__":
         last_balance_refresh_monotonic = 0.0
         last_strategy_candle_open_time: str | None = None
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
-        command_kwargs = _build_command_kwargs(symbol)
+        command_kwargs = _build_command_kwargs(symbol, leverage=lvrg, fee_rate=0.0005)
         runtime_context: dict[str, Any] = {"state": state}
 
         technical_logger.info(
@@ -687,7 +689,7 @@ if __name__ == "__main__":
                         indicator_inputs = _resolve_live_indicator_inputs(cfg, strategy_mode=strategy_mode)
                         params = cfg["params"]
                         set_leverage(symbol, lvrg)
-                        command_kwargs = _build_command_kwargs(symbol)
+                        command_kwargs = _build_command_kwargs(symbol, leverage=lvrg, fee_rate=0.0005)
                         if live_market_stream is not None:
                             live_market_stream.update_config(
                                 symbol=symbol,

@@ -1954,12 +1954,11 @@ def apply_exit_decision(
         if decision.reason != "liquidation":
             close_position(config.symbol)
         current_balance = get_balance()
-        trade["net_pnl"] = current_balance - balance
         balance = current_balance
         update_position(state, None)
         update_balance(state, balance)
         add_closed_trade(state, sanitize_trade_for_history(trade))
-        emit_exit_event(log_buffer, config, log_ts, decision, trade["net_pnl"])
+        emit_exit_event(log_buffer, config, log_ts, decision, decision.net_pnl)
     else:
         balance, _ = apply_backtest_exit_transition(
             balance,

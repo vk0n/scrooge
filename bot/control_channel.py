@@ -68,6 +68,40 @@ def _ratio_to_percent(numerator: Any, denominator: Any) -> float | None:
     return (left / right) * 100.0
 
 
+def _manual_close_trade_pnl(
+    position: dict[str, Any],
+    *,
+    exit_price: float | None,
+    fee_rate: float | None,
+    leverage: float | None,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    side = str(position.get("side", "")).strip().lower()
+    size = _as_float(position.get("size"))
+    entry_price = _as_float(position.get("entry"))
+    margin_used = _as_float(position.get("margin_used"))
+    if margin_used is None and entry_price is not None and size is not None:
+        leverage_value = _as_float(leverage)
+        if leverage_value is not None and leverage_value > 0:
+            margin_used = (entry_price * size) / leverage_value
+
+    if side not in {"long", "short"} or size is None or size <= 0 or entry_price is None or entry_price <= 0 or exit_price is None:
+        return None, None, None, margin_used
+
+    position_value = entry_price * size
+    if side == "long":
+        gross_pnl = (exit_price - entry_price) * size
+    else:
+        gross_pnl = (entry_price - exit_price) * size
+
+    fee_total = None
+    fee_rate_value = _as_float(fee_rate)
+    if fee_rate_value is not None and fee_rate_value >= 0:
+        fee_total = position_value * fee_rate_value * 2.0
+
+    net_pnl = gross_pnl - fee_total if fee_total is not None else gross_pnl
+    return net_pnl, gross_pnl, fee_total, margin_used
+
+
 def _validate_level_update(action: str, new_value: float, position: dict[str, Any]) -> None:
     side = str(position.get("side", "")).lower()
     entry = _as_float(position.get("entry"))
@@ -180,6 +214,8 @@ def process_pending_commands(
     update_position_fn: Callable[[dict[str, Any], dict[str, Any] | None], None] | None = None,
     update_balance_fn: Callable[[dict[str, Any], float], None] | None = None,
     add_closed_trade_fn: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
+    leverage: float | None = None,
+    fee_rate: float | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """
     Consume queued control commands and apply them to bot runtime state.
@@ -378,8 +414,22 @@ def process_pending_commands(
                             exit_price = _as_float(local_position.get("entry"))
                         if exit_price is not None:
                             trade_record["exit"] = exit_price
-                        if previous_balance is not None and latest_balance is not None:
+                        computed_net_pnl, computed_gross_pnl, computed_fee_total, margin_used = _manual_close_trade_pnl(
+                            local_position,
+                            exit_price=exit_price,
+                            fee_rate=fee_rate,
+                            leverage=leverage,
+                        )
+                        if computed_net_pnl is not None:
+                            trade_record["net_pnl"] = computed_net_pnl
+                        elif previous_balance is not None and latest_balance is not None:
                             trade_record["net_pnl"] = latest_balance - previous_balance
+                        if computed_gross_pnl is not None:
+                            trade_record["gross_pnl"] = computed_gross_pnl
+                        if computed_fee_total is not None:
+                            trade_record["fee"] = computed_fee_total
+                        if margin_used is not None:
+                            trade_record["margin_used"] = margin_used
                         add_closed_trade_fn(state, trade_record)
                         emit_event(
                             code="trade_closed_manual",
