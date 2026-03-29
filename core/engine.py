@@ -1525,6 +1525,8 @@ def build_position_from_entry(decision: EntryDecision, *, row_ts: str) -> dict[s
         "trail_price": None,
         "time": row_ts,
         "entry_time": row_ts,
+        "trigger": decision.trigger,
+        "stake_mode": decision.stake_mode,
     }
 
 
@@ -1692,6 +1694,12 @@ def build_exit_trade(
         trade["gross_pnl"] = decision.gross_pnl
     if decision.fee_total is not None:
         trade["fee"] = decision.fee_total
+    if decision.via_tail_guard:
+        trade["via_tail_guard"] = True
+    if decision.rsi is not None:
+        trade["exit_rsi"] = decision.rsi
+    if decision.threshold is not None:
+        trade["exit_threshold"] = decision.threshold
     return trade
 
 
@@ -2238,6 +2246,7 @@ def process_discrete_row(
             )
         elif isinstance(entry_decision, EntryDecision):
             position = build_position_from_entry(entry_decision, row_ts=row_ts)
+            position["entry_rsi"] = rsi
             refresh_position_snapshot(position, price, config.leverage, row_ts)
             entry_fee = entry_decision.size * price * config.fee_rate
 

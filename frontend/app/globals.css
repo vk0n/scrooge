@@ -1632,7 +1632,6 @@ pre {
   display: grid;
   gap: 0.78rem;
   padding: 0 1rem 1rem;
-  border-top: 1px solid rgba(115, 127, 146, 0.22);
 }
 
 .trade-history-detail-grid {
@@ -1661,6 +1660,10 @@ pre {
 .trade-history-detail strong {
   color: #eef3fb;
   font-weight: 500;
+}
+
+.trade-history-trace-note {
+  line-height: 1.45;
 }
 
 .trade-history-toolbar {

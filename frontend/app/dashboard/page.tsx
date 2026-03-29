@@ -108,6 +108,12 @@ type TradeHistoryItem = {
   net_pnl: number | null;
   gross_pnl?: number | null;
   fee: number | null;
+  trigger?: string | null;
+  stake_mode?: string | null;
+  entry_rsi?: number | null;
+  via_tail_guard?: boolean | null;
+  exit_rsi?: number | null;
+  exit_threshold?: number | null;
 };
 
 type TradeHistoryResponse = {
@@ -570,6 +576,94 @@ function formatExitReason(value: string | null | undefined): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function formatTriggerTrace(value: string | null | undefined): string {
+  if (!value || typeof value !== "string") {
+    return "Opened on a prior signal";
+  }
+  if (value === "manual_suggestion") {
+    return "Opened from your suggestion";
+  }
+  if (value === "strategy_rules") {
+    return "Opened by strategy rules";
+  }
+  return `Opened by ${formatExitReason(value)}`;
+}
+
+function formatStakeModeTrace(value: string | null | undefined): string | null {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+  if (value === "half") {
+    return "with half stake";
+  }
+  if (value === "full") {
+    return "with full stake";
+  }
+  return `with ${formatExitReason(value).toLowerCase()}`;
+}
+
+function formatTraceNumber(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function buildTradeOpenTrace(trade: TradeHistoryItem): string {
+  const parts: string[] = [formatTriggerTrace(trade.trigger)];
+  const stakeModeTrace = formatStakeModeTrace(trade.stake_mode);
+  const entryRsiTrace = formatTraceNumber(trade.entry_rsi);
+
+  if (stakeModeTrace) {
+    parts.push(stakeModeTrace);
+  }
+  if (entryRsiTrace) {
+    parts.push(`at RSI ${entryRsiTrace}`);
+  }
+
+  return `${parts.join(" ")}.`;
+}
+
+function buildTradeCloseTrace(trade: TradeHistoryItem): string {
+  const exitReason = trade.exit_reason ?? "";
+  const exitRsiTrace = formatTraceNumber(trade.exit_rsi);
+  const exitThresholdTrace = formatTraceNumber(trade.exit_threshold);
+
+  if (!exitReason) {
+    return "Closed for a reason not yet recorded.";
+  }
+
+  if (exitReason === "manual_close") {
+    return "Closed by your request.";
+  }
+  if (exitReason === "liquidation") {
+    return "Closed by liquidation.";
+  }
+  if (exitReason === "stop_loss") {
+    return "Closed by the Safety Net.";
+  }
+  if (exitReason === "take_profit" && trade.via_tail_guard) {
+    return "Closed under Tail Guard after profit lock-in.";
+  }
+  if (exitReason === "take_profit") {
+    return "Closed by the Treasure Mark.";
+  }
+  if (exitReason === "rsi_extreme") {
+    if (exitRsiTrace && exitThresholdTrace) {
+      return `Closed on RSI extreme: ${exitRsiTrace} against ${exitThresholdTrace}.`;
+    }
+    if (exitRsiTrace) {
+      return `Closed on RSI extreme at ${exitRsiTrace}.`;
+    }
+    return "Closed on RSI extreme.";
+  }
+  return `Closed by ${formatExitReason(trade.exit_reason).toLowerCase()}.`;
+}
+
+function buildTradeNarration(trade: TradeHistoryItem): string {
+  return `${buildTradeOpenTrace(trade)} ${buildTradeCloseTrace(trade)}`.replace(/\s+/g, " ").trim();
 }
 
 function formatDateTimeEuCompact(value: unknown, fallback = "N/A"): string {
@@ -1460,6 +1554,7 @@ function DashboardContent(): JSX.Element {
                         <span className={tradeHistoryPnlPillClass(trade.net_pnl)}>{formatSignedUsd(trade.net_pnl)}</span>
                       </summary>
                       <div className="trade-history-body">
+                        <p className="dialog-scrooge trade-history-trace-note">{buildTradeNarration(trade)}</p>
                         <div className="trade-history-detail-grid">
                           <div className="trade-history-detail">
                             <span className="trade-history-detail-label">Entry</span>
