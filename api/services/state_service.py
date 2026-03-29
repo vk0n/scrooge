@@ -207,6 +207,24 @@ def _extract_exchange_position_snapshot(
     return None
 
 
+def _has_explicit_flat_exchange_position(
+    position: dict[str, Any],
+    *,
+    state: dict[str, Any] | None = None,
+) -> bool:
+    state_exchange = state.get("exchange_position") if isinstance(state, dict) else None
+    if isinstance(state_exchange, dict):
+        position_amt = _maybe_float(state_exchange.get("position_amt"))
+        if position_amt is not None and abs(position_amt) <= 1e-12:
+            return True
+
+    position_amt = _maybe_float(position.get("exchange_position_amt"))
+    if position_amt is not None and abs(position_amt) <= 1e-12:
+        return True
+
+    return False
+
+
 def _status_from_code(code: str, labels: dict[str, str]) -> UiStatus | None:
     label = labels.get(code)
     if label is None:
@@ -284,6 +302,8 @@ def resolve_open_trade_info(
         return None
 
     exchange_snapshot = _extract_exchange_position_snapshot(position, state=state)
+    if exchange_snapshot is None and _has_explicit_flat_exchange_position(position, state=state):
+        return None
     if bool(position.get("open_pending")) and exchange_snapshot is None:
         return None
 

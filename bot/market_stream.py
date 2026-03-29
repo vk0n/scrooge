@@ -338,6 +338,38 @@ class LiveMarketStream:
             updated_at=updated_at,
         )
 
+    def _reconcile_position_from_exchange_snapshot(self, *, source: str, event_ts: Any) -> None:
+        try:
+            position = self._get_open_position_fn(self._symbol)
+        except Exception as exc:  # noqa: BLE001
+            technical_logger.warning("exchange_position_reconcile_failed symbol=%s source=%s error=%s", self._symbol, source, exc)
+            return
+
+        set_cached_position(self._symbol, position)
+        if isinstance(position, dict):
+            self._apply_account_position_update(
+                {
+                    "pa": position.get("positionAmt"),
+                    "ep": position.get("entryPrice"),
+                    "up": position.get("unRealizedProfit"),
+                    "ps": position.get("positionSide"),
+                    "iw": position.get("isolatedWallet") or position.get("isolatedMargin"),
+                },
+                event_ts,
+            )
+            return
+
+        self._apply_account_position_update(
+            {
+                "pa": 0.0,
+                "ep": 0.0,
+                "up": 0.0,
+                "ps": None,
+                "iw": 0.0,
+            },
+            event_ts,
+        )
+
     def start(self) -> bool:
         if self._running:
             return True
@@ -657,6 +689,7 @@ class LiveMarketStream:
             technical_logger.warning("user_stream_position_bootstrap_failed symbol=%s error=%s", self._symbol, exc)
         else:
             set_cached_position(self._symbol, position)
+            bootstrap_event_ts = int(time.time() * 1000)
             if isinstance(position, dict):
                 ts_label = datetime.now().strftime(TIMESTAMP_FORMAT)
                 snapshot = _normalize_rest_exchange_position_snapshot(
@@ -670,6 +703,17 @@ class LiveMarketStream:
                     if isinstance(state, dict):
                         self._merge_exchange_position_snapshot_into_state(state, snapshot)
                         self._save_state_fn(state)
+            else:
+                self._apply_account_position_update(
+                    {
+                        "pa": 0.0,
+                        "ep": 0.0,
+                        "up": 0.0,
+                        "ps": None,
+                        "iw": 0.0,
+                    },
+                    bootstrap_event_ts,
+                )
 
     def _start_user_stream(self) -> bool:
         if not USER_STREAM_ENABLED:
@@ -1041,6 +1085,29 @@ class LiveMarketStream:
             order_type,
             _format_event_timestamp_ms(event_ts),
         )
+
+        if execution_type != "TRADE" or order_status not in {"FILLED", "PARTIALLY_FILLED"}:
+            return
+
+        should_reconcile = False
+        order_id = _to_optional_int(order_data.get("i"))
+        with self._state_lock:
+            state = self._state_getter()
+            if isinstance(state, dict):
+                current_position = state.get("position")
+                if isinstance(current_position, dict):
+                    pending_close_order_id = _to_optional_int(current_position.get("pending_close_order_id"))
+                    pending_open_order_id = _to_optional_int(current_position.get("pending_open_order_id"))
+                    if bool(current_position.get("close_pending")):
+                        should_reconcile = pending_close_order_id is None or pending_close_order_id == order_id
+                    elif bool(current_position.get("open_pending")):
+                        should_reconcile = pending_open_order_id is None or pending_open_order_id == order_id
+
+        if should_reconcile:
+            self._reconcile_position_from_exchange_snapshot(
+                source="rest_after_order_trade_update",
+                event_ts=event_ts,
+            )
 
     def _apply_account_position_update(self, position_update: dict[str, Any], event_ts: Any) -> None:
         position_amt = _to_float(position_update.get("pa"))

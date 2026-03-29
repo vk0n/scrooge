@@ -848,33 +848,39 @@ function DashboardContent(): JSX.Element {
     }
   }
 
-  async function runControlAction(
-    endpoint: ControlEndpoint,
-    options?: { confirmMessage?: string; body?: unknown }
-  ): Promise<void> {
-    const confirmMessage = options?.confirmMessage;
-    if (confirmMessage) {
-      const confirmed = window.confirm(confirmMessage);
-      if (!confirmed) {
-        return;
-      }
-    }
-
+  async function submitControlAction(endpoint: ControlEndpoint, body?: unknown): Promise<boolean> {
     setBusyAction(endpoint);
     setControlError(null);
     try {
       const response = await fetchApi<ControlResponse>(`/api/control/${endpoint}`, {
         method: "POST",
-        body: options?.body
+        body
       });
       setCommandResult(response);
       const statusPayload = await fetchApi<CommandStatusResponse>(`/api/control/commands/${response.command_id}`);
       setCommandStatus(statusPayload);
+      return true;
     } catch (err) {
       setControlError(err instanceof Error ? err.message : `Failed to execute ${endpoint}`);
+      return false;
     } finally {
       setBusyAction(null);
     }
+  }
+
+  async function runControlAction(
+    endpoint: ControlEndpoint,
+    options?: { confirmMessage?: string; body?: unknown }
+  ): Promise<boolean> {
+    const confirmMessage = options?.confirmMessage;
+    if (confirmMessage) {
+      const confirmed = window.confirm(confirmMessage);
+      if (!confirmed) {
+        return false;
+      }
+    }
+
+    return submitControlAction(endpoint, options?.body);
   }
 
   async function runUpdate(endpoint: "update-sl" | "update-tp", rawValue: string): Promise<void> {
@@ -910,6 +916,29 @@ function DashboardContent(): JSX.Element {
       confirmMessage: `Are you sure I should ${actionLabel} right now?`
     });
     setShowTradeSuggestions(false);
+  }
+
+  async function runCloseFloorFlow(): Promise<void> {
+    if (hasOpenPosition) {
+      const confirmed = window.confirm(
+        "There is an open trade on the floor. It will be closed before I shut the office. Proceed?"
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      const closeQueued = await submitControlAction("close-position");
+      if (!closeQueued) {
+        return;
+      }
+
+      await submitControlAction("stop");
+      return;
+    }
+
+    await runControlAction("stop", {
+      confirmMessage: "Close the trading floor for now?"
+    });
   }
 
   async function loadEditableConfig(): Promise<void> {
@@ -1500,11 +1529,7 @@ function DashboardContent(): JSX.Element {
                 <button
                   type="button"
                   className="dialog-user-btn"
-                  onClick={() =>
-                    void runControlAction("stop", {
-                      confirmMessage: "Close the trading floor for now?"
-                    })
-                  }
+                  onClick={() => void runCloseFloorFlow()}
                   disabled={busyAction !== null}
                 >
                   Close the Floor
