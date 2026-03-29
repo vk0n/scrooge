@@ -81,8 +81,8 @@ def _manual_close_trade_pnl(
 ) -> tuple[float | None, float | None, float | None, float | None]:
     side = str(position.get("side", "")).strip().lower()
     size = _as_float(position.get("size"))
-    entry_price = _as_float(position.get("entry"))
-    margin_used = _as_float(position.get("margin_used"))
+    entry_price = _as_float(position.get("exchange_entry_price")) or _as_float(position.get("entry"))
+    margin_used = _as_float(position.get("exchange_isolated_margin")) or _as_float(position.get("margin_used"))
     if margin_used is None and entry_price is not None and size is not None:
         leverage_value = _as_float(leverage)
         if leverage_value is not None and leverage_value > 0:
@@ -113,10 +113,10 @@ def _manual_close_trade_pnl(
 
 def _validate_level_update(action: str, new_value: float, position: dict[str, Any]) -> None:
     side = str(position.get("side", "")).lower()
-    entry = _as_float(position.get("entry"))
+    entry = _as_float(position.get("exchange_entry_price")) or _as_float(position.get("entry"))
     sl = _as_float(position.get("sl"))
     tp = _as_float(position.get("tp"))
-    liq_price = _as_float(position.get("liq_price"))
+    liq_price = _as_float(position.get("exchange_liq_price")) or _as_float(position.get("liq_price"))
 
     if action == "update_sl":
         if side == "long":
@@ -157,10 +157,10 @@ def _status_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     if isinstance(position, dict):
         snapshot["position"] = {
             "side": position.get("side"),
-            "entry": _as_float(position.get("entry")),
+            "entry": _as_float(position.get("exchange_entry_price")) or _as_float(position.get("entry")),
             "sl": _as_float(position.get("sl")),
             "tp": _as_float(position.get("tp")),
-            "liq_price": _as_float(position.get("liq_price")),
+            "liq_price": _as_float(position.get("exchange_liq_price")) or _as_float(position.get("liq_price")),
             "trail_active": bool(position.get("trail_active", False)),
         }
     else:
