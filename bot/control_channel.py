@@ -321,8 +321,6 @@ def process_pending_commands(
                     notify=True,
                 )
             elif action == "suggest_trade":
-                if not bool(state.get("trading_enabled", True)):
-                    raise ValueError("Cannot suggest a trade while trading is paused")
                 if isinstance(state.get("position"), dict):
                     raise ValueError("Cannot suggest a trade while a position is already open")
 
@@ -330,16 +328,33 @@ def process_pending_commands(
                 if requested_side is None:
                     raise ValueError("Invalid trade side. Expected 'buy' or 'sell'.")
 
+                resumed_for_suggestion = not bool(state.get("trading_enabled", True))
+                if resumed_for_suggestion:
+                    state["trading_enabled"] = True
+                    emit_event(
+                        code="bot_started",
+                        category="lifecycle",
+                        ts=event_ts,
+                        persist_ui=True,
+                        symbol=symbol,
+                    )
+
                 state["manual_trade_suggestion"] = {
                     "side": requested_side,
                     "requested_at": _now_iso(),
                     "requested_by": str(payload.get("requested_by", "unknown")).strip() or "unknown",
                 }
                 save_state_fn(state)
-                message = (
-                    f"{requested_side.capitalize()} suggestion recorded. "
-                    f"Scrooge will try it on the next live tick and manage it by the usual rules."
-                )
+                if resumed_for_suggestion:
+                    message = (
+                        f"{requested_side.capitalize()} suggestion recorded. "
+                        "The office has reopened, and Scrooge will try it on the next live tick."
+                    )
+                else:
+                    message = (
+                        f"{requested_side.capitalize()} suggestion recorded. "
+                        f"Scrooge will try it on the next live tick and manage it by the usual rules."
+                    )
                 emit_event(
                     code="manual_trade_suggested",
                     category="command",
