@@ -54,7 +54,13 @@ def get_status() -> dict[str, object]:
     bot_running_status = "running" if trading_enabled else "paused"
 
     position = state.get("position")
-    open_trade_info = resolve_open_trade_info(position)
+    last_price = resolve_last_price(state)
+    open_trade_info = resolve_open_trade_info(
+        position,
+        state=state,
+        leverage=config.get("leverage"),
+        last_price=last_price,
+    )
     balance_value = resolve_balance(state, default_balance=_default_balance_for_mode(config))
     if _is_live_mode(config) and balance_value is None:
         warnings.append("Live balance unavailable: exchange balance has not been written to state yet.")
@@ -63,13 +69,13 @@ def get_status() -> dict[str, object]:
         "bot_running_status": bot_running_status,
         "trading_enabled": trading_enabled,
         "balance": balance_value,
-        "last_price": resolve_last_price(state),
+        "last_price": last_price,
         "last_price_updated_at": resolve_last_price_updated_at(state),
         "bot_status": resolve_bot_status(state),
         "current_position": open_trade_info["side"] if open_trade_info else None,
         "leverage": config.get("leverage"),
         "symbol": config.get("symbol"),
-        "trailing_state": resolve_trailing_state(position),
+        "trailing_state": resolve_trailing_state(position, open_trade_info=open_trade_info),
         "trade_status": resolve_trade_status(state),
         "open_trade_info": open_trade_info,
         "last_update_timestamp": resolve_last_update_timestamp(state),

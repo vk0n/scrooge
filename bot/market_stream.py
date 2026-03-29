@@ -995,6 +995,16 @@ class LiveMarketStream:
             if not isinstance(state, dict):
                 return
 
+            state["exchange_position"] = {
+                "symbol": self._symbol,
+                "position_amt": position_amt,
+                "entry_price": entry_price,
+                "unrealized_pnl": _to_float(position_update.get("up")),
+                "position_side": position_update.get("ps"),
+                "updated_at": ts_label,
+                "source": "user_stream_account_update",
+            }
+
             current_position = state.get("position")
             if not isinstance(current_position, dict):
                 if abs(position_amt) > 1e-12:
@@ -1020,6 +1030,7 @@ class LiveMarketStream:
                         position_amt=position_amt,
                         entry=entry_price,
                     )
+                    self._save_state_fn(state)
                 return
 
             if abs(position_amt) <= 1e-12:

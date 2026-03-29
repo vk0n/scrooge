@@ -56,6 +56,14 @@ class OpenTradeInfo(TypedDict):
     updated_at: str | None
 
 
+def _ratio_to_percent(numerator: Any, denominator: Any) -> float | None:
+    left = _maybe_float(numerator)
+    right = _maybe_float(denominator)
+    if left is None or right is None or right == 0:
+        return None
+    return (left / right) * 100.0
+
+
 def load_state() -> tuple[dict[str, Any], list[str]]:
     if not STATE_PATH.exists():
         return (
@@ -113,6 +121,57 @@ def _normalize_position_side(value: Any) -> str | None:
     return side
 
 
+def _normalize_exchange_position_side(value: Any, position_amt: Any) -> str | None:
+    side = str(value or "").strip().upper()
+    if side == "LONG":
+        return "long"
+    if side == "SHORT":
+        return "short"
+
+    amount = _maybe_float(position_amt)
+    if amount is None:
+        return None
+    if amount > 0:
+        return "long"
+    if amount < 0:
+        return "short"
+    return None
+
+
+def _extract_exchange_position_snapshot(
+    position: dict[str, Any],
+    *,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    state_exchange = state.get("exchange_position") if isinstance(state, dict) else None
+    if isinstance(state_exchange, dict):
+        position_amt = _maybe_float(state_exchange.get("position_amt"))
+        entry_price = _maybe_float(state_exchange.get("entry_price"))
+        unrealized_pnl = _maybe_float(state_exchange.get("unrealized_pnl"))
+        side = _normalize_exchange_position_side(state_exchange.get("position_side"), position_amt)
+        if position_amt is not None and abs(position_amt) > 1e-12 and side is not None:
+            return {
+                "side": side,
+                "size": abs(position_amt),
+                "entry": entry_price,
+                "unrealized_pnl": unrealized_pnl,
+                "updated_at": _maybe_text(state_exchange.get("updated_at")),
+            }
+
+    position_amt = _maybe_float(position.get("exchange_position_amt"))
+    side = _normalize_exchange_position_side(position.get("exchange_position_side"), position_amt)
+    if position_amt is not None and abs(position_amt) > 1e-12 and side is not None:
+        return {
+            "side": side,
+            "size": abs(position_amt),
+            "entry": _maybe_float(position.get("exchange_entry_price")),
+            "unrealized_pnl": _maybe_float(position.get("exchange_unrealized_pnl")),
+            "updated_at": _maybe_text(position.get("exchange_position_updated_at")),
+        }
+
+    return None
+
+
 def _status_from_code(code: str, labels: dict[str, str]) -> UiStatus | None:
     label = labels.get(code)
     if label is None:
@@ -156,7 +215,11 @@ def resolve_last_price_updated_at(state: dict[str, Any]) -> str | None:
 
 def resolve_bot_status(state: dict[str, Any]) -> UiStatus | None:
     position = state.get("position")
-    open_trade_info = resolve_open_trade_info(position)
+    open_trade_info = resolve_open_trade_info(
+        position,
+        state=state,
+        last_price=resolve_last_price(state),
+    )
     trading_enabled = resolve_trading_enabled(state)
 
     bot_status = _resolve_ui_status(state.get("bot_status"), BOT_STATUS_LABELS)
@@ -175,13 +238,30 @@ def resolve_bot_status(state: dict[str, Any]) -> UiStatus | None:
     return search_status
 
 
-def resolve_open_trade_info(position: Any) -> OpenTradeInfo | None:
+def resolve_open_trade_info(
+    position: Any,
+    *,
+    state: dict[str, Any] | None = None,
+    leverage: Any = None,
+    last_price: Any = None,
+) -> OpenTradeInfo | None:
     if not isinstance(position, dict):
         return None
 
-    side = _normalize_position_side(position.get("side"))
-    size = _maybe_float(position.get("size"))
-    entry = _maybe_float(position.get("entry"))
+    exchange_snapshot = _extract_exchange_position_snapshot(position, state=state)
+
+    side = (
+        (exchange_snapshot.get("side") if isinstance(exchange_snapshot, dict) else None)
+        or _normalize_position_side(position.get("side"))
+    )
+    size = (
+        (exchange_snapshot.get("size") if isinstance(exchange_snapshot, dict) else None)
+        or _maybe_float(position.get("size"))
+    )
+    entry = (
+        (exchange_snapshot.get("entry") if isinstance(exchange_snapshot, dict) else None)
+        or _maybe_float(position.get("entry"))
+    )
     if side is None or size is None or entry is None or size <= 0 or entry <= 0:
         return None
 
@@ -189,31 +269,62 @@ def resolve_open_trade_info(position: Any) -> OpenTradeInfo | None:
     if entry_time is None:
         return None
 
+    current_price = _maybe_float(last_price) or _maybe_float(position.get("last_price"))
+    sl = _maybe_float(position.get("sl"))
+    tp = _maybe_float(position.get("tp"))
+    unrealized_pnl = (
+        (exchange_snapshot.get("unrealized_pnl") if isinstance(exchange_snapshot, dict) else None)
+        if isinstance(exchange_snapshot, dict)
+        else None
+    )
+    if unrealized_pnl is None:
+        unrealized_pnl = _maybe_float(position.get("unrealized_pnl"))
+
+    position_notional = abs(size) * entry
+    leverage_value = _maybe_float(leverage)
+    margin_used = (position_notional / leverage_value) if leverage_value is not None and leverage_value > 0 else _maybe_float(position.get("margin_used"))
+    unrealized_pnl_pct = _ratio_to_percent(unrealized_pnl, position_notional)
+    roi_pct = _ratio_to_percent(unrealized_pnl, margin_used)
+    if current_price is not None and current_price > 0:
+        if side == "short":
+            distance_to_sl_pct = _ratio_to_percent((sl - current_price), current_price) if sl is not None else None
+            distance_to_tp_pct = _ratio_to_percent((current_price - tp), current_price) if tp is not None else None
+        else:
+            distance_to_sl_pct = _ratio_to_percent((current_price - sl), current_price) if sl is not None else None
+            distance_to_tp_pct = _ratio_to_percent((tp - current_price), current_price) if tp is not None else None
+    else:
+        distance_to_sl_pct = _maybe_float(position.get("distance_to_sl_pct"))
+        distance_to_tp_pct = _maybe_float(position.get("distance_to_tp_pct"))
+
     return {
         "side": side,
         "size": size,
         "entry": entry,
-        "sl": _maybe_float(position.get("sl")),
-        "tp": _maybe_float(position.get("tp")),
+        "sl": sl,
+        "tp": tp,
         "liq_price": _maybe_float(position.get("liq_price")),
         "trail_active": bool(position.get("trail_active", False)),
         "trail_price": _maybe_float(position.get("trail_price")),
         "trail_max": _maybe_float(position.get("trail_max")),
         "trail_min": _maybe_float(position.get("trail_min")),
         "entry_time": entry_time,
-        "unrealized_pnl": _maybe_float(position.get("unrealized_pnl")),
-        "unrealized_pnl_pct": _maybe_float(position.get("unrealized_pnl_pct")),
-        "position_notional": _maybe_float(position.get("position_notional")),
-        "margin_used": _maybe_float(position.get("margin_used")),
-        "roi_pct": _maybe_float(position.get("roi_pct")),
-        "distance_to_sl_pct": _maybe_float(position.get("distance_to_sl_pct")),
-        "distance_to_tp_pct": _maybe_float(position.get("distance_to_tp_pct")),
-        "updated_at": _maybe_text(position.get("updated_at")),
+        "unrealized_pnl": unrealized_pnl,
+        "unrealized_pnl_pct": unrealized_pnl_pct,
+        "position_notional": position_notional,
+        "margin_used": margin_used,
+        "roi_pct": roi_pct,
+        "distance_to_sl_pct": distance_to_sl_pct,
+        "distance_to_tp_pct": distance_to_tp_pct,
+        "updated_at": (
+            (exchange_snapshot.get("updated_at") if isinstance(exchange_snapshot, dict) else None)
+            or _maybe_text(position.get("updated_at"))
+        ),
     }
 
 
-def resolve_trailing_state(position: Any) -> dict[str, Any] | None:
-    open_trade_info = resolve_open_trade_info(position)
+def resolve_trailing_state(position: Any, *, open_trade_info: OpenTradeInfo | None = None) -> dict[str, Any] | None:
+    if open_trade_info is None:
+        open_trade_info = resolve_open_trade_info(position)
     if open_trade_info is None:
         return None
 
@@ -236,7 +347,11 @@ def resolve_trailing_state(position: Any) -> dict[str, Any] | None:
 
 def resolve_trade_status(state: dict[str, Any]) -> UiStatus | None:
     position = state.get("position")
-    open_trade_info = resolve_open_trade_info(position)
+    open_trade_info = resolve_open_trade_info(
+        position,
+        state=state,
+        last_price=resolve_last_price(state),
+    )
     if open_trade_info is None:
         return None
 
@@ -265,6 +380,12 @@ def resolve_last_update_timestamp(state: dict[str, Any]) -> str | None:
     position = state.get("position")
     if isinstance(position, dict):
         updated_at = _maybe_text(position.get("updated_at"))
+        if updated_at is not None:
+            return updated_at
+
+    exchange_position = state.get("exchange_position")
+    if isinstance(exchange_position, dict):
+        updated_at = _maybe_text(exchange_position.get("updated_at"))
         if updated_at is not None:
             return updated_at
 
