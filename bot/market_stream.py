@@ -112,6 +112,26 @@ def _to_optional_int(value: Any) -> int | None:
     return numeric if numeric >= 0 else None
 
 
+def _normalize_rest_exchange_position_snapshot(symbol: str, snapshot: dict[str, Any], *, source: str, updated_at: str) -> dict[str, Any]:
+    position_amt = _to_float(snapshot.get("positionAmt"))
+    entry_price = _to_float(snapshot.get("entryPrice"))
+    unrealized_pnl = _to_float(snapshot.get("unRealizedProfit"))
+    isolated_margin = _to_float(snapshot.get("isolatedWallet")) or _to_float(snapshot.get("isolatedMargin"))
+    return {
+        "symbol": str(symbol).upper(),
+        "position_amt": position_amt,
+        "entry_price": entry_price,
+        "unrealized_pnl": unrealized_pnl,
+        "position_side": snapshot.get("positionSide"),
+        "isolated_margin": isolated_margin,
+        "mark_price": _to_float(snapshot.get("markPrice")),
+        "liq_price": _to_float(snapshot.get("liquidationPrice")),
+        "break_even_price": _to_float(snapshot.get("breakEvenPrice")),
+        "updated_at": updated_at,
+        "source": source,
+    }
+
+
 def _format_event_timestamp_ms(value: Any) -> str:
     try:
         ts_ms = int(value)
@@ -278,6 +298,45 @@ class LiveMarketStream:
         self._last_mark_price: float | None = None
         self._last_persist_monotonic: float | None = None
         self._running = False
+
+    def _merge_exchange_position_snapshot_into_state(self, state: dict[str, Any], snapshot: dict[str, Any]) -> None:
+        state["exchange_position"] = dict(snapshot)
+
+        current_position = state.get("position")
+        if not isinstance(current_position, dict):
+            return
+
+        current_position["exchange_position_amt"] = snapshot.get("position_amt")
+        current_position["exchange_entry_price"] = snapshot.get("entry_price")
+        current_position["exchange_unrealized_pnl"] = snapshot.get("unrealized_pnl")
+        current_position["exchange_position_side"] = snapshot.get("position_side")
+        current_position["exchange_isolated_margin"] = snapshot.get("isolated_margin")
+        current_position["exchange_mark_price"] = snapshot.get("mark_price")
+        current_position["exchange_liq_price"] = snapshot.get("liq_price")
+        current_position["exchange_break_even_price"] = snapshot.get("break_even_price")
+        current_position["exchange_position_updated_at"] = snapshot.get("updated_at")
+
+    def _state_exchange_position_needs_enrichment(self, state: dict[str, Any]) -> bool:
+        exchange_position = state.get("exchange_position")
+        if not isinstance(exchange_position, dict):
+            return True
+        return exchange_position.get("liq_price") is None or exchange_position.get("break_even_price") is None
+
+    def _fetch_rest_exchange_position_snapshot(self, *, source: str, updated_at: str) -> dict[str, Any] | None:
+        try:
+            position = self._get_open_position_fn(self._symbol)
+        except Exception as exc:  # noqa: BLE001
+            technical_logger.warning("exchange_position_enrichment_failed symbol=%s source=%s error=%s", self._symbol, source, exc)
+            return None
+        if not isinstance(position, dict):
+            return None
+        set_cached_position(self._symbol, position)
+        return _normalize_rest_exchange_position_snapshot(
+            self._symbol,
+            position,
+            source=source,
+            updated_at=updated_at,
+        )
 
     def start(self) -> bool:
         if self._running:
@@ -598,6 +657,19 @@ class LiveMarketStream:
             technical_logger.warning("user_stream_position_bootstrap_failed symbol=%s error=%s", self._symbol, exc)
         else:
             set_cached_position(self._symbol, position)
+            if isinstance(position, dict):
+                ts_label = datetime.now().strftime(TIMESTAMP_FORMAT)
+                snapshot = _normalize_rest_exchange_position_snapshot(
+                    self._symbol,
+                    position,
+                    source="rest_bootstrap",
+                    updated_at=ts_label,
+                )
+                with self._state_lock:
+                    state = self._state_getter()
+                    if isinstance(state, dict):
+                        self._merge_exchange_position_snapshot_into_state(state, snapshot)
+                        self._save_state_fn(state)
 
     def _start_user_stream(self) -> bool:
         if not USER_STREAM_ENABLED:
@@ -990,12 +1062,30 @@ class LiveMarketStream:
             set_cached_position(self._symbol, cached_position)
 
         ts_label = _format_event_timestamp_ms(event_ts)
+        enriched_snapshot = None
+
+        with self._state_lock:
+            state = self._state_getter()
+            if not isinstance(state, dict):
+                return
+            current_position = state.get("position")
+            should_enrich = abs(position_amt) > 1e-12 and (
+                (isinstance(current_position, dict) and bool(current_position.get("open_pending")))
+                or self._state_exchange_position_needs_enrichment(state)
+            )
+
+        if should_enrich:
+            enriched_snapshot = self._fetch_rest_exchange_position_snapshot(
+                source="rest_after_account_update",
+                updated_at=ts_label,
+            )
 
         with self._state_lock:
             state = self._state_getter()
             if not isinstance(state, dict):
                 return
 
+            previous_exchange_position = state.get("exchange_position") if isinstance(state.get("exchange_position"), dict) else {}
             state["exchange_position"] = {
                 "symbol": self._symbol,
                 "position_amt": position_amt,
@@ -1003,9 +1093,14 @@ class LiveMarketStream:
                 "unrealized_pnl": _to_float(position_update.get("up")),
                 "position_side": position_update.get("ps"),
                 "isolated_margin": _to_float(position_update.get("iw")),
+                "mark_price": self._last_mark_price,
+                "liq_price": _to_float(previous_exchange_position.get("liq_price")),
+                "break_even_price": _to_float(previous_exchange_position.get("break_even_price")),
                 "updated_at": ts_label,
                 "source": "user_stream_account_update",
             }
+            if isinstance(enriched_snapshot, dict):
+                self._merge_exchange_position_snapshot_into_state(state, enriched_snapshot)
 
             current_position = state.get("position")
             if not isinstance(current_position, dict):
@@ -1114,6 +1209,9 @@ class LiveMarketStream:
             next_position["exchange_unrealized_pnl"] = _to_float(position_update.get("up"))
             next_position["exchange_position_side"] = position_update.get("ps")
             next_position["exchange_isolated_margin"] = _to_float(position_update.get("iw"))
+            next_position["exchange_mark_price"] = self._last_mark_price
+            next_position["exchange_liq_price"] = _to_float(next_position.get("exchange_liq_price"))
+            next_position["exchange_break_even_price"] = _to_float(next_position.get("exchange_break_even_price"))
             next_position["exchange_position_updated_at"] = ts_label
             next_position.setdefault("time", next_position.get("entry_time") or ts_label)
             next_position.setdefault("entry_time", next_position.get("time") or ts_label)
