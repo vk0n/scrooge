@@ -1319,6 +1319,17 @@ class LiveMarketStream:
             if not isinstance(state, dict):
                 return
 
+            state["mark_price"] = position_price
+            state["mark_price_updated_at"] = ts_label
+            exchange_position = state.get("exchange_position")
+            if isinstance(exchange_position, dict):
+                exchange_position["mark_price"] = position_price
+                exchange_position["updated_at"] = ts_label
+            current_position = state.get("position")
+            if isinstance(current_position, dict):
+                current_position["exchange_mark_price"] = position_price
+                current_position["exchange_position_updated_at"] = ts_label
+
             refresh_runtime_state_from_price_tick(
                 state,
                 last_price=display_price,

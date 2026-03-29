@@ -36,6 +36,7 @@ type OpenTradeInfo = {
   side: PositionSide;
   size: number;
   entry: number;
+  break_even_price: number | null;
   sl: number | null;
   tp: number | null;
   liq_price: number | null;
@@ -891,14 +892,14 @@ function DashboardContent(): JSX.Element {
   }
 
   async function runBreakEvenSafetyNet(): Promise<void> {
-    if (!isFiniteNumber(entryPrice) || entryPrice <= 0) {
-      setControlError("Entry price is not available.");
+    if (!isFiniteNumber(breakEvenTargetPrice) || breakEvenTargetPrice <= 0) {
+      setControlError("Break-even price is not available.");
       return;
     }
 
     await runControlAction("update-sl", {
-      body: { value: entryPrice },
-      confirmMessage: `Bring the Net to Even at ${entryPrice}?`
+      body: { value: breakEvenTargetPrice },
+      confirmMessage: `Bring the Net to Even at ${breakEvenTargetPrice}?`
     });
   }
 
@@ -1106,6 +1107,8 @@ function DashboardContent(): JSX.Element {
   const unrealizedPnl = openTradeInfo?.unrealized_pnl ?? null;
   const roiPercent = openTradeInfo?.roi_pct ?? null;
   const entryPrice = openTradeInfo?.entry ?? null;
+  const breakEvenPrice = openTradeInfo?.break_even_price ?? null;
+  const breakEvenTargetPrice = isFiniteNumber(breakEvenPrice) ? breakEvenPrice : entryPrice;
   const positionSize = openTradeInfo?.size ?? null;
   const marginUsed = openTradeInfo?.margin_used ?? null;
   const lastPrice = data?.last_price ?? null;
@@ -1135,12 +1138,12 @@ function DashboardContent(): JSX.Element {
   const slDraftPreview = computeTargetPnlPreview(openTradeSide, entryPrice, positionSize, slValue, sl);
   const tpDraftPreview = computeTargetPnlPreview(openTradeSide, entryPrice, positionSize, tpValue, tp);
   const alreadyAtBreakEvenOrBetter =
-    !isFiniteNumber(entryPrice) ||
-    (openTradeSide === "long" && isFiniteNumber(sl) && sl >= entryPrice) ||
-    (openTradeSide === "short" && isFiniteNumber(sl) && sl <= entryPrice);
+    !isFiniteNumber(breakEvenTargetPrice) ||
+    (openTradeSide === "long" && isFiniteNumber(sl) && sl >= breakEvenTargetPrice) ||
+    (openTradeSide === "short" && isFiniteNumber(sl) && sl <= breakEvenTargetPrice);
   const showBreakEvenSafetyNetAction =
     hasOpenPosition &&
-    isFiniteNumber(entryPrice) &&
+    isFiniteNumber(breakEvenTargetPrice) &&
     isFiniteNumber(unrealizedPnl) &&
     unrealizedPnl > 0 &&
     !alreadyAtBreakEvenOrBetter;

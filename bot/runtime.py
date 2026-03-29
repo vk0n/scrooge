@@ -417,6 +417,64 @@ def _append_latest_chart_candle(
         return last_ts_ms
 
 
+def _optional_float(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _sync_exchange_position_snapshot_into_state(
+    current_state: dict[str, Any],
+    *,
+    symbol: str,
+    position_snapshot: dict[str, Any],
+    ts_label: str,
+) -> None:
+    position_amt = _optional_float(position_snapshot.get("positionAmt"))
+    entry_price = _optional_float(position_snapshot.get("entryPrice"))
+    unrealized_pnl = _optional_float(position_snapshot.get("unRealizedProfit"))
+    isolated_margin = (
+        _optional_float(position_snapshot.get("isolatedWallet"))
+        or _optional_float(position_snapshot.get("isolatedMargin"))
+    )
+    mark_price = _optional_float(position_snapshot.get("markPrice"))
+    liq_price = _optional_float(position_snapshot.get("liquidationPrice"))
+    break_even_price = _optional_float(position_snapshot.get("breakEvenPrice"))
+    position_side = position_snapshot.get("positionSide")
+
+    current_state["exchange_position"] = {
+        "symbol": symbol,
+        "position_amt": position_amt,
+        "entry_price": entry_price,
+        "unrealized_pnl": unrealized_pnl,
+        "position_side": position_side,
+        "isolated_margin": isolated_margin,
+        "mark_price": mark_price,
+        "liq_price": liq_price,
+        "break_even_price": break_even_price,
+        "updated_at": ts_label,
+        "source": "rest_position_snapshot",
+    }
+
+    current_position = current_state.get("position")
+    if not isinstance(current_position, dict):
+        return
+
+    current_position["exchange_position_amt"] = position_amt
+    current_position["exchange_entry_price"] = entry_price
+    current_position["exchange_unrealized_pnl"] = unrealized_pnl
+    current_position["exchange_position_side"] = position_side
+    current_position["exchange_isolated_margin"] = isolated_margin
+    current_position["exchange_mark_price"] = mark_price
+    current_position["exchange_liq_price"] = liq_price
+    current_position["exchange_break_even_price"] = break_even_price
+    current_position["exchange_position_updated_at"] = ts_label
+
+
 def _build_command_kwargs(symbol: str, *, leverage: float, fee_rate: float) -> dict[str, Any]:
     return {
         "symbol": symbol,
@@ -611,6 +669,16 @@ if __name__ == "__main__":
 
             pos = get_open_position(current_symbol) if expect_position else get_cached_open_position(current_symbol)
             if pos is not None:
+                with state_lock:
+                    current_state = runtime_context.get("state")
+                    if isinstance(current_state, dict):
+                        _sync_exchange_position_snapshot_into_state(
+                            current_state,
+                            symbol=current_symbol,
+                            position_snapshot=pos,
+                            ts_label=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        )
+                        runtime_context["state"] = current_state
                 cache_health_flags["position_cache_stale_logged"] = False
             return pos
 

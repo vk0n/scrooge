@@ -38,6 +38,7 @@ class OpenTradeInfo(TypedDict):
     side: str
     size: float
     entry: float
+    break_even_price: float | None
     sl: float | None
     tp: float | None
     liq_price: float | None
@@ -54,6 +55,32 @@ class OpenTradeInfo(TypedDict):
     distance_to_sl_pct: float | None
     distance_to_tp_pct: float | None
     updated_at: str | None
+
+
+def _compute_live_unrealized_pnl(
+    *,
+    side: str | None,
+    size: Any,
+    entry: Any,
+    mark_price: Any,
+) -> float | None:
+    normalized_side = _normalize_position_side(side)
+    normalized_size = _maybe_float(size)
+    normalized_entry = _maybe_float(entry)
+    normalized_mark = _maybe_float(mark_price)
+    if (
+        normalized_side is None
+        or normalized_size is None
+        or normalized_entry is None
+        or normalized_mark is None
+        or normalized_size <= 0
+        or normalized_entry <= 0
+        or normalized_mark <= 0
+    ):
+        return None
+    if normalized_side == "short":
+        return (normalized_entry - normalized_mark) * normalized_size
+    return (normalized_mark - normalized_entry) * normalized_size
 
 
 def _ratio_to_percent(numerator: Any, denominator: Any) -> float | None:
@@ -156,6 +183,9 @@ def _extract_exchange_position_snapshot(
                 "entry": entry_price,
                 "unrealized_pnl": unrealized_pnl,
                 "margin_used": _maybe_float(state_exchange.get("isolated_margin")),
+                "mark_price": _maybe_float(state_exchange.get("mark_price")),
+                "liq_price": _maybe_float(state_exchange.get("liq_price")),
+                "break_even_price": _maybe_float(state_exchange.get("break_even_price")),
                 "updated_at": _maybe_text(state_exchange.get("updated_at")),
             }
 
@@ -168,6 +198,9 @@ def _extract_exchange_position_snapshot(
             "entry": _maybe_float(position.get("exchange_entry_price")),
             "unrealized_pnl": _maybe_float(position.get("exchange_unrealized_pnl")),
             "margin_used": _maybe_float(position.get("exchange_isolated_margin")),
+            "mark_price": _maybe_float(position.get("exchange_mark_price")),
+            "liq_price": _maybe_float(position.get("exchange_liq_price")),
+            "break_even_price": _maybe_float(position.get("exchange_break_even_price")),
             "updated_at": _maybe_text(position.get("exchange_position_updated_at")),
         }
 
@@ -274,13 +307,25 @@ def resolve_open_trade_info(
         return None
 
     current_price = _maybe_float(last_price) or _maybe_float(position.get("last_price"))
+    mark_price = (
+        (exchange_snapshot.get("mark_price") if isinstance(exchange_snapshot, dict) else None)
+        or _maybe_float(position.get("exchange_mark_price"))
+    )
+    pricing_price = mark_price or current_price
     sl = _maybe_float(position.get("sl"))
     tp = _maybe_float(position.get("tp"))
-    unrealized_pnl = (
-        (exchange_snapshot.get("unrealized_pnl") if isinstance(exchange_snapshot, dict) else None)
-        if isinstance(exchange_snapshot, dict)
-        else None
+    unrealized_pnl = _compute_live_unrealized_pnl(
+        side=side,
+        size=size,
+        entry=entry,
+        mark_price=pricing_price,
     )
+    if unrealized_pnl is None:
+        unrealized_pnl = (
+            (exchange_snapshot.get("unrealized_pnl") if isinstance(exchange_snapshot, dict) else None)
+            if isinstance(exchange_snapshot, dict)
+            else None
+        )
     if unrealized_pnl is None:
         unrealized_pnl = _maybe_float(position.get("unrealized_pnl"))
 
@@ -295,13 +340,13 @@ def resolve_open_trade_info(
         margin_used = (position_notional / leverage_value) if leverage_value is not None and leverage_value > 0 else _maybe_float(position.get("margin_used"))
     unrealized_pnl_pct = _ratio_to_percent(unrealized_pnl, position_notional)
     roi_pct = _ratio_to_percent(unrealized_pnl, margin_used)
-    if current_price is not None and current_price > 0:
+    if pricing_price is not None and pricing_price > 0:
         if side == "short":
-            distance_to_sl_pct = _ratio_to_percent((sl - current_price), current_price) if sl is not None else None
-            distance_to_tp_pct = _ratio_to_percent((current_price - tp), current_price) if tp is not None else None
+            distance_to_sl_pct = _ratio_to_percent((sl - pricing_price), pricing_price) if sl is not None else None
+            distance_to_tp_pct = _ratio_to_percent((pricing_price - tp), pricing_price) if tp is not None else None
         else:
-            distance_to_sl_pct = _ratio_to_percent((current_price - sl), current_price) if sl is not None else None
-            distance_to_tp_pct = _ratio_to_percent((tp - current_price), current_price) if tp is not None else None
+            distance_to_sl_pct = _ratio_to_percent((pricing_price - sl), pricing_price) if sl is not None else None
+            distance_to_tp_pct = _ratio_to_percent((tp - pricing_price), pricing_price) if tp is not None else None
     else:
         distance_to_sl_pct = _maybe_float(position.get("distance_to_sl_pct"))
         distance_to_tp_pct = _maybe_float(position.get("distance_to_tp_pct"))
@@ -310,9 +355,17 @@ def resolve_open_trade_info(
         "side": side,
         "size": size,
         "entry": entry,
+        "break_even_price": (
+            (exchange_snapshot.get("break_even_price") if isinstance(exchange_snapshot, dict) else None)
+            or _maybe_float(position.get("exchange_break_even_price"))
+        ),
         "sl": sl,
         "tp": tp,
-        "liq_price": _maybe_float(position.get("liq_price")),
+        "liq_price": (
+            (exchange_snapshot.get("liq_price") if isinstance(exchange_snapshot, dict) else None)
+            or _maybe_float(position.get("exchange_liq_price"))
+            or _maybe_float(position.get("liq_price"))
+        ),
         "trail_active": bool(position.get("trail_active", False)),
         "trail_price": _maybe_float(position.get("trail_price")),
         "trail_max": _maybe_float(position.get("trail_max")),
