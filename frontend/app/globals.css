@@ -478,6 +478,14 @@ pre {
   font-weight: 600;
 }
 
+.status-performance-metric-value-closed-trades {
+  color: #d8b15f;
+}
+
+.status-performance-metric-value-success-rate {
+  transition: color 180ms ease;
+}
+
 .status-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

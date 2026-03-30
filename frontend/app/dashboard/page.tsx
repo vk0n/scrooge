@@ -374,6 +374,24 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
+function successRateColor(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "#c6cfdd";
+  }
+
+  const clamped = clampPercent(value);
+  if (clamped <= 20) {
+    return "#f6465d";
+  }
+  if (clamped >= 80) {
+    return "#0ecb81";
+  }
+
+  const normalized = (clamped - 20) / 60;
+  const hue = normalized * 120;
+  return `hsl(${hue.toFixed(1)} 86% 60%)`;
+}
+
 function buildTradeProgressTrackBackground(entryPercent: number, slPercent: number): string {
   const entry = clampPercent(entryPercent);
   const safetyNet = clampPercent(slPercent);
@@ -1585,7 +1603,7 @@ function DashboardContent(): JSX.Element {
                   </div>
                   <div className="status-performance-metric">
                     <span className="status-performance-metric-label">Closed Trades</span>
-                    <span className="status-performance-metric-value value-neutral">
+                    <span className="status-performance-metric-value status-performance-metric-value-closed-trades">
                       {formatNumberValue(performanceClosedTrades, {
                         minimumFractionDigits: 0,
                         maximumFractionDigits: 0
@@ -1594,7 +1612,10 @@ function DashboardContent(): JSX.Element {
                   </div>
                   <div className="status-performance-metric">
                     <span className="status-performance-metric-label">Success Rate</span>
-                    <span className="status-performance-metric-value value-neutral">
+                    <span
+                      className="status-performance-metric-value status-performance-metric-value-success-rate"
+                      style={{ color: successRateColor(performanceWinRate) }}
+                    >
                       {formatUnsignedPercent(performanceWinRate)}
                     </span>
                   </div>
