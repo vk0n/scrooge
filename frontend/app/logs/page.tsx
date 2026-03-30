@@ -104,6 +104,13 @@ function LogsContent(): JSX.Element {
   }
 
   useEffect((): (() => void) => {
+    document.body.classList.add("logs-page-active");
+    return () => {
+      document.body.classList.remove("logs-page-active");
+    };
+  }, []);
+
+  useEffect((): (() => void) => {
     if (!autoRefresh) {
       setWsConnected(false);
       return () => undefined;
@@ -190,7 +197,7 @@ function LogsContent(): JSX.Element {
   const parsedLines = displayedLines.map(parseLogLine);
 
   return (
-    <section className="panel page-shell">
+    <section className="panel page-shell logs-page-panel">
       <p className="dialog-scrooge">
         {autoRefresh
           ? wsConnected

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from services.auth_service import require_control_or_basic_auth
 from services.command_service import enqueue_control_command, get_command_status
+from services.system_service import get_service_status
 
 router = APIRouter()
 
@@ -33,6 +34,18 @@ def _enqueue_action(
     payload: dict[str, object] | None = None,
 ) -> dict[str, object]:
     require_control_or_basic_auth(request=request, control_token=control_token)
+    try:
+        service_status = get_service_status()
+    except RuntimeError:
+        service_status = None
+
+    if service_status is not None and not service_status.running:
+        detail = (
+            f"Scrooge runtime is offline ({service_status.active_state}). "
+            "Instruction cannot be delivered while the office bot is not running."
+        )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+
     try:
         return enqueue_control_command(action=action, requested_by=_requested_by(request), payload=payload)
     except ValueError as exc:

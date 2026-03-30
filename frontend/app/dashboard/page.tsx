@@ -67,6 +67,7 @@ type TrailingState = {
 type TradeSuggestionSide = "buy" | "sell";
 type ControlAction = "start" | "stop" | "restart" | "close_position" | "suggest_trade" | "update_sl" | "update_tp";
 type ControlEndpoint = "start" | "stop" | "restart" | "close-position" | "suggest-trade" | "update-sl" | "update-tp";
+type ControlActionLike = ControlAction | ControlEndpoint;
 
 type ControlResponse = {
   action: ControlAction;
@@ -782,6 +783,105 @@ function closePositionButtonClass(unrealizedPnl: number | null): string {
   return "button-neutral";
 }
 
+function normalizeControlAction(action: ControlActionLike | null | undefined): ControlAction | null {
+  if (!action) {
+    return null;
+  }
+
+  const normalized = action.replaceAll("-", "_");
+  if (
+    normalized === "start" ||
+    normalized === "stop" ||
+    normalized === "restart" ||
+    normalized === "close_position" ||
+    normalized === "suggest_trade" ||
+    normalized === "update_sl" ||
+    normalized === "update_tp"
+  ) {
+    return normalized;
+  }
+
+  return null;
+}
+
+function instructionActionLabel(action: ControlActionLike | null | undefined): string {
+  const normalized = normalizeControlAction(action);
+  switch (normalized) {
+    case "start":
+      return "Open the office";
+    case "stop":
+      return "Close the office";
+    case "restart":
+      return "Restart the office";
+    case "close_position":
+      return "Close the trade";
+    case "suggest_trade":
+      return "Act on your suggestion";
+    case "update_sl":
+      return "Reset the Safety Net";
+    case "update_tp":
+      return "Move the Treasure Mark";
+    default:
+      return "Carry out your instruction";
+  }
+}
+
+function isInstructionPending(status: string | undefined): boolean {
+  return status === "pending" || status === "processing";
+}
+
+function isProminentInstruction(action: ControlActionLike | null | undefined): boolean {
+  const normalized = normalizeControlAction(action);
+  return (
+    normalized === "start" ||
+    normalized === "stop" ||
+    normalized === "restart" ||
+    normalized === "close_position" ||
+    normalized === "suggest_trade"
+  );
+}
+
+function instructionStatusTitle(status: string | undefined): string {
+  if (status === "completed") {
+    return "Instruction fulfilled";
+  }
+  if (status === "failed") {
+    return "Instruction failed";
+  }
+  return "Instruction in motion";
+}
+
+function instructionStatusLabel(status: string | undefined): string {
+  if (status === "completed") {
+    return "Completed";
+  }
+  if (status === "failed") {
+    return "Failed";
+  }
+  if (status === "processing") {
+    return "Processing";
+  }
+  return "Pending";
+}
+
+function instructionOverlaySummary(action: ControlActionLike | null | undefined): string {
+  const normalized = normalizeControlAction(action);
+  switch (normalized) {
+    case "start":
+      return "Scrooge is opening the office and taking his post.";
+    case "stop":
+      return "Scrooge is closing the office and securing the floor.";
+    case "restart":
+      return "Scrooge is straightening the ledgers and reopening the office.";
+    case "close_position":
+      return "Scrooge is closing the trade and settling the books.";
+    case "suggest_trade":
+      return "Scrooge is acting on your instruction at the next live tick.";
+    default:
+      return "Scrooge is carrying out your instruction.";
+  }
+}
+
 function DashboardContent(): JSX.Element {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -792,6 +892,7 @@ function DashboardContent(): JSX.Element {
   const [controlError, setControlError] = useState<string | null>(null);
   const [commandResult, setCommandResult] = useState<ControlResponse | null>(null);
   const [commandStatus, setCommandStatus] = useState<CommandStatusResponse | null>(null);
+  const [dismissedInstructionId, setDismissedInstructionId] = useState<string | null>(null);
   const [showTradeSuggestions, setShowTradeSuggestions] = useState<boolean>(false);
   const [slValue, setSlValue] = useState<string>("");
   const [tpValue, setTpValue] = useState<string>("");
@@ -851,6 +952,7 @@ function DashboardContent(): JSX.Element {
   async function submitControlAction(endpoint: ControlEndpoint, body?: unknown): Promise<boolean> {
     setBusyAction(endpoint);
     setControlError(null);
+    setDismissedInstructionId(null);
     try {
       const response = await fetchApi<ControlResponse>(`/api/control/${endpoint}`, {
         method: "POST",
@@ -1129,6 +1231,13 @@ function DashboardContent(): JSX.Element {
     }
   }, [commandStatus]);
 
+  useEffect(() => {
+    if (!commandStatus?.command_id) {
+      return;
+    }
+    setDismissedInstructionId(null);
+  }, [commandStatus?.command_id]);
+
   const openTradeInfo = data?.open_trade_info ?? null;
   const sl = openTradeInfo?.sl ?? null;
   const tp = openTradeInfo?.tp ?? null;
@@ -1176,6 +1285,14 @@ function DashboardContent(): JSX.Element {
     isFiniteNumber(unrealizedPnl) &&
     unrealizedPnl > 0 &&
     !alreadyAtBreakEvenOrBetter;
+  const latestCommandStatusMatchesResult =
+    commandStatus !== null && commandResult !== null && commandStatus.command_id === commandResult.command_id;
+  const pendingInstructionAction: ControlActionLike | null =
+    busyAction ?? (latestCommandStatusMatchesResult && isInstructionPending(commandStatus.status) ? commandStatus.action : null);
+  const showInstructionOverlay =
+    pendingInstructionAction !== null && isProminentInstruction(pendingInstructionAction);
+  const showInstructionToast =
+    commandStatus !== null && dismissedInstructionId !== commandStatus.command_id;
 
   useEffect(() => {
     if (!hasOpenPosition) {
@@ -1187,6 +1304,42 @@ function DashboardContent(): JSX.Element {
 
   return (
     <section className="panel page-shell office-panel">
+      {showInstructionOverlay ? (
+        <div className="instruction-overlay" role="status" aria-live="polite" aria-label="Instruction in motion">
+          <div className="instruction-overlay-card">
+            <span className="instruction-overlay-seal" aria-hidden="true" />
+            <div className="instruction-overlay-copy">
+              <span className="instruction-overlay-eyebrow">Instruction in motion</span>
+              <strong className="instruction-overlay-title">{instructionActionLabel(pendingInstructionAction)}</strong>
+              <p className="instruction-overlay-message">{instructionOverlaySummary(pendingInstructionAction)}</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {showInstructionToast && commandStatus ? (
+        <div className={`instruction-toast instruction-toast-${commandStatus.status ?? "pending"}`} role="status" aria-live="polite">
+          <div className="instruction-toast-head">
+            <div className="instruction-toast-title-group">
+              <span className="instruction-toast-title">{instructionStatusTitle(commandStatus.status)}</span>
+              <span className="instruction-toast-action">{instructionActionLabel(commandStatus.action)}</span>
+            </div>
+            <button
+              type="button"
+              className="instruction-toast-dismiss"
+              onClick={() => setDismissedInstructionId(commandStatus.command_id)}
+              aria-label="Dismiss instruction notice"
+            >
+              ×
+            </button>
+          </div>
+          <div className="instruction-toast-meta">
+            <span className={commandStatusBadgeClass(commandStatus.status)}>{instructionStatusLabel(commandStatus.status)}</span>
+          </div>
+          <p className="dialog-scrooge instruction-toast-message">
+            {commandStatus.message || `${instructionActionLabel(commandStatus.action)} is underway.`}
+          </p>
+        </div>
+      ) : null}
       {wsFallbackActive ? (
         <p className="dialog-scrooge dialog-scrooge-warning">
           Wire is down (WebSocket disconnected). Courier polling every {POLL_MS / 1000}s.
@@ -1535,7 +1688,6 @@ function DashboardContent(): JSX.Element {
                   Close the Floor
                 </button>
               ) : null}
-              {busyAction ? <span className="dialog-scrooge dialog-scrooge-compact">Executing {busyAction}...</span> : null}
             </div>
           </div>
           <p className="dialog-scrooge">My previous trades:</p>
@@ -1789,16 +1941,6 @@ function DashboardContent(): JSX.Element {
       ) : null}
 
       {controlError ? <p className="dialog-scrooge dialog-scrooge-error">{controlError}</p> : null}
-
-      {commandStatus ? (
-        <div className="kv-item metric-card">
-          <span className="kv-label">Last Order</span>
-          <span className={commandStatusBadgeClass(commandStatus.status)}>
-            {commandStatus.action}: {commandStatus.status}
-          </span>
-          {commandStatus.message ? <span className="dialog-scrooge">{commandStatus.message}</span> : null}
-        </div>
-      ) : null}
 
       {data?.warnings.length ? (
         <>

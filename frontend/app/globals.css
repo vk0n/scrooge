@@ -541,6 +541,180 @@ pre {
   margin-left: auto;
 }
 
+.instruction-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(6, 9, 14, 0.42);
+  backdrop-filter: blur(10px);
+}
+
+.instruction-overlay-card {
+  width: min(100%, 29rem);
+  display: grid;
+  justify-items: center;
+  gap: 0.72rem;
+  border: 1px solid rgba(160, 125, 58, 0.52);
+  border-radius: 16px;
+  padding: 1rem 1.05rem;
+  background: linear-gradient(180deg, rgba(28, 20, 9, 0.92), rgba(18, 15, 10, 0.97));
+  box-shadow:
+    0 24px 56px rgba(0, 0, 0, 0.4),
+    inset 0 0 0 1px rgba(201, 162, 86, 0.12);
+  text-align: center;
+}
+
+.instruction-overlay-seal {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+  border: 1px solid rgba(196, 161, 88, 0.64);
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 217, 146, 0.38), transparent 42%),
+    linear-gradient(180deg, rgba(132, 96, 38, 0.94), rgba(79, 58, 24, 0.98));
+  box-shadow:
+    inset 0 0 0 1px rgba(247, 217, 151, 0.16),
+    0 0 22px rgba(255, 176, 32, 0.18);
+  position: relative;
+}
+
+.instruction-overlay-seal::after {
+  content: "";
+  position: absolute;
+  inset: 0.58rem;
+  border-radius: 999px;
+  border: 2px solid rgba(247, 226, 181, 0.88);
+  animation: instructionPulse 1.5s ease-in-out infinite;
+}
+
+.instruction-overlay-copy {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.instruction-overlay-eyebrow {
+  color: #f7dca9;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.instruction-overlay-title {
+  font-size: 1.08rem;
+  color: #fff2d3;
+  line-height: 1.3;
+}
+
+.instruction-overlay-message {
+  color: #e8d9b3;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.instruction-toast {
+  position: fixed;
+  top: calc(0.95rem + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 85;
+  width: min(calc(100vw - 1.2rem), 30rem);
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid rgba(95, 108, 128, 0.32);
+  border-radius: 16px;
+  padding: 0.8rem 0.9rem;
+  background: rgba(9, 13, 20, 0.94);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 1px rgba(116, 128, 147, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+.instruction-toast-pending,
+.instruction-toast-processing {
+  border-color: rgba(170, 135, 63, 0.42);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 1px rgba(183, 149, 78, 0.1);
+}
+
+.instruction-toast-completed {
+  border-color: rgba(41, 153, 107, 0.32);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 1px rgba(41, 153, 107, 0.1);
+}
+
+.instruction-toast-failed {
+  border-color: rgba(177, 61, 76, 0.38);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 1px rgba(177, 61, 76, 0.1);
+}
+
+.instruction-toast-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.instruction-toast-title-group {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.instruction-toast-title {
+  color: #eef2fa;
+  font-size: 0.96rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.instruction-toast-action {
+  color: #aeb8ca;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.instruction-toast-dismiss {
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0;
+  border-radius: 999px;
+  border-color: rgba(101, 114, 134, 0.48);
+  background: rgba(18, 23, 33, 0.9);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.instruction-toast-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.instruction-toast-message {
+  margin: 0;
+}
+
+@keyframes instructionPulse {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.76;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 1;
+  }
+}
+
 .trade-suggest-toolbar {
   display: inline-grid;
   justify-self: end;
@@ -2155,6 +2329,36 @@ pre {
   scrollbar-gutter: stable;
 }
 
+.logs-page-panel {
+  min-height: 0;
+}
+
+body.logs-page-active {
+  overflow: hidden;
+}
+
+body.logs-page-active main.app-shell {
+  height: 100dvh;
+  min-height: 100dvh;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+body.logs-page-active .logs-page-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+  overflow: hidden;
+}
+
+body.logs-page-active .logs-page-panel .log-box {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+}
+
 .log-feed {
   display: grid;
   gap: 0.38rem;
@@ -2498,6 +2702,21 @@ pre {
     padding: 0.62rem;
   }
 
+  .instruction-overlay {
+    padding: 0.85rem;
+  }
+
+  .instruction-overlay-card {
+    border-radius: 14px;
+    padding: 0.88rem 0.82rem;
+  }
+
+  .instruction-toast {
+    top: calc(0.72rem + env(safe-area-inset-top, 0px));
+    width: min(calc(100vw - 0.9rem), 28rem);
+    padding: 0.72rem 0.78rem;
+  }
+
   .panel {
     border-radius: 12px;
     padding: 0.78rem;
@@ -2577,6 +2796,15 @@ pre {
     max-height: 340px;
   }
 
+  .logs-page-panel {
+    min-height: auto;
+  }
+
+  .logs-page-panel .log-box {
+    height: auto;
+    max-height: 340px;
+  }
+
   .log-line {
     grid-template-columns: 1fr;
     gap: 0.28rem;
@@ -2588,6 +2816,15 @@ pre {
 
   body {
     padding-bottom: 5rem;
+  }
+
+  body.logs-page-active {
+    padding-bottom: 0;
+  }
+
+  body.logs-page-active main.app-shell {
+    height: calc(100dvh - 5.35rem - env(safe-area-inset-bottom, 0px));
+    min-height: calc(100dvh - 5.35rem - env(safe-area-inset-bottom, 0px));
   }
 
   .chart-page-shell {

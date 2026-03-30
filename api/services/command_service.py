@@ -8,6 +8,8 @@ from typing import Any
 
 import redis
 
+from services.system_service import get_service_status
+
 
 REDIS_HOST = os.getenv("SCROOGE_REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("SCROOGE_REDIS_PORT", "6379"))
@@ -15,6 +17,7 @@ REDIS_DB = int(os.getenv("SCROOGE_REDIS_DB", "0"))
 CONTROL_QUEUE_KEY = os.getenv("SCROOGE_CONTROL_QUEUE_KEY", "scrooge:control:queue")
 COMMAND_STATUS_PREFIX = os.getenv("SCROOGE_COMMAND_STATUS_PREFIX", "scrooge:control:command:")
 COMMAND_STATUS_TTL_SECONDS = int(os.getenv("SCROOGE_COMMAND_STATUS_TTL_SECONDS", "86400"))
+COMMAND_STALE_AFTER_SECONDS = int(os.getenv("SCROOGE_COMMAND_STALE_AFTER_SECONDS", "20"))
 SUPPORTED_ACTIONS = {
     "start",
     "stop",
@@ -28,6 +31,16 @@ SUPPORTED_ACTIONS = {
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _client() -> redis.Redis:
@@ -111,4 +124,39 @@ def get_command_status(command_id: str) -> dict[str, Any] | None:
             payload["payload"] = json.loads(raw_command_payload)
         except json.JSONDecodeError:
             payload["payload"] = raw_command_payload
+
+    status_value = str(payload.get("status", "")).strip().lower()
+    if status_value in {"pending", "processing"}:
+        try:
+            service_status = get_service_status()
+        except RuntimeError:
+            service_status = None
+
+        if service_status is not None:
+            payload["service_status"] = {
+                "service_name": service_status.service_name,
+                "running": service_status.running,
+                "active_state": service_status.active_state,
+                "sub_state": service_status.sub_state,
+                "unit_file_state": service_status.unit_file_state,
+            }
+            if not service_status.running:
+                payload["status"] = "failed"
+                payload["message"] = (
+                    f"Instruction could not be delivered because the Scrooge runtime is offline "
+                    f"({service_status.active_state})."
+                )
+                return payload
+
+        updated_at = _parse_iso(payload.get("updated_at"))
+        created_at = _parse_iso(payload.get("created_at"))
+        reference_ts = updated_at or created_at
+        if reference_ts is not None:
+            age_seconds = (datetime.now(UTC) - reference_ts.astimezone(UTC)).total_seconds()
+            if age_seconds >= COMMAND_STALE_AFTER_SECONDS:
+                payload["status"] = "failed"
+                payload["message"] = (
+                    "Instruction timed out before the Scrooge runtime acknowledged it. "
+                    "The office bot may be offline or not polling the command queue."
+                )
     return payload
