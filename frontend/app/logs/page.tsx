@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
@@ -84,6 +84,8 @@ function LogsContent(): JSX.Element {
   const [loading, setLoading] = useState<boolean>(true);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [logPage, setLogPage] = useState<number>(0);
+  const logBoxRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollTargetRef = useRef<"top" | "bottom" | null>(null);
 
   async function loadLogs(silent = false): Promise<void> {
     if (!silent) {
@@ -199,6 +201,25 @@ function LogsContent(): JSX.Element {
   const hasOlderLogs = pageStart > 0;
   const hasNewerLogs = logPageIndex > 0;
 
+  useEffect(() => {
+    if (!pendingScrollTargetRef.current) {
+      return;
+    }
+    const node = logBoxRef.current;
+    if (!node) {
+      return;
+    }
+    const target = pendingScrollTargetRef.current;
+    pendingScrollTargetRef.current = null;
+    requestAnimationFrame(() => {
+      if (target === "bottom") {
+        node.scrollTop = node.scrollHeight;
+        return;
+      }
+      node.scrollTop = 0;
+    });
+  }, [logPageIndex, displayedLines.length]);
+
   return (
     <section className="panel page-shell logs-page-panel">
       <p className="dialog-scrooge">
@@ -216,7 +237,7 @@ function LogsContent(): JSX.Element {
               ))}
             </ul>
           ) : null}
-          <div className="log-box log-feed log-box-newest-first">
+          <div ref={logBoxRef} className="log-box log-feed log-box-newest-first">
             {parsedLines.map((line, index) => (
               <article key={`${line.raw}-${index}`} className={`log-line log-line-${line.tone}`}>
                 {line.timestamp ? <span className="log-line-timestamp">[{line.timestamp}]</span> : null}
@@ -237,7 +258,10 @@ function LogsContent(): JSX.Element {
               <button
                 type="button"
                 className="dialog-user-btn trade-history-nav-button logs-history-nav-button logs-history-nav-button-later"
-                onClick={() => setLogPage((currentPage) => Math.max(0, currentPage - 1))}
+                onClick={() => {
+                  pendingScrollTargetRef.current = "bottom";
+                  setLogPage((currentPage) => Math.max(0, currentPage - 1));
+                }}
                 disabled={!hasNewerLogs}
               >
                 Later
@@ -246,7 +270,10 @@ function LogsContent(): JSX.Element {
                 <button
                   type="button"
                   className="dialog-user-btn trade-history-nav-button logs-history-nav-button logs-history-nav-button-latest"
-                  onClick={() => setLogPage(0)}
+                  onClick={() => {
+                    pendingScrollTargetRef.current = "top";
+                    setLogPage(0);
+                  }}
                 >
                   Latest
                 </button>
@@ -256,7 +283,10 @@ function LogsContent(): JSX.Element {
               <button
                 type="button"
                 className="dialog-user-btn trade-history-nav-button logs-history-nav-button logs-history-nav-button-earlier"
-                onClick={() => setLogPage((currentPage) => Math.min(logPageCount - 1, currentPage + 1))}
+                onClick={() => {
+                  pendingScrollTargetRef.current = "top";
+                  setLogPage((currentPage) => Math.min(logPageCount - 1, currentPage + 1));
+                }}
                 disabled={!hasOlderLogs}
               >
                 Earlier
