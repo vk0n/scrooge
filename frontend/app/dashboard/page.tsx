@@ -883,8 +883,18 @@ function instructionOverlaySummary(action: ControlActionLike | null | undefined)
     case "suggest_trade":
       return "Scrooge is acting on your instruction at the next live tick.";
     default:
-      return "Scrooge is carrying out your instruction.";
+  return "Scrooge is carrying out your instruction.";
   }
+}
+
+function buildQueuedCommandStatus(response: ControlResponse): CommandStatusResponse {
+  return {
+    command_id: response.command_id,
+    action: response.action,
+    status: response.status || "pending",
+    message: "",
+    updated_at: response.queued_at
+  };
 }
 
 function DashboardContent(): JSX.Element {
@@ -965,8 +975,13 @@ function DashboardContent(): JSX.Element {
         body
       });
       setCommandResult(response);
-      const statusPayload = await fetchApi<CommandStatusResponse>(`/api/control/commands/${response.command_id}`);
-      setCommandStatus(statusPayload);
+      setCommandStatus(buildQueuedCommandStatus(response));
+      try {
+        const statusPayload = await fetchApi<CommandStatusResponse>(`/api/control/commands/${response.command_id}`);
+        setCommandStatus(statusPayload);
+      } catch {
+        // Keep the queued placeholder status and let the follow-up poll resolve it.
+      }
       return true;
     } catch (err) {
       setControlError(err instanceof Error ? err.message : `Failed to execute ${endpoint}`);
