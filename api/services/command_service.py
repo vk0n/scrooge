@@ -136,3 +136,5 @@ def get_command_status(command_id: str) -> dict[str, Any] | None:
                     "He did not acknowledge it in time; the office wire may be down or Scrooge may not be tending the command queue."
                 )
                 return payload
+
+    return payload
