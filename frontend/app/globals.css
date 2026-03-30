@@ -2453,6 +2453,29 @@ body.logs-page-active .logs-page-panel .log-box {
     inset 0 0 0 1px rgba(118, 128, 146, 0.14);
 }
 
+.logs-history-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.72rem;
+}
+
+.logs-history-center-spacer {
+  min-height: 1px;
+}
+
+.logs-history-nav-button-later {
+  justify-self: start;
+}
+
+.logs-history-nav-button-earlier {
+  justify-self: end;
+}
+
+.logs-history-nav-button-latest {
+  justify-self: center;
+}
+
 .chart-surface {
   width: 100%;
   border: 1px solid var(--border);
@@ -2803,6 +2826,37 @@ body.logs-page-active .logs-page-panel .log-box {
   .logs-page-panel .log-box {
     height: auto;
     max-height: 340px;
+  }
+
+  .logs-history-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "later earlier"
+      "latest latest";
+    align-items: stretch;
+  }
+
+  .logs-history-nav-button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .logs-history-nav-button-later {
+    grid-area: later;
+  }
+
+  .logs-history-nav-button-earlier {
+    grid-area: earlier;
+  }
+
+  .logs-history-nav-button-latest {
+    grid-area: latest;
+    justify-self: center;
+    width: min(100%, 12rem);
+  }
+
+  .logs-history-center-spacer {
+    display: none;
   }
 
   .log-line {

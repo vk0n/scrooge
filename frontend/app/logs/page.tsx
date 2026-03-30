@@ -23,7 +23,8 @@ type ParsedLogLine = {
   messageLead: string;
 };
 
-const DEFAULT_LINES = 200;
+const LOG_WINDOW_LINES = 200;
+const LOG_PAGE_SIZE = 10;
 const POLL_MS = 60000;
 const WS_RECONNECT_MS = 5000;
 
@@ -81,17 +82,15 @@ function LogsContent(): JSX.Element {
   const [data, setData] = useState<LogsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [lineCount, setLineCount] = useState<number>(DEFAULT_LINES);
-  const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
-  const [newestFirst, setNewestFirst] = useState<boolean>(true);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [logPage, setLogPage] = useState<number>(0);
 
-  async function loadLogs(lines: number, silent = false): Promise<void> {
+  async function loadLogs(silent = false): Promise<void> {
     if (!silent) {
       setLoading(true);
     }
     try {
-      const payload = await fetchApi<LogsPayload>(`/api/logs?lines=${encodeURIComponent(String(lines))}`);
+      const payload = await fetchApi<LogsPayload>(`/api/logs?lines=${encodeURIComponent(String(LOG_WINDOW_LINES))}`);
       setData(payload);
       setError(null);
     } catch (err) {
@@ -111,11 +110,6 @@ function LogsContent(): JSX.Element {
   }, []);
 
   useEffect((): (() => void) => {
-    if (!autoRefresh) {
-      setWsConnected(false);
-      return () => undefined;
-    }
-
     let closedByUser = false;
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
@@ -130,7 +124,7 @@ function LogsContent(): JSX.Element {
       const wsUrl = buildWebSocketUrl("/ws/status", {
         username: creds.username,
         password: creds.password,
-        lines: String(lineCount),
+        lines: String(LOG_WINDOW_LINES),
       });
       if (!wsUrl) {
         setWsConnected(false);
@@ -155,7 +149,7 @@ function LogsContent(): JSX.Element {
       };
       socket.onclose = () => {
         setWsConnected(false);
-        if (!closedByUser && autoRefresh) {
+        if (!closedByUser) {
           reconnectTimer = window.setTimeout(connect, WS_RECONNECT_MS);
         }
       };
@@ -175,92 +169,46 @@ function LogsContent(): JSX.Element {
         socket.close();
       }
     };
-  }, [autoRefresh, lineCount]);
+  }, []);
 
   useEffect((): (() => void) => {
-    void loadLogs(lineCount, false);
-    if (!autoRefresh) {
-      return () => undefined;
-    }
+    void loadLogs(false);
     if (wsConnected) {
       return () => undefined;
     }
     const intervalId = window.setInterval(() => {
-      void loadLogs(lineCount, true);
+      void loadLogs(true);
     }, POLL_MS);
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [autoRefresh, lineCount, wsConnected]);
+  }, [wsConnected]);
 
-  const displayedLines = data ? (newestFirst ? [...data.lines].reverse() : data.lines) : [];
+  const totalLines = data?.lines.length ?? 0;
+  const logPageCount = Math.max(1, Math.ceil(totalLines / LOG_PAGE_SIZE));
+  const logPageIndex = Math.min(logPage, logPageCount - 1);
+
+  useEffect(() => {
+    setLogPage((currentPage) => Math.min(currentPage, logPageCount - 1));
+  }, [logPageCount]);
+
+  const pageEnd = Math.max(0, totalLines - logPageIndex * LOG_PAGE_SIZE);
+  const pageStart = Math.max(0, pageEnd - LOG_PAGE_SIZE);
+  const displayedLines = data ? data.lines.slice(pageStart, pageEnd).reverse() : [];
   const parsedLines = displayedLines.map(parseLogLine);
+  const hasOlderLogs = pageStart > 0;
+  const hasNewerLogs = logPageIndex > 0;
 
   return (
     <section className="panel page-shell logs-page-panel">
       <p className="dialog-scrooge">
-        {autoRefresh
-          ? wsConnected
-            ? newestFirst
-              ? "Live quill: freshest entries arrive at the top."
-              : "Live quill: entries stream in real time."
-            : `Courier mode: polling every ${POLL_MS / 1000}s.`
-          : "Manual reading mode: auto updates disabled."}
+        Live quill: freshest entries arrive at the top.
       </p>
-      <div className="toolbar logs-toolbar">
-        <div className="logs-toolbar-group">
-          <label htmlFor="lineCount" className="line-count-inline dialog-user-field">
-            <span>Rows</span>
-            <input
-              id="lineCount"
-              type="number"
-              min={1}
-              max={5000}
-              value={lineCount}
-              onChange={(event) => {
-                const value = Number(event.target.value);
-                if (Number.isFinite(value) && value >= 1 && value <= 5000) {
-                  setLineCount(value);
-                }
-              }}
-            />
-          </label>
-          <div className="logs-toolbar-toggles">
-            <label htmlFor="autoRefresh" className="field-inline dialog-user-toggle logs-toolbar-toggle">
-              <input
-                id="autoRefresh"
-                type="checkbox"
-                className="dialog-user-check"
-                checked={autoRefresh}
-                onChange={(event) => setAutoRefresh(event.target.checked)}
-              />
-              Auto Tail
-            </label>
-            <label htmlFor="newestFirst" className="field-inline dialog-user-toggle logs-toolbar-toggle">
-              <input
-                id="newestFirst"
-                type="checkbox"
-                className="dialog-user-check"
-                checked={newestFirst}
-                onChange={(event) => setNewestFirst(event.target.checked)}
-              />
-              Newest First
-            </label>
-          </div>
-        </div>
-        <div className="logs-toolbar-rail">
-          {loading ? <span className="dialog-scrooge dialog-scrooge-compact">Loading...</span> : null}
-          <button type="button" className="dialog-user-btn logs-toolbar-btn" onClick={() => void loadLogs(lineCount, false)}>
-            Read Again
-          </button>
-        </div>
-      </div>
+      {loading ? <p className="dialog-scrooge dialog-scrooge-compact">Opening the ledger...</p> : null}
+      {!wsConnected ? <p className="dialog-scrooge dialog-scrooge-warning">Courier fallback is polling quietly.</p> : null}
       {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
       {data ? (
         <>
-          <p className="dialog-scrooge">
-            Showing {newestFirst ? "newest" : "oldest"} visible order: {data.returned_lines} / {data.requested_lines}
-          </p>
           {data.warnings?.length ? (
             <ul className="warning-list">
               {data.warnings.map((warning) => (
@@ -268,7 +216,7 @@ function LogsContent(): JSX.Element {
               ))}
             </ul>
           ) : null}
-          <div className={`log-box log-feed${newestFirst ? " log-box-newest-first" : ""}`}>
+          <div className="log-box log-feed log-box-newest-first">
             {parsedLines.map((line, index) => (
               <article key={`${line.raw}-${index}`} className={`log-line log-line-${line.tone}`}>
                 {line.timestamp ? <span className="log-line-timestamp">[{line.timestamp}]</span> : null}
@@ -284,6 +232,37 @@ function LogsContent(): JSX.Element {
               </article>
             ))}
           </div>
+          {totalLines > LOG_PAGE_SIZE ? (
+            <div className="toolbar logs-history-toolbar">
+              <button
+                type="button"
+                className="dialog-user-btn trade-history-nav-button logs-history-nav-button logs-history-nav-button-later"
+                onClick={() => setLogPage((currentPage) => Math.max(0, currentPage - 1))}
+                disabled={!hasNewerLogs}
+              >
+                Later
+              </button>
+              {hasNewerLogs ? (
+                <button
+                  type="button"
+                  className="dialog-user-btn trade-history-nav-button logs-history-nav-button logs-history-nav-button-latest"
+                  onClick={() => setLogPage(0)}
+                >
+                  Latest
+                </button>
+              ) : (
+                <span className="logs-history-center-spacer" aria-hidden="true" />
+              )}
+              <button
+                type="button"
+                className="dialog-user-btn trade-history-nav-button logs-history-nav-button logs-history-nav-button-earlier"
+                onClick={() => setLogPage((currentPage) => Math.min(logPageCount - 1, currentPage + 1))}
+                disabled={!hasOlderLogs}
+              >
+                Earlier
+              </button>
+            </div>
+          ) : null}
         </>
       ) : null}
     </section>
