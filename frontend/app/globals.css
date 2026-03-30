@@ -356,19 +356,32 @@ pre {
 }
 
 .status-helper {
-  margin-top: -0.2rem;
-  color: #9ea8ba;
-  font-size: 0.83rem;
-  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  margin-top: -0.04rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.18rem 0;
+  color: #aab1bf;
+  font-size: 0.81rem;
+  text-align: center;
 }
 
 .status-helper-primary,
 .status-helper-last-price {
-  display: inline;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.18rem;
+  white-space: nowrap;
 }
 
 .status-helper-separator {
-  display: inline;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 0.32rem;
+  color: #8d95a5;
 }
 
 .status-helper-value {
@@ -627,8 +640,20 @@ pre {
 }
 
 .office-runtime-toolbar {
-  justify-content: flex-end;
-  margin-left: auto;
+  justify-content: flex-start;
+  margin-left: 0;
+}
+
+.office-runtime-toolbar-open {
+  justify-content: center;
+}
+
+.office-idle-actions {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: space-between;
+  align-items: start;
+  gap: 0.75rem;
 }
 
 .instruction-overlay {
@@ -1111,6 +1136,12 @@ pre {
   margin-left: auto;
   gap: 0.42rem;
   width: fit-content;
+}
+
+.config-toolbar-centered {
+  width: 100%;
+  margin-left: 0;
+  justify-content: center;
 }
 
 .config-action-btn {
@@ -2923,16 +2954,43 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .status-performance-head {
-    grid-template-columns: 1fr;
-    gap: 0.42rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.4rem;
+    align-items: center;
   }
 
   .status-performance-window-toggle {
-    justify-content: flex-start;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 0.22rem;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .status-performance-title {
+    white-space: nowrap;
+  }
+
+  .status-performance-window-btn {
+    min-height: 1.56rem;
+    padding: 0.16rem 0.38rem;
+    font-size: 0.72rem;
   }
 
   .status-performance-metrics {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .status-performance-metric:first-child {
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.32rem 0.5rem;
+  }
+
+  .status-performance-metric:first-child .status-performance-metric-label,
+  .status-performance-metric:first-child .status-performance-metric-value {
+    margin: 0;
   }
 
   .status-chip {
@@ -2951,6 +3009,27 @@ body.logs-page-active .logs-page-panel .log-box {
     max-width: 100%;
     white-space: normal;
     text-align: left;
+  }
+
+  .status-helper {
+    display: grid;
+    gap: 0.12rem;
+    justify-items: center;
+    text-align: center;
+  }
+
+  .status-helper-primary,
+  .status-helper-last-price {
+    display: inline-flex;
+    justify-content: center;
+  }
+
+  .status-helper-last-price {
+    width: 100%;
+  }
+
+  .status-helper-separator-secondary {
+    display: none;
   }
 
   .metric-card .metric-value {
@@ -3122,7 +3201,7 @@ body.logs-page-active .logs-page-panel .log-box {
     margin-top: 0.08rem;
   }
 
-  .status-helper-separator {
+  .status-helper-separator-secondary {
     display: none;
   }
 
@@ -3365,6 +3444,11 @@ body.logs-page-active .logs-page-panel .log-box {
     justify-content: stretch;
   }
 
+  .office-idle-actions {
+    grid-template-columns: 1fr;
+    gap: 0.45rem;
+  }
+
   .trade-suggest-toolbar {
     display: grid;
     justify-self: stretch;
@@ -3378,6 +3462,14 @@ body.logs-page-active .logs-page-panel .log-box {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     justify-content: stretch;
+  }
+
+  .office-idle-actions > .trade-suggest-toolbar {
+    order: 1;
+  }
+
+  .office-idle-actions > .office-runtime-toolbar {
+    order: 2;
   }
 
   .trade-suggest-toolbar > .dialog-user-btn,

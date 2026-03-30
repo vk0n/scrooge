@@ -166,11 +166,11 @@ const PERFORMANCE_WINDOWS: Array<{
   lookbackDays: number | null;
   proseLabel: string;
 }> = [
-  { key: "30d", label: "30d", lookbackDays: 30, proseLabel: "last 30 days" },
-  { key: "90d", label: "90d", lookbackDays: 90, proseLabel: "last 90 days" },
-  { key: "180d", label: "180d", lookbackDays: 180, proseLabel: "last 180 days" },
-  { key: "365d", label: "365d", lookbackDays: 365, proseLabel: "last 365 days" },
-  { key: "all", label: "All", lookbackDays: null, proseLabel: "all time" },
+  { key: "30d", label: "30D", lookbackDays: 30, proseLabel: "last 30 days" },
+  { key: "90d", label: "3M", lookbackDays: 90, proseLabel: "last 3 months" },
+  { key: "180d", label: "6M", lookbackDays: 180, proseLabel: "last 6 months" },
+  { key: "365d", label: "1Y", lookbackDays: 365, proseLabel: "last year" },
+  { key: "all", label: "ALL", lookbackDays: null, proseLabel: "all time" },
 ];
 const COMMON_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "EUR", "TRY", "USD"];
 
@@ -1539,19 +1539,6 @@ function DashboardContent(): JSX.Element {
                 </span>
               </div>
             </div>
-            <p className="status-helper">
-              <span className="status-helper-primary">
-                Ticker: <span className="status-helper-value">{displayValue(data.symbol)}</span> • Leverage:{" "}
-                <span className="status-helper-value">{formatLeverage(data.leverage)}</span>
-              </span>
-              <span className="status-helper-last-price">
-                <span className="status-helper-separator" aria-hidden="true">
-                  {" "}
-                  •{" "}
-                </span>
-                Last Price: <span className="status-helper-value">{formatPrice(lastPrice)}</span>
-              </span>
-            </p>
             <div className="status-performance-strip" aria-live="polite">
               <div className="status-performance-head">
                 <span className="status-performance-title">Recent Performance</span>
@@ -1597,13 +1584,7 @@ function DashboardContent(): JSX.Element {
                     </span>
                   </div>
                   <div className="status-performance-metric">
-                    <span className="status-performance-metric-label">Success rate</span>
-                    <span className="status-performance-metric-value value-neutral">
-                      {formatUnsignedPercent(performanceWinRate)}
-                    </span>
-                  </div>
-                  <div className="status-performance-metric">
-                    <span className="status-performance-metric-label">Closed trades</span>
+                    <span className="status-performance-metric-label">Closed Trades</span>
                     <span className="status-performance-metric-value value-neutral">
                       {formatNumberValue(performanceClosedTrades, {
                         minimumFractionDigits: 0,
@@ -1611,9 +1592,30 @@ function DashboardContent(): JSX.Element {
                       })}
                     </span>
                   </div>
+                  <div className="status-performance-metric">
+                    <span className="status-performance-metric-label">Success Rate</span>
+                    <span className="status-performance-metric-value value-neutral">
+                      {formatUnsignedPercent(performanceWinRate)}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
+            <p className="status-helper">
+              <span className="status-helper-primary">
+                Ticker: <span className="status-helper-value">{displayValue(data.symbol)}</span>
+                <span className="status-helper-separator status-helper-separator-primary" aria-hidden="true">
+                  •
+                </span>
+                Leverage: <span className="status-helper-value">{formatLeverage(data.leverage)}</span>
+              </span>
+              <span className="status-helper-separator status-helper-separator-secondary" aria-hidden="true">
+                •
+              </span>
+              <span className="status-helper-last-price">
+                Last Price: <span className="status-helper-value">{formatPrice(lastPrice)}</span>
+              </span>
+            </p>
             <details
               className="position-accordion position-accordion-featured"
               open={hasOpenPosition && positionExpanded}
@@ -1857,64 +1859,92 @@ function DashboardContent(): JSX.Element {
               </div>
             </details>
             {!hasOpenPosition ? (
-              <div className="toolbar trade-suggest-toolbar">
-                <button
-                  type="button"
-                  className="dialog-user-btn"
-                  onClick={() => setShowTradeSuggestions((prev) => !prev)}
-                  disabled={busyAction !== null}
-                >
-                  Suggest a Trade
-                </button>
-                {showTradeSuggestions ? (
-                  <div className="trade-suggest-actions">
+              <div className="office-idle-actions">
+                <div className="toolbar office-runtime-toolbar">
+                  {!tradingEnabled ? (
                     <button
                       type="button"
-                      className="dialog-user-btn button-success"
-                      onClick={() => void runSuggestedTrade("buy")}
+                      className="dialog-user-btn"
+                      onClick={() =>
+                        void runControlAction("start", {
+                          confirmMessage: "Open the trading floor now?"
+                        })
+                      }
                       disabled={busyAction !== null}
                     >
-                      Buy
+                      Open for Business
                     </button>
+                  ) : (
                     <button
                       type="button"
-                      className="dialog-user-btn button-danger"
-                      onClick={() => void runSuggestedTrade("sell")}
+                      className="dialog-user-btn"
+                      onClick={() => void runCloseFloorFlow()}
                       disabled={busyAction !== null}
                     >
-                      Sell
+                      Close the Floor
                     </button>
-                  </div>
-                ) : null}
+                  )}
+                </div>
+                <div className="toolbar trade-suggest-toolbar trade-suggest-toolbar-idle">
+                  <button
+                    type="button"
+                    className="dialog-user-btn"
+                    onClick={() => setShowTradeSuggestions((prev) => !prev)}
+                    disabled={busyAction !== null}
+                  >
+                    Suggest a Trade
+                  </button>
+                  {showTradeSuggestions ? (
+                    <div className="trade-suggest-actions">
+                      <button
+                        type="button"
+                        className="dialog-user-btn button-success"
+                        onClick={() => void runSuggestedTrade("buy")}
+                        disabled={busyAction !== null}
+                      >
+                        Buy
+                      </button>
+                      <button
+                        type="button"
+                        className="dialog-user-btn button-danger"
+                        onClick={() => void runSuggestedTrade("sell")}
+                        disabled={busyAction !== null}
+                      >
+                        Sell
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ) : null}
 
-            <div className="toolbar office-runtime-toolbar">
-              {!tradingEnabled ? (
-                <button
-                  type="button"
-                  className="dialog-user-btn"
-                  onClick={() =>
-                    void runControlAction("start", {
-                      confirmMessage: "Open the trading floor now?"
-                    })
-                  }
-                  disabled={busyAction !== null}
-                >
-                  Open for Business
-                </button>
-              ) : null}
-              {tradingEnabled ? (
-                <button
-                  type="button"
-                  className="dialog-user-btn"
-                  onClick={() => void runCloseFloorFlow()}
-                  disabled={busyAction !== null}
-                >
-                  Close the Floor
-                </button>
-              ) : null}
-            </div>
+            {hasOpenPosition ? (
+              <div className="toolbar office-runtime-toolbar office-runtime-toolbar-open">
+                {!tradingEnabled ? (
+                  <button
+                    type="button"
+                    className="dialog-user-btn"
+                    onClick={() =>
+                      void runControlAction("start", {
+                        confirmMessage: "Open the trading floor now?"
+                      })
+                    }
+                    disabled={busyAction !== null}
+                  >
+                    Open for Business
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="dialog-user-btn"
+                    onClick={() => void runCloseFloorFlow()}
+                    disabled={busyAction !== null}
+                  >
+                    Close the Floor
+                  </button>
+                )}
+              </div>
+            ) : null}
           </div>
           <p className="dialog-scrooge">My previous trades:</p>
           <div className="section-block">
@@ -2117,7 +2147,7 @@ function DashboardContent(): JSX.Element {
                 </div>
               </div>
             )}
-            <div className="toolbar config-toolbar">
+            <div className={`toolbar config-toolbar${!contractEditing ? " config-toolbar-centered" : ""}`}>
               {contractEditing ? (
                 <>
                   <button
@@ -2144,7 +2174,7 @@ function DashboardContent(): JSX.Element {
               ) : (
                 <button
                   type="button"
-                  className="dialog-user-btn config-action-btn"
+                  className="dialog-user-btn config-action-btn config-action-btn-centered"
                   onClick={() => {
                     setRawConfigDraft(rawConfigText);
                     setContractEditing(true);
