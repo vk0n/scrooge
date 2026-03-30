@@ -120,13 +120,31 @@ type TradeHistoryItem = {
 
 type TradeHistoryResponse = {
   path: string;
-  requested_limit: number | null;
   lookback_days_applied: number | null;
+  page: number;
+  page_size: number;
   total_trades: number;
+  total_pages: number;
+  has_previous_page: boolean;
+  has_next_page: boolean;
   returned_trades: number;
   trades: TradeHistoryItem[];
   warnings: string[];
 };
+
+type TradePerformanceSummaryResponse = {
+  path: string;
+  lookback_days_applied: number | null;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  breakeven_trades: number;
+  win_rate_pct: number | null;
+  net_pnl_total: number;
+  warnings: string[];
+};
+
+type PerformanceWindowKey = "30d" | "90d" | "180d" | "365d" | "all";
 
 type SaveRawConfigResponse = {
   updated: boolean;
@@ -142,8 +160,18 @@ const WS_RECONNECT_MS = 5000;
 const COMMAND_POLL_MS = 2000;
 const INSTRUCTION_TOAST_AUTO_DISMISS_MS = 3000;
 const TRADE_HISTORY_PAGE_SIZE = 3;
-const TRADE_HISTORY_LOOKBACK_DAYS = 90;
-const TRADE_HISTORY_LOOKBACK_LABEL = "last 3 months";
+const PERFORMANCE_WINDOWS: Array<{
+  key: PerformanceWindowKey;
+  label: string;
+  lookbackDays: number | null;
+  proseLabel: string;
+}> = [
+  { key: "30d", label: "30d", lookbackDays: 30, proseLabel: "last 30 days" },
+  { key: "90d", label: "90d", lookbackDays: 90, proseLabel: "last 90 days" },
+  { key: "180d", label: "180d", lookbackDays: 180, proseLabel: "last 180 days" },
+  { key: "365d", label: "365d", lookbackDays: 365, proseLabel: "last 365 days" },
+  { key: "all", label: "All", lookbackDays: null, proseLabel: "all time" },
+];
 const COMMON_QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "EUR", "TRY", "USD"];
 
 function formatNumberValue(
@@ -496,6 +524,13 @@ function formatPercent(value: number | null): string {
   return "0.00%";
 }
 
+function formatUnsignedPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  return `${formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+}
+
 function parseTradeTimestamp(value: string | null | undefined): number | null {
   if (!value || typeof value !== "string") {
     return null;
@@ -554,6 +589,23 @@ function tradeHistoryPnlPillClass(netPnl: number | null): string {
 }
 
 function formatSignedUsd(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  const absolute = formatNumberValue(Math.abs(value), {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+  if (value > 0) {
+    return `+$${absolute}`;
+  }
+  if (value < 0) {
+    return `-$${absolute}`;
+  }
+  return "$0.00";
+}
+
+function formatSignedUsdCompact(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "N/A";
   }
@@ -926,6 +978,11 @@ function DashboardContent(): JSX.Element {
   const [tradeHistoryLoading, setTradeHistoryLoading] = useState<boolean>(true);
   const [tradeHistoryPage, setTradeHistoryPage] = useState<number>(0);
   const [tradeHistoryTotal, setTradeHistoryTotal] = useState<number>(0);
+  const [tradeHistoryPageCount, setTradeHistoryPageCount] = useState<number>(0);
+  const [performanceWindow, setPerformanceWindow] = useState<PerformanceWindowKey>("30d");
+  const [performanceSummary, setPerformanceSummary] = useState<TradePerformanceSummaryResponse | null>(null);
+  const [performanceSummaryError, setPerformanceSummaryError] = useState<string | null>(null);
+  const [performanceSummaryLoading, setPerformanceSummaryLoading] = useState<boolean>(true);
   const [contractExpanded, setContractExpanded] = useState<boolean>(false);
 
   async function loadStatus(silent = false): Promise<void> {
@@ -945,22 +1002,53 @@ function DashboardContent(): JSX.Element {
     }
   }
 
-  async function loadTradeHistory(silent = false): Promise<void> {
+  async function loadTradeHistory(
+    windowKey: PerformanceWindowKey,
+    page: number,
+    silent = false
+  ): Promise<void> {
     if (!silent) {
       setTradeHistoryLoading(true);
     }
+    const selectedWindow = PERFORMANCE_WINDOWS.find((windowOption) => windowOption.key === windowKey) ?? PERFORMANCE_WINDOWS[0];
+    const searchParams = new URLSearchParams({
+      page: String(page),
+      page_size: String(TRADE_HISTORY_PAGE_SIZE)
+    });
+    if (selectedWindow.lookbackDays !== null) {
+      searchParams.set("lookback_days", String(selectedWindow.lookbackDays));
+    }
     try {
-      const payload = await fetchApi<TradeHistoryResponse>(
-        `/api/history/trades?lookback_days=${TRADE_HISTORY_LOOKBACK_DAYS}`
-      );
+      const payload = await fetchApi<TradeHistoryResponse>(`/api/history/trades?${searchParams.toString()}`);
       setTradeHistory(payload.trades);
       setTradeHistoryTotal(payload.total_trades);
+      setTradeHistoryPageCount(payload.total_pages);
+      setTradeHistoryPage(payload.page);
       setTradeHistoryError(null);
     } catch (err) {
       setTradeHistoryError(err instanceof Error ? err.message : "Failed to load trade history");
     } finally {
       if (!silent) {
         setTradeHistoryLoading(false);
+      }
+    }
+  }
+
+  async function loadPerformanceSummary(windowKey: PerformanceWindowKey, silent = false): Promise<void> {
+    if (!silent) {
+      setPerformanceSummaryLoading(true);
+    }
+    const selectedWindow = PERFORMANCE_WINDOWS.find((windowOption) => windowOption.key === windowKey) ?? PERFORMANCE_WINDOWS[0];
+    const query = selectedWindow.lookbackDays === null ? "" : `?lookback_days=${selectedWindow.lookbackDays}`;
+    try {
+      const payload = await fetchApi<TradePerformanceSummaryResponse>(`/api/history/summary${query}`);
+      setPerformanceSummary(payload);
+      setPerformanceSummaryError(null);
+    } catch (err) {
+      setPerformanceSummaryError(err instanceof Error ? err.message : "Failed to load recent performance");
+    } finally {
+      if (!silent) {
+        setPerformanceSummaryLoading(false);
       }
     }
   }
@@ -1182,20 +1270,26 @@ function DashboardContent(): JSX.Element {
   }, []);
 
   useEffect((): (() => void) => {
-    void loadTradeHistory(false);
+    void loadTradeHistory(performanceWindow, tradeHistoryPage, false);
     const intervalId = window.setInterval(() => {
-      void loadTradeHistory(true);
+      void loadTradeHistory(performanceWindow, tradeHistoryPage, true);
     }, POLL_MS);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [performanceWindow, tradeHistoryPage]);
 
-  useEffect(() => {
-    const maxPageIndex = Math.max(0, Math.ceil(tradeHistory.length / TRADE_HISTORY_PAGE_SIZE) - 1);
-    setTradeHistoryPage((currentPage) => Math.min(currentPage, maxPageIndex));
-  }, [tradeHistory.length]);
+  useEffect((): (() => void) => {
+    void loadPerformanceSummary(performanceWindow, false);
+    const intervalId = window.setInterval(() => {
+      void loadPerformanceSummary(performanceWindow, true);
+    }, POLL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [performanceWindow]);
 
   useEffect((): (() => void) => {
     void loadStatus(false);
@@ -1242,9 +1336,10 @@ function DashboardContent(): JSX.Element {
     }
     if (commandStatus.status === "completed") {
       void loadStatus(true);
-      void loadTradeHistory(true);
+      void loadTradeHistory(performanceWindow, tradeHistoryPage, true);
+      void loadPerformanceSummary(performanceWindow, true);
     }
-  }, [commandStatus]);
+  }, [commandStatus, performanceWindow, tradeHistoryPage]);
 
   useEffect(() => {
     if (!commandStatus?.command_id) {
@@ -1294,12 +1389,17 @@ function DashboardContent(): JSX.Element {
   const tradeStatus = data?.trade_status ?? null;
   const contractParagraphs = editableConfig ? buildContractParagraphs(editableConfig) : [];
   const contractTeaser = buildContractTeaser(contractParagraphs);
-  const tradeHistoryPageCount = Math.max(1, Math.ceil(tradeHistory.length / TRADE_HISTORY_PAGE_SIZE));
-  const tradeHistoryPageIndex = Math.min(tradeHistoryPage, tradeHistoryPageCount - 1);
-  const pagedTrades = tradeHistory.slice(
-    tradeHistoryPageIndex * TRADE_HISTORY_PAGE_SIZE,
-    tradeHistoryPageIndex * TRADE_HISTORY_PAGE_SIZE + TRADE_HISTORY_PAGE_SIZE
-  );
+  const selectedPerformanceWindow =
+    PERFORMANCE_WINDOWS.find((windowOption) => windowOption.key === performanceWindow) ?? PERFORMANCE_WINDOWS[0];
+  const tradeHistoryPageIndex = Math.max(0, Math.min(tradeHistoryPage, Math.max(0, tradeHistoryPageCount - 1)));
+  const tradeHistoryRangeStart = tradeHistoryTotal > 0 ? tradeHistoryPageIndex * TRADE_HISTORY_PAGE_SIZE + 1 : 0;
+  const tradeHistoryRangeEnd =
+    tradeHistoryTotal > 0
+      ? Math.min(tradeHistoryPageIndex * TRADE_HISTORY_PAGE_SIZE + tradeHistory.length, tradeHistoryTotal)
+      : 0;
+  const performanceNetPnl = performanceSummary?.net_pnl_total ?? null;
+  const performanceWinRate = performanceSummary?.win_rate_pct ?? null;
+  const performanceClosedTrades = performanceSummary?.total_trades ?? 0;
   const positionSummaryText = tradeSummaryText(tradeStatus);
   const positionSummaryPhraseClass = tradeSummaryPhraseClass(tradeStatus);
   const positionUpnlBadgeText = positionSummaryBadgeText(hasOpenPosition, roiPercent);
@@ -1452,6 +1552,68 @@ function DashboardContent(): JSX.Element {
                 Last Price: <span className="status-helper-value">{formatPrice(lastPrice)}</span>
               </span>
             </p>
+            <div className="status-performance-strip" aria-live="polite">
+              <div className="status-performance-head">
+                <span className="status-performance-title">Recent Performance</span>
+                <div className="status-performance-window-toggle" role="tablist" aria-label="Recent performance window">
+                  {PERFORMANCE_WINDOWS.map((windowOption) => (
+                    <button
+                      key={windowOption.key}
+                      type="button"
+                      className={`status-performance-window-btn${performanceWindow === windowOption.key ? " active" : ""}`}
+                      onClick={() => {
+                        setTradeHistoryPage(0);
+                        setPerformanceWindow(windowOption.key);
+                      }}
+                      aria-pressed={performanceWindow === windowOption.key}
+                    >
+                      {windowOption.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {performanceSummaryError ? (
+                <p className="status-performance-note status-performance-note-error">{performanceSummaryError}</p>
+              ) : performanceSummaryLoading && !performanceSummary ? (
+                <p className="status-performance-note">Reading the ledger for {selectedPerformanceWindow.proseLabel}...</p>
+              ) : performanceClosedTrades <= 0 ? (
+                <p className="status-performance-note">
+                  No closed trades recorded for {selectedPerformanceWindow.proseLabel}.
+                </p>
+              ) : (
+                <div className="status-performance-metrics">
+                  <div className="status-performance-metric">
+                    <span className="status-performance-metric-label">Result</span>
+                    <span
+                      className={`status-performance-metric-value ${
+                        typeof performanceNetPnl === "number" && performanceNetPnl > 0
+                          ? "value-positive"
+                          : typeof performanceNetPnl === "number" && performanceNetPnl < 0
+                            ? "value-negative"
+                            : "value-neutral"
+                      }`}
+                    >
+                      {formatSignedUsdCompact(performanceNetPnl)}
+                    </span>
+                  </div>
+                  <div className="status-performance-metric">
+                    <span className="status-performance-metric-label">Success rate</span>
+                    <span className="status-performance-metric-value value-neutral">
+                      {formatUnsignedPercent(performanceWinRate)}
+                    </span>
+                  </div>
+                  <div className="status-performance-metric">
+                    <span className="status-performance-metric-label">Closed trades</span>
+                    <span className="status-performance-metric-value value-neutral">
+                      {formatNumberValue(performanceClosedTrades, {
+                        minimumFractionDigits: 0,
+                        maximumFractionDigits: 0
+                      })}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
             <details
               className="position-accordion position-accordion-featured"
               open={hasOpenPosition && positionExpanded}
@@ -1766,7 +1928,7 @@ function DashboardContent(): JSX.Element {
               </div>
             ) : (
               <div className="trade-history-stack">
-                {pagedTrades.map((trade, index) => {
+                {tradeHistory.map((trade, index) => {
                   const isPositive = typeof trade.net_pnl === "number" && trade.net_pnl > 0;
                   const isNegative = typeof trade.net_pnl === "number" && trade.net_pnl < 0;
                   const sideClass = positionSideBadgeClass(trade.side);
@@ -1855,7 +2017,7 @@ function DashboardContent(): JSX.Element {
                     </details>
                   );
                 })}
-                {tradeHistory.length > TRADE_HISTORY_PAGE_SIZE ? (
+                {tradeHistoryPageCount > 1 ? (
                   <div className="toolbar trade-history-toolbar">
                     <button
                       type="button"
@@ -1866,15 +2028,14 @@ function DashboardContent(): JSX.Element {
                       Later
                     </button>
                     <span className="trade-history-page-indicator">
-                      Showing {tradeHistoryPageIndex * TRADE_HISTORY_PAGE_SIZE + 1}-
-                      {Math.min((tradeHistoryPageIndex + 1) * TRADE_HISTORY_PAGE_SIZE, tradeHistory.length)} of{" "}
-                      {tradeHistoryTotal} for {TRADE_HISTORY_LOOKBACK_LABEL}
+                      Showing {tradeHistoryRangeStart}-{tradeHistoryRangeEnd} of {tradeHistoryTotal} for{" "}
+                      {selectedPerformanceWindow.proseLabel}
                     </span>
                     <button
                       type="button"
                       className="dialog-user-btn trade-history-nav-button"
                       onClick={() =>
-                        setTradeHistoryPage((currentPage) => Math.min(tradeHistoryPageCount - 1, currentPage + 1))
+                        setTradeHistoryPage((currentPage) => Math.min(Math.max(0, tradeHistoryPageCount - 1), currentPage + 1))
                       }
                       disabled={tradeHistoryPageIndex >= tradeHistoryPageCount - 1}
                     >

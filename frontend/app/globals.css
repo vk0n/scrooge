@@ -375,6 +375,96 @@ pre {
   color: #edf0f7;
 }
 
+.status-performance-strip {
+  display: grid;
+  gap: 0.58rem;
+  border: 1px solid #2f3744;
+  border-radius: 12px;
+  padding: 0.68rem 0.72rem;
+  background: linear-gradient(180deg, rgba(18, 22, 30, 0.9) 0%, rgba(11, 15, 21, 0.95) 100%);
+  box-shadow: inset 0 0 0 1px rgba(118, 128, 146, 0.1);
+}
+
+.status-performance-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.72rem;
+  align-items: center;
+}
+
+.status-performance-title {
+  color: #aab1bf;
+  font-size: 0.81rem;
+}
+
+.status-performance-window-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.32rem;
+}
+
+.status-performance-window-btn {
+  min-height: 1.72rem;
+  padding: 0.2rem 0.48rem;
+  border-radius: 999px;
+  border: 1px solid rgba(70, 81, 101, 0.9);
+  background: rgba(19, 24, 33, 0.92);
+  color: #aeb8ca;
+  font-size: 0.76rem;
+  line-height: 1.1;
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  box-shadow: inset 0 0 0 1px rgba(118, 128, 146, 0.08);
+}
+
+.status-performance-window-btn:hover:not(:disabled) {
+  border-color: #5f87b5;
+  color: #eef4ff;
+}
+
+.status-performance-window-btn.active {
+  border-color: rgba(150, 117, 49, 0.82);
+  background: linear-gradient(180deg, rgba(78, 55, 19, 0.84), rgba(49, 37, 15, 0.92));
+  color: #ffe0a8;
+}
+
+.status-performance-note {
+  color: #b5bfce;
+  font-size: 0.82rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+}
+
+.status-performance-note-error {
+  color: #ffd1d7;
+}
+
+.status-performance-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.status-performance-metric {
+  display: grid;
+  gap: 0.18rem;
+  border: 1px solid #2b323e;
+  border-radius: 10px;
+  padding: 0.5rem 0.58rem;
+  background: linear-gradient(180deg, rgba(15, 19, 27, 0.9), rgba(11, 14, 21, 0.95));
+  box-shadow: inset 0 0 0 1px rgba(118, 128, 146, 0.1);
+}
+
+.status-performance-metric-label {
+  color: #aab1bf;
+  font-size: 0.79rem;
+  line-height: 1.2;
+}
+
+.status-performance-metric-value {
+  font-size: 0.94rem;
+  font-weight: 600;
+}
+
 .status-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -2829,6 +2919,19 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .status-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .status-performance-head {
+    grid-template-columns: 1fr;
+    gap: 0.42rem;
+  }
+
+  .status-performance-window-toggle {
+    justify-content: flex-start;
+  }
+
+  .status-performance-metrics {
     grid-template-columns: 1fr;
   }
 
