@@ -8,8 +8,6 @@ from typing import Any
 
 import redis
 
-from services.system_service import get_service_status
-
 
 REDIS_HOST = os.getenv("SCROOGE_REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("SCROOGE_REDIS_PORT", "6379"))
@@ -112,12 +110,6 @@ def get_command_status(command_id: str) -> dict[str, Any] | None:
     if not payload:
         return None
 
-    service_status_raw = payload.get("service_status")
-    if service_status_raw:
-        try:
-            payload["service_status"] = json.loads(service_status_raw)
-        except json.JSONDecodeError:
-            payload["service_status"] = service_status_raw
     raw_command_payload = payload.get("payload")
     if raw_command_payload:
         try:
@@ -127,27 +119,6 @@ def get_command_status(command_id: str) -> dict[str, Any] | None:
 
     status_value = str(payload.get("status", "")).strip().lower()
     if status_value in {"pending", "processing"}:
-        try:
-            service_status = get_service_status()
-        except RuntimeError:
-            service_status = None
-
-        if service_status is not None:
-            payload["service_status"] = {
-                "service_name": service_status.service_name,
-                "running": service_status.running,
-                "active_state": service_status.active_state,
-                "sub_state": service_status.sub_state,
-                "unit_file_state": service_status.unit_file_state,
-            }
-            if not service_status.running:
-                payload["status"] = "failed"
-                payload["message"] = (
-                    f"Instruction could not be delivered because the Scrooge runtime is offline "
-                    f"({service_status.active_state})."
-                )
-                return payload
-
         updated_at = _parse_iso(payload.get("updated_at"))
         created_at = _parse_iso(payload.get("created_at"))
         reference_ts = updated_at or created_at

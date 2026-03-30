@@ -976,12 +976,6 @@ function DashboardContent(): JSX.Element {
       });
       setCommandResult(response);
       setCommandStatus(buildQueuedCommandStatus(response));
-      try {
-        const statusPayload = await fetchApi<CommandStatusResponse>(`/api/control/commands/${response.command_id}`);
-        setCommandStatus(statusPayload);
-      } catch {
-        // Keep the queued placeholder status and let the follow-up poll resolve it.
-      }
       return true;
     } catch (err) {
       setControlError(err instanceof Error ? err.message : `Failed to execute ${endpoint}`);
