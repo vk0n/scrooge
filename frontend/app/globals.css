@@ -632,6 +632,7 @@ pre {
     0 18px 40px rgba(0, 0, 0, 0.34),
     inset 0 0 0 1px rgba(116, 128, 147, 0.08);
   backdrop-filter: blur(16px);
+  overflow: hidden;
 }
 
 .instruction-toast-pending,
@@ -701,6 +702,43 @@ pre {
 
 .instruction-toast-message {
   margin: 0;
+}
+
+.instruction-toast-timer-active {
+  cursor: pointer;
+}
+
+.instruction-toast-pinned {
+  cursor: default;
+}
+
+.instruction-toast-timer-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: 100%;
+  transform-origin: left center;
+  background: linear-gradient(90deg, rgba(255, 205, 112, 0.95), rgba(255, 140, 107, 0.82));
+  animation-name: instructionToastTimer;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  pointer-events: none;
+}
+
+.instruction-toast-pinned .instruction-toast-timer-bar {
+  animation-play-state: paused;
+}
+
+@keyframes instructionToastTimer {
+  from {
+    transform: scaleX(1);
+    opacity: 0.95;
+  }
+  to {
+    transform: scaleX(0);
+    opacity: 0.45;
+  }
 }
 
 @keyframes instructionPulse {

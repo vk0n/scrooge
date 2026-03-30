@@ -156,7 +156,7 @@ def get_command_status(command_id: str) -> dict[str, Any] | None:
             if age_seconds >= COMMAND_STALE_AFTER_SECONDS:
                 payload["status"] = "failed"
                 payload["message"] = (
-                    "Instruction timed out before the Scrooge runtime acknowledged it. "
-                    "The office bot may be offline or not polling the command queue."
+                    "The instruction sat unanswered on Scrooge's desk for too long. "
+                    "He did not acknowledge it in time; the office wire may be down or Scrooge may not be tending the command queue."
                 )
-    return payload
+                return payload

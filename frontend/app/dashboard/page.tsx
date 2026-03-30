@@ -140,6 +140,7 @@ type SaveRawConfigResponse = {
 const POLL_MS = 60000;
 const WS_RECONNECT_MS = 5000;
 const COMMAND_POLL_MS = 2000;
+const INSTRUCTION_TOAST_AUTO_DISMISS_MS = 3000;
 const TRADE_HISTORY_PAGE_SIZE = 3;
 const TRADE_HISTORY_LOOKBACK_DAYS = 90;
 const TRADE_HISTORY_LOOKBACK_LABEL = "last 3 months";
@@ -830,6 +831,10 @@ function isInstructionPending(status: string | undefined): boolean {
   return status === "pending" || status === "processing";
 }
 
+function isInstructionTerminal(status: string | undefined): boolean {
+  return status === "completed" || status === "failed";
+}
+
 function isProminentInstruction(action: ControlActionLike | null | undefined): boolean {
   const normalized = normalizeControlAction(action);
   return (
@@ -893,6 +898,7 @@ function DashboardContent(): JSX.Element {
   const [commandResult, setCommandResult] = useState<ControlResponse | null>(null);
   const [commandStatus, setCommandStatus] = useState<CommandStatusResponse | null>(null);
   const [dismissedInstructionId, setDismissedInstructionId] = useState<string | null>(null);
+  const [pinnedInstructionId, setPinnedInstructionId] = useState<string | null>(null);
   const [showTradeSuggestions, setShowTradeSuggestions] = useState<boolean>(false);
   const [slValue, setSlValue] = useState<string>("");
   const [tpValue, setTpValue] = useState<string>("");
@@ -1236,7 +1242,28 @@ function DashboardContent(): JSX.Element {
       return;
     }
     setDismissedInstructionId(null);
+    setPinnedInstructionId(null);
   }, [commandStatus?.command_id]);
+
+  useEffect(() => {
+    if (!commandStatus?.command_id || !isInstructionTerminal(commandStatus.status)) {
+      return () => undefined;
+    }
+    if (dismissedInstructionId === commandStatus.command_id) {
+      return () => undefined;
+    }
+    if (pinnedInstructionId === commandStatus.command_id) {
+      return () => undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setDismissedInstructionId(commandStatus.command_id);
+    }, INSTRUCTION_TOAST_AUTO_DISMISS_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [commandStatus, dismissedInstructionId, pinnedInstructionId]);
 
   const openTradeInfo = data?.open_trade_info ?? null;
   const sl = openTradeInfo?.sl ?? null;
@@ -1292,7 +1319,16 @@ function DashboardContent(): JSX.Element {
   const showInstructionOverlay =
     pendingInstructionAction !== null && isProminentInstruction(pendingInstructionAction);
   const showInstructionToast =
-    commandStatus !== null && dismissedInstructionId !== commandStatus.command_id;
+    commandStatus !== null &&
+    isInstructionTerminal(commandStatus.status) &&
+    dismissedInstructionId !== commandStatus.command_id;
+  const toastCanAutoDismiss =
+    commandStatus !== null &&
+    isInstructionTerminal(commandStatus.status) &&
+    pinnedInstructionId !== commandStatus.command_id;
+  const toastIsPinned =
+    commandStatus !== null &&
+    pinnedInstructionId === commandStatus.command_id;
 
   useEffect(() => {
     if (!hasOpenPosition) {
@@ -1317,7 +1353,23 @@ function DashboardContent(): JSX.Element {
         </div>
       ) : null}
       {showInstructionToast && commandStatus ? (
-        <div className={`instruction-toast instruction-toast-${commandStatus.status ?? "pending"}`} role="status" aria-live="polite">
+        <div
+          className={`instruction-toast instruction-toast-${commandStatus.status ?? "pending"}${toastCanAutoDismiss ? " instruction-toast-timer-active" : ""}${toastIsPinned ? " instruction-toast-pinned" : ""}`}
+          role="status"
+          aria-live="polite"
+          onClick={() => {
+            if (isInstructionTerminal(commandStatus.status)) {
+              setPinnedInstructionId(commandStatus.command_id);
+            }
+          }}
+        >
+          {isInstructionTerminal(commandStatus.status) ? (
+            <span
+              className="instruction-toast-timer-bar"
+              style={{ animationDuration: `${INSTRUCTION_TOAST_AUTO_DISMISS_MS}ms` }}
+              aria-hidden="true"
+            />
+          ) : null}
           <div className="instruction-toast-head">
             <div className="instruction-toast-title-group">
               <span className="instruction-toast-title">{instructionStatusTitle(commandStatus.status)}</span>
@@ -1326,7 +1378,10 @@ function DashboardContent(): JSX.Element {
             <button
               type="button"
               className="instruction-toast-dismiss"
-              onClick={() => setDismissedInstructionId(commandStatus.command_id)}
+              onClick={(event) => {
+                event.stopPropagation();
+                setDismissedInstructionId(commandStatus.command_id);
+              }}
               aria-label="Dismiss instruction notice"
             >
               ×
