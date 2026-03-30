@@ -132,6 +132,43 @@ def _normalize_rest_exchange_position_snapshot(symbol: str, snapshot: dict[str, 
     }
 
 
+def _normalize_exchange_position_side(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    return text or None
+
+
+def _select_symbol_position_update(
+    candidates: list[dict[str, Any]],
+    *,
+    symbol: str,
+    local_position: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    matching = [candidate for candidate in candidates if str(candidate.get("s", "")).upper() == symbol]
+    if not matching:
+        return None
+
+    local_side = str(local_position.get("side")).strip().lower() if isinstance(local_position, dict) else ""
+    preferred_position_side = "LONG" if local_side == "long" else "SHORT" if local_side == "short" else None
+
+    ranked: list[tuple[int, float, dict[str, Any]]] = []
+    for candidate in matching:
+        position_amt = abs(_to_float(candidate.get("pa")) or 0.0)
+        position_side = _normalize_exchange_position_side(candidate.get("ps"))
+        score = 0
+        if preferred_position_side and position_side == preferred_position_side:
+            score += 4
+        if position_amt > 1e-12:
+            score += 2
+        if position_side == "BOTH":
+            score += 1
+        ranked.append((score, position_amt, candidate))
+
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return ranked[0][2]
+
+
 def _format_event_timestamp_ms(value: Any) -> str:
     try:
         ts_ms = int(value)
@@ -1017,11 +1054,20 @@ class LiveMarketStream:
         if balance_value is not None:
             set_cached_balance(balance_value)
 
-        position_update = None
-        for candidate in account_data.get("P", []) or []:
-            if str(candidate.get("s", "")).upper() == self._symbol:
-                position_update = candidate
-                break
+        current_position = None
+        with self._state_lock:
+            state = self._state_getter()
+            if isinstance(state, dict) and isinstance(state.get("position"), dict):
+                current_position = state.get("position")
+
+        raw_position_candidates = [
+            candidate for candidate in (account_data.get("P", []) or []) if isinstance(candidate, dict)
+        ]
+        position_update = _select_symbol_position_update(
+            raw_position_candidates,
+            symbol=self._symbol,
+            local_position=current_position,
+        )
 
         if position_update is not None:
             position_amt = _to_float(position_update.get("pa"))
@@ -1091,6 +1137,9 @@ class LiveMarketStream:
 
         should_reconcile = False
         order_id = _to_optional_int(order_data.get("i"))
+        should_flag_unexpected_fill = False
+        unexpected_fill_context: dict[str, Any] = {}
+        order_side = str(order_data.get("S", "")).strip().upper()
         with self._state_lock:
             state = self._state_getter()
             if isinstance(state, dict):
@@ -1102,11 +1151,58 @@ class LiveMarketStream:
                         should_reconcile = pending_close_order_id is None or pending_close_order_id == order_id
                     elif bool(current_position.get("open_pending")):
                         should_reconcile = pending_open_order_id is None or pending_open_order_id == order_id
+                    else:
+                        local_side = str(current_position.get("side") or "").strip().lower()
+                        closes_local_position = (
+                            (local_side == "long" and order_side == "SELL")
+                            or (local_side == "short" and order_side == "BUY")
+                        )
+                        should_flag_unexpected_fill = closes_local_position
+                        unexpected_fill_context = {
+                            "side": current_position.get("side"),
+                            "entry": current_position.get("entry"),
+                        }
 
         if should_reconcile:
             self._reconcile_position_from_exchange_snapshot(
                 source="rest_after_order_trade_update",
                 event_ts=event_ts,
+            )
+            return
+
+        if should_flag_unexpected_fill:
+            technical_logger.warning(
+                "user_stream_unexpected_fill symbol=%s order_id=%s order_side=%s order_type=%s status=%s avg_price=%s realized_pnl=%s reduce_only=%s",
+                self._symbol,
+                order_id,
+                order_side,
+                order_type,
+                order_status,
+                _to_float(order_data.get("ap")),
+                _to_float(order_data.get("rp")),
+                bool(order_data.get("R", False)),
+            )
+            emit_event(
+                code="position_sync_unexpected_fill",
+                category="error",
+                ts=_format_event_timestamp_ms(event_ts),
+                level="warning",
+                notify=True,
+                persist_ui=True,
+                runtime_mode="live",
+                ui_message=(
+                    f"The exchange reported an unexpected fill on {self._symbol} while Scrooge was managing "
+                    "a live position without a pending open or close request. Please inspect orders and the ledger."
+                ),
+                symbol=self._symbol,
+                order_id=order_id,
+                order_side=(order_side or None),
+                order_type=(order_type or None),
+                order_status=(order_status or None),
+                average_price=_to_float(order_data.get("ap")),
+                realized_pnl=_to_float(order_data.get("rp")),
+                reduce_only=bool(order_data.get("R", False)),
+                **unexpected_fill_context,
             )
 
     def _apply_account_position_update(self, position_update: dict[str, Any], event_ts: Any) -> None:
