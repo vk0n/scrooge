@@ -56,6 +56,11 @@ def _status_key(command_id: str) -> str:
     return f"{COMMAND_STATUS_PREFIX}{command_id}"
 
 
+def _apply_status_ttl(pipe: redis.client.Pipeline, status_key: str) -> None:
+    if COMMAND_STATUS_TTL_SECONDS > 0:
+        pipe.expire(status_key, COMMAND_STATUS_TTL_SECONDS)
+
+
 def enqueue_control_command(action: str, requested_by: str | None, payload: dict[str, Any] | None = None) -> dict[str, str]:
     normalized_action = action.strip().lower()
     if normalized_action not in SUPPORTED_ACTIONS:
@@ -87,7 +92,7 @@ def enqueue_control_command(action: str, requested_by: str | None, payload: dict
         client = _client()
         pipe = client.pipeline()
         pipe.hset(status_key, mapping=status_payload)
-        pipe.expire(status_key, COMMAND_STATUS_TTL_SECONDS)
+        _apply_status_ttl(pipe, status_key)
         pipe.rpush(CONTROL_QUEUE_KEY, json.dumps(command_payload))
         pipe.execute()
     except redis.RedisError as exc:

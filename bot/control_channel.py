@@ -34,6 +34,11 @@ def _status_key(command_id: str) -> str:
     return f"{COMMAND_STATUS_PREFIX}{command_id}"
 
 
+def _apply_status_ttl(pipe: Any, status_key: str) -> None:
+    if COMMAND_STATUS_TTL_SECONDS > 0:
+        pipe.expire(status_key, COMMAND_STATUS_TTL_SECONDS)
+
+
 def _log_message(logger: Callable[[str], None] | None, level: str, message: str) -> None:
     if logger is not None:
         logger(message)
@@ -205,7 +210,7 @@ def _update_status(client: Any, command_id: str, fields: dict[str, Any], logger:
     try:
         pipe = client.pipeline()
         pipe.hset(key, mapping=payload)
-        pipe.expire(key, COMMAND_STATUS_TTL_SECONDS)
+        _apply_status_ttl(pipe, key)
         pipe.execute()
     except RedisError as exc:
         _log_message(logger, "warning", f"[CONTROL] Failed to update command status for {command_id}: {exc}")
