@@ -24,7 +24,7 @@ type ParsedLogLine = {
 };
 
 const LOG_WINDOW_LINES = 200;
-const LOG_PAGE_SIZE = 10;
+const LOG_PAGE_SIZE = 30;
 const POLL_MS = 60000;
 const WS_RECONNECT_MS = 5000;
 
