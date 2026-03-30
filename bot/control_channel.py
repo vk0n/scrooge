@@ -323,6 +323,12 @@ def process_pending_commands(
             elif action == "suggest_trade":
                 if isinstance(state.get("position"), dict):
                     raise ValueError("Cannot suggest a trade while a position is already open")
+                exchange_position = get_open_position_fn(symbol) if (get_open_position_fn and symbol) else None
+                if isinstance(exchange_position, dict):
+                    raise ValueError(
+                        "Cannot suggest a trade while the exchange holds an unmanaged live position. "
+                        "Please clear it first."
+                    )
 
                 requested_side = _normalize_suggested_side(command_payload.get("side"))
                 if requested_side is None:
@@ -406,6 +412,10 @@ def process_pending_commands(
                 has_exchange_position = isinstance(exchange_position, dict)
                 if not has_local_position and not has_exchange_position:
                     message = "Skipped: no open position to close."
+                elif not has_local_position and has_exchange_position:
+                    raise ValueError(
+                        "Refusing to close the live exchange position because it is not tracked in Scrooge state."
+                    )
                 elif has_local_position and bool(local_position.get("close_pending")):
                     message = "Close request already in flight; awaiting exchange confirmation."
                 else:
@@ -523,8 +533,6 @@ def process_pending_commands(
                             save_state_fn(state)
 
                     message = "Manual close submitted; awaiting exchange confirmation."
-                    if not has_local_position and has_exchange_position:
-                        message = "Closed exchange position; local state had no open position."
             else:
                 raise ValueError(f"Unsupported action: {action}")
 

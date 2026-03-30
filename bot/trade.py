@@ -420,109 +420,97 @@ def cancel_sl_tp(symbol):
             technical_logger.info("protective_order_cancelled symbol=%s type=%s order_id=%s", symbol, o["type"], o["orderId"])
 
 
-def open_or_close_trade(symbol, side=None, qty=0, sl=None, tp=None, leverage=10):
-    """
-    Open trade if no position, close if position exists.
-    Handles SL/TP and checks balance.
-    """
+def _submit_market_close_order(symbol):
     pos = get_open_position(symbol)
-
-    if pos:
-        # --- Close existing position ---
-        pos_amt = float(pos["positionAmt"])
-        close_side = "SELL" if pos_amt > 0 else "BUY"
-        close_qty = abs(pos_amt)
-        close_qty, _ = round_qty_price(symbol, close_qty, 0)
-
-        try:
-            client = _get_client()
-            order = client.futures_create_order(
-                symbol=symbol,
-                side=close_side,
-                type="MARKET",
-                quantity=close_qty
-            )
-            technical_logger.info(
-                "position_closed symbol=%s side=%s quantity=%s",
-                symbol,
-                close_side,
-                close_qty,
-            )
-            cancel_sl_tp(symbol)
-            return order
-        except Exception as e:
-            technical_logger.exception("position_close_failed symbol=%s error=%s", symbol, e)
-
-    elif side and qty > 0:
-        # --- Open new position ---
-        if qty <= 0:
-            technical_logger.warning("position_open_skipped_not_enough_margin symbol=%s side=%s", symbol, side)
-            return
-
-        qty, sl = round_qty_price(symbol, qty, sl) if sl else (qty, None)
-        qty, tp = round_qty_price(symbol, qty, tp) if tp else (qty, None)
-
-        try:
-            client = _get_client()
-            order = client.futures_create_order(
-                symbol=symbol,
-                side=side,
-                type="MARKET",
-                quantity=qty
-            )
-            technical_logger.info(
-                "position_opened symbol=%s side=%s quantity=%s leverage=%s",
-                symbol,
-                side,
-                qty,
-                leverage,
-            )
-
-            # place SL/TP
-            if sl:
-                #client.futures_create_order(
-                #    symbol=symbol,
-                #    side="SELL" if side=="BUY" else "BUY",
-                #    type="STOP_MARKET",
-                #    stopPrice=sl,
-                #    quantity=qty
-                #)
-                technical_logger.info("stop_loss_prepared symbol=%s side=%s stop_price=%s", symbol, side, sl)
-
-            if tp:
-                # client.futures_create_order(
-                #     symbol=symbol,
-                #     side="SELL" if side=="BUY" else "BUY",
-                #     type="TAKE_PROFIT_MARKET",
-                #     stopPrice=tp,
-                #     quantity=qty
-                # )
-                technical_logger.info("take_profit_prepared symbol=%s side=%s take_profit=%s", symbol, side, tp)
-
-            return order
-
-        except Exception as e:
-            technical_logger.exception("position_open_failed symbol=%s side=%s quantity=%s error=%s", symbol, side, qty, e)
-
-    else:
+    if not pos:
         technical_logger.warning(
             "position_close_skipped_no_exchange_position symbol=%s",
             symbol,
         )
+        return None
+
+    pos_amt = float(pos["positionAmt"])
+    close_side = "SELL" if pos_amt > 0 else "BUY"
+    close_qty = abs(pos_amt)
+    close_qty, _ = round_qty_price(symbol, close_qty, 0)
+
+    try:
+        client = _get_client()
+        order = client.futures_create_order(
+            symbol=symbol,
+            side=close_side,
+            type="MARKET",
+            quantity=close_qty
+        )
+        technical_logger.info(
+            "position_closed symbol=%s side=%s quantity=%s",
+            symbol,
+            close_side,
+            close_qty,
+        )
+        cancel_sl_tp(symbol)
+        return order
+    except Exception as e:
+        technical_logger.exception("position_close_failed symbol=%s error=%s", symbol, e)
+        return None
+
+
+def _submit_market_open_order(symbol, side, qty, sl=None, tp=None, leverage=10):
+    if qty <= 0:
+        technical_logger.warning("position_open_skipped_not_enough_margin symbol=%s side=%s", symbol, side)
+        return None
+
+    existing_position = get_open_position(symbol)
+    if existing_position is not None:
+        technical_logger.warning(
+            "position_open_blocked_existing_exchange_position symbol=%s side=%s quantity=%s existing_position_amt=%s",
+            symbol,
+            side,
+            qty,
+            existing_position.get("positionAmt"),
+        )
+        return None
+
+    qty, sl = round_qty_price(symbol, qty, sl) if sl else (qty, None)
+    qty, tp = round_qty_price(symbol, qty, tp) if tp else (qty, None)
+
+    try:
+        client = _get_client()
+        order = client.futures_create_order(
+            symbol=symbol,
+            side=side,
+            type="MARKET",
+            quantity=qty
+        )
+        technical_logger.info(
+            "position_opened symbol=%s side=%s quantity=%s leverage=%s",
+            symbol,
+            side,
+            qty,
+            leverage,
+        )
+
+        if sl:
+            technical_logger.info("stop_loss_prepared symbol=%s side=%s stop_price=%s", symbol, side, sl)
+
+        if tp:
+            technical_logger.info("take_profit_prepared symbol=%s side=%s take_profit=%s", symbol, side, tp)
+
+        return order
+    except Exception as e:
+        technical_logger.exception("position_open_failed symbol=%s side=%s quantity=%s error=%s", symbol, side, qty, e)
+        return None
 
 
 def open_position(symbol, side, qty, sl=None, tp=None, leverage=10):
     """
-    Wrapper to open a new trade.
-    Uses the universal open_or_close_trade function.
+    Open a new trade only when the exchange is flat.
     """
-    return open_or_close_trade(symbol, side, qty, sl, tp, leverage)
+    return _submit_market_open_order(symbol, side, qty, sl, tp, leverage)
 
 
 def close_position(symbol):
     """
-    Wrapper to close any open position.
-    Uses the universal open_or_close_trade function.
+    Close an existing exchange position.
     """
-    # side and qty are ignored when closing, universal function detects open position
-    return open_or_close_trade(symbol)
+    return _submit_market_close_order(symbol)

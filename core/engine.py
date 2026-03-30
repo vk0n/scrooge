@@ -1202,6 +1202,22 @@ def consume_manual_trade_suggestion(state: dict[str, Any], live: bool) -> dict[s
     return suggestion
 
 
+def _resolve_unmanaged_exchange_position(state: dict[str, Any], position: dict[str, Any] | None) -> dict[str, Any] | None:
+    if isinstance(position, dict):
+        return None
+    exchange_position = state.get("exchange_position")
+    if not isinstance(exchange_position, dict):
+        return None
+    position_amt = to_float(exchange_position.get("position_amt"))
+    if position_amt is None or abs(position_amt) <= 1e-12:
+        return None
+    return {
+        "position_amt": position_amt,
+        "entry": to_float(exchange_position.get("entry_price")),
+        "side": "short" if position_amt < 0 else "long",
+    }
+
+
 def initialize_strategy_runtime(
     *,
     live: bool,
@@ -2248,6 +2264,31 @@ def process_discrete_row(
             runtime.balance = balance
             runtime.position = position
             return
+        unmanaged_exchange_position = _resolve_unmanaged_exchange_position(state, position)
+        if live and unmanaged_exchange_position is not None:
+            if normalize_manual_trade_suggestion(state.get("manual_trade_suggestion")) is not None:
+                state["manual_trade_suggestion"] = None
+                emit_event(
+                    code="manual_trade_rejected_unmanaged_position",
+                    category="error",
+                    ts=log_ts,
+                    level="warning",
+                    notify=True,
+                    persist_ui=True,
+                    runtime_mode=config.runtime_mode,
+                    strategy_mode=config.strategy_mode,
+                    symbol=config.symbol,
+                    side=unmanaged_exchange_position.get("side"),
+                    position_amt=unmanaged_exchange_position.get("position_amt"),
+                    entry=unmanaged_exchange_position.get("entry"),
+                    ui_message=(
+                        f"I found an unmanaged live {config.symbol} position on the exchange, "
+                        "so I refused the queued trade suggestion. Please clear the foreign position first."
+                    ),
+                )
+            runtime.balance = balance
+            runtime.position = position
+            return
         if not config.allow_entries:
             runtime.balance = balance
             runtime.position = position
@@ -2301,6 +2342,28 @@ def process_discrete_row(
                         entry_decision.tp,
                         config.leverage,
                     )
+                    if not isinstance(open_order, dict) or open_order.get("orderId") is None:
+                        emit_event(
+                            code="trade_open_submission_failed",
+                            category="error",
+                            ts=log_ts,
+                            level="error",
+                            notify=True,
+                            persist_ui=True,
+                            runtime_mode=config.runtime_mode,
+                            strategy_mode=config.strategy_mode,
+                            symbol=config.symbol,
+                            side=entry_decision.side,
+                            trigger=entry_decision.trigger,
+                            ui_message=(
+                                f"I refused to open a new {entry_decision.side} on {config.symbol} because "
+                                "the exchange did not confirm a fresh opening order. "
+                                "I shall leave the ledger untouched."
+                            ),
+                        )
+                        runtime.balance = balance
+                        runtime.position = None
+                        return
                     execution_summary = get_order_execution_summary(config.symbol, open_order)
                     _apply_entry_execution_summary(
                         position,
