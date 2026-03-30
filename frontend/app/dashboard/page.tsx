@@ -753,25 +753,13 @@ function formatDateTimeEuCompact(value: unknown, fallback = "N/A"): string {
   return formatted.replace(/:\d{2}$/, "");
 }
 
-function contractParagraphToPlainText(paragraph: ContractParagraph): string {
-  return paragraph
-    .map((segment) => ("display" in segment ? segment.display : segment.text))
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function buildContractTeaser(paragraphs: ContractParagraph[]): string {
-  const firstParagraph = paragraphs[0];
-  if (!firstParagraph) {
-    return "No covenant is loaded yet.";
+  const clauseCount = paragraphs.length;
+  if (clauseCount <= 0) {
+    return "No contract is loaded yet.";
   }
 
-  const firstText = contractParagraphToPlainText(firstParagraph);
-  if (firstText.length <= 152) {
-    return firstText;
-  }
-  return `${firstText.slice(0, 149).trimEnd()}...`;
+  return `The contract is sealed. ${clauseCount} clauses await inspection.`;
 }
 
 type TargetPnlPreview = {
@@ -1063,7 +1051,7 @@ function DashboardContent(): JSX.Element {
       setPerformanceSummary(payload);
       setPerformanceSummaryError(null);
     } catch (err) {
-      setPerformanceSummaryError(err instanceof Error ? err.message : "Failed to load recent performance");
+      setPerformanceSummaryError(err instanceof Error ? err.message : "Failed to load performance");
     } finally {
       if (!silent) {
         setPerformanceSummaryLoading(false);
@@ -1559,8 +1547,8 @@ function DashboardContent(): JSX.Element {
             </div>
             <div className="status-performance-strip" aria-live="polite">
               <div className="status-performance-head">
-                <span className="status-performance-title">Recent Performance</span>
-                <div className="status-performance-window-toggle" role="tablist" aria-label="Recent performance window">
+                <span className="status-performance-title">Performance</span>
+                <div className="status-performance-window-toggle" role="tablist" aria-label="Performance window">
                   {PERFORMANCE_WINDOWS.map((windowOption) => (
                     <button
                       key={windowOption.key}
