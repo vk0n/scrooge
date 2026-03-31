@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from services.config_service import load_config
+from services.chart_service import estimate_extreme_rsi_price
 from services.state_service import (
     load_state,
     resolve_balance,
@@ -61,6 +62,20 @@ def get_status() -> dict[str, object]:
         leverage=config.get("leverage"),
         last_price=last_price,
     )
+    if open_trade_info and open_trade_info.get("trail_active"):
+        extreme_rsi_estimate = estimate_extreme_rsi_price(
+            symbol=config.get("symbol"),
+            side=open_trade_info.get("side"),
+            config=config,
+        )
+        if extreme_rsi_estimate:
+            open_trade_info = {
+                **open_trade_info,
+                "extreme_rsi_threshold": extreme_rsi_estimate.get("threshold"),
+                "extreme_rsi_price_estimate": extreme_rsi_estimate.get("price_estimate"),
+                "extreme_rsi_interval": extreme_rsi_estimate.get("interval"),
+                "extreme_rsi_current_value": extreme_rsi_estimate.get("current_rsi"),
+            }
     balance_value = resolve_balance(state, default_balance=_default_balance_for_mode(config))
     if _is_live_mode(config) and balance_value is None:
         warnings.append("Live balance unavailable: exchange balance has not been written to state yet.")

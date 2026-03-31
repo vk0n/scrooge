@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
@@ -53,6 +53,10 @@ type OpenTradeInfo = {
   distance_to_sl_pct: number | null;
   distance_to_tp_pct: number | null;
   updated_at: string | null;
+  extreme_rsi_threshold?: number | null;
+  extreme_rsi_price_estimate?: number | null;
+  extreme_rsi_interval?: string | null;
+  extreme_rsi_current_value?: number | null;
 };
 
 type TrailingState = {
@@ -353,6 +357,20 @@ function formatUsd(value: number | null): string {
   return `$${formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function renderUsdMetricValue(value: number | null): ReactNode {
+  if (value === null || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  return (
+    <>
+      {formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      <span className="vault-dollar" aria-hidden="true">
+        $
+      </span>
+    </>
+  );
+}
+
 function formatVaultAmount(value: number | null): string {
   return formatNumberValue(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -426,22 +444,25 @@ function buildTradeProgressTrackBackground(entryPercent: number, slPercent: numb
     rgba(67, 146, 109, 0.48) 100%)`;
 }
 
-type TradeProgressMarkerKey = "sl" | "entry" | "tp";
+type TradeProgressMarkerKey = "sl" | "entry" | "tp" | "trail" | "peak";
 
 type TradeProgressMarker = {
   key: TradeProgressMarkerKey;
-  label: "SN" | "Entry" | "TM";
+  label: string;
   value: number;
   percent: number;
 };
 
 type TradeProgressSnapshot = {
+  mode: "normal" | "trail";
   slPercent: number;
   entryPercent: number;
   tpPercent: number;
+  trailPercent: number | null;
   currentPercent: number | null;
   currentLabelPercent: number | null;
   currentTone: "positive" | "negative" | "neutral";
+  currentLabel: string;
   markers: TradeProgressMarker[];
 };
 
@@ -449,8 +470,71 @@ function computeTradeProgress(
   sl: number | null,
   entry: number | null,
   tp: number | null,
-  current: number | null
+  current: number | null,
+  options?: {
+    trailPrice?: number | null;
+    trailPeakPrice?: number | null;
+    tailGuardArmed?: boolean;
+    side?: PositionSide | null;
+  }
 ): TradeProgressSnapshot | null {
+  const tailGuardArmed = Boolean(options?.tailGuardArmed);
+  const trailPrice = isFiniteNumber(options?.trailPrice) ? options?.trailPrice ?? null : null;
+  const trailPeakPrice = isFiniteNumber(options?.trailPeakPrice) ? options?.trailPeakPrice ?? null : null;
+  const side = options?.side ?? null;
+
+  if (
+    tailGuardArmed &&
+    side &&
+    isFiniteNumber(entry) &&
+    trailPrice !== null &&
+    isFiniteNumber(current) &&
+    trailPeakPrice !== null
+  ) {
+    const isLong = side === "long";
+    const markers = [
+      { key: "entry" as const, label: "Entry", value: entry },
+      { key: "trail" as const, label: "Trail", value: trailPrice },
+      { key: "peak" as const, label: isLong ? "Max" : "Min", value: trailPeakPrice }
+    ].sort((left, right) => (isLong ? left.value - right.value : right.value - left.value));
+
+    const leftValue = markers[0]?.value;
+    const rightValue = markers[markers.length - 1]?.value;
+    const span = rightValue - leftValue;
+    if (!Number.isFinite(span) || span === 0) {
+      return null;
+    }
+
+    const toPercent = (value: number): number => ((value - leftValue) / span) * 100;
+    const normalizedMarkers = markers.map((marker) => ({
+      ...marker,
+      percent: clampPercent(toPercent(marker.value))
+    }));
+    const entryRaw = toPercent(entry);
+    const trailRaw = toPercent(trailPrice);
+    const currentRaw = toPercent(current);
+    const currentPercent = clampPercent(currentRaw);
+    let currentTone: TradeProgressSnapshot["currentTone"] = "neutral";
+    if (currentRaw > trailRaw + 0.2) {
+      currentTone = "positive";
+    } else if (currentRaw < trailRaw - 0.2) {
+      currentTone = "negative";
+    }
+
+    return {
+      mode: "trail",
+      slPercent: clampPercent(trailRaw),
+      entryPercent: clampPercent(entryRaw),
+      tpPercent: clampPercent(toPercent(trailPeakPrice)),
+      trailPercent: clampPercent(trailRaw),
+      currentPercent,
+      currentLabelPercent: Math.max(8, Math.min(92, currentPercent)),
+      currentTone,
+      currentLabel: "Now",
+      markers: normalizedMarkers
+    };
+  }
+
   if (!isFiniteNumber(sl) || !isFiniteNumber(entry) || !isFiniteNumber(tp) || sl === tp) {
     return null;
   }
@@ -490,12 +574,15 @@ function computeTradeProgress(
   }
 
   return {
+    mode: "normal",
     slPercent: clampPercent(slRaw),
     entryPercent: clampPercent(entryRaw),
     tpPercent: clampPercent(tpRaw),
+    trailPercent: null,
     currentPercent,
     currentLabelPercent: currentPercent === null ? null : Math.max(8, Math.min(92, currentPercent)),
     currentTone,
+    currentLabel: "Now",
     markers: normalizedMarkers
   };
 }
@@ -753,6 +840,20 @@ function formatDateTimeEuCompact(value: unknown, fallback = "N/A"): string {
   return formatted.replace(/:\d{2}$/, "");
 }
 
+function formatDateTimeEuTimeFirst(value: unknown, fallback = "N/A"): string {
+  const formatted = formatDateTimeEu(value, fallback);
+  if (formatted === fallback) {
+    return fallback;
+  }
+
+  const fullMatch = formatted.match(/^(\d{2}\.\d{2}\.\d{4})\s(\d{2}:\d{2}:\d{2})$/);
+  if (fullMatch) {
+    return `${fullMatch[2]} ${fullMatch[1]}`;
+  }
+
+  return formatted;
+}
+
 function buildContractTeaser(paragraphs: ContractParagraph[]): string {
   const clauseCount = paragraphs.length;
   if (clauseCount <= 0) {
@@ -793,32 +894,6 @@ function computeTargetPnlPreview(
   return { pnlUsd, tone };
 }
 
-function tailGuardValueClass(trailingState: TrailingState | null): string {
-  if (!trailingState) {
-    return "metric-value value-neutral";
-  }
-  const trailActive = trailingState.trail_active;
-  if (!trailActive) {
-    return "metric-value value-neutral";
-  }
-  return "metric-value value-positive";
-}
-
-function resolveTailGuardValue(trailingState: TrailingState | null): string {
-  if (!trailingState) {
-    return "N/A";
-  }
-  const trailActive = trailingState.trail_active;
-  if (!trailActive) {
-    return "Off";
-  }
-  const trailPrice = trailingState.trail_price ?? trailingState.tp;
-  if (trailPrice === null) {
-    return "Active";
-  }
-  return formatPrice(trailPrice);
-}
-
 function commandStatusBadgeClass(status: string | undefined): string {
   if (status === "completed") {
     return "badge badge-good";
@@ -840,6 +915,23 @@ function closePositionButtonClass(unrealizedPnl: number | null): string {
     return "button-danger";
   }
   return "button-neutral";
+}
+
+function describeExtremeRsiExit(side: PositionSide | null, config: EditableConfig | null): string {
+  const params = config?.params;
+  if (side === "long") {
+    const threshold = params?.rsi_extreme_long;
+    return isFiniteNumber(threshold)
+      ? `Exit on extreme RSI above ${formatNumberValue(threshold, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}.`
+      : "Exit on extreme long RSI.";
+  }
+  if (side === "short") {
+    const threshold = params?.rsi_extreme_short;
+    return isFiniteNumber(threshold)
+      ? `Exit on extreme RSI below ${formatNumberValue(threshold, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}.`
+      : "Exit on extreme short RSI.";
+  }
+  return "Exit on extreme RSI.";
 }
 
 function normalizeControlAction(action: ControlActionLike | null | undefined): ControlAction | null {
@@ -1387,7 +1479,7 @@ function DashboardContent(): JSX.Element {
   const positionSize = openTradeInfo?.size ?? null;
   const marginUsed = openTradeInfo?.margin_used ?? null;
   const lastPrice = data?.last_price ?? null;
-  const openTime = formatDateTimeEu(openTradeInfo?.entry_time ?? null);
+  const openTime = formatDateTimeEuTimeFirst(openTradeInfo?.entry_time ?? null);
   const hasOpenPosition = openTradeInfo !== null;
   const openTradeSide = openTradeInfo?.side ?? null;
   const tradingEnabled = data?.trading_enabled ?? true;
@@ -1414,15 +1506,34 @@ function DashboardContent(): JSX.Element {
   const tradeSummaryDirectionSide = hasOpenPosition ? normalizePositionSide(openTradeSide) : null;
   const statusIntentText = statusIntentBadgeText(botStatus);
   const statusIntentClass = statusIntentBadgeClass(botStatus);
-  const tradeProgress = computeTradeProgress(sl, entryPrice, tp, lastPrice);
-  const slDraftPreview = computeTargetPnlPreview(openTradeSide, entryPrice, positionSize, slValue, sl);
+  const tailGuardArmed = Boolean(openTradeInfo?.trail_active || data?.trailing_state?.trail_active);
+  const trailGuardPrice = openTradeInfo?.trail_price ?? data?.trailing_state?.trail_price ?? null;
+  const trailPeakPrice =
+    openTradeSide === "short"
+      ? openTradeInfo?.trail_min ?? data?.trailing_state?.trail_min ?? null
+      : openTradeInfo?.trail_max ?? data?.trailing_state?.trail_max ?? null;
+  const extremeRsiThreshold = openTradeInfo?.extreme_rsi_threshold ?? null;
+  const extremeRsiPriceEstimate = openTradeInfo?.extreme_rsi_price_estimate ?? null;
+  const extremeRsiInterval = openTradeInfo?.extreme_rsi_interval ?? null;
+  const extremeRsiCurrentValue = openTradeInfo?.extreme_rsi_current_value ?? null;
+  const effectiveSafetyNetPrice =
+    tailGuardArmed && isFiniteNumber(trailGuardPrice) ? trailGuardPrice : sl;
+  const tradeProgress = computeTradeProgress(effectiveSafetyNetPrice, entryPrice, tp, lastPrice, {
+    trailPrice: trailGuardPrice,
+    trailPeakPrice: trailPeakPrice ?? lastPrice,
+    tailGuardArmed,
+    side: openTradeSide
+  });
+  const slDraftPreview = computeTargetPnlPreview(openTradeSide, entryPrice, positionSize, slValue, effectiveSafetyNetPrice);
   const tpDraftPreview = computeTargetPnlPreview(openTradeSide, entryPrice, positionSize, tpValue, tp);
+  const extremeRsiPreview = computeTargetPnlPreview(openTradeSide, entryPrice, positionSize, "", extremeRsiPriceEstimate);
   const alreadyAtBreakEvenOrBetter =
     !isFiniteNumber(breakEvenTargetPrice) ||
-    (openTradeSide === "long" && isFiniteNumber(sl) && sl >= breakEvenTargetPrice) ||
-    (openTradeSide === "short" && isFiniteNumber(sl) && sl <= breakEvenTargetPrice);
+    (openTradeSide === "long" && isFiniteNumber(effectiveSafetyNetPrice) && effectiveSafetyNetPrice >= breakEvenTargetPrice) ||
+    (openTradeSide === "short" && isFiniteNumber(effectiveSafetyNetPrice) && effectiveSafetyNetPrice <= breakEvenTargetPrice);
   const showBreakEvenSafetyNetAction =
     hasOpenPosition &&
+    !tailGuardArmed &&
     isFiniteNumber(breakEvenTargetPrice) &&
     isFiniteNumber(unrealizedPnl) &&
     unrealizedPnl > 0 &&
@@ -1660,14 +1771,15 @@ function DashboardContent(): JSX.Element {
                 ) : null}
               </summary>
               <div className="position-accordion-body">
+                <p className="trade-opened-meta">
+                  <span className="trade-opened-meta-label">Opened:</span>
+                  <span className="trade-opened-meta-value">{openTime}</span>
+                </p>
+
                 <div className="trade-pulse-grid">
                   <div className="kv-item metric-card">
                     <span className="kv-label">Entry Price</span>
                     <span className="metric-value">{formatPrice(entryPrice)}</span>
-                  </div>
-                  <div className="kv-item metric-card">
-                    <span className="kv-label">Opened At</span>
-                    <span className="metric-value">{openTime}</span>
                   </div>
                   <div className="kv-item metric-card">
                     <span className="kv-label">Floating PnL</span>
@@ -1677,18 +1789,12 @@ function DashboardContent(): JSX.Element {
 
                 <div className="trade-detail-grid">
                   <div className="kv-item metric-card">
-                    <span className="kv-label">Margin Used</span>
-                    <span className="metric-value">{formatUsd(marginUsed)}</span>
-                  </div>
-                  <div className="kv-item metric-card">
                     <span className="kv-label">Position Size</span>
                     <span className="metric-value">{formatAssetAmount(positionSize, data?.symbol)}</span>
                   </div>
                   <div className="kv-item metric-card">
-                    <span className="kv-label">Tail Guard</span>
-                    <span className={tailGuardValueClass(data.trailing_state)}>
-                      {resolveTailGuardValue(data.trailing_state)}
-                    </span>
+                    <span className="kv-label">Margin Used</span>
+                    <span className="metric-value vault-value">{renderUsdMetricValue(marginUsed)}</span>
                   </div>
                 </div>
 
@@ -1703,7 +1809,11 @@ function DashboardContent(): JSX.Element {
                     <div className="trade-progress-track-shell">
                       <div
                         className="trade-progress-track"
-                        aria-label="Trade progress from safety net to treasure mark"
+                        aria-label={
+                          tradeProgress.mode === "trail"
+                            ? "Trade progress from entry to the trail peak with the live price in motion"
+                            : "Trade progress from safety net to treasure mark"
+                        }
                         style={{
                           background: buildTradeProgressTrackBackground(
                             tradeProgress.entryPercent,
@@ -1713,7 +1823,11 @@ function DashboardContent(): JSX.Element {
                       >
                         {Math.abs(tradeProgress.slPercent - tradeProgress.entryPercent) > 0.6 ? (
                           <span
-                            className="trade-progress-level-marker trade-progress-level-marker-sl"
+                            className={`trade-progress-level-marker ${
+                              tradeProgress.mode === "trail"
+                                ? "trade-progress-level-marker-trail"
+                                : "trade-progress-level-marker-sl"
+                            }`}
                             style={{ left: `${tradeProgress.slPercent}%` }}
                             aria-hidden="true"
                           >
@@ -1775,6 +1889,17 @@ function DashboardContent(): JSX.Element {
                   <div className="kv-item trade-manage-card trade-manage-card-with-quick-btn">
                     <div className="trade-manage-card-head">
                       <span className="kv-label">Safety Net</span>
+                      {tailGuardArmed ? (
+                        <span
+                          className="trade-manage-guard-badge"
+                          title="Tail Guard is armed and the Safety Net now follows the live trail."
+                          aria-label="Tail Guard is armed"
+                        >
+                          <span className="trade-manage-guard-icon" aria-hidden="true">
+                            🛡️
+                          </span>
+                        </span>
+                      ) : null}
                       {showBreakEvenSafetyNetAction ? (
                         <button
                           type="button"
@@ -1790,60 +1915,104 @@ function DashboardContent(): JSX.Element {
                         </button>
                       ) : null}
                     </div>
-                    <span className="metric-value">{formatPrice(sl)}</span>
-                    <div className="trade-edit-row">
-                      <label className="field-stack dialog-user-field trade-edit-field">
-                        Set Safety Net
-                        <input
-                          type="number"
-                          step="any"
-                          min="0"
-                          value={slValue}
-                          onChange={(event) => setSlValue(event.target.value)}
+                    <span className="metric-value">{formatPrice(effectiveSafetyNetPrice)}</span>
+                    {!tailGuardArmed ? (
+                      <div className="trade-edit-row">
+                        <label className="field-stack dialog-user-field trade-edit-field">
+                          Set Safety Net
+                          <input
+                            type="number"
+                            step="any"
+                            min="0"
+                            value={slValue}
+                            onChange={(event) => setSlValue(event.target.value)}
+                            disabled={busyAction !== null || !hasOpenPosition}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="dialog-user-btn"
+                          onClick={() => void runUpdate("update-sl", slValue)}
                           disabled={busyAction !== null || !hasOpenPosition}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="dialog-user-btn"
-                        onClick={() => void runUpdate("update-sl", slValue)}
-                        disabled={busyAction !== null || !hasOpenPosition}
-                      >
-                        Apply Net
-                      </button>
-                    </div>
-                    <p className={`trade-edit-preview floating-pnl-value value-${slDraftPreview?.tone ?? "neutral"}`}>
-                      If hit: {slDraftPreview ? formatUnrealizedPnlUsd(slDraftPreview.pnlUsd) : "N/A"}
-                    </p>
+                        >
+                          Apply Net
+                        </button>
+                      </div>
+                    ) : null}
+                    {slDraftPreview ? (
+                      <p className={`trade-edit-preview trade-edit-preview-tight floating-pnl-value value-${slDraftPreview.tone}`}>
+                        If hit: {formatUnrealizedPnlUsd(slDraftPreview.pnlUsd)}
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className="kv-item trade-manage-card">
-                    <span className="kv-label">Treasure Mark</span>
-                    <span className="metric-value">{formatPrice(tp)}</span>
-                    <div className="trade-edit-row">
-                      <label className="field-stack dialog-user-field trade-edit-field">
-                        Set Treasure Mark
-                        <input
-                          type="number"
-                          step="any"
-                          min="0"
-                          value={tpValue}
-                          onChange={(event) => setTpValue(event.target.value)}
-                          disabled={busyAction !== null || !hasOpenPosition}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="dialog-user-btn"
-                        onClick={() => void runUpdate("update-tp", tpValue)}
-                        disabled={busyAction !== null || !hasOpenPosition}
-                      >
-                        Mark Treasure
-                      </button>
+                    <div className="trade-manage-card-head">
+                      <span className="kv-label">Treasure Mark</span>
                     </div>
-                    <p className={`trade-edit-preview floating-pnl-value value-${tpDraftPreview?.tone ?? "neutral"}`}>
-                      If hit: {tpDraftPreview ? formatUnrealizedPnlUsd(tpDraftPreview.pnlUsd) : "N/A"}
-                    </p>
+                    {tailGuardArmed ? (
+                      <>
+                        <span className="metric-value trade-manage-readonly-value">
+                          {isFiniteNumber(extremeRsiPriceEstimate) ? (
+                            <>
+                              <span>{formatPrice(extremeRsiPriceEstimate)}</span>{" "}
+                              <span className="trade-manage-readonly-qualifier">(Estimated)</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>N/A</span>{" "}
+                              <span className="trade-manage-readonly-qualifier">(Estimated)</span>
+                            </>
+                          )}
+                        </span>
+                        <p className="trade-manage-readonly-note">
+                          Depends on RSI:{" "}
+                          {isFiniteNumber(extremeRsiCurrentValue)
+                            ? formatNumberValue(extremeRsiCurrentValue, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                            : "N/A"}
+                          {" / "}
+                          {isFiniteNumber(extremeRsiThreshold)
+                            ? formatNumberValue(extremeRsiThreshold, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                            : "N/A"}
+                          {extremeRsiInterval ? ` (${extremeRsiInterval})` : ""}
+                        </p>
+                        {extremeRsiPreview ? (
+                          <p className={`trade-edit-preview floating-pnl-value value-${extremeRsiPreview.tone}`}>
+                            If hit: {formatUnrealizedPnlUsd(extremeRsiPreview.pnlUsd)}
+                          </p>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <span className="metric-value">{formatPrice(tp)}</span>
+                        <div className="trade-edit-row">
+                          <label className="field-stack dialog-user-field trade-edit-field">
+                            Set Treasure Mark
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={tpValue}
+                              onChange={(event) => setTpValue(event.target.value)}
+                              disabled={busyAction !== null || !hasOpenPosition}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="dialog-user-btn"
+                            onClick={() => void runUpdate("update-tp", tpValue)}
+                            disabled={busyAction !== null || !hasOpenPosition}
+                          >
+                            Mark Treasure
+                          </button>
+                        </div>
+                        {tpDraftPreview ? (
+                          <p className={`trade-edit-preview floating-pnl-value value-${tpDraftPreview.tone}`}>
+                            If hit: {formatUnrealizedPnlUsd(tpDraftPreview.pnlUsd)}
+                          </p>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 </div>
 

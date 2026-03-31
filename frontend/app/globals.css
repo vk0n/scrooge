@@ -605,6 +605,15 @@ pre {
   word-break: break-word;
 }
 
+.metric-value-currency {
+  display: inline-block;
+  margin-right: 0.06rem;
+}
+
+.metric-value-currency-positive {
+  color: var(--value-positive-surface);
+}
+
 .floating-pnl-value {
   font-weight: 700;
   letter-spacing: 0.01em;
@@ -1740,8 +1749,11 @@ pre {
 
 .position-summary-phrase-empty {
   max-width: none;
+  white-space: nowrap;
   overflow: visible;
   text-overflow: clip;
+  overflow-wrap: normal;
+  text-wrap: nowrap;
 }
 
 .position-upnl-badge {
@@ -2036,7 +2048,7 @@ pre {
 
 .trade-pulse-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.62rem;
 }
 
@@ -2048,8 +2060,28 @@ pre {
 
 .trade-detail-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.62rem;
+}
+
+.trade-opened-meta {
+  margin: -0.08rem 0 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.28rem;
+  padding-inline-start: 0.65rem;
+  color: #aab4c6;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.trade-opened-meta-label {
+  color: #98a5bb;
+}
+
+.trade-opened-meta-value {
+  color: #dbe5f6;
 }
 
 .trade-progress-card {
@@ -2132,6 +2164,11 @@ pre {
 .trade-progress-level-marker-tp {
   background: rgba(141, 225, 182, 0.84);
   box-shadow: 0 0 0 1px rgba(17, 56, 39, 0.62);
+}
+
+.trade-progress-level-marker-trail {
+  background: rgba(93, 220, 170, 0.88);
+  box-shadow: 0 0 0 1px rgba(18, 72, 50, 0.62);
 }
 
 .trade-progress-level-dot {
@@ -2321,9 +2358,49 @@ pre {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.92rem;
+  width: 1em;
+  height: 1em;
+  font-size: 0.86rem;
   line-height: 1;
-  transform: translateY(0.01rem);
+}
+
+.trade-manage-guard-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 1.9rem;
+  min-height: 1.7rem;
+  padding: 0.12rem 0.36rem;
+  border: 1px solid rgba(50, 151, 111, 0.68);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(18, 56, 43, 0.82), rgba(14, 38, 30, 0.9));
+  color: var(--value-positive-surface);
+  line-height: 1;
+  cursor: help;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-align: center;
+  box-shadow:
+    inset 0 0 0 1px rgba(143, 227, 183, 0.06),
+    0 0 0 1px rgba(14, 40, 31, 0.3);
+}
+
+.trade-manage-card-with-quick-btn .trade-manage-guard-badge {
+  position: absolute;
+  top: 0.54rem;
+  right: 0.65rem;
+  z-index: 1;
+}
+
+.trade-manage-guard-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  font-size: 0.86rem;
+  line-height: 1;
 }
 
   .trade-edit-row {
@@ -2349,6 +2426,27 @@ pre {
   font-size: 0.76rem;
   line-height: 1.3;
   font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+}
+
+.trade-edit-preview-tight {
+  margin-top: -0.18rem;
+}
+
+.trade-manage-readonly-value {
+  color: #d6e0ef;
+}
+
+.trade-manage-readonly-qualifier {
+  color: #92a1b7;
+  font-size: 0.82em;
+  font-weight: 400;
+}
+
+.trade-manage-readonly-note {
+  margin: -0.02rem 0 0;
+  color: #b9c7d9;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .trade-danger-line {
@@ -3178,8 +3276,9 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .position-accordion-summary-empty {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: max-content max-content;
     grid-template-areas: "title phrase";
+    justify-content: space-between;
     align-items: center;
   }
 
@@ -3208,6 +3307,17 @@ body.logs-page-active .logs-page-panel .log-box {
     text-overflow: clip;
     overflow-wrap: anywhere;
     text-wrap: pretty;
+  }
+
+  .position-summary-phrase-empty {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0;
+    max-width: none;
+    padding: 0.16rem 0.44rem;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    text-wrap: nowrap;
   }
 
   .status-helper-last-price {
@@ -3262,8 +3372,13 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .trade-progress-header {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+  }
+
+  .trade-progress-now {
+    font-size: 0.72rem;
+    padding: 0.12rem 0.42rem;
   }
 
   .trade-progress-track-shell {

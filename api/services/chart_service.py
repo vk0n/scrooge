@@ -1058,6 +1058,124 @@ def _build_equity_curve(
     return points
 
 
+def _estimate_price_for_rsi_threshold(
+    reference_closes: list[float],
+    *,
+    period: int,
+    threshold: float,
+) -> float | None:
+    if len(reference_closes) < period + 1:
+        return None
+
+    recent_window = reference_closes[-max(period + 4, 16) :]
+    base_low = min(recent_window)
+    base_high = max(recent_window)
+    if not math.isfinite(base_low) or not math.isfinite(base_high) or base_high <= 0:
+        return None
+
+    low = max(base_low * 0.85, 1e-8)
+    high = max(base_high * 1.15, low * 1.05)
+
+    def rsi_for(candidate_close: float) -> float | None:
+        if candidate_close <= 0 or not math.isfinite(candidate_close):
+            return None
+        rsi_values = _rsi(reference_closes + [candidate_close], period=period)
+        rsi_value = rsi_values[-1] if rsi_values else None
+        return _to_float(rsi_value)
+
+    low_rsi = rsi_for(low)
+    high_rsi = rsi_for(high)
+
+    expansion_steps = 0
+    while (low_rsi is None or low_rsi > threshold) and expansion_steps < 24:
+        low *= 0.95
+        low_rsi = rsi_for(low)
+        expansion_steps += 1
+
+    expansion_steps = 0
+    while (high_rsi is None or high_rsi < threshold) and expansion_steps < 24:
+        high *= 1.05
+        high_rsi = rsi_for(high)
+        expansion_steps += 1
+
+    if low_rsi is None or high_rsi is None or low_rsi > threshold or high_rsi < threshold:
+        return None
+
+    for _ in range(36):
+        mid = (low + high) / 2.0
+        mid_rsi = rsi_for(mid)
+        if mid_rsi is None:
+            return None
+        if mid_rsi < threshold:
+            low = mid
+        else:
+            high = mid
+
+    estimate = (low + high) / 2.0
+    return estimate if math.isfinite(estimate) and estimate > 0 else None
+
+
+def estimate_extreme_rsi_price(
+    *,
+    symbol: str | None,
+    side: str | None,
+    config: dict[str, Any],
+) -> dict[str, Any] | None:
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_side = str(side or "").strip().lower()
+    if not normalized_symbol or normalized_side not in {"long", "short"}:
+        return None
+
+    params = config.get("params")
+    params_map = params if isinstance(params, dict) else {}
+    threshold_key = "rsi_extreme_long" if normalized_side == "long" else "rsi_extreme_short"
+    threshold = _to_float(params_map.get(threshold_key))
+    if threshold is None:
+        return None
+
+    indicator_spec = _build_indicator_spec(config)
+    rsi_spec = indicator_spec.get("rsi") if isinstance(indicator_spec, dict) else None
+    if not isinstance(rsi_spec, dict):
+        return None
+
+    interval = str(rsi_spec.get("interval") or DEFAULT_STRATEGY_BIG_INTERVAL).strip()
+    period = int(rsi_spec.get("period") or STRATEGY_RSI_PERIOD)
+    try:
+        interval_ms = _parse_interval_to_ms(interval)
+    except ValueError:
+        return None
+
+    period_ms = interval_ms * max(period + 18, 40)
+    candles, _warnings = _fetch_candles_from_dataset(
+        symbol=normalized_symbol,
+        period_ms=period_ms,
+        interval=interval,
+        end_ms=None,
+    )
+    if len(candles) < period + 2:
+        return None
+
+    closes = [float(candle["close"]) for candle in candles if _to_float(candle.get("close")) is not None]
+    if len(closes) < period + 2:
+        return None
+
+    current_close = closes[-1]
+    reference_closes = closes[:-1]
+    estimate_price = _estimate_price_for_rsi_threshold(reference_closes, period=period, threshold=threshold)
+    if estimate_price is None:
+        return None
+
+    current_rsi_values = _rsi(reference_closes + [current_close], period=period)
+    current_rsi = _to_float(current_rsi_values[-1] if current_rsi_values else None)
+
+    return {
+        "threshold": threshold,
+        "price_estimate": estimate_price,
+        "interval": interval,
+        "current_rsi": current_rsi,
+    }
+
+
 def build_chart_payload(
     symbol: str | None,
     period: str,

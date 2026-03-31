@@ -19,6 +19,7 @@ from bot.trade import (
     get_order_execution_summary,
     open_position,
 )
+from core.event_store import build_event_record, get_event_store
 from core.feature_engine import FeatureEngine, floor_ns, interval_to_ns
 from core.indicator_inputs import (
     INDICATOR_COLUMNS,
@@ -68,6 +69,7 @@ class StrategyRuntime:
     execution_mode: str
     execution_sync: ExecutionSyncContext
     execution_events: list[MarketEvent]
+    entry_trace_markers: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -345,6 +347,7 @@ REALTIME_WARMUP_LIMITS = {
     "medium": 240,
     "big": 240,
 }
+DEBUG_ENTRY_TRACE_ENV = "SCROOGE_DEBUG_ENTRY_TRACE"
 
 
 def _tqdm_position(extra_offset: int = 0) -> int | None:
@@ -517,6 +520,170 @@ def _event_ts_to_ns(value: Any) -> int | None:
     if dt_value.tzinfo is not None:
         dt_value = dt_value.astimezone(timezone.utc).replace(tzinfo=None)
     return _naive_datetime_to_ns(dt_value)
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_entry_trace_enabled(*, runtime: StrategyRuntime) -> bool:
+    raw_value = str(os.getenv(DEBUG_ENTRY_TRACE_ENV, "1") or "").strip().lower()
+    return runtime.live and raw_value not in {"0", "false", "no", "off"}
+
+
+def _entry_trace_condition_states(
+    snapshot: DiscreteRowSnapshot,
+    *,
+    config: StrategyConfig,
+    side: str,
+) -> dict[str, bool]:
+    if side == "long":
+        return {
+            "band": bool(snapshot.price < snapshot.lower),
+            "rsi": bool(snapshot.rsi < config.rsi_long_open_threshold),
+            "ema": bool(snapshot.price > snapshot.ema),
+        }
+    return {
+        "band": bool(snapshot.price > snapshot.upper),
+        "rsi": bool(snapshot.rsi > config.rsi_short_open_threshold),
+        "ema": bool(snapshot.price < snapshot.ema),
+    }
+
+
+def _collect_entry_trace_candidates(
+    snapshot: DiscreteRowSnapshot,
+    *,
+    config: StrategyConfig,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for side in ("long", "short"):
+        conditions = _entry_trace_condition_states(snapshot, config=config, side=side)
+        matched_conditions = [name for name, satisfied in conditions.items() if satisfied]
+        missing_conditions = [name for name, satisfied in conditions.items() if not satisfied]
+        if not conditions["band"] and len(matched_conditions) < 2:
+            continue
+        candidates.append(
+            {
+                "side": side,
+                "conditions": conditions,
+                "matched_conditions": matched_conditions,
+                "missing_conditions": missing_conditions,
+                "eligible": not missing_conditions,
+            }
+        )
+    return candidates
+
+
+def _append_entry_trace_event(
+    runtime: StrategyRuntime,
+    *,
+    config: StrategyConfig,
+    log_ts: str,
+    snapshot: DiscreteRowSnapshot,
+    candidate: dict[str, Any],
+    blocker: str,
+    qty_local: float | None = None,
+    context: dict[str, Any] | None = None,
+) -> None:
+    minute_bucket = str(log_ts or "")[:16]
+    missing_conditions = list(candidate.get("missing_conditions") or [])
+    marker = "|".join(
+        [
+            minute_bucket,
+            str(candidate.get("side") or ""),
+            blocker,
+            ",".join(missing_conditions),
+        ]
+    )
+    if marker in runtime.entry_trace_markers:
+        return
+    runtime.entry_trace_markers.add(marker)
+    if len(runtime.entry_trace_markers) > 8192:
+        runtime.entry_trace_markers.clear()
+        runtime.entry_trace_markers.add(marker)
+
+    event_context = {
+        "symbol": config.symbol,
+        "side": candidate.get("side"),
+        "blocker": blocker,
+        "eligible": bool(candidate.get("eligible")),
+        "matched_conditions": list(candidate.get("matched_conditions") or []),
+        "missing_conditions": missing_conditions,
+        "price": snapshot.price,
+        "lower": snapshot.lower,
+        "upper": snapshot.upper,
+        "rsi": snapshot.rsi,
+        "ema": snapshot.ema,
+        "atr": snapshot.atr,
+        "qty_local": qty_local,
+    }
+    if context:
+        event_context.update(context)
+
+    get_event_store().append(
+        build_event_record(
+            ts=log_ts,
+            level="debug",
+            code="entry_candidate_trace",
+            category="debug",
+            ui_message="entry candidate trace",
+            notify=False,
+            runtime_mode=config.runtime_mode,
+            strategy_mode=config.strategy_mode,
+            context=event_context,
+        )
+    )
+
+
+def _trace_entry_technical_blockers(
+    runtime: StrategyRuntime,
+    *,
+    config: StrategyConfig,
+    log_ts: str,
+    snapshot: DiscreteRowSnapshot,
+    candidates: list[dict[str, Any]],
+    qty_local: float,
+) -> None:
+    for candidate in candidates:
+        if candidate.get("eligible"):
+            continue
+        missing_conditions = list(candidate.get("missing_conditions") or [])
+        blocker = f"technical:{','.join(missing_conditions)}" if missing_conditions else "technical"
+        _append_entry_trace_event(
+            runtime,
+            config=config,
+            log_ts=log_ts,
+            snapshot=snapshot,
+            candidate=candidate,
+            blocker=blocker,
+            qty_local=qty_local,
+        )
+
+
+def _trace_entry_external_blocker(
+    runtime: StrategyRuntime,
+    *,
+    config: StrategyConfig,
+    log_ts: str,
+    snapshot: DiscreteRowSnapshot,
+    candidates: list[dict[str, Any]],
+    blocker: str,
+    qty_local: float | None = None,
+    context: dict[str, Any] | None = None,
+) -> None:
+    for candidate in candidates:
+        if not candidate.get("eligible"):
+            continue
+        _append_entry_trace_event(
+            runtime,
+            config=config,
+            log_ts=log_ts,
+            snapshot=snapshot,
+            candidate=candidate,
+            blocker=blocker,
+            qty_local=qty_local,
+            context=context,
+        )
 
 
 def _interval_to_freq(interval: str) -> str:
@@ -2264,8 +2431,25 @@ def process_discrete_row(
             runtime.balance = balance
             runtime.position = position
             return
+        entry_trace_enabled = _debug_entry_trace_enabled(runtime=runtime)
+        trace_candidates: list[dict[str, Any]] = []
+        if entry_trace_enabled:
+            trace_candidates = _collect_entry_trace_candidates(snapshot, config=config)
         unmanaged_exchange_position = _resolve_unmanaged_exchange_position(state, position)
         if live and unmanaged_exchange_position is not None:
+            if trace_candidates:
+                _trace_entry_external_blocker(
+                    runtime,
+                    config=config,
+                    log_ts=log_ts,
+                    snapshot=snapshot,
+                    candidates=trace_candidates,
+                    blocker="unmanaged_position",
+                    context={
+                        "exchange_position_amt": unmanaged_exchange_position.get("position_amt"),
+                        "exchange_entry": unmanaged_exchange_position.get("entry"),
+                    },
+                )
             if normalize_manual_trade_suggestion(state.get("manual_trade_suggestion")) is not None:
                 state["manual_trade_suggestion"] = None
                 emit_event(
@@ -2290,6 +2474,15 @@ def process_discrete_row(
             runtime.position = position
             return
         if not config.allow_entries:
+            if trace_candidates:
+                _trace_entry_external_blocker(
+                    runtime,
+                    config=config,
+                    log_ts=log_ts,
+                    snapshot=snapshot,
+                    candidates=trace_candidates,
+                    blocker="entries_disabled",
+                )
             runtime.balance = balance
             runtime.position = position
             return
@@ -2312,8 +2505,39 @@ def process_discrete_row(
             qty_local=qty_local,
             manual_side=manual_side,
         )
+        if entry_trace_enabled and manual_side is None and trace_candidates:
+            _trace_entry_technical_blockers(
+                runtime,
+                config=config,
+                log_ts=log_ts,
+                snapshot=snapshot,
+                candidates=trace_candidates,
+                qty_local=qty_local,
+            )
 
         if isinstance(entry_decision, EntryGuardRejection):
+            if entry_trace_enabled and manual_side is None:
+                _trace_entry_external_blocker(
+                    runtime,
+                    config=config,
+                    log_ts=log_ts,
+                    snapshot=snapshot,
+                    candidates=[
+                        {
+                            "side": entry_decision.side,
+                            "matched_conditions": ["band", "rsi", "ema"],
+                            "missing_conditions": [],
+                            "eligible": True,
+                        }
+                    ],
+                    blocker="liquidation_guard",
+                    qty_local=qty_local,
+                    context={
+                        "entry": entry_decision.entry,
+                        "sl": entry_decision.sl,
+                        "liq_price": entry_decision.liq_price,
+                    },
+                )
             event_kwargs = build_entry_guard_event_payload(
                 entry_decision,
                 symbol=config.symbol,
@@ -2332,7 +2556,30 @@ def process_discrete_row(
             entry_fee = entry_decision.size * price * config.fee_rate
 
             if live:
-                if can_open_trade(config.symbol, entry_decision.size, config.leverage):
+                can_open = can_open_trade(config.symbol, entry_decision.size, config.leverage)
+                if not can_open:
+                    if entry_trace_enabled and manual_side is None:
+                        _trace_entry_external_blocker(
+                            runtime,
+                            config=config,
+                            log_ts=log_ts,
+                            snapshot=snapshot,
+                            candidates=[
+                                {
+                                    "side": entry_decision.side,
+                                    "matched_conditions": ["band", "rsi", "ema"],
+                                    "missing_conditions": [],
+                                    "eligible": True,
+                                }
+                            ],
+                            blocker="insufficient_margin",
+                            qty_local=qty_local,
+                            context={
+                                "required_size": entry_decision.size,
+                                "balance": balance,
+                            },
+                        )
+                if can_open:
                     side_command = "BUY" if entry_decision.side == "long" else "SELL"
                     open_order = open_position(
                         config.symbol,
