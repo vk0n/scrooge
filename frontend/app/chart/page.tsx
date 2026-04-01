@@ -405,14 +405,11 @@ function buildLivePriceAnnotations(
       ].join(";");
 
     const badgeHtml =
-      `<span style="display:inline-block;white-space:nowrap;padding:4px 6px;border-radius:6px;` +
-      `border:1.2px solid ${CHART_THEME.livePrice};background:rgba(244, 248, 252, 0.95);">` +
       `<span style="${chipStyle(bandOk)}">BB</span>` +
       `<span style="display:inline-block;width:4px;"></span>` +
       `<span style="${chipStyle(emaOk)}">EMA</span>` +
       `<span style="display:inline-block;width:4px;"></span>` +
-      `<span style="${chipStyle(rsiOk)}">RSI</span>` +
-      `</span>`;
+      `<span style="${chipStyle(rsiOk)}">RSI</span>`;
 
     return [
       {
@@ -430,6 +427,10 @@ function buildLivePriceAnnotations(
           color: CHART_THEME.text,
           size: 11,
         },
+        bordercolor: CHART_THEME.livePrice,
+        borderwidth: 1,
+        borderpad: 5,
+        bgcolor: "rgba(25, 32, 44, 0.92)",
       },
     ];
   }

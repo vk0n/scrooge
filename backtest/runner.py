@@ -4,6 +4,7 @@ from contextlib import closing
 import csv
 from dataclasses import dataclass
 from datetime import datetime
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -52,6 +53,7 @@ class BacktestConfig:
     execution_mode: str
     agg_trade_source: str
     agg_trade_tick_interval: str
+    agg_trade_exact_progress: bool
     agg_trade_archive_base_url: str
     agg_trade_rest_base_url: str
     agg_trade_cache_enabled: bool
@@ -100,6 +102,17 @@ class BacktestResult:
     stats: dict[str, Any]
 
 
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text not in {"0", "false", "no", "off"}
+
+
 def build_backtest_config(
     cfg: dict[str, Any],
     *,
@@ -146,6 +159,10 @@ def build_backtest_config(
                 raise ValueError("agg_trade_tick_interval seconds must be greater than zero")
         except ValueError as exc:
             raise ValueError("agg_trade_tick_interval must be 'raw' or an integer number of seconds like 1s, 5s, 15s") from exc
+    agg_trade_exact_progress = _coerce_bool(
+        cfg.get("agg_trade_exact_progress", os.getenv("SCROOGE_BACKTEST_EXACT_PROGRESS")),
+        default=False,
+    )
     agg_trade_archive_base_url = str(cfg.get("agg_trade_archive_base_url", "") or "").strip()
     agg_trade_rest_base_url = str(cfg.get("agg_trade_rest_base_url", "") or "").strip()
     agg_trade_cache_enabled = bool(cfg.get("agg_trade_cache_enabled", True))
@@ -165,6 +182,7 @@ def build_backtest_config(
         execution_mode=execution_mode,
         agg_trade_source=agg_trade_source,
         agg_trade_tick_interval=agg_trade_tick_interval,
+        agg_trade_exact_progress=agg_trade_exact_progress,
         agg_trade_archive_base_url=agg_trade_archive_base_url,
         agg_trade_rest_base_url=agg_trade_rest_base_url,
         agg_trade_cache_enabled=agg_trade_cache_enabled,
@@ -516,21 +534,50 @@ def run_backtest(
                 raise ValueError("market event strategy runner requires a market event source")
         replay_stage_label = "AggTrades + Replay" if agg_trade_stream_session is not None else "Strategy Replay"
         replay_stage_total = market_event_total if market_event_total is not None else 0
-        start_stage(replay_stage_label, replay_stage_total)
         if agg_trade_stream_session is not None:
-            with closing(agg_trade_stream_session.iter_events(report_progress=False)) as streamed_events:
+            if config.agg_trade_exact_progress:
+                with closing(agg_trade_stream_session.iter_events(report_progress=True)) as streamed_events:
+                    for _ in streamed_events:
+                        pass
+                df = agg_trade_stream_session.indicator_frame
+                agg_trade_stream_summary = agg_trade_stream_session.summary
+                if agg_trade_stream_summary.total_events <= 0:
+                    raise ValueError("No market events were built from historical aggTrades.")
+                market_event_total = agg_trade_stream_summary.total_events
+                market_event_iter_factory = lambda path=config.market_event_stream_path: iter_market_event_stream(path)
+                exact_replay_stage_label = (
+                    "Realtime Event Replay"
+                    if config.strategy_mode == "realtime" or uses_realtime_indicator_inputs(config.indicator_inputs)
+                    else "Backtest Event Replay"
+                )
+                start_stage(exact_replay_stage_label, market_event_total)
                 final_balance, trades, balance_history, state = market_event_strategy_runner(
-                    streamed_events,
+                    market_event_iter_factory(),
                     candle_interval=str(config.intervals["small"]),
                     intervals={key: str(value) for key, value in config.intervals.items()},
-                    market_event_total=None,
+                    market_event_total=market_event_total,
                     strategy_mode=config.strategy_mode,
                     execution_mode=config.execution_mode,
                     strict_indicator_alignment=False,
                     progress_reporter=progress_reporter,
                     **strategy_kwargs,
                 )
-            complete_stage()
+                complete_stage()
+            else:
+                start_stage(replay_stage_label, replay_stage_total)
+                with closing(agg_trade_stream_session.iter_events(report_progress=False)) as streamed_events:
+                    final_balance, trades, balance_history, state = market_event_strategy_runner(
+                        streamed_events,
+                        candle_interval=str(config.intervals["small"]),
+                        intervals={key: str(value) for key, value in config.intervals.items()},
+                        market_event_total=None,
+                        strategy_mode=config.strategy_mode,
+                        execution_mode=config.execution_mode,
+                        strict_indicator_alignment=False,
+                        progress_reporter=progress_reporter,
+                        **strategy_kwargs,
+                    )
+                complete_stage()
             df = agg_trade_stream_session.indicator_frame
             agg_trade_stream_summary = agg_trade_stream_session.summary
             if agg_trade_stream_summary.total_events <= 0:
@@ -562,6 +609,7 @@ def run_backtest(
             complete_stage()
             logger.info("backtest_market_tape_written rows=%s path=%s", len(tape), config.market_tape_path)
         else:
+            start_stage(replay_stage_label, replay_stage_total)
             final_balance, trades, balance_history, state = market_event_strategy_runner(
                 market_events if market_events is not None else market_event_iter_factory(),
                 candle_interval=str(config.intervals["small"]),
