@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
+import { parseTimestampMs, toUtcIsoString } from "../../lib/datetime";
 type Candle = {
   time: string;
   open: number;
@@ -126,6 +127,91 @@ type LiveStatusPayload = {
   open_trade_info: LiveOpenTradeInfo | null;
   trailing_state: LiveTrailingState | null;
 };
+
+function normalizeTimeString(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  return toUtcIsoString(value);
+}
+
+function normalizeIndicatorPoints(points: IndicatorPoint[] | undefined): IndicatorPoint[] {
+  if (!Array.isArray(points)) {
+    return [];
+  }
+  return points
+    .map((point) => ({
+      ...point,
+      time: normalizeTimeString(point.time) ?? point.time,
+    }))
+    .filter((point) => typeof point.time === "string" && point.time.length > 0);
+}
+
+function normalizeMarkers(markers: Marker[] | undefined): Marker[] {
+  if (!Array.isArray(markers)) {
+    return [];
+  }
+  return markers
+    .map((marker) => ({
+      ...marker,
+      time: normalizeTimeString(marker.time) ?? marker.time,
+    }))
+    .filter((marker) => typeof marker.time === "string" && marker.time.length > 0);
+}
+
+function normalizeChartPayload(payload: ChartPayload): ChartPayload {
+  return {
+    ...payload,
+    candles: payload.candles.map((candle) => ({
+      ...candle,
+      time: normalizeTimeString(candle.time) ?? candle.time,
+    })),
+    markers: {
+      entries: normalizeMarkers(payload.markers?.entries),
+      exits: normalizeMarkers(payload.markers?.exits),
+      stop_loss: normalizeMarkers(payload.markers?.stop_loss),
+      take_profit: normalizeMarkers(payload.markers?.take_profit),
+      liquidation: normalizeMarkers(payload.markers?.liquidation),
+    },
+    open_position: payload.open_position
+      ? {
+          ...payload.open_position,
+          time: normalizeTimeString(payload.open_position.time ?? null),
+        }
+      : null,
+    indicators: {
+      ema: normalizeIndicatorPoints(payload.indicators?.ema),
+      bollinger: payload.indicators?.bollinger
+        ? {
+            upper: normalizeIndicatorPoints(payload.indicators.bollinger.upper),
+            middle: normalizeIndicatorPoints(payload.indicators.bollinger.middle),
+            lower: normalizeIndicatorPoints(payload.indicators.bollinger.lower),
+          }
+        : undefined,
+      rsi: normalizeIndicatorPoints(payload.indicators?.rsi),
+    },
+    equity_curve: payload.equity_curve.map((point) => ({
+      ...point,
+      time: normalizeTimeString(point.time) ?? point.time,
+    })),
+    range_start: normalizeTimeString(payload.range_start),
+    range_end: normalizeTimeString(payload.range_end),
+  };
+}
+
+function normalizeLiveStatusPayload(payload: LiveStatusPayload): LiveStatusPayload {
+  return {
+    ...payload,
+    last_price_updated_at: normalizeTimeString(payload.last_price_updated_at ?? null),
+    last_update_timestamp: normalizeTimeString(payload.last_update_timestamp),
+    open_trade_info: payload.open_trade_info
+      ? {
+          ...payload.open_trade_info,
+          entry_time: normalizeTimeString(payload.open_trade_info.entry_time) ?? payload.open_trade_info.entry_time,
+        }
+      : null,
+  };
+}
 
 type ChartLegendItem = {
   key: string;
@@ -528,14 +614,7 @@ type PlotlyEventTarget = HTMLDivElement & {
 };
 
 function toTimestampMs(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value !== "string") {
-    return null;
-  }
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return parseTimestampMs(value);
 }
 
 function parseRelayoutXRange(eventData: PlotlyRelayoutEvent): [number, number] | null {
@@ -655,7 +734,7 @@ function ChartContent(): JSX.Element {
         query.set("end", new Date(endCursorMs).toISOString());
       }
       const payload = await fetchApi<ChartPayload>(`/api/chart?${query.toString()}`);
-      setData(payload);
+      setData(normalizeChartPayload(payload));
       setSymbol(payload.symbol);
       setError(null);
     } catch (err) {
@@ -714,7 +793,7 @@ function ChartContent(): JSX.Element {
         try {
           const payload = JSON.parse(event.data) as { type?: string; data?: LiveStatusPayload };
           if (payload.type === "status" && payload.data) {
-            setLiveStatus(payload.data);
+            setLiveStatus(normalizeLiveStatusPayload(payload.data));
           }
         } catch {
           // Ignore malformed WS payloads. Polling still refreshes chart data.
@@ -821,7 +900,7 @@ function ChartContent(): JSX.Element {
       const candleHigh = data.candles.map((candle) => candle.high);
       const candleLow = data.candles.map((candle) => candle.low);
       const candleClose = data.candles.map((candle) => candle.close);
-      const candleTimesMs = data.candles.map((candle) => Date.parse(candle.time));
+      const candleTimesMs = data.candles.map((candle) => toTimestampMs(candle.time) ?? Number.NaN);
       const chartStartMs = candleTimesMs.find((value) => Number.isFinite(value)) ?? null;
       const chartEndMs = [...candleTimesMs].reverse().find((value) => Number.isFinite(value)) ?? null;
       const boundedVisibleRange =
@@ -855,8 +934,7 @@ function ChartContent(): JSX.Element {
         scrollZoom: !compactChartUi,
         doubleClick: "reset+autosize",
       };
-      const openPositionTimeMs =
-        typeof data.open_position?.time === "string" ? Date.parse(data.open_position.time) : null;
+      const openPositionTimeMs = toTimestampMs(data.open_position?.time);
       const openPositionInRange =
         chartStartMs !== null &&
         chartEndMs !== null &&

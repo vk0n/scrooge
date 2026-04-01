@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from functools import lru_cache
+import re
 from typing import Any, Callable, Iterable
 
 import pandas as pd
@@ -39,6 +40,11 @@ from core.market_events import (
     PriceTickEvent,
     market_event_to_dict,
 )
+from shared.runtime_db import append_ui_log_entry
+from shared.time_utils import utc_now_text, utc_text_from_timestamp
+
+
+UI_LOG_BUFFER_LINE_PATTERN = re.compile(r"^\[(?P<ts>[^\]]+)\]\s?(?P<message>.*)$")
 
 
 @dataclass(slots=True)
@@ -115,6 +121,20 @@ class StrategyConfig:
     runtime_mode: str
     strategy_mode: str
     indicator_inputs: dict[str, str]
+
+
+def save_log(lines: list[str]) -> None:
+    for raw_line in lines:
+        line = str(raw_line or "").rstrip("\n")
+        if not line:
+            continue
+        match = UI_LOG_BUFFER_LINE_PATTERN.match(line)
+        if match:
+            ts = match.group("ts").strip()
+            append_ui_log_entry(ts, line)
+            continue
+        fallback_ts = utc_now_text("%Y-%m-%d %H:%M:%S")
+        append_ui_log_entry(fallback_ts, line)
 
 
 @dataclass(slots=True)
@@ -409,24 +429,21 @@ def _iter_with_progress(
 
 def format_event_timestamp(value: Any) -> str:
     if isinstance(value, pd.Timestamp):
-        dt_value = value.tz_convert(None) if value.tzinfo is not None else value
+        dt_value = value.tz_convert(UTC) if value.tzinfo is not None else value
         return dt_value.strftime(TIMESTAMP_FORMAT)
 
     if isinstance(value, datetime):
-        dt_value = value.replace(tzinfo=None) if value.tzinfo is not None else value
+        dt_value = value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo is not None else value
         return dt_value.strftime(TIMESTAMP_FORMAT)
 
     if isinstance(value, (int, float)):
         numeric_value = float(value)
         if numeric_value > 10_000_000_000:
             numeric_value /= 1000.0
-        try:
-            return datetime.fromtimestamp(numeric_value).strftime(TIMESTAMP_FORMAT)
-        except (OSError, OverflowError, ValueError):
-            return datetime.now().strftime(TIMESTAMP_FORMAT)
+        return utc_text_from_timestamp(numeric_value, TIMESTAMP_FORMAT)
 
     text_value = str(value).strip()
-    return text_value or datetime.now().strftime(TIMESTAMP_FORMAT)
+    return text_value or utc_now_text(TIMESTAMP_FORMAT)
 
 
 def _event_ts_to_timestamp(value: Any) -> pd.Timestamp | None:
@@ -1609,7 +1626,7 @@ def build_row_snapshot(
     indicator_inputs: dict[str, str] | None = None,
 ) -> DiscreteRowSnapshot:
     row_ts = timestamp_formatter(_row_value(row, "open_time"))
-    log_ts = datetime.now().strftime(timestamp_format) if live else row_ts
+    log_ts = utc_now_text(timestamp_format) if live else row_ts
     return DiscreteRowSnapshot(
         raw_row=row,
         price=_row_value(row, "close"),

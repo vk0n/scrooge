@@ -7,7 +7,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Callable
 
 import pandas as pd
@@ -33,6 +33,7 @@ from core.market_events import (
     PriceTickEvent,
     PositionSnapshotEvent,
 )
+from shared.time_utils import utc_now_text, utc_text_from_timestamp
 
 try:
     from binance import ThreadedWebsocketManager
@@ -173,11 +174,8 @@ def _format_event_timestamp_ms(value: Any) -> str:
     try:
         ts_ms = int(value)
     except (TypeError, ValueError):
-        return datetime.now().strftime(TIMESTAMP_FORMAT)
-    try:
-        return datetime.fromtimestamp(ts_ms / 1000).strftime(TIMESTAMP_FORMAT)
-    except (OSError, OverflowError, ValueError):
-        return datetime.now().strftime(TIMESTAMP_FORMAT)
+        return utc_now_text(TIMESTAMP_FORMAT)
+    return utc_text_from_timestamp(ts_ms, TIMESTAMP_FORMAT)
 
 
 def _interval_to_timedelta(interval: str) -> pd.Timedelta:
@@ -706,7 +704,11 @@ class LiveMarketStream:
         self._append_market_event(
             IndicatorSnapshotEvent(
                 symbol=self._symbol,
-                ts=close_dt.strftime(TIMESTAMP_FORMAT),
+                ts=(
+                    close_dt.tz_localize(UTC).strftime(TIMESTAMP_FORMAT)
+                    if close_dt.tzinfo is None
+                    else close_dt.tz_convert(UTC).strftime(TIMESTAMP_FORMAT)
+                ),
                 interval="discrete_snapshot",
                 values=payload_values,
             )
@@ -728,7 +730,7 @@ class LiveMarketStream:
             set_cached_position(self._symbol, position)
             bootstrap_event_ts = int(time.time() * 1000)
             if isinstance(position, dict):
-                ts_label = datetime.now().strftime(TIMESTAMP_FORMAT)
+                ts_label = utc_now_text(TIMESTAMP_FORMAT)
                 snapshot = _normalize_rest_exchange_position_snapshot(
                     self._symbol,
                     position,
@@ -1496,7 +1498,11 @@ class LiveMarketStream:
                 symbol=self._symbol,
                 ts=close_time,
                 interval=interval,
-                open_time=pd.Timestamp(candle["open_time"]).strftime(TIMESTAMP_FORMAT),
+                open_time=(
+                    pd.Timestamp(candle["open_time"]).tz_localize(UTC).strftime(TIMESTAMP_FORMAT)
+                    if pd.Timestamp(candle["open_time"]).tzinfo is None
+                    else pd.Timestamp(candle["open_time"]).tz_convert(UTC).strftime(TIMESTAMP_FORMAT)
+                ),
                 close_time=close_time,
                 open=float(candle["open"]),
                 high=float(candle["high"]),

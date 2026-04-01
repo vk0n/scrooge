@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
+import { formatDateTimeEu } from "../../lib/datetime";
 
 type LogsPayload = {
   path?: string;
@@ -240,7 +241,9 @@ function LogsContent(): JSX.Element {
           <div ref={logBoxRef} className="log-box log-feed log-box-newest-first">
             {parsedLines.map((line, index) => (
               <article key={`${line.raw}-${index}`} className={`log-line log-line-${line.tone}`}>
-                {line.timestamp ? <span className="log-line-timestamp">[{line.timestamp}]</span> : null}
+                {line.timestamp ? (
+                  <span className="log-line-timestamp">[{formatDateTimeEu(line.timestamp, line.timestamp)}]</span>
+                ) : null}
                 <span className="log-line-message">
                   {line.messageLead}
                   {line.resultText ? (

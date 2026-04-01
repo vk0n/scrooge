@@ -6,7 +6,7 @@ import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 import { buildContractParagraphs, type ContractParagraph, type EditableConfig } from "../../lib/contract";
-import { formatDateTimeEu } from "../../lib/datetime";
+import { formatDateTimeEu, parseTimestampMs } from "../../lib/datetime";
 
 type StatusPayload = {
   bot_running_status: string;
@@ -637,12 +637,7 @@ function formatUnsignedPercent(value: number | null): string {
 }
 
 function parseTradeTimestamp(value: string | null | undefined): number | null {
-  if (!value || typeof value !== "string") {
-    return null;
-  }
-  const normalized = value.trim().replace(" ", "T");
-  const timestamp = Date.parse(normalized);
-  return Number.isFinite(timestamp) ? timestamp : null;
+  return parseTimestampMs(value);
 }
 
 function formatTradeDuration(entryTime: string | null | undefined, exitTime: string | null | undefined): string {

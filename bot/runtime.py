@@ -35,6 +35,7 @@ from core.engine import initialize_realtime_strategy_processor, run_strategy_on_
 from core.indicator_inputs import normalize_indicator_inputs
 from core.binance_retry import create_binance_client
 from shared.runtime_db import bootstrap_runtime_db, runtime_artifact_dir, runtime_db_path, runtime_state_snapshot_exists
+from shared.time_utils import utc_now_text
 
 RLockType = type(threading.RLock())
 
@@ -251,18 +252,23 @@ def _parse_open_time_to_ms(value: Any) -> int | None:
             return numeric * 1000
     normalized = text.replace("Z", "+00:00")
     try:
-        return int(datetime.fromisoformat(normalized).timestamp() * 1000)
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        else:
+            parsed = parsed.astimezone(UTC)
+        return int(parsed.timestamp() * 1000)
     except ValueError:
         return None
 
 
 def _format_open_time(value: Any) -> str:
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M:%S")
+        return (value.astimezone(UTC) if value.tzinfo is not None else value).strftime("%Y-%m-%d %H:%M:%S")
     text = str(value).strip()
     if text:
         return text
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return utc_now_text("%Y-%m-%d %H:%M:%S")
 
 
 def _coerce_optional_float(value: Any) -> float | str:
@@ -660,7 +666,7 @@ if __name__ == "__main__":
                             current_state,
                             symbol=current_symbol,
                             position_snapshot=pos,
-                            ts_label=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            ts_label=utc_now_text("%Y-%m-%d %H:%M:%S"),
                         )
                         runtime_context["state"] = current_state
                 cache_health_flags["position_cache_stale_logged"] = False

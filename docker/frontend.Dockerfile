@@ -3,7 +3,9 @@ FROM node:20-bookworm-slim AS builder
 WORKDIR /app/frontend
 
 ARG INTERNAL_API_BASE_URL=http://api:8000
+ARG NEXT_PUBLIC_DISPLAY_TIMEZONE=Europe/Kyiv
 ENV INTERNAL_API_BASE_URL=${INTERNAL_API_BASE_URL}
+ENV NEXT_PUBLIC_DISPLAY_TIMEZONE=${NEXT_PUBLIC_DISPLAY_TIMEZONE}
 
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci

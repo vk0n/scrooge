@@ -131,12 +131,14 @@ services:
       dockerfile: docker/frontend.Dockerfile
       args:
         INTERNAL_API_BASE_URL: "${INTERNAL_API_BASE_URL:-http://api:8000}"
+        NEXT_PUBLIC_DISPLAY_TIMEZONE: "${NEXT_PUBLIC_DISPLAY_TIMEZONE:-Europe/Kyiv}"
     container_name: scrooge-frontend
     depends_on:
       - api
     environment:
       INTERNAL_API_BASE_URL: "${INTERNAL_API_BASE_URL:-http://api:8000}"
       NEXT_PUBLIC_API_BASE_URL: "${NEXT_PUBLIC_API_BASE_URL:-}"
+      NEXT_PUBLIC_DISPLAY_TIMEZONE: "${NEXT_PUBLIC_DISPLAY_TIMEZONE:-Europe/Kyiv}"
     labels:
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: "${SCROOGE_WATCHTOWER_SCOPE:-scrooge}"

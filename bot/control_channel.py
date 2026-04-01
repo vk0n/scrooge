@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Callable
 from bot.event_log import emit_event, get_technical_logger
 from core.engine import sanitize_trade_for_history
+from shared.time_utils import utc_now_iso, utc_now_text, utc_text_from_timestamp
 
 try:
     import redis
@@ -27,7 +28,7 @@ technical_logger = get_technical_logger()
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return utc_now_iso()
 
 
 def _status_key(command_id: str) -> str:
@@ -288,7 +289,7 @@ def process_pending_commands(
 
         try:
             was_enabled = bool(state.get("trading_enabled", True))
-            event_ts = datetime.now().strftime(TRADE_TIMESTAMP_FORMAT)
+            event_ts = utc_now_text(TRADE_TIMESTAMP_FORMAT)
             if action == "start":
                 state["trading_enabled"] = True
                 message = "Trading resumed." if not was_enabled else "Trading is already running."
@@ -437,7 +438,7 @@ def process_pending_commands(
                     if has_local_position and isinstance(local_position, dict):
                         trade_record = dict(local_position)
                         trade_record["exit_reason"] = "manual_close"
-                        trade_record["exit_time"] = datetime.now().strftime(TRADE_TIMESTAMP_FORMAT)
+                        trade_record["exit_time"] = utc_now_text(TRADE_TIMESTAMP_FORMAT)
                         execution_summary = (
                             get_order_execution_summary_fn(symbol, order_result)
                             if get_order_execution_summary_fn is not None
@@ -445,9 +446,10 @@ def process_pending_commands(
                         )
                         if isinstance(execution_summary, dict) and execution_summary.get("update_time_ms") is not None:
                             try:
-                                trade_record["exit_time"] = datetime.fromtimestamp(
-                                    int(execution_summary["update_time_ms"]) / 1000
-                                ).strftime(TRADE_TIMESTAMP_FORMAT)
+                                trade_record["exit_time"] = utc_text_from_timestamp(
+                                    execution_summary["update_time_ms"],
+                                    TRADE_TIMESTAMP_FORMAT,
+                                )
                             except (TypeError, ValueError, OSError):
                                 pass
                         exit_price = _extract_exit_price(order_result)
@@ -547,7 +549,7 @@ def process_pending_commands(
             emit_event(
                 code="command_failed",
                 category="error",
-                ts=datetime.now().strftime(TRADE_TIMESTAMP_FORMAT),
+                ts=utc_now_text(TRADE_TIMESTAMP_FORMAT),
                 level="warning",
                 persist_ui=True,
                 action=action,

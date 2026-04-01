@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime
 from typing import Any
 from bot.event_log import get_technical_logger
 from shared.runtime_db import (
@@ -14,6 +13,7 @@ from shared.runtime_db import (
     replace_trade_history_snapshot as replace_trade_history_db_snapshot,
     save_runtime_state_snapshot as save_runtime_state_db_snapshot,
 )
+from shared.time_utils import utc_now_ms, utc_now_text
 
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -35,11 +35,11 @@ technical_logger = get_technical_logger()
 
 
 def _now_ms() -> int:
-    return int(datetime.now().timestamp() * 1000)
+    return utc_now_ms()
 
 
 def _now_text() -> str:
-    return datetime.now().strftime(TIMESTAMP_FORMAT)
+    return utc_now_text(TIMESTAMP_FORMAT)
 
 
 def _default_state() -> dict[str, Any]:

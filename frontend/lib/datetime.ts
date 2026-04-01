@@ -1,5 +1,7 @@
 "use client";
 
+const DISPLAY_TIMEZONE = process.env.NEXT_PUBLIC_DISPLAY_TIMEZONE || "Europe/Kyiv";
+
 const EU_DATETIME_FORMATTER = new Intl.DateTimeFormat("uk-UA", {
   day: "2-digit",
   month: "2-digit",
@@ -7,12 +9,25 @@ const EU_DATETIME_FORMATTER = new Intl.DateTimeFormat("uk-UA", {
   hour: "2-digit",
   minute: "2-digit",
   second: "2-digit",
-  hour12: false
+  hour12: false,
+  timeZone: DISPLAY_TIMEZONE,
 });
 
-const LOCAL_DATETIME_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+const UTC_NAIVE_DATETIME_RE = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+const UTC_NAIVE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-function toDate(value: unknown): Date | null {
+function normalizeTimestampString(value: string): string {
+  const trimmed = value.trim();
+  if (UTC_NAIVE_DATETIME_RE.test(trimmed)) {
+    return `${trimmed.replace(" ", "T")}Z`;
+  }
+  if (UTC_NAIVE_DATE_RE.test(trimmed)) {
+    return `${trimmed}T00:00:00Z`;
+  }
+  return trimmed;
+}
+
+export function toDate(value: unknown): Date | null {
   if (value instanceof Date) {
     return Number.isFinite(value.getTime()) ? value : null;
   }
@@ -41,9 +56,19 @@ function toDate(value: unknown): Date | null {
     return toDate(numeric);
   }
 
-  const normalized = LOCAL_DATETIME_RE.test(trimmed) ? trimmed.replace(" ", "T") : trimmed;
+  const normalized = normalizeTimestampString(trimmed);
   const parsed = new Date(normalized);
   return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+export function parseTimestampMs(value: unknown): number | null {
+  const parsed = toDate(value);
+  return parsed ? parsed.getTime() : null;
+}
+
+export function toUtcIsoString(value: unknown): string | null {
+  const parsed = toDate(value);
+  return parsed ? parsed.toISOString() : null;
 }
 
 export function formatDateTimeEu(value: unknown, fallback = "N/A"): string {
