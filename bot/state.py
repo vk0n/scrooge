@@ -7,14 +7,12 @@ from bot.event_log import get_technical_logger
 from shared.runtime_db import (
     append_balance_history_row as append_balance_history_db_row,
     append_trade_history_row as append_trade_history_db_row,
-    balance_history_row_count as get_balance_history_db_row_count,
     list_balance_history_values as list_balance_history_db_values,
     list_trade_history_rows as list_trade_history_db_rows,
     load_runtime_state_snapshot as load_runtime_state_db_snapshot,
     replace_balance_history_snapshot as replace_balance_history_db_snapshot,
     replace_trade_history_snapshot as replace_trade_history_db_snapshot,
     save_runtime_state_snapshot as save_runtime_state_db_snapshot,
-    trade_history_row_count as get_trade_history_db_row_count,
 )
 
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"

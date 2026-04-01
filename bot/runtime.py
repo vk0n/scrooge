@@ -34,7 +34,7 @@ from core.event_store import reset_event_store
 from core.engine import initialize_realtime_strategy_processor, run_strategy_on_snapshot
 from core.indicator_inputs import normalize_indicator_inputs
 from core.binance_retry import create_binance_client
-from shared.runtime_db import runtime_artifact_dir, runtime_db_path, runtime_state_snapshot_exists
+from shared.runtime_db import bootstrap_runtime_db, runtime_artifact_dir, runtime_db_path, runtime_state_snapshot_exists
 
 RLockType = type(threading.RLock())
 
@@ -505,6 +505,7 @@ if __name__ == "__main__":
             )
 
     _ensure_runtime_event_log_file()
+    bootstrap_runtime_db()
 
     symbol = cfg["symbol"]
     lvrg = cfg["leverage"]

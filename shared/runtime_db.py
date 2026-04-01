@@ -12,6 +12,8 @@ from typing import Any, Iterator
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
+RUNTIME_DB_SCHEMA_VERSION = 1
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Initial DB-first runtime schema"
 
 
 class RuntimeDbError(OSError):
@@ -173,8 +175,15 @@ def _configure_connection(connection: sqlite3.Connection) -> None:
 
 
 def _ensure_schema(connection: sqlite3.Connection) -> None:
+    applied_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     connection.executescript(
         """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at_ms INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS trade_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             row_key TEXT NOT NULL UNIQUE,
@@ -248,6 +257,13 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         ON ui_log_entries(sort_ts_ms DESC, id DESC);
         """
     )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, description, applied_at_ms)
+        VALUES (?, ?, ?)
+        """,
+        (RUNTIME_DB_SCHEMA_VERSION, RUNTIME_DB_SCHEMA_DESCRIPTION, applied_at_ms),
+    )
 
 
 @contextmanager
@@ -269,6 +285,43 @@ def _connection(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         raise RuntimeDbError(f"Runtime database operation failed at {resolved_path}: {exc}") from exc
     finally:
         connection.close()
+
+
+def bootstrap_runtime_db(
+    path: Path | None = None,
+    *,
+    initial_state: dict[str, Any] | None = None,
+) -> Path:
+    """
+    Create or open the runtime DB, ensure schema is present, and optionally seed
+    the initial runtime state snapshot. No legacy file import is performed here.
+    """
+    resolved_path = (path or runtime_db_path()).expanduser()
+    with _connection(resolved_path) as connection:
+        if initial_state is not None:
+            row = connection.execute(
+                "SELECT 1 FROM runtime_state_snapshot WHERE state_key = ? LIMIT 1",
+                (STATE_SNAPSHOT_KEY,),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO runtime_state_snapshot (state_key, payload_json, updated_at_ms)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        STATE_SNAPSHOT_KEY,
+                        _json_text(initial_state),
+                        int(datetime.now(timezone.utc).timestamp() * 1000),
+                    ),
+                )
+    return resolved_path
+
+
+def current_runtime_db_schema_version(path: Path | None = None) -> int:
+    with _connection(path) as connection:
+        row = connection.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone()
+    return int(row["version"]) if row is not None and row["version"] is not None else 0
 
 
 def trade_history_row_count(path: Path | None = None) -> int:

@@ -34,7 +34,7 @@ scrooge/
 ### Strategy Modes
 
 - `strategy_mode: discrete`
-  - legacy minute-snapshot style evaluation
+  - minute-snapshot style evaluation
   - decisions are taken once per closed `small` candle
 - `strategy_mode: realtime`
   - event-driven evaluation on `price_tick`, `candle_closed`, `indicator_snapshot`, and account/order events
@@ -163,6 +163,9 @@ Runtime storage model:
 - `scrooge.sqlite3` is the source of truth for runtime state, trade history, balance history, and Ledger/UI log lines
 - `event_history.jsonl` remains a replay/debug artifact mirrored alongside DB event records
 - `market_events.jsonl` and `chart_dataset.csv` remain raw runtime artifacts
+
+Runtime contract reference:
+- `docs/runtime-storage.md`
 
 Live runtime behavior:
 - websocket-driven market stream
