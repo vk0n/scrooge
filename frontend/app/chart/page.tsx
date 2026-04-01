@@ -386,11 +386,17 @@ function buildLivePriceAnnotations(
       Number.isFinite(rsiThreshold) &&
       (sideContext === "long" ? latestRsi < rsiThreshold : latestRsi > rsiThreshold);
 
+    const buildIndicatorChip = (label: string, ok: boolean): string => {
+      const background = ok ? "#84cc16" : "#ef4444";
+      const textColor = ok ? "#0b1220" : "#fff7f7";
+      return `<span style="display:inline-block;padding:1px 6px;border-radius:2px;background:${background};color:${textColor};font-weight:700;">${label}</span>`;
+    };
+
     const text = [
-      `${bandOk ? "🟩" : "🟥"} ${bandLabel}`,
-      `${emaOk ? "🟩" : "🟥"} EMA`,
-      `${rsiOk ? "🟩" : "🟥"} RSI`,
-    ].join("   ");
+      buildIndicatorChip(bandLabel, bandOk),
+      buildIndicatorChip("EMA", emaOk),
+      buildIndicatorChip("RSI", rsiOk),
+    ].join("&nbsp;");
 
     return [
       {
@@ -409,7 +415,7 @@ function buildLivePriceAnnotations(
           size: 11,
         },
         bordercolor: CHART_THEME.livePrice,
-        borderwidth: 1,
+        borderwidth: 1.2,
         borderpad: 5,
         bgcolor: "rgba(244, 248, 252, 0.95)",
       },
