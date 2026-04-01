@@ -7,6 +7,13 @@ from pathlib import Path
 from typing import Any, Iterator, Protocol, TypedDict
 from uuid import uuid4
 
+from shared.runtime_db import (
+    append_event_record as append_event_db_record,
+    event_history_row_count as get_event_history_db_row_count,
+    list_event_records as list_event_db_records,
+    runtime_artifact_dir,
+)
+
 
 EVENT_SCHEMA_VERSION = 1
 EVENT_LOG_FILE = (str(os.getenv("SCROOGE_EVENT_LOG_FILE", "") or "").strip() or "runtime/event_history.jsonl")
@@ -51,11 +58,7 @@ def resolve_event_log_path(path: str | Path | None = None) -> Path:
     if env_path:
         return Path(env_path).expanduser()
 
-    ui_log_path = str(os.getenv("SCROOGE_LOG_FILE", "") or "").strip()
-    if ui_log_path:
-        return Path(ui_log_path).expanduser().parent / "event_history.jsonl"
-
-    return Path(EVENT_LOG_FILE).expanduser()
+    return runtime_artifact_dir() / "event_history.jsonl"
 
 
 def build_event_record(
@@ -89,15 +92,59 @@ class JsonlEventStore:
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = resolve_event_log_path(path)
 
+    def _bootstrap_db_from_jsonl(self) -> None:
+        if not self.path.exists():
+            return
+        payloads: list[EventRecord] = []
+        with self.path.open("r", encoding="utf-8", errors="replace") as file_obj:
+            for line_number, raw_line in enumerate(file_obj, start=1):
+                text = raw_line.strip()
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    _logger().warning("event_store_line_malformed path=%s line=%s error=%s", self.path, line_number, exc)
+                    continue
+                if not isinstance(payload, dict):
+                    _logger().warning("event_store_line_invalid path=%s line=%s expected=json_object", self.path, line_number)
+                    continue
+                payloads.append(payload)  # type: ignore[arg-type]
+
+        for payload in payloads:
+            append_event_db_record(payload)
+
     def append(self, event: EventRecord) -> None:
+        try:
+            if get_event_history_db_row_count() == 0:
+                self._bootstrap_db_from_jsonl()
+            append_event_db_record(event)
+        except OSError:
+            _logger().exception("event_store_db_append_failed")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         serialized = json.dumps(event, ensure_ascii=True, sort_keys=True, default=str)
         with self.path.open("a", encoding="utf-8") as file_obj:
             file_obj.write(serialized + "\n")
 
     def iter_events(self) -> Iterator[EventRecord]:
+        try:
+            if get_event_history_db_row_count() > 0:
+                for payload in list_event_db_records():
+                    yield payload  # type: ignore[misc]
+                return
+        except OSError:
+            _logger().exception("event_store_db_read_failed")
+
         if not self.path.exists():
             return
+
+        try:
+            self._bootstrap_db_from_jsonl()
+            for payload in list_event_db_records():
+                yield payload  # type: ignore[misc]
+            return
+        except OSError:
+            _logger().exception("event_store_db_bootstrap_failed path=%s", self.path)
 
         with self.path.open("r", encoding="utf-8", errors="replace") as file_obj:
             for line_number, raw_line in enumerate(file_obj, start=1):

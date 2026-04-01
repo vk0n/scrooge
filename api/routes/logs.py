@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from services.log_service import LOG_PATH, read_last_log_lines
+from services.log_service import log_source_path, read_last_log_lines
 
 router = APIRouter()
 
@@ -19,7 +19,7 @@ def get_logs(lines: int = Query(default=200, ge=1, le=5000)) -> dict[str, object
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return {
-        "path": str(LOG_PATH),
+        "path": str(log_source_path()),
         "requested_lines": lines,
         "returned_lines": len(tail_lines),
         "lines": tail_lines,

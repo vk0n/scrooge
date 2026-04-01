@@ -39,10 +39,7 @@ DEFAULT_COMPARE_RUN_ROOT = PROJECT_ROOT / "runtime" / "compare"
 
 _COMPARE_ENV_KEYS = (
     "SCROOGE_BACKTEST_RUN_DIR",
-    "SCROOGE_STATE_FILE",
-    "SCROOGE_TRADE_HISTORY_FILE",
-    "SCROOGE_BALANCE_HISTORY_FILE",
-    "SCROOGE_LOG_FILE",
+    "SCROOGE_DB_PATH",
     "SCROOGE_EVENT_LOG_FILE",
     "SCROOGE_MARKET_EVENT_STREAM_FILE",
     "SCROOGE_RUNTIME_CHART_DATASET_PATH",
@@ -363,10 +360,7 @@ def _scenario_env(
 ) -> Iterator[None]:
     previous = {key: os.environ.get(key) for key in _COMPARE_ENV_KEYS}
     os.environ["SCROOGE_BACKTEST_RUN_DIR"] = str(run_dir)
-    os.environ["SCROOGE_STATE_FILE"] = str(run_dir / "state.json")
-    os.environ["SCROOGE_TRADE_HISTORY_FILE"] = str(run_dir / "trade_history.jsonl")
-    os.environ["SCROOGE_BALANCE_HISTORY_FILE"] = str(run_dir / "balance_history.jsonl")
-    os.environ["SCROOGE_LOG_FILE"] = str(run_dir / "trading_log.txt")
+    os.environ["SCROOGE_DB_PATH"] = str(run_dir / "scrooge.sqlite3")
     os.environ["SCROOGE_EVENT_LOG_FILE"] = str(run_dir / "event_history.jsonl")
     os.environ["SCROOGE_MARKET_EVENT_STREAM_FILE"] = str(run_dir / "market_events.jsonl")
     os.environ["SCROOGE_RUNTIME_CHART_DATASET_PATH"] = str(run_dir / "chart_dataset.csv")

@@ -188,10 +188,7 @@ Behavior:
 ## Runtime Artifacts
 
 Live services write into `/runtime`:
-- `state.json`
-- `trade_history.jsonl`
-- `balance_history.jsonl`
-- `trading_log.txt`
+- `scrooge.sqlite3`
 - `event_history.jsonl`
 - `market_events.jsonl`
 - `chart_dataset.csv`
@@ -199,7 +196,8 @@ Live services write into `/runtime`:
 - generated VAPID key files when push is enabled and keys are not pre-supplied
 
 Notes:
-- `event_history.jsonl` is the canonical append-only event log
+- `scrooge.sqlite3` is the source of truth for runtime state, trade history, balance history, and Ledger/UI log lines
+- `event_history.jsonl` remains a replay/debug event artifact mirrored alongside DB records
 - `market_events.jsonl` carries both market and account/execution events
 - runtime artifacts survive normal upgrades as long as the `scrooge_runtime` volume is preserved
 
@@ -219,10 +217,7 @@ Exported output appears in:
 - symlink `./backtest_artifacts/latest`
 
 Typical run artifacts:
-- `state.json`
-- `trade_history.jsonl`
-- `balance_history.jsonl`
-- `trading_log.txt`
+- `scrooge.sqlite3`
 - `event_history.jsonl`
 - `market_tape.jsonl`
 - `market_events.jsonl`
@@ -239,6 +234,7 @@ Typical run artifacts:
 - `report.html` when `enable_plot: true`
 
 Notes:
+- `scrooge.sqlite3` is the canonical backtest store for replay state, trade history, balance history, and UI log lines
 - `market_event_execution_summary.json` summarizes the active execution path
 - `market_event_trade_alignment_summary.json` compares strategy trades to observed execution trades
 - `report.json` is the machine-readable summary

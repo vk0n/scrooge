@@ -335,8 +335,6 @@ _TRANSIENT_POSITION_FIELDS = {
     "pending_open_order_id",
 }
 
-
-LOG_FILE = os.getenv("SCROOGE_LOG_FILE", "runtime/trading_log.txt")
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 SEARCH_STATUS_LABELS = {
     "looking_for_buy_opportunity": "Looking for a buy opportunity...",
@@ -408,13 +406,6 @@ def _iter_with_progress(
                 progress.update(1)
 
     return _tqdm_iter()
-
-
-def save_log(log_buffer: list[str]) -> None:
-    log_path = os.getenv("SCROOGE_LOG_FILE", LOG_FILE)
-    with open(log_path, "a") as f:
-        f.write("\n".join(log_buffer) + "\n")
-
 
 def format_event_timestamp(value: Any) -> str:
     if isinstance(value, pd.Timestamp):

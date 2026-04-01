@@ -22,15 +22,11 @@ PUSH_SUBJECT = os.getenv("SCROOGE_PUSH_VAPID_SUBJECT", "mailto:scrooge@example.l
 
 
 def _runtime_dir() -> Path:
-    for env_name in (
-        "SCROOGE_STATE_FILE",
-        "SCROOGE_STATE_PATH",
-        "SCROOGE_LOG_FILE",
-        "SCROOGE_LOG_PATH",
-    ):
+    for env_name in ("SCROOGE_DB_PATH", "SCROOGE_RUNTIME_DIR"):
         raw_value = os.getenv(env_name, "").strip()
         if raw_value:
-            return Path(raw_value).expanduser().parent
+            path = Path(raw_value).expanduser()
+            return path.parent if path.suffix else path
     return Path.cwd()
 
 

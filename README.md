@@ -154,13 +154,15 @@ python -m bot.runtime
 ```
 
 Default live artifacts:
-- `runtime/state.json`
-- `runtime/trading_log.txt`
-- `runtime/trade_history.jsonl`
-- `runtime/balance_history.jsonl`
+- `runtime/scrooge.sqlite3`
 - `runtime/event_history.jsonl`
 - `runtime/market_events.jsonl`
 - `runtime/chart_dataset.csv`
+
+Runtime storage model:
+- `scrooge.sqlite3` is the source of truth for runtime state, trade history, balance history, and Ledger/UI log lines
+- `event_history.jsonl` remains a replay/debug artifact mirrored alongside DB event records
+- `market_events.jsonl` and `chart_dataset.csv` remain raw runtime artifacts
 
 Live runtime behavior:
 - websocket-driven market stream
@@ -229,10 +231,7 @@ The checked-in backtest preset mirrors the tuned realtime baseline:
 - `indicator_inputs`: `ema=intrabar`, `rsi=closed`, `bb=closed`, `atr=intrabar`
 
 Typical backtest artifacts:
-- `state.json`
-- `trade_history.jsonl`
-- `balance_history.jsonl`
-- `trading_log.txt`
+- `scrooge.sqlite3`
 - `event_history.jsonl`
 - `market_tape.jsonl`
 - `market_events.jsonl`
@@ -245,6 +244,10 @@ Typical backtest artifacts:
 - `market_event_execution_trades.jsonl`
 - `market_event_trade_alignment_summary.json`
 - `market_event_trade_alignment_pairs.jsonl`
+
+Backtest storage model:
+- `scrooge.sqlite3` is the canonical store for replay state, trade history, balance history, and UI log lines inside the run directory
+- `event_history.jsonl`, `market_events.jsonl`, and the replay/alignment artifacts remain file-based outputs
 
 ### Historical aggTrades replay
 

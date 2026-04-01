@@ -1,18 +1,22 @@
 from __future__ import annotations
 
-import json
 import math
-import os
-import shutil
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 from bot.event_log import get_technical_logger
+from shared.runtime_db import (
+    append_balance_history_row as append_balance_history_db_row,
+    append_trade_history_row as append_trade_history_db_row,
+    balance_history_row_count as get_balance_history_db_row_count,
+    list_balance_history_values as list_balance_history_db_values,
+    list_trade_history_rows as list_trade_history_db_rows,
+    load_runtime_state_snapshot as load_runtime_state_db_snapshot,
+    replace_balance_history_snapshot as replace_balance_history_db_snapshot,
+    replace_trade_history_snapshot as replace_trade_history_db_snapshot,
+    save_runtime_state_snapshot as save_runtime_state_db_snapshot,
+    trade_history_row_count as get_trade_history_db_row_count,
+)
 
-STATE_FILE = os.getenv("SCROOGE_STATE_FILE", "runtime/state.json")
-TRADE_HISTORY_FILE = os.getenv("SCROOGE_TRADE_HISTORY_FILE", "runtime/trade_history.jsonl")
-BALANCE_HISTORY_FILE = os.getenv("SCROOGE_BALANCE_HISTORY_FILE", "runtime/balance_history.jsonl")
-STATE_BACKUP_SUFFIX = ".bak"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 SEARCH_STATUS_LABELS = {
@@ -38,24 +42,6 @@ def _now_ms() -> int:
 
 def _now_text() -> str:
     return datetime.now().strftime(TIMESTAMP_FORMAT)
-
-
-def _state_path() -> Path:
-    return Path(os.getenv("SCROOGE_STATE_FILE", STATE_FILE)).expanduser()
-
-
-def _trade_history_path() -> Path:
-    path = Path(os.getenv("SCROOGE_TRADE_HISTORY_FILE", TRADE_HISTORY_FILE)).expanduser()
-    if path.is_absolute():
-        return path
-    return _state_path().parent / path
-
-
-def _balance_history_path() -> Path:
-    path = Path(os.getenv("SCROOGE_BALANCE_HISTORY_FILE", BALANCE_HISTORY_FILE)).expanduser()
-    if path.is_absolute():
-        return path
-    return _state_path().parent / path
 
 
 def _default_state() -> dict[str, Any]:
@@ -201,95 +187,6 @@ def _normalize_state(raw_state: Any) -> dict[str, Any]:
     return normalized
 
 
-def _read_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-
-    try:
-        with path.open("r", encoding="utf-8") as file_obj:
-            data = json.load(file_obj)
-    except json.JSONDecodeError as exc:
-        technical_logger.warning("state_json_malformed path=%s error=%s", path, exc)
-        return None
-    except OSError as exc:
-        technical_logger.warning("state_read_failed path=%s error=%s", path, exc)
-        return None
-
-    if not isinstance(data, dict):
-        technical_logger.warning("state_json_invalid_format path=%s expected=json_object", path)
-        return None
-    return data
-
-
-def _atomic_write_state(path: Path, state: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    backup_path = path.with_suffix(path.suffix + STATE_BACKUP_SUFFIX)
-
-    with tmp_path.open("w", encoding="utf-8") as file_obj:
-        json.dump(state, file_obj, indent=4, default=str)
-
-    if path.exists():
-        try:
-            shutil.copy2(path, backup_path)
-        except OSError as exc:
-            technical_logger.warning("state_backup_update_failed path=%s error=%s", backup_path, exc)
-
-    tmp_path.replace(path)
-
-
-def _jsonl_has_content(path: Path) -> bool:
-    if not path.exists():
-        return False
-    try:
-        return path.stat().st_size > 0
-    except OSError:
-        return False
-
-
-def _atomic_write_jsonl(path: Path, rows: list[Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as file_obj:
-        for row in rows:
-            file_obj.write(json.dumps(row, default=str, separators=(",", ":")))
-            file_obj.write("\n")
-    tmp_path.replace(path)
-
-
-def _append_jsonl(path: Path, row: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file_obj:
-        file_obj.write(json.dumps(row, default=str, separators=(",", ":")))
-        file_obj.write("\n")
-
-
-def _load_jsonl(path: Path) -> list[Any]:
-    if not path.exists():
-        return []
-
-    rows: list[Any] = []
-    try:
-        with path.open("r", encoding="utf-8") as file_obj:
-            for idx, line in enumerate(file_obj, start=1):
-                raw = line.strip()
-                if not raw:
-                    continue
-                try:
-                    rows.append(json.loads(raw))
-                except json.JSONDecodeError as exc:
-                    technical_logger.warning(
-                        "history_jsonl_line_skipped path=%s line=%s error=%s",
-                        path,
-                        idx,
-                        exc,
-                    )
-    except OSError as exc:
-        technical_logger.warning("history_jsonl_read_failed path=%s error=%s", path, exc)
-        return []
-    return rows
-
-
 def _normalize_trade_history(raw_history: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_history, list):
         return []
@@ -315,7 +212,7 @@ def _normalize_balance_history(raw_history: Any) -> list[float]:
     return output
 
 
-def _migrate_legacy_history_keys(state: dict[str, Any], state_path: Path) -> dict[str, Any]:
+def _migrate_legacy_history_keys(state: dict[str, Any]) -> dict[str, Any]:
     has_trade_key = "trade_history" in state
     has_balance_key = "balance_history" in state
     if not has_trade_key and not has_balance_key:
@@ -323,71 +220,52 @@ def _migrate_legacy_history_keys(state: dict[str, Any], state_path: Path) -> dic
 
     trade_history = _normalize_trade_history(state.get("trade_history"))
     balance_history = _normalize_balance_history(state.get("balance_history"))
-    trade_path = _trade_history_path()
-    balance_path = _balance_history_path()
 
     if has_trade_key and trade_history:
         try:
-            if _jsonl_has_content(trade_path):
-                technical_logger.info("trade_history_preserved_existing path=%s", trade_path)
-            else:
-                _atomic_write_jsonl(trade_path, trade_history)
-                technical_logger.info("trade_history_migrated count=%s path=%s", len(trade_history), trade_path)
+            replace_trade_history_db_snapshot(trade_history)
+            technical_logger.info("trade_history_migrated_to_db count=%s", len(trade_history))
         except OSError as exc:
-            technical_logger.warning("trade_history_migration_failed path=%s error=%s", trade_path, exc)
+            technical_logger.warning("trade_history_migration_failed error=%s", exc)
 
     if has_balance_key and balance_history:
         try:
-            if _jsonl_has_content(balance_path):
-                technical_logger.info("balance_history_preserved_existing path=%s", balance_path)
-            else:
-                balance_rows = [{"time": None, "balance": value} for value in balance_history]
-                _atomic_write_jsonl(balance_path, balance_rows)
-                technical_logger.info("balance_history_migrated count=%s path=%s", len(balance_history), balance_path)
+            replace_balance_history_db_snapshot(balance_history)
+            technical_logger.info("balance_history_migrated_to_db count=%s", len(balance_history))
         except OSError as exc:
-            technical_logger.warning("balance_history_migration_failed path=%s error=%s", balance_path, exc)
+            technical_logger.warning("balance_history_migration_failed error=%s", exc)
 
     state.pop("trade_history", None)
     state.pop("balance_history", None)
-    try:
-        _atomic_write_state(state_path, state)
-        technical_logger.info("state_legacy_history_keys_removed path=%s", state_path)
-    except OSError as exc:
-        technical_logger.warning("state_rewrite_after_migration_failed path=%s error=%s", state_path, exc)
     return state
 
 
 def load_trade_history(limit: int | None = None) -> list[dict[str, Any]]:
-    rows = _load_jsonl(_trade_history_path())
-    output = [row for row in rows if isinstance(row, dict)]
+    try:
+        trades = list_trade_history_db_rows()
+    except OSError as exc:
+        technical_logger.warning("trade_history_db_read_failed error=%s", exc)
+        return []
     if limit is not None and limit > 0:
-        return output[-limit:]
-    return output
+        return trades[-limit:]
+    return trades
 
 
 def load_balance_history(limit: int | None = None) -> list[float]:
-    rows = _load_jsonl(_balance_history_path())
-    output: list[float] = []
-    for item in rows:
-        if isinstance(item, dict):
-            candidate = item.get("balance")
-        else:
-            candidate = item
-        value = _as_float_or_none(candidate)
-        if value is not None:
-            output.append(value)
-    if limit is not None and limit > 0:
-        return output[-limit:]
-    return output
+    try:
+        values = list_balance_history_db_values()
+    except OSError as exc:
+        technical_logger.warning("balance_history_db_read_failed error=%s", exc)
+        return []
+    return values[-limit:] if limit is not None and limit > 0 else values
 
 
 def _write_trade_history_snapshot(history: list[dict[str, Any]]) -> None:
-    _atomic_write_jsonl(_trade_history_path(), history)
+    replace_trade_history_db_snapshot(history)
 
 
 def _write_balance_history_snapshot(history: list[float]) -> None:
-    rows = [{"time": None, "balance": value} for value in history]
-    _atomic_write_jsonl(_balance_history_path(), rows)
+    replace_balance_history_db_snapshot(history)
 
 
 def load_state(include_history: bool = False) -> dict[str, Any]:
@@ -395,31 +273,19 @@ def load_state(include_history: bool = False) -> dict[str, Any]:
     Load runtime state snapshot.
     `trade_history` and `balance_history` are loaded only when include_history=True.
     """
-    path = _state_path()
-    backup_path = path.with_suffix(path.suffix + STATE_BACKUP_SUFFIX)
+    try:
+        db_state = load_runtime_state_db_snapshot()
+    except OSError as exc:
+        technical_logger.warning("state_db_read_failed error=%s", exc)
+        db_state = None
 
-    primary = _read_json(path)
-    if primary is not None:
-        normalized = _normalize_state(primary)
-        normalized = _migrate_legacy_history_keys(normalized, path)
+    if isinstance(db_state, dict):
+        normalized = _normalize_state(db_state)
+        normalized = _migrate_legacy_history_keys(normalized)
         if include_history:
             normalized["trade_history"] = load_trade_history()
             normalized["balance_history"] = load_balance_history()
         return normalized
-
-    backup = _read_json(backup_path)
-    if backup is not None:
-        restored = _normalize_state(backup)
-        try:
-            _atomic_write_state(path, restored)
-            technical_logger.info("state_restored_from_backup path=%s", backup_path)
-        except OSError as exc:
-            technical_logger.warning("state_restore_from_backup_failed backup=%s error=%s", backup_path, exc)
-        restored = _migrate_legacy_history_keys(restored, path)
-        if include_history:
-            restored["trade_history"] = load_trade_history()
-            restored["balance_history"] = load_balance_history()
-        return restored
 
     default = _default_state()
     if include_history:
@@ -430,8 +296,8 @@ def load_state(include_history: bool = False) -> dict[str, Any]:
 
 def save_state(state: dict[str, Any]) -> None:
     """
-    Persist runtime snapshot atomically and keep backup copy for crash-safe recovery.
-    If legacy history keys are present in-memory, write them to separate history files.
+    Persist the normalized runtime snapshot to the SQLite runtime store.
+    If legacy history keys are present in-memory, migrate them into DB snapshots.
     """
     normalized = _normalize_state(state)
     trade_history = _normalize_trade_history(normalized.pop("trade_history", None))
@@ -461,7 +327,10 @@ def save_state(state: dict[str, Any]) -> None:
         if latest:
             normalized["balance"] = latest[-1]
 
-    _atomic_write_state(_state_path(), normalized)
+    try:
+        save_runtime_state_db_snapshot(normalized)
+    except OSError as exc:
+        technical_logger.warning("state_db_write_failed error=%s", exc)
     state.clear()
     state.update(normalized)
 
@@ -471,9 +340,9 @@ def add_closed_trade(state: dict[str, Any], trade: dict[str, Any]) -> None:
     Append a closed trade to trade history and persist.
     """
     try:
-        _append_jsonl(_trade_history_path(), trade)
+        append_trade_history_db_row(trade)
     except OSError as exc:
-        technical_logger.warning("trade_history_append_failed error=%s", exc)
+        technical_logger.warning("trade_history_db_append_failed error=%s", exc)
     save_state(state)
 
 
@@ -505,13 +374,11 @@ def update_balance(state: dict[str, Any], balance: float) -> None:
         )
 
     if should_append:
+        balance_row = {"time": _now_ms(), "balance": balance_value}
         try:
-            _append_jsonl(
-                _balance_history_path(),
-                {"time": _now_ms(), "balance": balance_value},
-            )
+            append_balance_history_db_row(balance_row)
         except OSError as exc:
-            technical_logger.warning("balance_history_append_failed error=%s", exc)
+            technical_logger.warning("balance_history_db_append_failed error=%s", exc)
     state["balance"] = balance_value
     save_state(state)
 

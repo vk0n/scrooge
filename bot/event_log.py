@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 from core.event_store import build_event_record, get_event_store
+from shared.runtime_db import append_ui_log_entry as append_ui_log_db_entry
 
 try:
     from api.services.push_service import dispatch_event_push
@@ -13,7 +14,6 @@ except ImportError:  # pragma: no cover - api package may be unavailable in some
     dispatch_event_push = None
 
 
-UI_LOG_PATH = Path(os.getenv("SCROOGE_LOG_FILE", "runtime/trading_log.txt")).expanduser()
 TECHNICAL_LOGGER_NAME = "scrooge.bot"
 KNOWN_QUOTE_ASSETS = (
     "USDT",
@@ -30,14 +30,6 @@ KNOWN_QUOTE_ASSETS = (
 def _env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name, "1" if default else "0").strip().lower()
     return raw not in {"0", "false", "no", "off", ""}
-
-
-def _resolve_ui_log_path(path: Path | None = None) -> Path:
-    if path is not None:
-        return path.expanduser()
-    return Path(os.getenv("SCROOGE_LOG_FILE", str(UI_LOG_PATH))).expanduser()
-
-
 def _as_float(value: Any) -> float | None:
     try:
         numeric = float(value)
@@ -337,13 +329,10 @@ def append_ui_log_line(ts: str, message: str, *, log_buffer: list[str] | None = 
         log_buffer.append(line)
         return
 
-    path = _resolve_ui_log_path(ui_log_path)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as file_obj:
-            file_obj.write(line + "\n")
+        append_ui_log_db_entry(ts, line)
     except OSError:
-        _ensure_technical_logger().exception("Failed to append UI log line")
+        _ensure_technical_logger().exception("Failed to append UI log line to DB")
 
 
 def _should_persist_ui_immediately(runtime_mode: str | None, persist_ui: bool) -> bool:

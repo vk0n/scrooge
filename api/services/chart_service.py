@@ -1209,20 +1209,6 @@ def build_chart_payload(
     warnings.extend(trade_history_warnings)
     warnings.extend(balance_history_warnings)
 
-    if not trade_history:
-        legacy_trades = state.get("trade_history")
-        if isinstance(legacy_trades, list):
-            trade_history = [item for item in legacy_trades if isinstance(item, dict)]
-
-    if not balance_history:
-        legacy_balances = state.get("balance_history")
-        if isinstance(legacy_balances, list):
-            balance_history = []
-            for item in legacy_balances:
-                parsed = _to_float(item)
-                if parsed is not None:
-                    balance_history.append(parsed)
-
     state_for_chart = dict(state)
     state_for_chart["trade_history"] = trade_history
     state_for_chart["balance_history"] = balance_history

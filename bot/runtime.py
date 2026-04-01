@@ -34,6 +34,7 @@ from core.event_store import reset_event_store
 from core.engine import initialize_realtime_strategy_processor, run_strategy_on_snapshot
 from core.indicator_inputs import normalize_indicator_inputs
 from core.binance_retry import create_binance_client
+from shared.runtime_db import runtime_artifact_dir, runtime_db_path, runtime_state_snapshot_exists
 
 RLockType = type(threading.RLock())
 
@@ -136,13 +137,10 @@ def _apply_backtest_run_dir(run_dir: Path, cfg: dict[str, Any]) -> tuple[Path, b
     resolved_run_dir.mkdir(parents=True, exist_ok=True)
     os.environ["SCROOGE_BACKTEST_RUN_DIR"] = str(resolved_run_dir)
 
-    os.environ["SCROOGE_STATE_FILE"] = str(resolved_run_dir / "state.json")
-    os.environ["SCROOGE_TRADE_HISTORY_FILE"] = str(resolved_run_dir / "trade_history.jsonl")
-    os.environ["SCROOGE_BALANCE_HISTORY_FILE"] = str(resolved_run_dir / "balance_history.jsonl")
-    os.environ["SCROOGE_LOG_FILE"] = str(resolved_run_dir / "trading_log.txt")
     os.environ["SCROOGE_EVENT_LOG_FILE"] = str(resolved_run_dir / "event_history.jsonl")
     os.environ["SCROOGE_MARKET_EVENT_STREAM_FILE"] = str(resolved_run_dir / "market_events.jsonl")
     os.environ["SCROOGE_RUNTIME_CHART_DATASET_PATH"] = str(resolved_run_dir / "chart_dataset.csv")
+    os.environ["SCROOGE_DB_PATH"] = str(resolved_run_dir / "scrooge.sqlite3")
 
     reset_event_store(os.environ["SCROOGE_EVENT_LOG_FILE"])
 
@@ -208,25 +206,11 @@ def _sleep_with_command_poll(
     return current_state, restart_requested
 
 
-def _ensure_runtime_log_file() -> None:
-    """
-    Ensure runtime log file exists so API logs endpoint can read it immediately.
-    """
-    try:
-        log_path = Path(os.getenv("SCROOGE_LOG_FILE", "runtime/trading_log.txt")).expanduser()
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.touch(exist_ok=True)
-    except OSError as exc:
-        technical_logger.warning("runtime_log_init_failed path=%s error=%s", log_path, exc)
-
-
 def _resolve_runtime_event_log_file() -> Path:
     raw_event_log_path = str(os.getenv("SCROOGE_EVENT_LOG_FILE", "") or "").strip()
     if raw_event_log_path:
         return Path(raw_event_log_path).expanduser()
-
-    log_path = Path(os.getenv("SCROOGE_LOG_FILE", "runtime/trading_log.txt")).expanduser()
-    return log_path.parent / "event_history.jsonl"
+    return runtime_artifact_dir() / "event_history.jsonl"
 
 
 def _ensure_runtime_event_log_file() -> None:
@@ -520,7 +504,6 @@ if __name__ == "__main__":
                 latest_updated,
             )
 
-    _ensure_runtime_log_file()
     _ensure_runtime_event_log_file()
 
     symbol = cfg["symbol"]
@@ -551,10 +534,10 @@ if __name__ == "__main__":
     if live:
         # Load or create state
         state = load_state()
-        state_path = Path(os.getenv("SCROOGE_STATE_FILE", "runtime/state.json")).expanduser()
-        if not state_path.exists():
+        db_path = runtime_db_path()
+        if not runtime_state_snapshot_exists(db_path):
             save_state(state)
-            technical_logger.info("state_initialized path=%s", state_path)
+            technical_logger.info("state_initialized path=%s", db_path)
 
         state_lock = threading.RLock()
         control_client = get_control_client()

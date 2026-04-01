@@ -9,7 +9,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from services.auth_service import require_ws_auth
 from services.config_service import load_config
-from services.log_service import LOG_PATH, read_last_log_lines
+from services.log_service import log_source_path, read_last_log_lines
 from services.state_service import (
     load_state,
     resolve_balance,
@@ -108,7 +108,7 @@ def _build_logs_snapshot(lines: int) -> dict[str, Any]:
         tail_lines = []
         warnings = [str(exc)]
     return {
-        "path": str(LOG_PATH),
+        "path": str(log_source_path()),
         "requested_lines": lines,
         "returned_lines": len(tail_lines),
         "lines": tail_lines,

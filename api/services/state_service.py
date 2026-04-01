@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
-import os
+import sys
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, TypedDict
 
 
@@ -11,7 +9,12 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-STATE_PATH = Path(os.getenv("SCROOGE_STATE_PATH", str(_project_root() / "runtime" / "state.json"))).expanduser()
+_PROJECT_ROOT = _project_root()
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(_PROJECT_ROOT))
+
+from shared.runtime_db import load_runtime_state_snapshot  # noqa: E402
+
 
 SEARCH_STATUS_LABELS = {
     "looking_for_buy_opportunity": "Looking for a buy opportunity...",
@@ -92,37 +95,30 @@ def _ratio_to_percent(numerator: Any, denominator: Any) -> float | None:
 
 
 def load_state() -> tuple[dict[str, Any], list[str]]:
-    if not STATE_PATH.exists():
-        return (
-            {
-                "position": None,
-                "balance": None,
-                "last_price": None,
-                "last_price_updated_at": None,
-                "updated_at": None,
-                "search_status": None,
-                "bot_status": None,
-                "trade_status": None,
-                "session_start": None,
-                "session_end": None,
-                "trading_enabled": True,
-            },
-            [f"State file not found: {STATE_PATH}"],
-        )
-
+    warnings: list[str] = []
     try:
-        with STATE_PATH.open("r", encoding="utf-8") as file_obj:
-            raw = json.load(file_obj)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Malformed state JSON: {exc}") from exc
+        db_state = load_runtime_state_snapshot()
+        if isinstance(db_state, dict):
+            db_state.setdefault("trading_enabled", True)
+            return db_state, warnings
     except OSError as exc:
-        raise OSError(f"Failed to read state file: {STATE_PATH}") from exc
-
-    if not isinstance(raw, dict):
-        raise ValueError("State must be a JSON object")
-
-    raw.setdefault("trading_enabled", True)
-    return raw, []
+        warnings.append(f"Failed to read state DB snapshot: {exc}")
+    return (
+        {
+            "position": None,
+            "balance": None,
+            "last_price": None,
+            "last_price_updated_at": None,
+            "updated_at": None,
+            "search_status": None,
+            "bot_status": None,
+            "trade_status": None,
+            "session_start": None,
+            "session_end": None,
+            "trading_enabled": True,
+        },
+        warnings,
+    )
 
 
 def _maybe_float(value: Any) -> float | None:

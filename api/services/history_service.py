@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,71 +9,120 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _default_state_path() -> Path:
-    raw_state_path = os.getenv("SCROOGE_STATE_PATH", str(_project_root() / "runtime" / "state.json"))
-    return Path(raw_state_path).expanduser()
+_PROJECT_ROOT = _project_root()
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(_PROJECT_ROOT))
 
+from shared.runtime_db import (  # noqa: E402
+    count_trade_history_rows as get_trade_history_db_total_count,
+    list_balance_history_values as list_balance_history_db_values,
+    list_trade_history_rows as list_trade_history_db_rows,
+    runtime_db_path,
+    summarize_trade_history as summarize_trade_history_db,
+)
 
-def _resolve_history_path(env_name: str, default_filename: str) -> Path:
-    configured = os.getenv(env_name, "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return _default_state_path().parent / default_filename
-
-
-TRADE_HISTORY_PATH = _resolve_history_path("SCROOGE_TRADE_HISTORY_PATH", "trade_history.jsonl")
-BALANCE_HISTORY_PATH = _resolve_history_path("SCROOGE_BALANCE_HISTORY_PATH", "balance_history.jsonl")
-
-
-def _to_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _load_jsonl(path: Path) -> tuple[list[Any], list[str]]:
-    warnings: list[str] = []
-    if not path.exists():
-        return [], warnings
-
-    rows: list[Any] = []
-    try:
-        with path.open("r", encoding="utf-8") as file_obj:
-            for idx, line in enumerate(file_obj, start=1):
-                raw = line.strip()
-                if not raw:
-                    continue
-                try:
-                    rows.append(json.loads(raw))
-                except json.JSONDecodeError as exc:
-                    warnings.append(f"Malformed JSONL line {idx} in {path}: {exc}")
-    except OSError as exc:
-        warnings.append(f"Failed to read history file: {path} ({exc})")
-        return [], warnings
-
-    return rows, warnings
+RUNTIME_DB_PATH = runtime_db_path()
 
 
 def load_trade_history(limit: int | None = None) -> tuple[list[dict[str, Any]], list[str]]:
-    rows, warnings = _load_jsonl(TRADE_HISTORY_PATH)
-    trades = [row for row in rows if isinstance(row, dict)]
+    warnings: list[str] = []
+    try:
+        trades = list_trade_history_db_rows()
+    except OSError as exc:
+        warnings.append(f"Failed to read trade history DB: {RUNTIME_DB_PATH} ({exc})")
+        return [], warnings
+
     if limit is not None and limit > 0:
         trades = trades[-limit:]
     return trades, warnings
 
 
 def load_balance_history(limit: int | None = None) -> tuple[list[float], list[str]]:
-    rows, warnings = _load_jsonl(BALANCE_HISTORY_PATH)
-    balances: list[float] = []
-    for row in rows:
-        if isinstance(row, dict):
-            candidate = row.get("balance")
-        else:
-            candidate = row
-        value = _to_float(candidate)
-        if value is not None:
-            balances.append(value)
+    warnings: list[str] = []
+    try:
+        balances = list_balance_history_db_values()
+    except OSError as exc:
+        warnings.append(f"Failed to read balance history DB: {RUNTIME_DB_PATH} ({exc})")
+        return [], warnings
+
     if limit is not None and limit > 0:
         balances = balances[-limit:]
     return balances, warnings
+
+
+def trade_history_source_path() -> Path:
+    return RUNTIME_DB_PATH
+
+
+def load_trade_history_page(
+    *,
+    page: int,
+    page_size: int,
+    lookback_days: int | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    try:
+        total_trades = get_trade_history_db_total_count(lookback_days=lookback_days)
+        total_pages = (total_trades + page_size - 1) // page_size if total_trades > 0 else 0
+        effective_page = min(page, total_pages - 1) if total_pages > 0 else 0
+        page_start = effective_page * page_size
+        trades = list_trade_history_db_rows(
+            limit=page_size,
+            offset=page_start,
+            lookback_days=lookback_days,
+            newest_first=True,
+        )
+        return {
+            "path": str(RUNTIME_DB_PATH),
+            "lookback_days_applied": lookback_days,
+            "page": effective_page,
+            "page_size": page_size,
+            "total_trades": total_trades,
+            "total_pages": total_pages,
+            "has_previous_page": effective_page > 0,
+            "has_next_page": total_pages > 0 and effective_page < total_pages - 1,
+            "returned_trades": len(trades),
+            "trades": trades,
+        }, warnings
+    except OSError as exc:
+        warnings.append(f"Failed to read paged trade history DB: {RUNTIME_DB_PATH} ({exc})")
+
+    return {
+        "path": str(RUNTIME_DB_PATH),
+        "lookback_days_applied": lookback_days,
+        "page": 0,
+        "page_size": page_size,
+        "total_trades": 0,
+        "total_pages": 0,
+        "has_previous_page": False,
+        "has_next_page": False,
+        "returned_trades": 0,
+        "trades": [],
+    }, warnings
+
+
+def load_trade_history_summary(
+    *,
+    lookback_days: int | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    try:
+        summary = summarize_trade_history_db(lookback_days=lookback_days)
+        return {
+            "path": str(RUNTIME_DB_PATH),
+            "lookback_days_applied": lookback_days,
+            **summary,
+        }, warnings
+    except OSError as exc:
+        warnings.append(f"Failed to summarize trade history DB: {RUNTIME_DB_PATH} ({exc})")
+
+    return {
+        "path": str(RUNTIME_DB_PATH),
+        "lookback_days_applied": lookback_days,
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "breakeven_trades": 0,
+        "win_rate_pct": None,
+        "net_pnl_total": 0.0,
+    }, warnings

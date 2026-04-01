@@ -9,6 +9,7 @@ It provides:
 - config read/write endpoints
 - Redis-backed control commands
 - web push notification setup
+- DB-backed runtime state/history/log access
 
 ## Run Locally
 
@@ -41,14 +42,11 @@ Relevant env vars:
 - `SCROOGE_GUI_PASSWORD`
 - `SCROOGE_CONTROL_TOKEN`
 
-## Runtime Path Env
+## Runtime Storage Env
 
-The API reads bot/runtime artifacts from these paths:
+The API is DB-first:
 - `SCROOGE_CONFIG_PATH`
-- `SCROOGE_STATE_PATH`
-- `SCROOGE_TRADE_HISTORY_PATH`
-- `SCROOGE_BALANCE_HISTORY_PATH`
-- `SCROOGE_LOG_PATH`
+- `SCROOGE_DB_PATH`
 
 Chart-specific env:
 - `SCROOGE_CHART_SOURCE` (`auto`, `dataset`, `binance`)
