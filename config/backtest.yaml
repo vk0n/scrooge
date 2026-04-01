@@ -8,6 +8,7 @@ market_tape_input_path: ''
 market_event_input_path: ''
 agg_trade_source: archive
 agg_trade_tick_interval: 5s
+agg_trade_exact_progress: true
 agg_trade_archive_base_url: ''
 agg_trade_rest_base_url: ''
 agg_trade_cache_enabled: true
@@ -17,7 +18,7 @@ leverage: 3
 initial_balance: 10000
 use_full_balance: true
 qty: null
-enable_plot: false
+enable_plot: true
 run_monte_carlo: false
 run_rolling_window_backtest_distribution: false
 rolling_window_days: 365

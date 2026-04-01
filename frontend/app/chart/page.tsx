@@ -397,18 +397,27 @@ function buildLivePriceAnnotations(
         "display:inline-block",
         "padding:2px 6px",
         "border-radius:4px",
+        "border:1px solid rgba(255,255,255,0.9)",
         "font-weight:700",
         "line-height:1.1",
         "letter-spacing:0.01em",
         `background:${ok ? "#84cc16" : "#ef4444"}`,
         `color:${ok ? "#0b1220" : "#fff7f7"}`,
       ].join(";");
+    const separatorStyle = [
+      "display:inline-block",
+      "width:1px",
+      "height:14px",
+      "vertical-align:middle",
+      "margin:0 5px",
+      "background:rgba(255,255,255,0.95)",
+    ].join(";");
 
     const badgeHtml =
       `<span style="${chipStyle(bandOk)}">BB</span>` +
-      `<span style="display:inline-block;width:4px;"></span>` +
+      `<span style="${separatorStyle}"></span>` +
       `<span style="${chipStyle(emaOk)}">EMA</span>` +
-      `<span style="display:inline-block;width:4px;"></span>` +
+      `<span style="${separatorStyle}"></span>` +
       `<span style="${chipStyle(rsiOk)}">RSI</span>`;
 
     return [
@@ -427,10 +436,10 @@ function buildLivePriceAnnotations(
           color: CHART_THEME.text,
           size: 11,
         },
-        bordercolor: CHART_THEME.livePrice,
-        borderwidth: 1,
+        bordercolor: "#f4f8fc",
+        borderwidth: 1.2,
         borderpad: 5,
-        bgcolor: "rgba(25, 32, 44, 0.92)",
+        bgcolor: "rgba(13, 20, 29, 0.97)",
       },
     ];
   }
