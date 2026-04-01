@@ -39,6 +39,14 @@ type ChartPayload = {
     long_tp?: number | null;
     short_tp?: number | null;
   };
+  entry_rule_spec?: {
+    long?: {
+      rsi_open_threshold?: number | null;
+    };
+    short?: {
+      rsi_open_threshold?: number | null;
+    };
+  };
   markers: {
     entries: Marker[];
     exits: Marker[];
@@ -254,9 +262,75 @@ function buildCurrentLevelShapes(
 
 function buildLivePriceAnnotations(
   currentPrice: number | null,
-  openTrade: LiveOpenTradeInfo | null | undefined
+  openTrade: LiveOpenTradeInfo | null | undefined,
+  chartData?: ChartPayload | null
 ): Array<Record<string, unknown>> {
-  if (typeof currentPrice !== "number" || !Number.isFinite(currentPrice) || !openTrade) {
+  if (typeof currentPrice !== "number" || !Number.isFinite(currentPrice)) {
+    return [];
+  }
+
+  if (!openTrade && chartData) {
+    const latestEma = findLatestIndicatorValue(chartData.indicators?.ema);
+    const latestRsi = findLatestIndicatorValue(chartData.indicators?.rsi);
+    const latestBbl = findLatestIndicatorValue(chartData.indicators?.bollinger?.lower);
+    const latestBbu = findLatestIndicatorValue(chartData.indicators?.bollinger?.upper);
+    const longRsiOpenThreshold = chartData.entry_rule_spec?.long?.rsi_open_threshold;
+    const shortRsiOpenThreshold = chartData.entry_rule_spec?.short?.rsi_open_threshold;
+
+    if (
+      typeof latestEma !== "number" ||
+      !Number.isFinite(latestEma) ||
+      typeof latestRsi !== "number" ||
+      !Number.isFinite(latestRsi)
+    ) {
+      return [];
+    }
+
+    const sideContext: "long" | "short" = currentPrice >= latestEma ? "long" : "short";
+    const bandLabel = sideContext === "long" ? "BBL" : "BBU";
+    const bandValue = sideContext === "long" ? latestBbl : latestBbu;
+    const bandOk =
+      typeof bandValue === "number" &&
+      Number.isFinite(bandValue) &&
+      (sideContext === "long" ? currentPrice < bandValue : currentPrice > bandValue);
+    const emaOk = sideContext === "long" ? currentPrice >= latestEma : currentPrice < latestEma;
+    const rsiThreshold = sideContext === "long" ? longRsiOpenThreshold : shortRsiOpenThreshold;
+    const rsiOk =
+      typeof rsiThreshold === "number" &&
+      Number.isFinite(rsiThreshold) &&
+      (sideContext === "long" ? latestRsi < rsiThreshold : latestRsi > rsiThreshold);
+
+    const text = [
+      `${bandOk ? "🟩" : "🟥"} ${bandLabel}`,
+      `${emaOk ? "🟩" : "🟥"} EMA`,
+      `${rsiOk ? "🟩" : "🟥"} RSI`,
+    ].join("   ");
+
+    return [
+      {
+        xref: "paper",
+        x: 0,
+        xanchor: "left",
+        xshift: 10,
+        yref: "y",
+        y: currentPrice,
+        yanchor: "middle",
+        text,
+        showarrow: false,
+        align: "left",
+        font: {
+          color: "#0f172a",
+          size: 11,
+        },
+        bordercolor: CHART_THEME.livePrice,
+        borderwidth: 1,
+        borderpad: 5,
+        bgcolor: "rgba(244, 248, 252, 0.95)",
+      },
+    ];
+  }
+
+  if (!openTrade) {
     return [];
   }
 
@@ -293,6 +367,21 @@ function buildLivePriceAnnotations(
             : "rgba(25, 32, 44, 0.9)",
     },
   ];
+}
+
+function findLatestIndicatorValue(points: IndicatorPoint[] | undefined): number | null {
+  if (!points?.length) {
+    return null;
+  }
+
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    const value = points[index]?.value;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 function resolveLiveLevels(data: ChartPayload | null, liveStatus: LiveStatusPayload | null): Array<{ type: string; price: number }> | null {
@@ -1168,7 +1257,7 @@ function ChartContent(): JSX.Element {
         liveCurrentPrice,
         resolveLivePriceColor(priceTone)
       );
-      const priceAnnotations = buildLivePriceAnnotations(liveCurrentPrice, liveOpenTrade);
+      const priceAnnotations = buildLivePriceAnnotations(liveCurrentPrice, liveOpenTrade, data);
       await Plotly.relayout(priceChartRef.current, {
         shapes: priceShapes,
         annotations: priceAnnotations,

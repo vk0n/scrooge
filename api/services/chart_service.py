@@ -881,6 +881,19 @@ def _build_rsi_levels(config: dict[str, Any]) -> dict[str, float | None]:
     }
 
 
+def _build_entry_rule_spec(config: dict[str, Any]) -> dict[str, Any]:
+    params = config.get("params")
+    params_map = params if isinstance(params, dict) else {}
+    return {
+        "long": {
+            "rsi_open_threshold": _to_float(params_map.get("rsi_long_open_threshold")),
+        },
+        "short": {
+            "rsi_open_threshold": _to_float(params_map.get("rsi_short_open_threshold")),
+        },
+    }
+
+
 def _build_markers(state: dict[str, Any], range_start_ms: int | None, range_end_ms: int | None) -> dict[str, list[dict[str, Any]]]:
     markers = {
         "entries": [],
@@ -1256,6 +1269,7 @@ def build_chart_payload(
     open_position = _normalize_open_position(state_for_chart.get("position"))
     current_levels = _build_current_levels(open_position)
     rsi_levels = _build_rsi_levels(config)
+    entry_rule_spec = _build_entry_rule_spec(config)
     indicator_spec = _build_indicator_spec(config)
     indicators: dict[str, Any] = {}
     if include_indicators and candles:
@@ -1318,6 +1332,7 @@ def build_chart_payload(
         "markers": markers,
         "current_levels": current_levels,
         "rsi_levels": rsi_levels,
+        "entry_rule_spec": entry_rule_spec,
         "indicator_spec": indicator_spec,
         "open_position": open_position,
         "indicators": indicators,

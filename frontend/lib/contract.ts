@@ -156,7 +156,7 @@ export function buildContractParagraphs(config: EditableConfig): ContractParagra
       termSegment("Long entry."),
       textSegment(" Scrooge shall open a long only when price slips below the lower Bollinger Band, RSI is below the long-open bar "),
       valueSegment("params.rsi_long_open_threshold", params.rsi_long_open_threshold),
-      textSegment(", and price still stands above the EMA trend filter. If RSI remains above the long-size bar "),
+      textSegment(", and price still stands at or above the EMA trend filter. If RSI remains above the long-size bar "),
       valueSegment("params.rsi_long_qty_threshold", params.rsi_long_qty_threshold),
       textSegment(", he shall cut the opening size to half of the computed amount; otherwise he shall deploy the full computed size."),
     ],

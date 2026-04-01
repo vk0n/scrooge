@@ -532,7 +532,7 @@ def _entry_trace_condition_states(
         return {
             "band": bool(snapshot.price < snapshot.lower),
             "rsi": bool(snapshot.rsi < config.rsi_long_open_threshold),
-            "ema": bool(snapshot.price > snapshot.ema),
+            "ema": bool(snapshot.price >= snapshot.ema),
         }
     return {
         "band": bool(snapshot.price > snapshot.upper),
@@ -1647,7 +1647,7 @@ def resolve_entry_decision(
     manual_long = manual_side == "buy"
     manual_short = manual_side == "sell"
 
-    if (price < lower and rsi < config.rsi_long_open_threshold and price > ema) or manual_long:
+    if (price < lower and rsi < config.rsi_long_open_threshold and price >= ema) or manual_long:
         size = qty_local * 0.5 if rsi > config.rsi_long_qty_threshold else qty_local
         sl = price - atr * config.sl_mult
         tp = price + atr * config.tp_mult
