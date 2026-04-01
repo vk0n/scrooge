@@ -372,31 +372,25 @@ function buildLivePriceAnnotations(
       return [];
     }
 
-    const sideContext: "long" | "short" = currentPrice >= latestEma ? "long" : "short";
-    const bandLabel = sideContext === "long" ? "BBL" : "BBU";
-    const bandValue = sideContext === "long" ? latestBbl : latestBbu;
-    const bandOk =
-      typeof bandValue === "number" &&
-      Number.isFinite(bandValue) &&
-      (sideContext === "long" ? currentPrice < bandValue : currentPrice > bandValue);
-    const emaOk = sideContext === "long" ? currentPrice >= latestEma : currentPrice < latestEma;
+    const crossedLowerBand =
+      typeof latestBbl === "number" && Number.isFinite(latestBbl) && currentPrice < latestBbl;
+    const crossedUpperBand =
+      typeof latestBbu === "number" && Number.isFinite(latestBbu) && currentPrice > latestBbu;
+    const activeSignalSide: "long" | "short" | null = crossedLowerBand
+      ? "long"
+      : crossedUpperBand
+        ? "short"
+        : null;
+    const directionalSide: "long" | "short" = currentPrice >= latestEma ? "long" : "short";
+    const sideContext = activeSignalSide ?? directionalSide;
+    const bandOk = activeSignalSide !== null;
+    const emaOk =
+      activeSignalSide === null ? true : sideContext === "long" ? currentPrice >= latestEma : currentPrice < latestEma;
     const rsiThreshold = sideContext === "long" ? longRsiOpenThreshold : shortRsiOpenThreshold;
     const rsiOk =
       typeof rsiThreshold === "number" &&
       Number.isFinite(rsiThreshold) &&
       (sideContext === "long" ? latestRsi < rsiThreshold : latestRsi > rsiThreshold);
-
-    const buildIndicatorChip = (label: string, ok: boolean): string => {
-      const background = ok ? "#84cc16" : "#ef4444";
-      const textColor = ok ? "#0b1220" : "#fff7f7";
-      return `<span style="display:inline-block;padding:1px 6px;border-radius:2px;background:${background};color:${textColor};font-weight:700;">${label}</span>`;
-    };
-
-    const text = [
-      buildIndicatorChip(bandLabel, bandOk),
-      buildIndicatorChip("EMA", emaOk),
-      buildIndicatorChip("RSI", rsiOk),
-    ].join("&nbsp;");
 
     return [
       {
@@ -407,17 +401,77 @@ function buildLivePriceAnnotations(
         yref: "y",
         y: currentPrice,
         yanchor: "middle",
-        text,
+        text: "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;",
         showarrow: false,
         align: "left",
         font: {
-          color: "#0f172a",
+          color: "rgba(15, 23, 42, 0)",
           size: 11,
         },
         bordercolor: CHART_THEME.livePrice,
         borderwidth: 1.2,
-        borderpad: 5,
+        borderpad: 4,
         bgcolor: "rgba(244, 248, 252, 0.95)",
+      },
+      {
+        xref: "paper",
+        x: 0,
+        xanchor: "left",
+        xshift: 19,
+        yref: "y",
+        y: currentPrice,
+        yanchor: "middle",
+        text: "BB",
+        showarrow: false,
+        align: "center",
+        font: {
+          color: bandOk ? "#0b1220" : "#fff7f7",
+          size: 11,
+        },
+        bordercolor: "rgba(255, 255, 255, 0.18)",
+        borderwidth: 0.8,
+        borderpad: 2,
+        bgcolor: bandOk ? "#84cc16" : "#ef4444",
+      },
+      {
+        xref: "paper",
+        x: 0,
+        xanchor: "left",
+        xshift: 55,
+        yref: "y",
+        y: currentPrice,
+        yanchor: "middle",
+        text: "EMA",
+        showarrow: false,
+        align: "center",
+        font: {
+          color: emaOk ? "#0b1220" : "#fff7f7",
+          size: 11,
+        },
+        bordercolor: "rgba(255, 255, 255, 0.18)",
+        borderwidth: 0.8,
+        borderpad: 2,
+        bgcolor: emaOk ? "#84cc16" : "#ef4444",
+      },
+      {
+        xref: "paper",
+        x: 0,
+        xanchor: "left",
+        xshift: 91,
+        yref: "y",
+        y: currentPrice,
+        yanchor: "middle",
+        text: "RSI",
+        showarrow: false,
+        align: "center",
+        font: {
+          color: rsiOk ? "#0b1220" : "#fff7f7",
+          size: 11,
+        },
+        bordercolor: "rgba(255, 255, 255, 0.18)",
+        borderwidth: 0.8,
+        borderpad: 2,
+        bgcolor: rsiOk ? "#84cc16" : "#ef4444",
       },
     ];
   }
