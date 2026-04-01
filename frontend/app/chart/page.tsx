@@ -392,6 +392,28 @@ function buildLivePriceAnnotations(
       Number.isFinite(rsiThreshold) &&
       (sideContext === "long" ? latestRsi < rsiThreshold : latestRsi > rsiThreshold);
 
+    const chipStyle = (ok: boolean) =>
+      [
+        "display:inline-block",
+        "padding:2px 6px",
+        "border-radius:4px",
+        "font-weight:700",
+        "line-height:1.1",
+        "letter-spacing:0.01em",
+        `background:${ok ? "#84cc16" : "#ef4444"}`,
+        `color:${ok ? "#0b1220" : "#fff7f7"}`,
+      ].join(";");
+
+    const badgeHtml =
+      `<span style="display:inline-block;white-space:nowrap;padding:4px 6px;border-radius:6px;` +
+      `border:1.2px solid ${CHART_THEME.livePrice};background:rgba(244, 248, 252, 0.95);">` +
+      `<span style="${chipStyle(bandOk)}">BB</span>` +
+      `<span style="display:inline-block;width:4px;"></span>` +
+      `<span style="${chipStyle(emaOk)}">EMA</span>` +
+      `<span style="display:inline-block;width:4px;"></span>` +
+      `<span style="${chipStyle(rsiOk)}">RSI</span>` +
+      `</span>`;
+
     return [
       {
         xref: "paper",
@@ -401,77 +423,13 @@ function buildLivePriceAnnotations(
         yref: "y",
         y: currentPrice,
         yanchor: "middle",
-        text: "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;",
+        text: badgeHtml,
         showarrow: false,
         align: "left",
         font: {
-          color: "rgba(15, 23, 42, 0)",
+          color: CHART_THEME.text,
           size: 11,
         },
-        bordercolor: CHART_THEME.livePrice,
-        borderwidth: 1.2,
-        borderpad: 4,
-        bgcolor: "rgba(244, 248, 252, 0.95)",
-      },
-      {
-        xref: "paper",
-        x: 0,
-        xanchor: "left",
-        xshift: 19,
-        yref: "y",
-        y: currentPrice,
-        yanchor: "middle",
-        text: "BB",
-        showarrow: false,
-        align: "center",
-        font: {
-          color: bandOk ? "#0b1220" : "#fff7f7",
-          size: 11,
-        },
-        bordercolor: "rgba(255, 255, 255, 0.18)",
-        borderwidth: 0.8,
-        borderpad: 2,
-        bgcolor: bandOk ? "#84cc16" : "#ef4444",
-      },
-      {
-        xref: "paper",
-        x: 0,
-        xanchor: "left",
-        xshift: 55,
-        yref: "y",
-        y: currentPrice,
-        yanchor: "middle",
-        text: "EMA",
-        showarrow: false,
-        align: "center",
-        font: {
-          color: emaOk ? "#0b1220" : "#fff7f7",
-          size: 11,
-        },
-        bordercolor: "rgba(255, 255, 255, 0.18)",
-        borderwidth: 0.8,
-        borderpad: 2,
-        bgcolor: emaOk ? "#84cc16" : "#ef4444",
-      },
-      {
-        xref: "paper",
-        x: 0,
-        xanchor: "left",
-        xshift: 91,
-        yref: "y",
-        y: currentPrice,
-        yanchor: "middle",
-        text: "RSI",
-        showarrow: false,
-        align: "center",
-        font: {
-          color: rsiOk ? "#0b1220" : "#fff7f7",
-          size: 11,
-        },
-        bordercolor: "rgba(255, 255, 255, 0.18)",
-        borderwidth: 0.8,
-        borderpad: 2,
-        bgcolor: rsiOk ? "#84cc16" : "#ef4444",
       },
     ];
   }
