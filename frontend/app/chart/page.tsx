@@ -346,6 +346,111 @@ function buildCurrentLevelShapes(
   return shapes;
 }
 
+function buildLiveDecisionBadge(
+  currentPrice: number | null,
+  chartData?: ChartPayload | null
+): { shapes: Array<Record<string, unknown>>; annotations: Array<Record<string, unknown>> } {
+  if (typeof currentPrice !== "number" || !Number.isFinite(currentPrice) || !chartData) {
+    return { shapes: [], annotations: [] };
+  }
+
+  const latestEma = findLatestIndicatorValue(chartData.indicators?.ema);
+  const latestRsi = findLatestIndicatorValue(chartData.indicators?.rsi);
+  const latestBbl = findLatestIndicatorValue(chartData.indicators?.bollinger?.lower);
+  const latestBbu = findLatestIndicatorValue(chartData.indicators?.bollinger?.upper);
+  const longRsiOpenThreshold = chartData.entry_rule_spec?.long?.rsi_open_threshold;
+  const shortRsiOpenThreshold = chartData.entry_rule_spec?.short?.rsi_open_threshold;
+
+  if (
+    typeof latestEma !== "number" ||
+    !Number.isFinite(latestEma) ||
+    typeof latestRsi !== "number" ||
+    !Number.isFinite(latestRsi)
+  ) {
+    return { shapes: [], annotations: [] };
+  }
+
+  const crossedLowerBand =
+    typeof latestBbl === "number" && Number.isFinite(latestBbl) && currentPrice < latestBbl;
+  const crossedUpperBand =
+    typeof latestBbu === "number" && Number.isFinite(latestBbu) && currentPrice > latestBbu;
+
+  let sideContext: "long" | "short";
+  let bandOk = false;
+  if (crossedLowerBand) {
+    sideContext = "long";
+    bandOk = true;
+  } else if (crossedUpperBand) {
+    sideContext = "short";
+    bandOk = true;
+  } else if (currentPrice >= latestEma) {
+    sideContext = "long";
+  } else {
+    sideContext = "short";
+  }
+
+  const emaOk = bandOk ? (sideContext === "long" ? currentPrice >= latestEma : currentPrice < latestEma) : true;
+  const rsiThreshold = sideContext === "long" ? longRsiOpenThreshold : shortRsiOpenThreshold;
+  const rsiOk =
+    typeof rsiThreshold === "number" &&
+    Number.isFinite(rsiThreshold) &&
+    (sideContext === "long" ? latestRsi < rsiThreshold : latestRsi > rsiThreshold);
+
+  const sections = [
+    { label: "BB", ok: bandOk },
+    { label: "EMA", ok: emaOk },
+    { label: "RSI", ok: rsiOk },
+  ];
+
+  const xStart = 0.016;
+  const sectionWidth = 0.044;
+  const sectionGap = 0.0005;
+  const halfHeight = Math.max(28, currentPrice * 0.00055);
+  const shapes: Array<Record<string, unknown>> = [];
+  const annotations: Array<Record<string, unknown>> = [];
+
+  sections.forEach((section, index) => {
+    const x0 = xStart + index * (sectionWidth + sectionGap);
+    const x1 = x0 + sectionWidth;
+    shapes.push({
+      type: "rect",
+      xref: "paper",
+      yref: "y",
+      x0,
+      x1,
+      y0: currentPrice - halfHeight,
+      y1: currentPrice + halfHeight,
+      line: {
+        color: "#f4f8fc",
+        width: 1,
+      },
+      fillcolor: section.ok ? "rgba(132, 204, 22, 0.58)" : "rgba(239, 68, 68, 0.46)",
+      layer: "above",
+    });
+    annotations.push({
+      xref: "paper",
+      yref: "y",
+      x: x0 + sectionWidth / 2,
+      y: currentPrice,
+      xanchor: "center",
+      yanchor: "middle",
+      text: section.label,
+      showarrow: false,
+      font: {
+        color: "#f8fafc",
+        size: 11,
+        family: "var(--font-geist-mono), monospace",
+      },
+      bgcolor: "rgba(0,0,0,0)",
+      bordercolor: "rgba(0,0,0,0)",
+      borderpad: 0,
+      align: "center",
+    });
+  });
+
+  return { shapes, annotations };
+}
+
 function buildLivePriceAnnotations(
   currentPrice: number | null,
   openTrade: LiveOpenTradeInfo | null | undefined,
@@ -356,77 +461,7 @@ function buildLivePriceAnnotations(
   }
 
   if (!openTrade && chartData) {
-    const latestEma = findLatestIndicatorValue(chartData.indicators?.ema);
-    const latestRsi = findLatestIndicatorValue(chartData.indicators?.rsi);
-    const latestBbl = findLatestIndicatorValue(chartData.indicators?.bollinger?.lower);
-    const latestBbu = findLatestIndicatorValue(chartData.indicators?.bollinger?.upper);
-    const longRsiOpenThreshold = chartData.entry_rule_spec?.long?.rsi_open_threshold;
-    const shortRsiOpenThreshold = chartData.entry_rule_spec?.short?.rsi_open_threshold;
-
-    if (
-      typeof latestEma !== "number" ||
-      !Number.isFinite(latestEma) ||
-      typeof latestRsi !== "number" ||
-      !Number.isFinite(latestRsi)
-    ) {
-      return [];
-    }
-
-    const crossedLowerBand =
-      typeof latestBbl === "number" && Number.isFinite(latestBbl) && currentPrice < latestBbl;
-    const crossedUpperBand =
-      typeof latestBbu === "number" && Number.isFinite(latestBbu) && currentPrice > latestBbu;
-    const activeSignalSide: "long" | "short" | null = crossedLowerBand
-      ? "long"
-      : crossedUpperBand
-        ? "short"
-        : null;
-    const directionalSide: "long" | "short" = currentPrice >= latestEma ? "long" : "short";
-    const sideContext = activeSignalSide ?? directionalSide;
-    const bandOk = activeSignalSide !== null;
-    const emaOk =
-      activeSignalSide === null ? true : sideContext === "long" ? currentPrice >= latestEma : currentPrice < latestEma;
-    const rsiThreshold = sideContext === "long" ? longRsiOpenThreshold : shortRsiOpenThreshold;
-    const rsiOk =
-      typeof rsiThreshold === "number" &&
-      Number.isFinite(rsiThreshold) &&
-      (sideContext === "long" ? latestRsi < rsiThreshold : latestRsi > rsiThreshold);
-
-    const chipWidth = 36;
-    const chipHeight = 22;
-    const chipStartX = 10;
-    const chipStep = chipWidth - 1;
-    const chipOkColor = "rgba(132, 204, 22, 0.72)";
-    const chipBadColor = "rgba(239, 68, 68, 0.62)";
-    const indicatorChips = [
-      { label: "BB", ok: bandOk, xshift: chipStartX },
-      { label: "EMA", ok: emaOk, xshift: chipStartX + chipStep },
-      { label: "RSI", ok: rsiOk, xshift: chipStartX + chipStep * 2 },
-    ];
-
-    return indicatorChips.map((chip) => ({
-      xref: "paper",
-      x: 0,
-      xanchor: "left",
-      xshift: chip.xshift,
-      yref: "y",
-      y: currentPrice,
-      yanchor: "middle",
-      text: chip.label,
-      showarrow: false,
-      align: "center",
-      font: {
-        color: "#f8fafc",
-        size: 11,
-        family: "var(--font-geist-mono), monospace",
-      },
-      bordercolor: "#f4f8fc",
-      borderwidth: 1,
-      borderpad: 2,
-      width: chipWidth,
-      height: chipHeight,
-      bgcolor: chip.ok ? chipOkColor : chipBadColor,
-    }));
+    return buildLiveDecisionBadge(currentPrice, chartData).annotations;
   }
 
   if (!openTrade) {
@@ -1343,11 +1378,15 @@ function ChartContent(): JSX.Element {
       const liveCurrentPrice = liveSymbolMatchesChart ? liveStatus?.last_price ?? null : null;
       const liveOpenTrade = liveSymbolMatchesChart ? liveStatus?.open_trade_info ?? null : null;
       const priceTone = resolveLivePriceTone(liveOpenTrade?.unrealized_pnl);
-      const priceShapes = buildCurrentLevelShapes(
+      const decisionBadge = !liveOpenTrade ? buildLiveDecisionBadge(liveCurrentPrice, data) : { shapes: [], annotations: [] };
+      const priceShapes = [
+        ...buildCurrentLevelShapes(
         resolveLiveLevels(data, liveStatus) ?? data.current_levels,
         liveCurrentPrice,
         resolveLivePriceColor(priceTone)
-      );
+      ),
+        ...decisionBadge.shapes,
+      ];
       const priceAnnotations = buildLivePriceAnnotations(liveCurrentPrice, liveOpenTrade, data);
       await Plotly.relayout(priceChartRef.current, {
         shapes: priceShapes,
