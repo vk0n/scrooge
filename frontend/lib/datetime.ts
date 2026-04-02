@@ -13,6 +13,17 @@ const EU_DATETIME_FORMATTER = new Intl.DateTimeFormat("uk-UA", {
   timeZone: DISPLAY_TIMEZONE,
 });
 
+const DISPLAY_TIMEZONE_PARTS_FORMATTER = new Intl.DateTimeFormat("sv-SE", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+  timeZone: DISPLAY_TIMEZONE,
+});
+
 const UTC_NAIVE_DATETIME_RE = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
 const UTC_NAIVE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -77,4 +88,24 @@ export function formatDateTimeEu(value: unknown, fallback = "N/A"): string {
     return fallback;
   }
   return EU_DATETIME_FORMATTER.format(parsed).replace(", ", " ");
+}
+
+export function toDisplayTimezoneNaiveString(value: unknown): string | null {
+  const parsed = toDate(value);
+  if (!parsed) {
+    return null;
+  }
+
+  const parts = DISPLAY_TIMEZONE_PARTS_FORMATTER.formatToParts(parsed);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const year = byType.year;
+  const month = byType.month;
+  const day = byType.day;
+  const hour = byType.hour;
+  const minute = byType.minute;
+  const second = byType.second;
+  if (!year || !month || !day || !hour || !minute || !second) {
+    return null;
+  }
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
 }

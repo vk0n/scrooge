@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
-import { parseTimestampMs, toUtcIsoString } from "../../lib/datetime";
+import { parseTimestampMs, toDisplayTimezoneNaiveString, toUtcIsoString } from "../../lib/datetime";
 type Candle = {
   time: string;
   open: number;
@@ -405,7 +405,7 @@ function buildLiveDecisionBadge(
 
   const xStart = compact ? 0.012 : 0.016;
   const sectionWidth = compact ? 0.07 : 0.047;
-  const halfHeight = Math.max(compact ? 46 : 52, currentPrice * (compact ? 0.0009 : 0.00102));
+  const halfHeight = Math.max(compact ? 58 : 64, currentPrice * (compact ? 0.00108 : 0.00118));
   const badgeY0 = currentPrice - halfHeight;
   const badgeY1 = currentPrice + halfHeight;
   const badgeWidth = sections.length * sectionWidth;
@@ -681,14 +681,18 @@ function buildSharedDateAxisSettings(
 
   const dtick = resolveSharedDateTickMs(startMs, endMs);
   return {
-    tick0: new Date(alignTimestampToStep(startMs, dtick)).toISOString(),
+    tick0: new Date(alignTimestampToStep(startMs, dtick)).toISOString().slice(0, 19),
     dtick,
   };
 }
 
+function toChartDisplayTime(value: unknown): string | null {
+  return toDisplayTimezoneNaiveString(value);
+}
+
 function pointsToXY(points: IndicatorPoint[]): { x: string[]; y: Array<number | null> } {
   return {
-    x: points.map((point) => point.time),
+    x: points.map((point) => toChartDisplayTime(point.time) ?? point.time),
     y: points.map((point) => point.value),
   };
 }
@@ -699,7 +703,7 @@ function collectIndicatorValues(points: IndicatorPoint[] | undefined): Array<{ t
   }
 
   return points.flatMap((point) => {
-    const tsMs = toTimestampMs(point.time);
+    const tsMs = toTimestampMs(toChartDisplayTime(point.time));
     if (tsMs === null || typeof point.value !== "number" || !Number.isFinite(point.value)) {
       return [];
     }
@@ -995,12 +999,12 @@ function ChartContent(): JSX.Element {
         return;
       }
 
-      const candleX = data.candles.map((candle) => candle.time);
+      const candleX = data.candles.map((candle) => toChartDisplayTime(candle.time) ?? candle.time);
       const candleOpen = data.candles.map((candle) => candle.open);
       const candleHigh = data.candles.map((candle) => candle.high);
       const candleLow = data.candles.map((candle) => candle.low);
       const candleClose = data.candles.map((candle) => candle.close);
-      const candleTimesMs = data.candles.map((candle) => toTimestampMs(candle.time) ?? Number.NaN);
+      const candleTimesMs = candleX.map((time) => toTimestampMs(time) ?? Number.NaN);
       const chartStartMs = candleTimesMs.find((value) => Number.isFinite(value)) ?? null;
       const chartEndMs = [...candleTimesMs].reverse().find((value) => Number.isFinite(value)) ?? null;
       const boundedVisibleRange =
@@ -1013,8 +1017,8 @@ function ChartContent(): JSX.Element {
       const priceShapes = buildCurrentLevelShapes(data.current_levels, null);
       const initialXRange = boundedVisibleRange
         ? [
-            new Date(boundedVisibleRange[0]).toISOString(),
-            new Date(boundedVisibleRange[1]).toISOString(),
+            new Date(boundedVisibleRange[0]).toISOString().slice(0, 19),
+            new Date(boundedVisibleRange[1]).toISOString().slice(0, 19),
           ]
         : undefined;
       const activeRangeStartMs = boundedVisibleRange?.[0] ?? chartStartMs;
@@ -1034,7 +1038,7 @@ function ChartContent(): JSX.Element {
         scrollZoom: !compactChartUi,
         doubleClick: "reset+autosize",
       };
-      const openPositionTimeMs = toTimestampMs(data.open_position?.time);
+      const openPositionTimeMs = toTimestampMs(toChartDisplayTime(data.open_position?.time));
       const openPositionInRange =
         chartStartMs !== null &&
         chartEndMs !== null &&
@@ -1065,7 +1069,7 @@ function ChartContent(): JSX.Element {
           type: "scatter",
           mode: "markers",
           name: "Long Entries",
-          x: longEntries.map((marker) => marker.time),
+          x: longEntries.map((marker) => toChartDisplayTime(marker.time) ?? marker.time),
           y: longEntries.map((marker) => marker.price),
           marker: buildTradeEntryMarker("long", 10),
         });
@@ -1075,7 +1079,7 @@ function ChartContent(): JSX.Element {
           type: "scatter",
           mode: "markers",
           name: "Short Entries",
-          x: shortEntries.map((marker) => marker.time),
+          x: shortEntries.map((marker) => toChartDisplayTime(marker.time) ?? marker.time),
           y: shortEntries.map((marker) => marker.price),
           marker: buildTradeEntryMarker("short", 10),
         });
@@ -1091,7 +1095,7 @@ function ChartContent(): JSX.Element {
           type: "scatter",
           mode: "markers",
           name: "Exits",
-          x: data.markers.exits.map((marker) => marker.time),
+          x: data.markers.exits.map((marker) => toChartDisplayTime(marker.time) ?? marker.time),
           y: data.markers.exits.map((marker) => marker.price),
           marker: {
             color: exitColors,
@@ -1112,7 +1116,7 @@ function ChartContent(): JSX.Element {
           type: "scatter",
           mode: "markers",
           name: "Open Trade",
-          x: [data.open_position.time],
+          x: [toChartDisplayTime(data.open_position.time) ?? data.open_position.time],
           y: [data.open_position.entry],
           marker: buildTradeEntryMarker(data.open_position.side, 11),
         });
@@ -1217,7 +1221,10 @@ function ChartContent(): JSX.Element {
           const syncedAxisSettings = buildSharedDateAxisSettings(syncedRange?.[0] ?? null, syncedRange?.[1] ?? null);
           const payload = syncedRange
             ? {
-                "xaxis.range": [new Date(syncedRange[0]).toISOString(), new Date(syncedRange[1]).toISOString()],
+                "xaxis.range": [
+                  new Date(syncedRange[0]).toISOString().slice(0, 19),
+                  new Date(syncedRange[1]).toISOString().slice(0, 19),
+                ],
                 ...(syncedAxisSettings.tick0 ? { "xaxis.tick0": syncedAxisSettings.tick0 } : {}),
                 ...(syncedAxisSettings.dtick ? { "xaxis.dtick": syncedAxisSettings.dtick } : {}),
               }
@@ -1296,7 +1303,7 @@ function ChartContent(): JSX.Element {
               type: "scatter",
               mode: "lines",
               name: "Equity",
-              x: data.equity_curve.map((point) => point.time),
+              x: data.equity_curve.map((point) => toChartDisplayTime(point.time) ?? point.time),
               y: data.equity_curve.map((point) => point.balance),
               line: { color: CHART_THEME.equity, width: 1.8, shape: "hv" },
             },
