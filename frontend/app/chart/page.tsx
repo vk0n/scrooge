@@ -392,13 +392,19 @@ function buildLivePriceAnnotations(
       Number.isFinite(rsiThreshold) &&
       (sideContext === "long" ? latestRsi < rsiThreshold : latestRsi > rsiThreshold);
 
+    const chipWidth = 36;
+    const chipHeight = 22;
+    const chipStartX = 10;
+    const chipStep = chipWidth - 1;
+    const chipOkColor = "rgba(132, 204, 22, 0.72)";
+    const chipBadColor = "rgba(239, 68, 68, 0.62)";
     const indicatorChips = [
-      { label: "BB", ok: bandOk, xshift: 10 },
-      { label: "EMA", ok: emaOk, xshift: 38 },
-      { label: "RSI", ok: rsiOk, xshift: 74 },
+      { label: "BB", ok: bandOk, xshift: chipStartX },
+      { label: "EMA", ok: emaOk, xshift: chipStartX + chipStep },
+      { label: "RSI", ok: rsiOk, xshift: chipStartX + chipStep * 2 },
     ];
 
-    return indicatorChips.map((chip, index) => ({
+    return indicatorChips.map((chip) => ({
       xref: "paper",
       x: 0,
       xanchor: "left",
@@ -415,10 +421,11 @@ function buildLivePriceAnnotations(
         family: "var(--font-geist-mono), monospace",
       },
       bordercolor: "#f4f8fc",
-      borderwidth: 1.2,
-      borderpad: 5,
-      bgcolor: chip.ok ? "#84cc16" : "#ef4444",
-      xshiftanchor: index === 0 ? undefined : undefined,
+      borderwidth: 1,
+      borderpad: 2,
+      width: chipWidth,
+      height: chipHeight,
+      bgcolor: chip.ok ? chipOkColor : chipBadColor,
     }));
   }
 
