@@ -392,60 +392,34 @@ function buildLivePriceAnnotations(
       Number.isFinite(rsiThreshold) &&
       (sideContext === "long" ? latestRsi < rsiThreshold : latestRsi > rsiThreshold);
 
-    const chipStyle = (ok: boolean) =>
-      [
-        "display:inline-block",
-        "padding-top:2px",
-        "padding-bottom:2px",
-        "padding-left:6px",
-        "padding-right:6px",
-        "border-radius:4px",
-        "border-width:1px",
-        "border-style:solid",
-        "border-color:rgba(255,255,255,0.95)",
-        "font-weight:700",
-        "line-height:1.1",
-        "letter-spacing:0.01em",
-        `background-color:${ok ? "#84cc16" : "#ef4444"}`,
-        "color:#f8fafc",
-      ].join(";");
-    const separatorStyle = [
-      "display:inline-block",
-      "padding-left:4px",
-      "padding-right:4px",
-      "color:#f4f8fc",
-      "font-weight:700",
-    ].join(";");
-
-    const badgeHtml =
-      `<span style="${chipStyle(bandOk)}">BB</span>` +
-      `<span style="${separatorStyle}">|</span>` +
-      `<span style="${chipStyle(emaOk)}">EMA</span>` +
-      `<span style="${separatorStyle}">|</span>` +
-      `<span style="${chipStyle(rsiOk)}">RSI</span>`;
-
-    return [
-      {
-        xref: "paper",
-        x: 0,
-        xanchor: "left",
-        xshift: 10,
-        yref: "y",
-        y: currentPrice,
-        yanchor: "middle",
-        text: badgeHtml,
-        showarrow: false,
-        align: "left",
-        font: {
-          color: CHART_THEME.text,
-          size: 11,
-        },
-        bordercolor: "#f4f8fc",
-        borderwidth: 1.2,
-        borderpad: 5,
-        bgcolor: "rgba(13, 20, 29, 0.97)",
-      },
+    const indicatorChips = [
+      { label: "BB", ok: bandOk, xshift: 10 },
+      { label: "EMA", ok: emaOk, xshift: 38 },
+      { label: "RSI", ok: rsiOk, xshift: 74 },
     ];
+
+    return indicatorChips.map((chip, index) => ({
+      xref: "paper",
+      x: 0,
+      xanchor: "left",
+      xshift: chip.xshift,
+      yref: "y",
+      y: currentPrice,
+      yanchor: "middle",
+      text: chip.label,
+      showarrow: false,
+      align: "center",
+      font: {
+        color: "#f8fafc",
+        size: 11,
+        family: "var(--font-geist-mono), monospace",
+      },
+      bordercolor: "#f4f8fc",
+      borderwidth: 1.2,
+      borderpad: 5,
+      bgcolor: chip.ok ? "#84cc16" : "#ef4444",
+      xshiftanchor: index === 0 ? undefined : undefined,
+    }));
   }
 
   if (!openTrade) {
