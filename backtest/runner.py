@@ -261,8 +261,30 @@ def _write_chart_dataset_snapshot(df: pd.DataFrame, symbol: str, path: Path, bal
     if df is None or len(df) == 0:  # noqa: PLR2004
         return
 
+    max_rows_raw = str(os.getenv("SCROOGE_BACKTEST_CHART_DATASET_MAX_ROWS", "0") or "0").strip()
+    try:
+        max_rows = int(max_rows_raw)
+    except ValueError:
+        max_rows = 0
+
+    export_df = df
+    if max_rows > 0 and len(df) > max_rows:
+        stride = max(1, len(df) // max_rows)
+        export_df = df.iloc[::stride].copy()
+        if export_df.index[-1] != df.index[-1]:
+            export_df = pd.concat([export_df, df.iloc[[-1]]], axis=0)
+            export_df = export_df[~export_df.index.duplicated(keep="last")]
+        get_technical_logger().info(
+            "chart_dataset_snapshot_downsampled original_rows=%s exported_rows=%s max_rows=%s stride=%s path=%s",
+            len(df),
+            len(export_df),
+            max_rows,
+            stride,
+            path,
+        )
+
     required = {"open_time", "open", "high", "low", "close", "volume"}
-    if not required.issubset(set(df.columns)):
+    if not required.issubset(set(export_df.columns)):
         get_technical_logger().warning("chart_dataset_snapshot_skipped_missing_columns path=%s", path)
         return
 
@@ -275,7 +297,7 @@ def _write_chart_dataset_snapshot(df: pd.DataFrame, symbol: str, path: Path, bal
             except (TypeError, ValueError):
                 continue
         if clean_history:
-            rows_count = len(df)
+            rows_count = len(export_df)
             history_count = len(clean_history)
             if history_count >= rows_count:
                 aligned_balance_history = clean_history[-rows_count:]
@@ -289,7 +311,7 @@ def _write_chart_dataset_snapshot(df: pd.DataFrame, symbol: str, path: Path, bal
             writer.writerow(
                 ["open_time", "symbol", "open", "high", "low", "close", "volume", "balance", "EMA", "RSI", "BBL", "BBM", "BBU", "ATR"]
             )
-            for idx, row in enumerate(df.itertuples(index=False)):
+            for idx, row in enumerate(export_df.itertuples(index=False)):
                 balance_value: float | str = ""
                 if aligned_balance_history and idx < len(aligned_balance_history):
                     balance_value = aligned_balance_history[idx]
@@ -633,6 +655,7 @@ def run_backtest(
 
     start_stage("Artifacts", 5)
     state["balance_history"] = _compress_balance_history_for_state(balance_history)
+    state["trade_history"] = trades.to_dict(orient="records") if isinstance(trades, pd.DataFrame) else []
     state["balance"] = float(final_balance)
     if len(state["balance_history"]) != len(balance_history):
         logger.info(
@@ -665,14 +688,17 @@ def run_backtest(
     execution_artifact_events = market_events if market_events is not None else (
         market_event_iter_factory() if market_event_iter_factory is not None else []
     )
+    simulated_execution_events: list[MarketEvent] = []
     if config.execution_mode == "simulated":
         raw_simulated_execution_events = state.get("simulated_execution_events")
         if isinstance(raw_simulated_execution_events, list):
-            execution_artifact_events = [
+            simulated_execution_events = [
                 market_event_from_dict(payload)
                 for payload in raw_simulated_execution_events
                 if isinstance(payload, dict)
             ]
+            execution_artifact_events = simulated_execution_events
+    state.pop("simulated_execution_events", None)
     market_event_execution_summary = market_event_execution_writer(
         execution_artifact_events,
         symbol=config.symbol,

@@ -16,6 +16,9 @@ The stack consists of:
 
 Persistent runtime state lives in the `scrooge_runtime` Docker volume.
 
+For local stand/debug work, you can switch `/runtime` to a bind mount with
+`docker-compose.stand.yml`.
+
 ## Config Files
 
 Main mounted configs:
@@ -86,6 +89,12 @@ Control plane only:
 docker compose up -d --build
 ```
 
+Local stand/debug with bind-mounted `./runtime`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.stand.yml up -d --build
+```
+
 Control plane + Watchtower:
 
 ```bash
@@ -96,6 +105,12 @@ Control plane + live bot:
 
 ```bash
 docker compose --profile live up -d --build
+```
+
+Control plane + live bot with bind-mounted `./runtime`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.stand.yml --profile live up -d --build
 ```
 
 Control plane + live bot + Watchtower:

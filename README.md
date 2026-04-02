@@ -26,6 +26,7 @@ scrooge/
 ├── requirements/            # Split dependency sets
 ├── runtime/                 # Local runtime/backtest artifacts (gitignored)
 ├── docker-compose.yml
+├── docker-compose.stand.yml # Local stand/debug override with bind-mounted ./runtime
 └── main.py                  # Thin entry shim
 ```
 

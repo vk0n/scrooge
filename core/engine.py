@@ -182,6 +182,12 @@ class RealtimeStrategyProcessor:
         self.emitted_snapshots += 1
 
     def _sync_runtime_from_state(self) -> None:
+        # State-to-runtime sync is a live-only concern. In backtests the
+        # runtime object itself is the source of truth during replay; pulling
+        # position/balance back from persisted state before every event would
+        # wipe in-memory position transitions and cause repeated re-entries.
+        if not self.runtime.live:
+            return
         state = self.runtime.state
         if not isinstance(state, dict):
             return

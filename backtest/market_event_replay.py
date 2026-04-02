@@ -344,11 +344,121 @@ def write_market_event_execution_artifacts(
     fills_path: str | Path | None = None,
     trades_path: str | Path | None = None,
 ) -> MarketExecutionSummary:
-    events_list = list(events)
-    filtered = filter_execution_market_events(events_list, symbol=symbol)
-    summary = summarize_execution_market_events(events_list, symbol=symbol)
-    fills = build_observed_execution_fills(filtered, symbol=symbol)
+    target_symbol = _normalized_symbol(symbol)
+    filtered: list[MarketEvent] = []
+    fills: list[ObservedExecutionFill] = []
+    total_market_events = 0
+    account_balance_events = 0
+    position_snapshot_events = 0
+    order_trade_update_events = 0
+    trade_execution_events = 0
+    filled_order_events = 0
+    realized_pnl_total = 0.0
+    commission_total = 0.0
+    last_wallet_balance: float | None = None
+    last_cross_wallet_balance: float | None = None
+    last_position_amt: float | None = None
+    last_entry_price: float | None = None
+    last_unrealized_pnl: float | None = None
+    first_ts: str | None = None
+    last_ts: str | None = None
+
+    for event in events:
+        total_market_events += 1
+
+        if isinstance(event, AccountBalanceEvent):
+            filtered.append(event)
+            account_balance_events += 1
+            last_wallet_balance = float(event.wallet_balance)
+            last_cross_wallet_balance = (
+                float(event.cross_wallet_balance) if event.cross_wallet_balance is not None else None
+            )
+        elif isinstance(event, PositionSnapshotEvent):
+            event_symbol = _normalized_symbol(getattr(event, "symbol", None))
+            if target_symbol is not None and event_symbol != target_symbol:
+                continue
+            filtered.append(event)
+            position_snapshot_events += 1
+            last_position_amt = float(event.position_amt)
+            last_entry_price = float(event.entry_price) if event.entry_price is not None else None
+            last_unrealized_pnl = float(event.unrealized_pnl) if event.unrealized_pnl is not None else None
+        elif isinstance(event, OrderTradeUpdateEvent):
+            event_symbol = _normalized_symbol(getattr(event, "symbol", None))
+            if target_symbol is not None and event_symbol != target_symbol:
+                continue
+            filtered.append(event)
+            order_trade_update_events += 1
+
+            execution_type = str(event.execution_type or "").strip().upper()
+            order_status = str(event.order_status or "").strip().upper()
+            if execution_type == "TRADE":
+                trade_execution_events += 1
+            if order_status == "FILLED":
+                filled_order_events += 1
+            realized_pnl_total += float(event.realized_pnl or 0.0)
+            commission_total += float(event.commission or 0.0)
+
+            if execution_type == "TRADE":
+                fill_qty = float(event.last_filled_qty or 0.0)
+                fill_price = event.last_filled_price if event.last_filled_price is not None else event.average_price
+                side = _normalized_side(event.order_side)
+                if fill_qty > 0 and fill_price is not None and side is not None:
+                    fills.append(
+                        ObservedExecutionFill(
+                            symbol=event_symbol or "",
+                            ts=str(event.ts),
+                            side=side,
+                            signed_qty=(fill_qty if side == "long" else -fill_qty),
+                            fill_qty=fill_qty,
+                            fill_price=float(fill_price),
+                            accumulated_filled_qty=(
+                                float(event.accumulated_filled_qty) if event.accumulated_filled_qty is not None else None
+                            ),
+                            realized_pnl=float(event.realized_pnl or 0.0),
+                            commission=float(event.commission or 0.0),
+                            commission_asset=(str(event.commission_asset).strip().upper() if event.commission_asset else None),
+                            order_status=(str(event.order_status).strip().upper() if event.order_status else None),
+                            order_id=event.order_id,
+                            trade_id=event.trade_id,
+                            reduce_only=bool(event.reduce_only),
+                            source=event.source,
+                        )
+                    )
+        else:
+            continue
+
+        ts_text = str(getattr(event, "ts", "") or "").strip()
+        if ts_text:
+            if first_ts is None or _sort_ts_key(ts_text) < _sort_ts_key(first_ts):
+                first_ts = ts_text
+            if last_ts is None or _sort_ts_key(ts_text) > _sort_ts_key(last_ts):
+                last_ts = ts_text
+
+    fills.sort(key=lambda item: (_sort_ts_key(item.ts), item.order_id or 0, item.trade_id or 0))
     trades = reconstruct_observed_execution_trades(fills)
+    summary = MarketExecutionSummary(
+        symbol=target_symbol,
+        total_market_events=total_market_events,
+        execution_events=len(filtered),
+        account_balance_events=account_balance_events,
+        position_snapshot_events=position_snapshot_events,
+        order_trade_update_events=order_trade_update_events,
+        trade_execution_events=trade_execution_events,
+        filled_order_events=filled_order_events,
+        realized_pnl_total=realized_pnl_total,
+        commission_total=commission_total,
+        last_wallet_balance=last_wallet_balance,
+        last_cross_wallet_balance=last_cross_wallet_balance,
+        last_position_amt=last_position_amt,
+        last_entry_price=last_entry_price,
+        last_unrealized_pnl=last_unrealized_pnl,
+        observed_fill_events=len(fills),
+        observed_total_trades=len(trades),
+        observed_closed_trades=sum(1 for trade in trades if trade.status == "closed"),
+        observed_open_trades=sum(1 for trade in trades if trade.status == "open"),
+        first_ts=first_ts,
+        last_ts=last_ts,
+    )
 
     resolved_summary_path = Path(summary_path).expanduser()
     resolved_events_path = Path(events_path).expanduser()

@@ -1,0 +1,16 @@
+services:
+  bot:
+    volumes:
+      - ./runtime:/runtime
+      - ./config/live.yaml:/runtime/config.yaml:ro
+
+  backtest:
+    volumes:
+      - ./runtime:/runtime
+      - ./config/backtest.yaml:/runtime/config.backtest.yaml:ro
+      - ${SCROOGE_HOST_BACKTEST_ARTIFACTS_DIR:-./backtest_artifacts}:/host_artifacts
+
+  api:
+    volumes:
+      - ./runtime:/runtime
+      - ./config/live.yaml:/runtime/config.yaml

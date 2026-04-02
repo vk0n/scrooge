@@ -348,7 +348,8 @@ function buildCurrentLevelShapes(
 
 function buildLiveDecisionBadge(
   currentPrice: number | null,
-  chartData?: ChartPayload | null
+  chartData?: ChartPayload | null,
+  compact = false
 ): { shapes: Array<Record<string, unknown>>; annotations: Array<Record<string, unknown>> } {
   if (typeof currentPrice !== "number" || !Number.isFinite(currentPrice) || !chartData) {
     return { shapes: [], annotations: [] };
@@ -397,20 +398,39 @@ function buildLiveDecisionBadge(
     (sideContext === "long" ? latestRsi < rsiThreshold : latestRsi > rsiThreshold);
 
   const sections = [
-    { label: "BB", ok: bandOk },
-    { label: "EMA", ok: emaOk },
-    { label: "RSI", ok: rsiOk },
+    { label: compact ? "B" : "BB", ok: bandOk },
+    { label: compact ? "E" : "EMA", ok: emaOk },
+    { label: compact ? "R" : "RSI", ok: rsiOk },
   ];
 
-  const xStart = 0.016;
-  const sectionWidth = 0.044;
-  const sectionGap = 0.0005;
-  const halfHeight = Math.max(28, currentPrice * 0.00055);
+  const xStart = compact ? 0.012 : 0.016;
+  const sectionWidth = compact ? 0.07 : 0.047;
+  const halfHeight = Math.max(compact ? 46 : 52, currentPrice * (compact ? 0.0009 : 0.00102));
+  const badgeY0 = currentPrice - halfHeight;
+  const badgeY1 = currentPrice + halfHeight;
+  const badgeWidth = sections.length * sectionWidth;
+  const badgeX1 = xStart + badgeWidth;
   const shapes: Array<Record<string, unknown>> = [];
   const annotations: Array<Record<string, unknown>> = [];
 
+  shapes.push({
+    type: "rect",
+    xref: "paper",
+    yref: "y",
+    x0: xStart,
+    x1: badgeX1,
+    y0: badgeY0,
+    y1: badgeY1,
+    line: {
+      color: "#f4f8fc",
+      width: 1,
+    },
+    fillcolor: "rgba(15, 21, 32, 0.96)",
+    layer: "above",
+  });
+
   sections.forEach((section, index) => {
-    const x0 = xStart + index * (sectionWidth + sectionGap);
+    const x0 = xStart + index * sectionWidth;
     const x1 = x0 + sectionWidth;
     shapes.push({
       type: "rect",
@@ -418,15 +438,33 @@ function buildLiveDecisionBadge(
       yref: "y",
       x0,
       x1,
-      y0: currentPrice - halfHeight,
-      y1: currentPrice + halfHeight,
+      y0: badgeY0,
+      y1: badgeY1,
       line: {
-        color: "#f4f8fc",
-        width: 1,
+        color: "rgba(0, 0, 0, 0)",
+        width: 0,
       },
-      fillcolor: section.ok ? "rgba(132, 204, 22, 0.58)" : "rgba(239, 68, 68, 0.46)",
+      fillcolor: section.ok ? "rgba(132, 204, 22, 0.54)" : "rgba(239, 68, 68, 0.42)",
       layer: "above",
     });
+
+    if (index > 0) {
+      shapes.push({
+        type: "line",
+        xref: "paper",
+        yref: "y",
+        x0,
+        x1: x0,
+        y0: badgeY0,
+        y1: badgeY1,
+        line: {
+          color: "#f4f8fc",
+          width: 1,
+        },
+        layer: "above",
+      });
+    }
+
     annotations.push({
       xref: "paper",
       yref: "y",
@@ -438,7 +476,7 @@ function buildLiveDecisionBadge(
       showarrow: false,
       font: {
         color: "#f8fafc",
-        size: 11,
+        size: compact ? 9 : 10,
         family: "var(--font-geist-mono), monospace",
       },
       bgcolor: "rgba(0,0,0,0)",
@@ -454,14 +492,15 @@ function buildLiveDecisionBadge(
 function buildLivePriceAnnotations(
   currentPrice: number | null,
   openTrade: LiveOpenTradeInfo | null | undefined,
-  chartData?: ChartPayload | null
+  chartData?: ChartPayload | null,
+  compact = false
 ): Array<Record<string, unknown>> {
   if (typeof currentPrice !== "number" || !Number.isFinite(currentPrice)) {
     return [];
   }
 
   if (!openTrade && chartData) {
-    return buildLiveDecisionBadge(currentPrice, chartData).annotations;
+    return buildLiveDecisionBadge(currentPrice, chartData, compact).annotations;
   }
 
   if (!openTrade) {
@@ -513,6 +552,19 @@ function findLatestIndicatorValue(points: IndicatorPoint[] | undefined): number 
     if (typeof value === "number" && Number.isFinite(value)) {
       return value;
     }
+  }
+
+  return null;
+}
+
+function resolveOverlayPrice(chartData: ChartPayload | null, livePrice: number | null): number | null {
+  if (typeof livePrice === "number" && Number.isFinite(livePrice)) {
+    return livePrice;
+  }
+
+  const fallbackClose = chartData?.candles?.[chartData.candles.length - 1]?.close;
+  if (typeof fallbackClose === "number" && Number.isFinite(fallbackClose)) {
+    return fallbackClose;
   }
 
   return null;
@@ -1376,18 +1428,19 @@ function ChartContent(): JSX.Element {
       const chartSymbol = data.symbol.trim().toUpperCase();
       const liveSymbolMatchesChart = liveSymbol === chartSymbol;
       const liveCurrentPrice = liveSymbolMatchesChart ? liveStatus?.last_price ?? null : null;
+      const overlayPrice = resolveOverlayPrice(data, liveCurrentPrice);
       const liveOpenTrade = liveSymbolMatchesChart ? liveStatus?.open_trade_info ?? null : null;
       const priceTone = resolveLivePriceTone(liveOpenTrade?.unrealized_pnl);
-      const decisionBadge = !liveOpenTrade ? buildLiveDecisionBadge(liveCurrentPrice, data) : { shapes: [], annotations: [] };
+      const decisionBadge = !liveOpenTrade ? buildLiveDecisionBadge(overlayPrice, data, compactChartUi) : { shapes: [], annotations: [] };
       const priceShapes = [
         ...buildCurrentLevelShapes(
         resolveLiveLevels(data, liveStatus) ?? data.current_levels,
-        liveCurrentPrice,
+        overlayPrice,
         resolveLivePriceColor(priceTone)
       ),
         ...decisionBadge.shapes,
       ];
-      const priceAnnotations = buildLivePriceAnnotations(liveCurrentPrice, liveOpenTrade, data);
+      const priceAnnotations = buildLivePriceAnnotations(overlayPrice, liveOpenTrade, data, compactChartUi);
       await Plotly.relayout(priceChartRef.current, {
         shapes: priceShapes,
         annotations: priceAnnotations,
@@ -1399,7 +1452,7 @@ function ChartContent(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [data, liveStatus]);
+  }, [compactChartUi, data, liveStatus]);
 
   return (
     <section className="panel page-shell chart-page-shell">
