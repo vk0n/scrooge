@@ -425,10 +425,24 @@ def process_pending_commands(
                 elif has_local_position and bool(local_position.get("close_pending")):
                     message = "Close request already in flight; awaiting exchange confirmation."
                 else:
+                    pending_position = dict(local_position)
+                    pending_position["close_pending"] = True
+                    pending_position["close_requested_at"] = event_ts
+                    state["position"] = pending_position
+                    if update_position_fn is not None:
+                        update_position_fn(state, pending_position)
+                    else:
+                        save_state_fn(state)
+
                     previous_balance = _as_float(state.get("balance"))
                     fallback_exit_price = _as_float(exchange_position.get("markPrice")) if has_exchange_position else None
                     order_result = close_position_fn(symbol)
                     if has_exchange_position and order_result is None:
+                        state["position"] = local_position
+                        if update_position_fn is not None:
+                            update_position_fn(state, local_position)
+                        else:
+                            save_state_fn(state)
                         raise RuntimeError("Exchange close request did not return order confirmation")
 
                     latest_balance = None
@@ -499,7 +513,7 @@ def process_pending_commands(
                             trade_record["exit_fee"] = exit_commission
                         if isinstance(execution_summary, dict):
                             trade_record["exit_order_id"] = execution_summary.get("order_id")
-                        pending_position = dict(local_position)
+                        pending_position = dict(state.get("position")) if isinstance(state.get("position"), dict) else dict(local_position)
                         pending_position["close_pending"] = True
                         pending_position["close_requested_at"] = event_ts
                         pending_position["pending_close_trade"] = sanitize_trade_for_history(trade_record)
@@ -524,6 +538,10 @@ def process_pending_commands(
                             pending_position["pending_close_order_id"] = execution_summary.get("order_id")
                         state["position"] = pending_position
                         if latest_balance is not None and update_balance_fn is not None:
+                            if update_position_fn is not None:
+                                update_position_fn(state, pending_position)
+                            else:
+                                save_state_fn(state)
                             update_balance_fn(state, latest_balance)
                         else:
                             if latest_balance is not None:

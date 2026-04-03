@@ -2330,10 +2330,27 @@ def apply_exit_decision(
 ) -> tuple[float, dict[str, Any] | None]:
     if live:
         trade = build_exit_trade(position, decision, row_ts=row_ts)
+        pending_event = build_exit_event_payload(
+            decision,
+            symbol=config.symbol,
+            net_pnl=float(trade["net_pnl"]),
+        )
+        active_position = position
+        pending_position = _mark_position_close_pending(
+            position,
+            trade=trade,
+            event_payload=pending_event,
+            event_ts=log_ts,
+            runtime_mode=config.runtime_mode,
+            strategy_mode=config.strategy_mode,
+        )
+        update_position(state, pending_position)
+        position = state.get("position") if isinstance(state.get("position"), dict) else pending_position
         close_order = None
         if decision.reason != "liquidation":
             close_order = close_position(config.symbol)
             if not isinstance(close_order, dict) or close_order.get("orderId") is None:
+                update_position(state, active_position)
                 emit_event(
                     code="trade_close_submission_failed",
                     category="error",
@@ -2359,7 +2376,7 @@ def apply_exit_decision(
                     position.get("side"),
                     close_order,
                 )
-                return balance, position
+                return balance, active_position
             execution_summary = get_order_execution_summary(config.symbol, close_order)
             _apply_exit_execution_summary(
                 trade,
@@ -2367,25 +2384,29 @@ def apply_exit_decision(
                 execution_summary,
                 fee_rate=config.fee_rate,
             )
+        current_position = state.get("position")
+        if isinstance(current_position, dict) and bool(current_position.get("close_pending")):
+            close_requested_at = str(current_position.get("close_requested_at") or "")
+            if close_requested_at == log_ts:
+                refreshed_pending_position = dict(current_position)
+                refreshed_pending_position["pending_close_trade"] = sanitize_trade_for_history(trade)
+                refreshed_pending_position["pending_close_event"] = dict(
+                    build_exit_event_payload(
+                        decision,
+                        symbol=config.symbol,
+                        net_pnl=float(trade["net_pnl"]),
+                    )
+                )
+                refreshed_pending_position["pending_close_event_ts"] = str(trade.get("exit_time") or log_ts)
+                if isinstance(close_order, dict) and close_order.get("orderId") is not None:
+                    refreshed_pending_position["pending_close_order_id"] = close_order.get("orderId")
+                update_position(state, refreshed_pending_position)
+                position = refreshed_pending_position
         current_balance = get_balance()
         balance = current_balance
-        pending_event = build_exit_event_payload(
-            decision,
-            symbol=config.symbol,
-            net_pnl=float(trade["net_pnl"]),
-        )
-        pending_position = _mark_position_close_pending(
-            position,
-            trade=trade,
-            event_payload=pending_event,
-            event_ts=log_ts,
-            runtime_mode=config.runtime_mode,
-            strategy_mode=config.strategy_mode,
-            order_id=(close_order.get("orderId") if isinstance(close_order, dict) else None),
-        )
-        state["position"] = pending_position
         update_balance(state, balance)
-        position = pending_position
+        current_position = state.get("position")
+        position = current_position if isinstance(current_position, dict) else position
     else:
         balance, _ = apply_backtest_exit_transition(
             balance,
@@ -2594,6 +2615,22 @@ def process_discrete_row(
                             },
                         )
                 if can_open:
+                    event_kwargs = build_trade_opened_event_payload(
+                        entry_decision,
+                        symbol=config.symbol,
+                        leverage=config.leverage,
+                        fee=entry_fee,
+                        rsi=rsi,
+                    )
+                    pending_position = _mark_position_open_pending(
+                        position,
+                        event_payload=event_kwargs,
+                        event_ts=log_ts,
+                        runtime_mode=config.runtime_mode,
+                        strategy_mode=config.strategy_mode,
+                    )
+                    update_position(state, pending_position)
+                    position = state.get("position") if isinstance(state.get("position"), dict) else pending_position
                     side_command = "BUY" if entry_decision.side == "long" else "SELL"
                     open_order = open_position(
                         config.symbol,
@@ -2604,6 +2641,7 @@ def process_discrete_row(
                         config.leverage,
                     )
                     if not isinstance(open_order, dict) or open_order.get("orderId") is None:
+                        update_position(state, None)
                         emit_event(
                             code="trade_open_submission_failed",
                             category="error",
@@ -2636,27 +2674,46 @@ def process_discrete_row(
                     factual_entry_fee = to_float(position.get("entry_fee_paid"))
                     if factual_entry_fee is not None:
                         entry_fee = factual_entry_fee
+                    current_position = state.get("position")
+                    if isinstance(current_position, dict) and bool(current_position.get("open_pending")):
+                        open_requested_at = str(current_position.get("open_requested_at") or "")
+                        if open_requested_at == log_ts:
+                            refreshed_pending_position = dict(current_position)
+                            event_kwargs["entry"] = float(position["entry"])
+                            event_kwargs["size"] = float(position["size"])
+                            refreshed_pending_position.update(
+                                {
+                                    "side": position.get("side"),
+                                    "size": position.get("size"),
+                                    "entry": position.get("entry"),
+                                    "time": position.get("time"),
+                                    "entry_time": position.get("entry_time"),
+                                    "stake_mode": position.get("stake_mode"),
+                                    "trigger": position.get("trigger"),
+                                    "entry_rsi": position.get("entry_rsi"),
+                                    "entry_fee_paid": position.get("entry_fee_paid"),
+                                    "entry_order_id": position.get("entry_order_id"),
+                                    "entry_execution_time": position.get("entry_execution_time"),
+                                    "exchange_position_amt": position.get("exchange_position_amt"),
+                                    "exchange_entry_price": position.get("exchange_entry_price"),
+                                    "exchange_unrealized_pnl": position.get("exchange_unrealized_pnl"),
+                                    "exchange_position_side": position.get("exchange_position_side"),
+                                    "exchange_isolated_margin": position.get("exchange_isolated_margin"),
+                                    "exchange_mark_price": position.get("exchange_mark_price"),
+                                    "exchange_liq_price": position.get("exchange_liq_price"),
+                                    "exchange_break_even_price": position.get("exchange_break_even_price"),
+                                    "exchange_position_updated_at": position.get("exchange_position_updated_at"),
+                                    "pending_open_event": dict(event_kwargs),
+                                }
+                            )
+                            if isinstance(open_order, dict) and open_order.get("orderId") is not None:
+                                refreshed_pending_position["pending_open_order_id"] = open_order.get("orderId")
+                            update_position(state, refreshed_pending_position)
+                            position = refreshed_pending_position
                     balance = get_balance()
-                    event_kwargs = build_trade_opened_event_payload(
-                        entry_decision,
-                        symbol=config.symbol,
-                        leverage=config.leverage,
-                        fee=entry_fee,
-                        rsi=rsi,
-                    )
-                    event_kwargs["entry"] = float(position["entry"])
-                    event_kwargs["size"] = float(position["size"])
-                    pending_position = _mark_position_open_pending(
-                        position,
-                        event_payload=event_kwargs,
-                        event_ts=log_ts,
-                        runtime_mode=config.runtime_mode,
-                        strategy_mode=config.strategy_mode,
-                        order_id=(open_order.get("orderId") if isinstance(open_order, dict) else None),
-                    )
-                    state["position"] = pending_position
                     update_balance(state, balance)
-                    position = pending_position
+                    current_position = state.get("position")
+                    position = current_position if isinstance(current_position, dict) else position
             else:
                 balance -= _position_entry_fee(position, config.fee_rate)
                 event_kwargs = build_trade_opened_event_payload(
