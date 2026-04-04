@@ -507,6 +507,11 @@ def process_pending_commands(
                             trade_record["fee"] = computed_fee_total
                         if margin_used is not None:
                             trade_record["margin_used"] = margin_used
+                            if trade_record.get("net_pnl") is not None and margin_used > 0:
+                                try:
+                                    trade_record["roi_pct"] = (float(trade_record["net_pnl"]) / margin_used) * 100.0
+                                except (TypeError, ValueError):
+                                    pass
                         if entry_fee_paid is not None:
                             trade_record["entry_fee"] = entry_fee_paid
                         if exit_commission is not None:

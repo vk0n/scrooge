@@ -657,8 +657,12 @@ pre {
 }
 
 .office-runtime-toolbar {
-  justify-content: flex-start;
+  justify-content: center;
   margin-left: 0;
+}
+
+.office-runtime-toolbar-idle-footer {
+  margin-top: 0.6rem;
 }
 
 .office-runtime-toolbar-open {
@@ -667,10 +671,9 @@ pre {
 
 .office-idle-actions {
   display: grid;
-  grid-template-columns: auto auto;
-  justify-content: space-between;
+  justify-items: center;
   align-items: start;
-  gap: 0.75rem;
+  gap: 0.55rem;
 }
 
 .instruction-overlay {
@@ -886,9 +889,10 @@ pre {
 }
 
 .trade-suggest-toolbar {
-  display: inline-grid;
-  justify-self: end;
-  justify-items: end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
   gap: 0.42rem;
   width: fit-content;
 }
@@ -901,9 +905,17 @@ pre {
 }
 
 .trade-suggest-toolbar > .dialog-user-btn {
-  width: 100%;
+  width: auto;
   min-width: 12.6rem;
   justify-content: center;
+}
+
+.trade-suggest-toggle {
+  min-width: 12.6rem;
+}
+
+.trade-suggest-action {
+  min-width: 6.2rem;
 }
 
 .office-runtime-toolbar > .dialog-user-btn {
@@ -1162,10 +1174,14 @@ pre {
 }
 
 .config-action-btn {
-  min-height: 1.82rem;
-  padding: 0.28rem 0.52rem;
+  min-height: 2.1rem;
+  padding: 0.36rem 0.9rem;
   border-radius: 8px;
-  font-size: 0.88rem;
+  font-size: 0.93rem;
+}
+
+.config-action-btn-centered {
+  min-width: 12.6rem;
 }
 
 .notifications-panel {
@@ -1992,11 +2008,10 @@ pre {
   padding: 0 1rem 1rem;
 }
 
-.trade-history-detail-grid {
+.trade-history-primary-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.62rem;
-  padding-top: 0.78rem;
 }
 
 .trade-history-detail {
@@ -2010,18 +2025,68 @@ pre {
 
 .trade-history-detail-label {
   color: #9eabbe;
-  font-size: 0.75rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 0.01em;
+  text-transform: none;
 }
 
 .trade-history-detail strong {
   color: #eef3fb;
   font-weight: 500;
+  font-size: 1rem;
+  line-height: 1.25;
 }
 
 .trade-history-trace-note {
   line-height: 1.45;
+}
+
+.trade-history-composite-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.62rem;
+}
+
+.trade-history-composite-grid-secondary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: -0.04rem;
+}
+
+.trade-history-composite-card {
+  display: grid;
+  gap: 0.58rem;
+  padding: 0.72rem 0.78rem;
+  border: 1px solid rgba(95, 108, 128, 0.28);
+  border-radius: 0.95rem;
+  background: rgba(13, 16, 22, 0.44);
+}
+
+.trade-history-composite-stack {
+  display: grid;
+  gap: 0.32rem;
+}
+
+.trade-history-composite-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.48rem;
+  min-width: 0;
+}
+
+.trade-history-composite-line strong {
+  color: #eef3fb;
+  font-weight: 500;
+  font-size: 0.8rem;
+  line-height: 1.22;
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.trade-history-composite-line .trade-history-detail-label {
+  font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 .trade-history-toolbar {
@@ -3571,6 +3636,8 @@ body.logs-page-active .logs-page-panel .log-box {
   .office-runtime-toolbar {
     margin-left: 0;
     justify-content: stretch;
+    justify-self: stretch;
+    width: 100%;
   }
 
   .office-idle-actions {
@@ -3580,29 +3647,36 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .trade-suggest-toolbar {
     display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     justify-self: stretch;
     justify-items: stretch;
     gap: 0.45rem;
     width: 100%;
   }
 
-  .trade-suggest-actions {
+  .trade-suggest-toolbar > .dialog-user-btn {
     width: 100%;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    justify-content: stretch;
+    min-width: 0;
   }
 
-  .office-idle-actions > .trade-suggest-toolbar {
+  .trade-suggest-toggle {
+    grid-column: 1 / -1;
     order: 1;
   }
 
-  .office-idle-actions > .office-runtime-toolbar {
+  .trade-suggest-action-buy {
     order: 2;
   }
 
-  .trade-suggest-toolbar > .dialog-user-btn,
-  .trade-suggest-actions > * {
+  .trade-suggest-action-sell {
+    order: 3;
+  }
+
+  .trade-suggest-action {
+    min-width: 0;
+  }
+
+  .office-runtime-toolbar > .dialog-user-btn {
     width: 100%;
   }
 
@@ -3653,6 +3727,28 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .trade-history-nav-button:last-of-type {
     grid-area: earlier;
+  }
+
+  .trade-history-primary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trade-history-composite-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trade-history-composite-grid-secondary {
+    grid-template-columns: 1fr;
+    margin-top: 0;
+  }
+
+  .trade-history-composite-line {
+    align-items: flex-start;
+  }
+
+  .trade-history-composite-line strong {
+    font-size: 0.78rem;
+    text-align: left;
   }
 
   .config-toolbar {

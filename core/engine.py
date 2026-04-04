@@ -333,8 +333,6 @@ _TRANSIENT_POSITION_FIELDS = {
     "unrealized_pnl",
     "unrealized_pnl_pct",
     "position_notional",
-    "margin_used",
-    "roi_pct",
     "distance_to_sl_pct",
     "distance_to_tp_pct",
     "updated_at",
@@ -1900,6 +1898,10 @@ def build_exit_trade(
         "exit_reason": decision.reason,
         "net_pnl": decision.net_pnl,
     }
+    if decision.margin_used is not None:
+        trade["margin_used"] = decision.margin_used
+        if decision.margin_used > 0:
+            trade["roi_pct"] = (decision.net_pnl / decision.margin_used) * 100.0
     if decision.gross_pnl is not None:
         trade["gross_pnl"] = decision.gross_pnl
     if decision.fee_total is not None:

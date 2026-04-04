@@ -101,6 +101,8 @@ type TradeHistoryItem = {
   side: PositionSide;
   size: number | null;
   entry: number | null;
+  margin_used?: number | null;
+  roi_pct?: number | null;
   sl: number | null;
   tp: number | null;
   liq_price?: number | null;
@@ -781,7 +783,28 @@ function buildTradeOpenTrace(trade: TradeHistoryItem): string {
   return `${parts.join(" ")}.`;
 }
 
-function buildTradeCloseTrace(trade: TradeHistoryItem): string {
+function buildTradeRoiTrace(roiPct: number | null): string | null {
+  if (roiPct === null || !Number.isFinite(roiPct)) {
+    return null;
+  }
+  if (roiPct > 0) {
+    return `with ${formatUnsignedPercent(roiPct)} gain`;
+  }
+  if (roiPct < 0) {
+    return `with ${formatUnsignedPercent(Math.abs(roiPct))} loss`;
+  }
+  return "at break-even";
+}
+
+function appendTradeOutcomeTrace(base: string, roiPct: number | null): string {
+  const roiTrace = buildTradeRoiTrace(roiPct);
+  if (!roiTrace) {
+    return base;
+  }
+  return `${base} ${roiTrace}.`;
+}
+
+function buildTradeCloseTrace(trade: TradeHistoryItem, roiPct: number | null): string {
   const exitReason = trade.exit_reason ?? "";
   const exitRsiTrace = formatTraceNumber(trade.exit_rsi);
   const exitThresholdTrace = formatTraceNumber(trade.exit_threshold);
@@ -791,34 +814,34 @@ function buildTradeCloseTrace(trade: TradeHistoryItem): string {
   }
 
   if (exitReason === "manual_close") {
-    return "Closed by your request.";
+    return appendTradeOutcomeTrace("Closed by your request", roiPct);
   }
   if (exitReason === "liquidation") {
-    return "Closed by liquidation.";
+    return appendTradeOutcomeTrace("Closed by liquidation", roiPct);
   }
   if (exitReason === "stop_loss") {
-    return "Closed by the Safety Net.";
+    return appendTradeOutcomeTrace("Closed by the Safety Net", roiPct);
   }
   if (exitReason === "take_profit" && trade.via_tail_guard) {
-    return "Closed under Tail Guard after profit lock-in.";
+    return appendTradeOutcomeTrace("Closed under Tail Guard after lock-in", roiPct);
   }
   if (exitReason === "take_profit") {
-    return "Closed by the Treasure Mark.";
+    return appendTradeOutcomeTrace("Closed by the Treasure Mark", roiPct);
   }
   if (exitReason === "rsi_extreme") {
     if (exitRsiTrace && exitThresholdTrace) {
-      return `Closed on RSI extreme: ${exitRsiTrace} against ${exitThresholdTrace}.`;
+      return appendTradeOutcomeTrace(`Closed on RSI extreme: ${exitRsiTrace} against ${exitThresholdTrace}`, roiPct);
     }
     if (exitRsiTrace) {
-      return `Closed on RSI extreme at ${exitRsiTrace}.`;
+      return appendTradeOutcomeTrace(`Closed on RSI extreme at ${exitRsiTrace}`, roiPct);
     }
-    return "Closed on RSI extreme.";
+    return appendTradeOutcomeTrace("Closed on RSI extreme", roiPct);
   }
-  return `Closed by ${formatExitReason(trade.exit_reason).toLowerCase()}.`;
+  return appendTradeOutcomeTrace(`Closed by ${formatExitReason(trade.exit_reason).toLowerCase()}`, roiPct);
 }
 
-function buildTradeNarration(trade: TradeHistoryItem): string {
-  return `${buildTradeOpenTrace(trade)} ${buildTradeCloseTrace(trade)}`.replace(/\s+/g, " ").trim();
+function buildTradeNarration(trade: TradeHistoryItem, roiPct: number | null): string {
+  return `${buildTradeOpenTrace(trade)} ${buildTradeCloseTrace(trade, roiPct)}`.replace(/\s+/g, " ").trim();
 }
 
 function formatDateTimeEuCompact(value: unknown, fallback = "N/A"): string {
@@ -1651,71 +1674,6 @@ function DashboardContent(): JSX.Element {
                 </span>
               </div>
             </div>
-            <div className="status-performance-strip" aria-live="polite">
-              <div className="status-performance-head">
-                <span className="status-performance-title">Performance</span>
-                <div className="status-performance-window-toggle" role="tablist" aria-label="Performance window">
-                  {PERFORMANCE_WINDOWS.map((windowOption) => (
-                    <button
-                      key={windowOption.key}
-                      type="button"
-                      className={`status-performance-window-btn${performanceWindow === windowOption.key ? " active" : ""}`}
-                      onClick={() => {
-                        setTradeHistoryPage(0);
-                        setPerformanceWindow(windowOption.key);
-                      }}
-                      aria-pressed={performanceWindow === windowOption.key}
-                    >
-                      {windowOption.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {performanceSummaryError ? (
-                <p className="status-performance-note status-performance-note-error">{performanceSummaryError}</p>
-              ) : performanceSummaryLoading && !performanceSummary ? (
-                <p className="status-performance-note">Reading the ledger for {selectedPerformanceWindow.proseLabel}...</p>
-              ) : performanceClosedTrades <= 0 ? (
-                <p className="status-performance-note">
-                  No closed trades recorded for {selectedPerformanceWindow.proseLabel}.
-                </p>
-              ) : (
-                <div className="status-performance-metrics">
-                  <div className="status-performance-metric">
-                    <span className="status-performance-metric-label">Result</span>
-                    <span
-                      className={`status-performance-metric-value ${
-                        typeof performanceNetPnl === "number" && performanceNetPnl > 0
-                          ? "value-positive"
-                          : typeof performanceNetPnl === "number" && performanceNetPnl < 0
-                            ? "value-negative"
-                            : "value-neutral"
-                      }`}
-                    >
-                      {formatSignedUsdCompact(performanceNetPnl)}
-                    </span>
-                  </div>
-                  <div className="status-performance-metric">
-                    <span className="status-performance-metric-label">Closed Trades</span>
-                    <span className="status-performance-metric-value status-performance-metric-value-closed-trades">
-                      {formatNumberValue(performanceClosedTrades, {
-                        minimumFractionDigits: 0,
-                        maximumFractionDigits: 0
-                      })}
-                    </span>
-                  </div>
-                  <div className="status-performance-metric">
-                    <span className="status-performance-metric-label">Success Rate</span>
-                    <span
-                      className="status-performance-metric-value status-performance-metric-value-success-rate"
-                      style={{ color: successRateColor(performanceWinRate) }}
-                    >
-                      {formatUnsignedPercent(performanceWinRate)}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
             <p className="status-helper">
               <span className="status-helper-primary">
                 Ticker: <span className="status-helper-value">{displayValue(data.symbol)}</span>
@@ -2033,45 +1991,12 @@ function DashboardContent(): JSX.Element {
             </details>
             {!hasOpenPosition ? (
               <div className="office-idle-actions">
-                <div className="toolbar office-runtime-toolbar">
-                  {!tradingEnabled ? (
-                    <button
-                      type="button"
-                      className="dialog-user-btn"
-                      onClick={() =>
-                        void runControlAction("start", {
-                          confirmMessage: "Open the trading floor now?"
-                        })
-                      }
-                      disabled={busyAction !== null}
-                    >
-                      Open for Business
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="dialog-user-btn"
-                      onClick={() => void runCloseFloorFlow()}
-                      disabled={busyAction !== null}
-                    >
-                      Close the Floor
-                    </button>
-                  )}
-                </div>
                 <div className="toolbar trade-suggest-toolbar trade-suggest-toolbar-idle">
-                  <button
-                    type="button"
-                    className="dialog-user-btn"
-                    onClick={() => setShowTradeSuggestions((prev) => !prev)}
-                    disabled={busyAction !== null}
-                  >
-                    Suggest a Trade
-                  </button>
                   {showTradeSuggestions ? (
-                    <div className="trade-suggest-actions">
+                    <>
                       <button
                         type="button"
-                        className="dialog-user-btn button-success"
+                        className="dialog-user-btn button-success trade-suggest-action trade-suggest-action-buy"
                         onClick={() => void runSuggestedTrade("buy")}
                         disabled={busyAction !== null}
                       >
@@ -2079,20 +2004,130 @@ function DashboardContent(): JSX.Element {
                       </button>
                       <button
                         type="button"
-                        className="dialog-user-btn button-danger"
+                        className="dialog-user-btn trade-suggest-toggle"
+                        onClick={() => setShowTradeSuggestions((prev) => !prev)}
+                        disabled={busyAction !== null}
+                      >
+                        Suggest a Trade
+                      </button>
+                      <button
+                        type="button"
+                        className="dialog-user-btn button-danger trade-suggest-action trade-suggest-action-sell"
                         onClick={() => void runSuggestedTrade("sell")}
                         disabled={busyAction !== null}
                       >
                         Sell
                       </button>
-                    </div>
-                  ) : null}
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="dialog-user-btn trade-suggest-toggle"
+                      onClick={() => setShowTradeSuggestions((prev) => !prev)}
+                      disabled={busyAction !== null}
+                    >
+                      Suggest a Trade
+                    </button>
+                  )}
                 </div>
               </div>
             ) : null}
 
             {hasOpenPosition ? (
               <div className="toolbar office-runtime-toolbar office-runtime-toolbar-open">
+                {!tradingEnabled ? (
+                  <button
+                    type="button"
+                    className="dialog-user-btn"
+                    onClick={() =>
+                      void runControlAction("start", {
+                        confirmMessage: "Open the trading floor now?"
+                      })
+                    }
+                    disabled={busyAction !== null}
+                  >
+                    Open for Business
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="dialog-user-btn"
+                    onClick={() => void runCloseFloorFlow()}
+                    disabled={busyAction !== null}
+                  >
+                    Close the Floor
+                  </button>
+                )}
+              </div>
+            ) : null}
+
+            <div className="status-performance-strip" aria-live="polite">
+              <div className="status-performance-head">
+                <span className="status-performance-title">Performance</span>
+                <div className="status-performance-window-toggle" role="tablist" aria-label="Performance window">
+                  {PERFORMANCE_WINDOWS.map((windowOption) => (
+                    <button
+                      key={windowOption.key}
+                      type="button"
+                      className={`status-performance-window-btn${performanceWindow === windowOption.key ? " active" : ""}`}
+                      onClick={() => {
+                        setTradeHistoryPage(0);
+                        setPerformanceWindow(windowOption.key);
+                      }}
+                      aria-pressed={performanceWindow === windowOption.key}
+                    >
+                      {windowOption.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {performanceSummaryError ? (
+                <p className="status-performance-note status-performance-note-error">{performanceSummaryError}</p>
+              ) : performanceSummaryLoading && !performanceSummary ? (
+                <p className="status-performance-note">Reading the ledger for {selectedPerformanceWindow.proseLabel}...</p>
+              ) : performanceClosedTrades <= 0 ? (
+                <p className="status-performance-note">
+                  No closed trades recorded for {selectedPerformanceWindow.proseLabel}.
+                </p>
+              ) : (
+                <div className="status-performance-metrics">
+                  <div className="status-performance-metric">
+                    <span className="status-performance-metric-label">Result</span>
+                    <span
+                      className={`status-performance-metric-value ${
+                        typeof performanceNetPnl === "number" && performanceNetPnl > 0
+                          ? "value-positive"
+                          : typeof performanceNetPnl === "number" && performanceNetPnl < 0
+                            ? "value-negative"
+                            : "value-neutral"
+                      }`}
+                    >
+                      {formatSignedUsdCompact(performanceNetPnl)}
+                    </span>
+                  </div>
+                  <div className="status-performance-metric">
+                    <span className="status-performance-metric-label">Closed Trades</span>
+                    <span className="status-performance-metric-value status-performance-metric-value-closed-trades">
+                      {formatNumberValue(performanceClosedTrades, {
+                        minimumFractionDigits: 0,
+                        maximumFractionDigits: 0
+                      })}
+                    </span>
+                  </div>
+                  <div className="status-performance-metric">
+                    <span className="status-performance-metric-label">Success Rate</span>
+                    <span
+                      className="status-performance-metric-value status-performance-metric-value-success-rate"
+                      style={{ color: successRateColor(performanceWinRate) }}
+                    >
+                      {formatUnsignedPercent(performanceWinRate)}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+            {!hasOpenPosition ? (
+              <div className="toolbar office-runtime-toolbar office-runtime-toolbar-idle-footer">
                 {!tradingEnabled ? (
                   <button
                     type="button"
@@ -2141,6 +2176,29 @@ function DashboardContent(): JSX.Element {
                     trade.exit_time ?? trade.entry_time ?? trade.time ?? null
                   );
                   const durationLabel = formatTradeDuration(trade.entry_time ?? trade.time ?? null, trade.exit_time);
+                  const leverageValue =
+                    typeof data?.leverage === "number" && Number.isFinite(data.leverage) && data.leverage > 0
+                      ? data.leverage
+                      : null;
+                  const tradeMarginUsed =
+                    typeof trade.margin_used === "number" && Number.isFinite(trade.margin_used)
+                      ? trade.margin_used
+                      : leverageValue !== null &&
+                          typeof trade.entry === "number" &&
+                          Number.isFinite(trade.entry) &&
+                          typeof trade.size === "number" &&
+                          Number.isFinite(trade.size)
+                        ? Math.abs(trade.entry * trade.size) / leverageValue
+                        : null;
+                  const tradeRoiPct =
+                    typeof trade.roi_pct === "number" && Number.isFinite(trade.roi_pct)
+                      ? trade.roi_pct
+                      : tradeMarginUsed !== null &&
+                          tradeMarginUsed > 0 &&
+                          typeof trade.net_pnl === "number" &&
+                          Number.isFinite(trade.net_pnl)
+                        ? (trade.net_pnl / tradeMarginUsed) * 100
+                        : null;
 
                   return (
                     <details
@@ -2163,58 +2221,60 @@ function DashboardContent(): JSX.Element {
                         <span className={tradeHistoryPnlPillClass(trade.net_pnl)}>{formatSignedUsd(trade.net_pnl)}</span>
                       </summary>
                       <div className="trade-history-body">
-                        <p className="dialog-scrooge trade-history-trace-note">{buildTradeNarration(trade)}</p>
-                        <div className="trade-history-detail-grid">
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Entry</span>
-                            <strong>{formatPrice(trade.entry)}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Exit</span>
-                            <strong>{formatPrice(trade.exit)}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Opened</span>
-                            <strong>{formatDateTimeEu(trade.entry_time ?? trade.time ?? null)}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Closed</span>
-                            <strong>{summaryTime}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Duration</span>
-                            <strong>{durationLabel}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Size</span>
-                            <strong>{formatAssetAmount(trade.size, data?.symbol)}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Fee</span>
-                            <strong>{formatUsd(trade.fee)}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Exit Reason</span>
-                            <strong>{formatExitReason(trade.exit_reason)}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Safety Net</span>
-                            <strong>{formatPrice(trade.sl)}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Treasure Mark</span>
-                            <strong>{formatPrice(trade.tp)}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Tail Guard</span>
-                            <strong>{trade.trail_active ? "Armed" : "Off"}</strong>
-                          </div>
-                          <div className="trade-history-detail">
-                            <span className="trade-history-detail-label">Outcome</span>
-                            <strong className={isPositive ? "value-positive" : isNegative ? "value-negative" : "value-neutral"}>
-                              {formatSignedUsd(trade.net_pnl)}
-                            </strong>
-                          </div>
+                        <p className="dialog-scrooge trade-history-trace-note">{buildTradeNarration(trade, tradeRoiPct)}</p>
+                        <div className="trade-history-composite-grid">
+                          <section className="trade-history-composite-card">
+                            <div className="trade-history-composite-line">
+                              <span className="trade-history-detail-label">Entry</span>
+                              <strong>{formatPrice(trade.entry)}</strong>
+                            </div>
+                            <div className="trade-history-composite-line">
+                              <span className="trade-history-detail-label">Exit</span>
+                              <strong>{formatPrice(trade.exit)}</strong>
+                            </div>
+                          </section>
+                          <section className="trade-history-composite-card">
+                            <div className="trade-history-composite-line">
+                              <span className="trade-history-detail-label">Opened</span>
+                              <strong>{formatDateTimeEu(trade.entry_time ?? trade.time ?? null)}</strong>
+                            </div>
+                            <div className="trade-history-composite-line">
+                              <span className="trade-history-detail-label">Closed</span>
+                              <strong>{summaryTime}</strong>
+                            </div>
+                            <div className="trade-history-composite-line">
+                              <span className="trade-history-detail-label">Duration</span>
+                              <strong>{durationLabel}</strong>
+                            </div>
+                          </section>
+                        </div>
+                        <div className="trade-history-composite-grid trade-history-composite-grid-secondary">
+                          <section className="trade-history-composite-card">
+                            <div className="trade-history-composite-stack">
+                              <div className="trade-history-composite-line">
+                                <span className="trade-history-detail-label">Size</span>
+                                <strong>{formatAssetAmount(trade.size, data?.symbol)}</strong>
+                              </div>
+                              <div className="trade-history-composite-line">
+                                <span className="trade-history-detail-label">Margin Used</span>
+                                <strong>{formatUsd(tradeMarginUsed)}</strong>
+                              </div>
+                              <div className="trade-history-composite-line">
+                                <span className="trade-history-detail-label">Fee</span>
+                                <strong>{formatUsd(trade.fee)}</strong>
+                              </div>
+                            </div>
+                          </section>
+                          <section className="trade-history-composite-card">
+                            <div className="trade-history-composite-line">
+                              <span className="trade-history-detail-label">Safety Net</span>
+                              <strong>{formatPrice(trade.sl)}</strong>
+                            </div>
+                            <div className="trade-history-composite-line">
+                              <span className="trade-history-detail-label">Treasure Mark</span>
+                              <strong>{formatPrice(trade.tp)}</strong>
+                            </div>
+                          </section>
                         </div>
                       </div>
                     </details>
