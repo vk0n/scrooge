@@ -349,9 +349,16 @@ function buildCurrentLevelShapes(
 function buildLiveDecisionBadge(
   currentPrice: number | null,
   chartData?: ChartPayload | null,
-  compact = false
+  compact = false,
+  currentPricePaper: number | null = null
 ): { shapes: Array<Record<string, unknown>>; annotations: Array<Record<string, unknown>> } {
-  if (typeof currentPrice !== "number" || !Number.isFinite(currentPrice) || !chartData) {
+  if (
+    typeof currentPrice !== "number" ||
+    !Number.isFinite(currentPrice) ||
+    !chartData ||
+    typeof currentPricePaper !== "number" ||
+    !Number.isFinite(currentPricePaper)
+  ) {
     return { shapes: [], annotations: [] };
   }
 
@@ -402,105 +409,82 @@ function buildLiveDecisionBadge(
     { label: compact ? "E" : "EMA", ok: emaOk },
     { label: compact ? "R" : "RSI", ok: rsiOk },
   ];
-
-  const xStart = compact ? 0.012 : 0.016;
-  const sectionWidth = compact ? 0.07 : 0.047;
-  const halfHeight = Math.max(compact ? 58 : 64, currentPrice * (compact ? 0.00108 : 0.00118));
-  const badgeY0 = currentPrice - halfHeight;
-  const badgeY1 = currentPrice + halfHeight;
-  const badgeWidth = sections.length * sectionWidth;
-  const badgeX1 = xStart + badgeWidth;
-  const shapes: Array<Record<string, unknown>> = [];
-  const annotations: Array<Record<string, unknown>> = [];
-
-  shapes.push({
-    type: "rect",
-    xref: "paper",
-    yref: "y",
-    x0: xStart,
-    x1: badgeX1,
-    y0: badgeY0,
-    y1: badgeY1,
-    line: {
-      color: "#f4f8fc",
-      width: 1,
-    },
-    fillcolor: "rgba(15, 21, 32, 0.96)",
-    layer: "above",
-  });
-
-  sections.forEach((section, index) => {
+  const xStart = compact ? 0.03 : 0.032;
+  const sectionWidth = compact ? 0.030 : 0.034;
+  const totalWidth = sectionWidth * sections.length;
+  const halfHeight = compact ? 0.028 : 0.022;
+  const yCenter = Math.max(halfHeight + 0.01, Math.min(1 - halfHeight - 0.01, currentPricePaper));
+  const y0 = yCenter - halfHeight;
+  const y1 = yCenter + halfHeight;
+  const sectionShapes = sections.map((section, index) => {
     const x0 = xStart + index * sectionWidth;
     const x1 = x0 + sectionWidth;
-    shapes.push({
+    return {
       type: "rect",
       xref: "paper",
-      yref: "y",
+      yref: "paper",
       x0,
       x1,
-      y0: badgeY0,
-      y1: badgeY1,
+      y0,
+      y1,
       line: {
-        color: "rgba(0, 0, 0, 0)",
-        width: 0,
+        color: "rgba(244, 248, 252, 0.95)",
+        width: 1,
       },
-      fillcolor: section.ok ? "rgba(132, 204, 22, 0.54)" : "rgba(239, 68, 68, 0.42)",
+      fillcolor: section.ok ? "rgba(132, 204, 22, 0.62)" : "rgba(220, 68, 68, 0.48)",
       layer: "above",
-    });
+    };
+  });
+  const sectionAnnotations = sections.map((section, index) => ({
+    xref: "paper",
+    yref: "paper",
+    x: xStart + index * sectionWidth + sectionWidth / 2,
+    y: yCenter,
+    xanchor: "center",
+    yanchor: "middle",
+    text: section.label,
+    showarrow: false,
+    font: {
+      color: "#f8fafc",
+      size: compact ? 9 : 10,
+      family: "var(--font-geist-mono), monospace",
+    },
+    bgcolor: "rgba(0,0,0,0)",
+    bordercolor: "rgba(0,0,0,0)",
+    borderwidth: 0,
+  }));
 
-    if (index > 0) {
-      shapes.push({
-        type: "line",
+  return {
+    shapes: [
+      {
+        type: "rect",
         xref: "paper",
-        yref: "y",
-        x0,
-        x1: x0,
-        y0: badgeY0,
-        y1: badgeY1,
+        yref: "paper",
+        x0: xStart,
+        x1: xStart + totalWidth,
+        y0,
+        y1,
         line: {
-          color: "#f4f8fc",
+          color: "rgba(244, 248, 252, 0.95)",
           width: 1,
         },
+        fillcolor: "rgba(15, 21, 32, 0.96)",
         layer: "above",
-      });
-    }
-
-    annotations.push({
-      xref: "paper",
-      yref: "y",
-      x: x0 + sectionWidth / 2,
-      y: currentPrice,
-      xanchor: "center",
-      yanchor: "middle",
-      text: section.label,
-      showarrow: false,
-      font: {
-        color: "#f8fafc",
-        size: compact ? 9 : 10,
-        family: "var(--font-geist-mono), monospace",
       },
-      bgcolor: "rgba(0,0,0,0)",
-      bordercolor: "rgba(0,0,0,0)",
-      borderpad: 0,
-      align: "center",
-    });
-  });
-
-  return { shapes, annotations };
+      ...sectionShapes,
+    ],
+    annotations: sectionAnnotations,
+  };
 }
 
 function buildLivePriceAnnotations(
   currentPrice: number | null,
   openTrade: LiveOpenTradeInfo | null | undefined,
-  chartData?: ChartPayload | null,
-  compact = false
+  _chartData?: ChartPayload | null,
+  _compact = false
 ): Array<Record<string, unknown>> {
   if (typeof currentPrice !== "number" || !Number.isFinite(currentPrice)) {
     return [];
-  }
-
-  if (!openTrade && chartData) {
-    return buildLiveDecisionBadge(currentPrice, chartData, compact).annotations;
   }
 
   if (!openTrade) {
@@ -1438,7 +1422,23 @@ function ChartContent(): JSX.Element {
       const overlayPrice = resolveOverlayPrice(data, liveCurrentPrice);
       const liveOpenTrade = liveSymbolMatchesChart ? liveStatus?.open_trade_info ?? null : null;
       const priceTone = resolveLivePriceTone(liveOpenTrade?.unrealized_pnl);
-      const decisionBadge = !liveOpenTrade ? buildLiveDecisionBadge(overlayPrice, data, compactChartUi) : { shapes: [], annotations: [] };
+      const plotNode = priceChartRef.current as HTMLDivElement & {
+        _fullLayout?: { yaxis?: { range?: [number, number] } };
+      };
+      const yRange = plotNode._fullLayout?.yaxis?.range;
+      const currentPricePaper =
+        typeof overlayPrice === "number" &&
+        Number.isFinite(overlayPrice) &&
+        Array.isArray(yRange) &&
+        yRange.length === 2 &&
+        Number.isFinite(yRange[0]) &&
+        Number.isFinite(yRange[1]) &&
+        yRange[1] !== yRange[0]
+          ? (overlayPrice - yRange[0]) / (yRange[1] - yRange[0])
+          : null;
+      const decisionBadge = !liveOpenTrade
+        ? buildLiveDecisionBadge(overlayPrice, data, compactChartUi, currentPricePaper)
+        : { shapes: [], annotations: [] };
       const priceShapes = [
         ...buildCurrentLevelShapes(
         resolveLiveLevels(data, liveStatus) ?? data.current_levels,
@@ -1450,7 +1450,7 @@ function ChartContent(): JSX.Element {
       const priceAnnotations = buildLivePriceAnnotations(overlayPrice, liveOpenTrade, data, compactChartUi);
       await Plotly.relayout(priceChartRef.current, {
         shapes: priceShapes,
-        annotations: priceAnnotations,
+        annotations: [...decisionBadge.annotations, ...priceAnnotations],
       });
     };
 

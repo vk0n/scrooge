@@ -527,6 +527,7 @@ def _fetch_candles(
         interval=interval,
         end_ms=end_ms,
     )
+    dataset_is_stale = False
     if dataset_candles:
         if end_ms is None:
             interval_ms = _parse_interval_to_ms(interval)
@@ -535,11 +536,12 @@ def _fetch_candles(
             now_ms = int(datetime.now(UTC).timestamp() * 1000)
             if (now_ms - dataset_last_ts_ms) <= stale_after_ms:
                 return dataset_candles, dataset_warnings, "dataset", interval
+            dataset_is_stale = True
         else:
             return dataset_candles, dataset_warnings, "dataset", interval
 
     warnings = list(dataset_warnings)
-    if dataset_candles and end_ms is None:
+    if dataset_is_stale and end_ms is None:
         warnings.append("Dataset candles look stale for live view; falling back to Binance candles.")
     else:
         warnings.append("Falling back to Binance candles.")
@@ -556,6 +558,9 @@ def _fetch_candles(
         end_ms=end_ms,
     )
     warnings.extend(binance_warnings)
+    if not binance_candles and dataset_candles:
+        warnings.append("Binance candles unavailable; using stale dataset candles instead.")
+        return dataset_candles, warnings, "dataset", interval
     return binance_candles, warnings, "binance", fallback_interval
 
 
@@ -1265,7 +1270,13 @@ def build_chart_payload(
     range_start_ms = candles[0]["ts_ms"] if candles else None
     range_end_ms = candles[-1]["ts_ms"] if candles else None
 
-    markers = _build_markers(state=state_for_chart, range_start_ms=range_start_ms, range_end_ms=range_end_ms)
+    markers = _build_markers(state=state_for_chart, range_start_ms=range_start_ms, range_end_ms=range_end_ms) if candles else {
+        "entries": [],
+        "exits": [],
+        "stop_loss": [],
+        "take_profit": [],
+        "liquidation": [],
+    }
     open_position = _normalize_open_position(state_for_chart.get("position"))
     current_levels = _build_current_levels(open_position)
     rsi_levels = _build_rsi_levels(config)
