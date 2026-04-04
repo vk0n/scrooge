@@ -2033,34 +2033,6 @@ function DashboardContent(): JSX.Element {
               </div>
             ) : null}
 
-            {hasOpenPosition ? (
-              <div className="toolbar office-runtime-toolbar office-runtime-toolbar-open">
-                {!tradingEnabled ? (
-                  <button
-                    type="button"
-                    className="dialog-user-btn"
-                    onClick={() =>
-                      void runControlAction("start", {
-                        confirmMessage: "Open the trading floor now?"
-                      })
-                    }
-                    disabled={busyAction !== null}
-                  >
-                    Open for Business
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="dialog-user-btn"
-                    onClick={() => void runCloseFloorFlow()}
-                    disabled={busyAction !== null}
-                  >
-                    Close the Floor
-                  </button>
-                )}
-              </div>
-            ) : null}
-
             <div className="status-performance-strip" aria-live="polite">
               <div className="status-performance-head">
                 <span className="status-performance-title">Performance</span>
@@ -2126,33 +2098,35 @@ function DashboardContent(): JSX.Element {
                 </div>
               )}
             </div>
-            {!hasOpenPosition ? (
-              <div className="toolbar office-runtime-toolbar office-runtime-toolbar-idle-footer">
-                {!tradingEnabled ? (
-                  <button
-                    type="button"
-                    className="dialog-user-btn"
-                    onClick={() =>
-                      void runControlAction("start", {
-                        confirmMessage: "Open the trading floor now?"
-                      })
-                    }
-                    disabled={busyAction !== null}
-                  >
-                    Open for Business
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="dialog-user-btn"
-                    onClick={() => void runCloseFloorFlow()}
-                    disabled={busyAction !== null}
-                  >
-                    Close the Floor
-                  </button>
-                )}
-              </div>
-            ) : null}
+            <div
+              className={`toolbar office-runtime-toolbar${
+                hasOpenPosition ? " office-runtime-toolbar-open" : " office-runtime-toolbar-idle-footer"
+              }`}
+            >
+              {!tradingEnabled ? (
+                <button
+                  type="button"
+                  className="dialog-user-btn"
+                  onClick={() =>
+                    void runControlAction("start", {
+                      confirmMessage: "Open the trading floor now?"
+                    })
+                  }
+                  disabled={busyAction !== null}
+                >
+                  Open for Business
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="dialog-user-btn"
+                  onClick={() => void runCloseFloorFlow()}
+                  disabled={busyAction !== null}
+                >
+                  Close the Floor
+                </button>
+              )}
+            </div>
           </div>
           <p className="dialog-scrooge">My previous trades:</p>
           <div className="section-block">
