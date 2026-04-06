@@ -275,6 +275,24 @@ function formatSignedPercent(value: number | null | undefined): string | null {
   return `${sign}${formatted}%`;
 }
 
+function formatChartDecimal(
+  value: number | null | undefined,
+  options?: {
+    minimumFractionDigits?: number;
+    maximumFractionDigits?: number;
+    prefix?: string;
+  }
+): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  const formatted = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: options?.minimumFractionDigits ?? 2,
+    maximumFractionDigits: options?.maximumFractionDigits ?? 2,
+  }).format(value);
+  return `${options?.prefix ?? ""}${formatted}`;
+}
+
 function resolveLivePriceTone(unrealizedPnl: number | null | undefined): "neutral" | "positive" | "negative" {
   if (typeof unrealizedPnl !== "number" || !Number.isFinite(unrealizedPnl) || unrealizedPnl === 0) {
     return "neutral";
@@ -732,15 +750,10 @@ function buildPriceLegendItems(
     return [];
   }
 
-  const items: ChartLegendItem[] = [{ key: "price", label: "Price", swatchClassName: "chart-legend-swatch-price" }];
-
-  const hasOpenPosition =
-    data.open_position?.entry !== null && data.open_position?.entry !== undefined && Boolean(data.open_position?.time);
-  const hasTradeEntryMarkers = Array.isArray(data.markers?.entries) && data.markers.entries.length > 0;
-
-  if (hasOpenPosition || hasTradeEntryMarkers) {
-    items.push({ key: "open-trade", label: "Trade Entries", swatchClassName: "chart-legend-swatch-open-trade" });
-  }
+  const items: ChartLegendItem[] = [
+    { key: "price", label: "Price", swatchClassName: "chart-legend-swatch-price" },
+    { key: "open-trade", label: "Trade Entries", swatchClassName: "chart-legend-swatch-open-trade" },
+  ];
 
   if (includeIndicators && data.indicators?.ema?.length) {
     const emaPeriod = data.indicator_spec?.ema?.period ?? 50;
@@ -789,6 +802,22 @@ function ChartContent(): JSX.Element {
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const priceLegendItems = buildPriceLegendItems(data, includeIndicators);
+  const chartSymbol = data?.symbol?.trim().toUpperCase() ?? symbol.trim().toUpperCase();
+  const liveSymbolMatchesChart =
+    !!liveStatus?.symbol && liveStatus.symbol.trim().toUpperCase() === chartSymbol;
+  const latestPriceValue =
+    liveSymbolMatchesChart && typeof liveStatus?.last_price === "number" && Number.isFinite(liveStatus.last_price)
+      ? liveStatus.last_price
+      : data?.candles?.[data.candles.length - 1]?.close ?? null;
+  const latestEquityValue = data?.equity_curve?.[data.equity_curve.length - 1]?.balance ?? null;
+  const latestRsiValue = findLatestIndicatorValue(data?.indicators?.rsi);
+  const rsiPeriod = data?.indicator_spec?.rsi?.period ?? 11;
+  const rsiInterval = data?.indicator_spec?.rsi?.interval;
+  const rsiTitle = includeIndicators && data?.indicators?.rsi?.length
+    ? rsiInterval
+      ? `RSI (${rsiPeriod}, ${rsiInterval})`
+      : `RSI (${rsiPeriod})`
+    : "RSI";
 
   async function ensurePlotly(): Promise<any> {
     if (plotlyRef.current) {
@@ -1642,15 +1671,20 @@ function ChartContent(): JSX.Element {
           <header className="chart-panel-head">
             <div className="chart-panel-title-wrap">
               <h3 className="chart-panel-title">{data?.symbol ?? symbol} Price</h3>
+              {formatChartDecimal(latestPriceValue) ? (
+                <span className="chart-panel-title-value">{formatChartDecimal(latestPriceValue)}</span>
+              ) : null}
             </div>
             {priceLegendItems.length ? (
-              <div className="chart-panel-legend" aria-label="Price chart legend">
-                {priceLegendItems.map((item) => (
-                  <span key={item.key} className="chart-legend-item">
-                    <span className={`chart-legend-swatch ${item.swatchClassName}`} aria-hidden="true" />
-                    <span className="chart-legend-label">{item.label}</span>
-                  </span>
-                ))}
+              <div className="chart-panel-legend-wrap">
+                <div className="chart-panel-legend" aria-label="Price chart legend">
+                  {priceLegendItems.map((item) => (
+                    <span key={item.key} className="chart-legend-item">
+                      <span className={`chart-legend-swatch ${item.swatchClassName}`} aria-hidden="true" />
+                      <span className="chart-legend-label">{item.label}</span>
+                    </span>
+                  ))}
+                </div>
               </div>
             ) : null}
           </header>
@@ -1658,21 +1692,25 @@ function ChartContent(): JSX.Element {
         </section>
         <section className="chart-panel">
           <header className="chart-panel-head chart-panel-head-simple">
-            <h3 className="chart-panel-title">Equity Curve</h3>
+            <div className="chart-panel-title-wrap">
+              <h3 className="chart-panel-title">Equity Curve</h3>
+              {formatChartDecimal(latestEquityValue, { prefix: "$" }) ? (
+                <span className="chart-panel-title-value">
+                  {formatChartDecimal(latestEquityValue, { prefix: "$" })}
+                </span>
+              ) : null}
+            </div>
           </header>
           <div ref={equityChartRef} className="chart-surface chart-surface-md" />
         </section>
         <section className="chart-panel">
           <header className="chart-panel-head chart-panel-head-simple">
-            <h3 className="chart-panel-title">
-              {includeIndicators && data?.indicators?.rsi?.length
-                ? (() => {
-                    const rsiPeriod = data.indicator_spec?.rsi?.period ?? 11;
-                    const rsiInterval = data.indicator_spec?.rsi?.interval;
-                    return rsiInterval ? `RSI (${rsiPeriod}, ${rsiInterval})` : `RSI (${rsiPeriod})`;
-                  })()
-                : "RSI"}
-            </h3>
+            <div className="chart-panel-title-wrap">
+              <h3 className="chart-panel-title">{rsiTitle}</h3>
+              {formatChartDecimal(latestRsiValue) ? (
+                <span className="chart-panel-title-value">{formatChartDecimal(latestRsiValue)}</span>
+              ) : null}
+            </div>
           </header>
           <div ref={rsiChartRef} className="chart-surface chart-surface-sm" />
         </section>

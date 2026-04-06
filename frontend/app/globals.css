@@ -1507,6 +1507,10 @@ pre {
 }
 
 .chart-panel-title-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.32rem 0.5rem;
   min-width: 0;
 }
 
@@ -1515,6 +1519,18 @@ pre {
   color: var(--text);
   font-size: 0.98rem;
   line-height: 1.2;
+}
+
+.chart-panel-title-value {
+  color: #d7e1f0;
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.chart-panel-legend-wrap {
+  display: grid;
+  justify-items: end;
+  min-width: 0;
 }
 
 .chart-panel-legend {
@@ -3532,8 +3548,16 @@ body.logs-page-active .logs-page-panel .log-box {
     align-items: flex-start;
   }
 
+  .chart-panel-title-wrap {
+    gap: 0.18rem 0.38rem;
+  }
+
   .chart-panel-legend {
     justify-content: flex-start;
+  }
+
+  .chart-panel-legend-wrap {
+    justify-items: start;
   }
 
   .chart-view-btn {
@@ -3852,12 +3876,20 @@ body.logs-page-active .logs-page-panel .log-box {
     font-size: 0.9rem;
   }
 
+  .chart-panel-title-value {
+    font-size: 0.84rem;
+  }
+
   .chart-panel-legend {
     gap: 0.28rem 0.5rem;
   }
 
   .chart-legend-item {
     font-size: 0.72rem;
+  }
+
+  .chart-legend-subvalue {
+    font-size: 0.66rem;
   }
 
   .chart-surface-lg {
