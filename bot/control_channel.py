@@ -356,7 +356,6 @@ def process_pending_commands(
                     "requested_at": _now_iso(),
                     "requested_by": str(payload.get("requested_by", "unknown")).strip() or "unknown",
                 }
-                save_state_fn(state)
                 if resumed_for_suggestion:
                     message = (
                         f"{requested_side.capitalize()} suggestion recorded. "
@@ -376,6 +375,9 @@ def process_pending_commands(
                     side="long" if requested_side == "buy" else "short",
                     requested_by=payload.get("requested_by"),
                 )
+                # Publish the queued suggestion to runtime state only after its ledger entry is written,
+                # so the bot cannot consume it and log an opening ahead of the suggestion itself.
+                save_state_fn(state)
             elif action in {"update_sl", "update_tp"}:
                 position = state.get("position")
                 if not isinstance(position, dict):
