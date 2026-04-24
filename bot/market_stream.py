@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from datetime import UTC, datetime
 from typing import Any, Callable
 
@@ -34,13 +35,6 @@ from core.market_events import (
     PositionSnapshotEvent,
 )
 from shared.time_utils import utc_now_text, utc_text_from_timestamp
-
-try:
-    from binance import ThreadedWebsocketManager
-    from binance.enums import FuturesType
-except ImportError:  # pragma: no cover - dependency installed in bot image
-    ThreadedWebsocketManager = None
-    FuturesType = None
 
 try:
     import websocket
@@ -85,8 +79,27 @@ USER_STREAM_RECONNECT_SECONDS = max(
     1.0,
     float(os.getenv("SCROOGE_USER_STREAM_RECONNECT_SECONDS", "5")),
 )
+MARKET_STREAM_RECONNECT_SECONDS = max(
+    1.0,
+    float(os.getenv("SCROOGE_MARKET_STREAM_RECONNECT_SECONDS", "5")),
+)
 FUTURES_REST_BASE_URL = os.getenv("SCROOGE_FUTURES_REST_BASE_URL", "https://fapi.binance.com").rstrip("/")
-FUTURES_WS_BASE_URL = os.getenv("SCROOGE_FUTURES_WS_BASE_URL", "wss://fstream.binance.com/ws").rstrip("/")
+FUTURES_PRIVATE_WS_BASE_URL = os.getenv(
+    "SCROOGE_FUTURES_PRIVATE_WS_BASE_URL",
+    "wss://fstream.binance.com/private",
+).rstrip("/")
+FUTURES_MARKET_WS_STREAM_URL = os.getenv(
+    "SCROOGE_FUTURES_MARKET_WS_STREAM_URL",
+    "wss://fstream.binance.com/market/stream",
+).rstrip("/")
+USER_STREAM_EVENTS = tuple(
+    event.strip()
+    for event in os.getenv(
+        "SCROOGE_USER_STREAM_EVENTS",
+        "ACCOUNT_UPDATE,ORDER_TRADE_UPDATE,listenKeyExpired",
+    ).split(",")
+    if event.strip()
+)
 BINANCE_MAX_KLINE_LIMIT = 1500
 INDICATOR_WARMUP_ROWS = {
     "small": 2,
@@ -317,9 +330,13 @@ class LiveMarketStream:
         self._pending_emit_after_monotonic: float | None = None
         self._last_emitted_small_open_time_ms: int | None = None
 
-        self._twm: ThreadedWebsocketManager | None = None
-        self._market_stream_name: str | None = None
-        self._user_stream_name: str | None = None
+        self._market_socket_app: Any = None
+        self._market_socket_thread: threading.Thread | None = None
+        self._market_stop_event = threading.Event()
+        self._market_stream_connected = False
+        self._last_market_stream_message_monotonic: float | None = None
+        self._last_market_stream_connected_monotonic: float | None = None
+        self._last_market_stream_disconnected_monotonic: float | None = None
         self._user_listen_key: str | None = None
         self._user_socket_app: Any = None
         self._user_socket_thread: threading.Thread | None = None
@@ -413,8 +430,8 @@ class LiveMarketStream:
             technical_logger.info("market_stream_disabled_by_env symbol=%s", self._symbol)
             return False
 
-        if ThreadedWebsocketManager is None or FuturesType is None:
-            technical_logger.warning("market_stream_unavailable reason=python_binance_missing")
+        if websocket is None:
+            technical_logger.warning("market_stream_unavailable reason=websocket_client_missing")
             return False
 
         clear_runtime_account_cache()
@@ -433,35 +450,27 @@ class LiveMarketStream:
             )
         )
 
-        twm = None
         try:
-            twm = ThreadedWebsocketManager(api_key=self._api_key, api_secret=self._api_secret)
-            twm.start()
-            market_stream_name = twm.start_futures_multiplex_socket(
-                callback=self._handle_message,
-                streams=streams,
-                futures_type=FuturesType.USD_M,
-            )
-            user_stream_name = "raw_listen_key_socket" if self._start_user_stream() else None
+            market_stream_started = self._start_market_stream(streams)
+            user_stream_started = self._start_user_stream()
         except Exception as exc:  # noqa: BLE001
             technical_logger.exception("market_stream_start_failed symbol=%s error=%s", self._symbol, exc)
-            if twm is not None:
-                try:
-                    twm.stop()
-                except Exception:  # noqa: BLE001
-                    pass
+            self._stop_market_stream()
+            self._stop_user_stream()
             return False
 
-        self._twm = twm
-        self._market_stream_name = market_stream_name
-        self._user_stream_name = user_stream_name
+        if not market_stream_started:
+            self._stop_market_stream()
+            self._stop_user_stream()
+            return False
+
         self._last_persist_monotonic = None
         self._running = True
         technical_logger.info(
             "market_stream_started symbol=%s streams=%s user_stream=%s persist_interval=%s settle=%s",
             self._symbol,
             ",".join(streams),
-            bool(user_stream_name),
+            bool(user_stream_started),
             MARKET_STREAM_PERSIST_INTERVAL_SECONDS,
             MARKET_STREAM_SETTLE_SECONDS,
         )
@@ -480,35 +489,11 @@ class LiveMarketStream:
         return max(0.0, time.monotonic() - last_message)
 
     def stop(self) -> None:
-        twm = self._twm
-        market_stream_name = self._market_stream_name
-        user_stream_name = self._user_stream_name
         self._running = False
-        self._twm = None
-        self._market_stream_name = None
-        self._user_stream_name = None
         self._last_persist_monotonic = None
-        self._user_stream_connected = False
-        self._last_user_stream_disconnected_monotonic = time.monotonic()
+        self._stop_market_stream()
         self._stop_user_stream()
-
-        if twm is None:
-            return
-
-        try:
-            if market_stream_name:
-                twm.stop_socket(market_stream_name)
-            if user_stream_name:
-                twm.stop_socket(user_stream_name)
-        except Exception as exc:  # noqa: BLE001
-            technical_logger.warning("market_stream_socket_stop_failed symbol=%s error=%s", self._symbol, exc)
-
-        try:
-            twm.stop()
-        except Exception as exc:  # noqa: BLE001
-            technical_logger.warning("market_stream_stop_failed symbol=%s error=%s", self._symbol, exc)
-        else:
-            technical_logger.info("market_stream_stopped symbol=%s", self._symbol)
+        technical_logger.info("market_stream_stopped symbol=%s", self._symbol)
 
     def update_config(
         self,
@@ -782,6 +767,35 @@ class LiveMarketStream:
         self._user_keepalive_thread.start()
         return True
 
+    def _start_market_stream(self, streams: list[str]) -> bool:
+        self._market_stop_event.clear()
+        self._market_socket_thread = threading.Thread(
+            target=self._run_market_socket_loop,
+            args=(tuple(streams),),
+            name=f"scrooge-market-stream-{self._symbol.lower()}",
+            daemon=True,
+        )
+        self._market_socket_thread.start()
+        return True
+
+    def _stop_market_stream(self) -> None:
+        self._market_stop_event.set()
+
+        socket_app = self._market_socket_app
+        self._market_socket_app = None
+        if socket_app is not None:
+            try:
+                socket_app.close()
+            except Exception as exc:  # noqa: BLE001
+                technical_logger.warning("market_stream_socket_close_failed symbol=%s error=%s", self._symbol, exc)
+
+        thread_obj = self._market_socket_thread
+        if thread_obj is not None and thread_obj.is_alive():
+            thread_obj.join(timeout=2.0)
+        self._market_socket_thread = None
+        self._market_stream_connected = False
+        self._last_market_stream_disconnected_monotonic = time.monotonic()
+
     def _stop_user_stream(self) -> None:
         self._user_stop_event.set()
 
@@ -799,11 +813,79 @@ class LiveMarketStream:
 
         self._user_socket_thread = None
         self._user_keepalive_thread = None
+        self._user_stream_connected = False
+        self._last_user_stream_disconnected_monotonic = time.monotonic()
 
         listen_key = self._user_listen_key
         self._user_listen_key = None
         if listen_key:
             self._close_listen_key(listen_key)
+
+    def _run_market_socket_loop(self, streams: tuple[str, ...]) -> None:
+        stream_path = "/".join(streams)
+        ws_url = f"{FUTURES_MARKET_WS_STREAM_URL}?streams={stream_path}"
+
+        while not self._market_stop_event.is_set():
+            socket_app = websocket.WebSocketApp(
+                ws_url,
+                on_open=self._handle_market_socket_open,
+                on_message=self._handle_market_socket_message,
+                on_error=self._handle_market_socket_error,
+                on_close=self._handle_market_socket_close,
+            )
+            self._market_socket_app = socket_app
+
+            try:
+                socket_app.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as exc:  # noqa: BLE001
+                technical_logger.warning("market_stream_run_failed symbol=%s error=%s", self._symbol, exc)
+            finally:
+                self._market_socket_app = None
+
+            if self._market_stop_event.is_set():
+                break
+
+            technical_logger.warning(
+                "market_stream_reconnecting symbol=%s delay=%s",
+                self._symbol,
+                MARKET_STREAM_RECONNECT_SECONDS,
+            )
+            if self._market_stop_event.wait(MARKET_STREAM_RECONNECT_SECONDS):
+                break
+
+    def _handle_market_socket_open(self, ws_app: Any) -> None:  # noqa: ARG002
+        self._market_stream_connected = True
+        self._last_market_stream_connected_monotonic = time.monotonic()
+        technical_logger.info("market_stream_connected symbol=%s", self._symbol)
+
+    def _handle_market_socket_message(self, ws_app: Any, raw_message: Any) -> None:  # noqa: ARG002
+        self._market_stream_connected = True
+        self._last_market_stream_message_monotonic = time.monotonic()
+        try:
+            message = json.loads(raw_message) if isinstance(raw_message, str) else raw_message
+        except json.JSONDecodeError:
+            technical_logger.warning("market_stream_message_invalid_json symbol=%s raw=%s", self._symbol, raw_message)
+            return
+        self._handle_message(message)
+
+    def _handle_market_socket_error(self, ws_app: Any, error: Any) -> None:  # noqa: ARG002
+        if self._market_stop_event.is_set():
+            return
+        self._market_stream_connected = False
+        self._last_market_stream_disconnected_monotonic = time.monotonic()
+        technical_logger.warning("market_stream_socket_error symbol=%s error=%s", self._symbol, error)
+
+    def _handle_market_socket_close(self, ws_app: Any, status_code: Any, message: Any) -> None:  # noqa: ARG002
+        if self._market_stop_event.is_set():
+            return
+        self._market_stream_connected = False
+        self._last_market_stream_disconnected_monotonic = time.monotonic()
+        technical_logger.warning(
+            "market_stream_disconnected symbol=%s status=%s message=%s",
+            self._symbol,
+            status_code,
+            message,
+        )
 
     def _request_listen_key(self, method: str, *, listen_key: str | None = None) -> dict[str, Any] | None:
         url = f"{FUTURES_REST_BASE_URL}/fapi/v1/listenKey"
@@ -886,7 +968,10 @@ class LiveMarketStream:
                     continue
                 self._user_listen_key = listen_key
 
-            ws_url = f"{FUTURES_WS_BASE_URL}/{listen_key}"
+            query_params: dict[str, str] = {"listenKey": listen_key}
+            if USER_STREAM_EVENTS:
+                query_params["events"] = ",".join(USER_STREAM_EVENTS)
+            ws_url = f"{FUTURES_PRIVATE_WS_BASE_URL}/ws?{urllib.parse.urlencode(query_params)}"
             socket_app = websocket.WebSocketApp(
                 ws_url,
                 on_open=self._handle_user_socket_open,
