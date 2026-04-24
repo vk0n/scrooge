@@ -96,7 +96,7 @@ USER_STREAM_EVENTS = tuple(
     event.strip()
     for event in os.getenv(
         "SCROOGE_USER_STREAM_EVENTS",
-        "ACCOUNT_UPDATE,ORDER_TRADE_UPDATE,listenKeyExpired",
+        "ACCOUNT_UPDATE,ORDER_TRADE_UPDATE",
     ).split(",")
     if event.strip()
 )
@@ -970,7 +970,7 @@ class LiveMarketStream:
 
             query_params: dict[str, str] = {"listenKey": listen_key}
             if USER_STREAM_EVENTS:
-                query_params["events"] = ",".join(USER_STREAM_EVENTS)
+                query_params["events"] = "/".join(USER_STREAM_EVENTS)
             ws_url = f"{FUTURES_PRIVATE_WS_BASE_URL}/ws?{urllib.parse.urlencode(query_params)}"
             socket_app = websocket.WebSocketApp(
                 ws_url,
