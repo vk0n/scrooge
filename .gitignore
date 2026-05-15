@@ -106,6 +106,7 @@ data/
 data_*
 best_params*
 optimization_results.csv
+ROADMAP.md
 runtime/*
 !runtime/.gitkeep
 backtest_artifacts/

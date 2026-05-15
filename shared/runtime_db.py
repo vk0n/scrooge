@@ -12,8 +12,8 @@ from typing import Any, Iterator
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 1
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Initial DB-first runtime schema"
+RUNTIME_DB_SCHEMA_VERSION = 2
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Portfolio ledger schema"
 
 
 class RuntimeDbError(OSError):
@@ -167,6 +167,41 @@ def _ui_log_record(ts: str, line: str) -> tuple[Any, ...]:
     )
 
 
+def _portfolio_transaction_record(transaction: dict[str, Any]) -> tuple[Any, ...]:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    payload = dict(transaction)
+    executed_at_ms = _parse_timestamp_to_ms(payload.get("executed_at"))
+    if executed_at_ms is None:
+        executed_at_ms = now_ms
+    executed_at_text = str(payload.get("executed_at") or "").strip() or datetime.fromtimestamp(
+        executed_at_ms / 1000,
+        tz=timezone.utc,
+    ).strftime(TIMESTAMP_FORMAT)
+    transaction_id = str(payload.get("transaction_id") or _row_key(payload))
+    account_key = str(payload.get("account_key") or "manual_spot").strip() or "manual_spot"
+
+    return (
+        transaction_id,
+        account_key,
+        executed_at_ms,
+        executed_at_text,
+        str(payload.get("tx_type") or "").strip().lower(),
+        str(payload.get("asset_symbol") or "").strip().upper(),
+        str(payload.get("quote_symbol") or "USDT").strip().upper(),
+        _as_float_or_none(payload.get("quantity")),
+        _as_float_or_none(payload.get("price")),
+        _as_float_or_none(payload.get("fee_amount")),
+        str(payload.get("fee_asset") or "").strip().upper() or None,
+        str(payload.get("source") or "manual").strip().lower(),
+        str(payload.get("status") or "settled").strip().lower(),
+        str(payload.get("note") or "").strip() or None,
+        str(payload.get("external_order_id") or "").strip() or None,
+        _json_text(payload),
+        now_ms,
+        now_ms,
+    )
+
+
 def _configure_connection(connection: sqlite3.Connection) -> None:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
@@ -255,7 +290,61 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_ui_log_entries_sort
         ON ui_log_entries(sort_ts_ms DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS portfolio_accounts (
+            account_key TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            account_type TEXT NOT NULL DEFAULT 'spot',
+            base_currency TEXT NOT NULL DEFAULT 'USDT',
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS portfolio_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id TEXT NOT NULL UNIQUE,
+            account_key TEXT NOT NULL,
+            executed_at_ms INTEGER NOT NULL,
+            executed_at_text TEXT NOT NULL,
+            tx_type TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            quantity REAL NOT NULL,
+            price REAL,
+            fee_amount REAL,
+            fee_asset TEXT,
+            source TEXT NOT NULL DEFAULT 'manual',
+            status TEXT NOT NULL DEFAULT 'settled',
+            note TEXT,
+            external_order_id TEXT,
+            payload_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_portfolio_transactions_sort
+        ON portfolio_transactions(executed_at_ms DESC, id DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_portfolio_transactions_asset
+        ON portfolio_transactions(asset_symbol, quote_symbol, status);
         """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO portfolio_accounts (
+            account_key,
+            name,
+            account_type,
+            base_currency,
+            archived,
+            created_at_ms,
+            updated_at_ms
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("manual_spot", "Manual Spot", "spot", "USDT", 0, applied_at_ms, applied_at_ms),
     )
     connection.execute(
         """
@@ -671,3 +760,182 @@ def list_ui_log_lines(*, limit: int, path: Path | None = None) -> list[str]:
             (limit,),
         ).fetchall()
     return [str(row["line_text"]) for row in reversed(rows)]
+
+
+def ensure_portfolio_account(
+    *,
+    account_key: str = "manual_spot",
+    name: str = "Manual Spot",
+    account_type: str = "spot",
+    base_currency: str = "USDT",
+    path: Path | None = None,
+) -> None:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO portfolio_accounts (
+                account_key,
+                name,
+                account_type,
+                base_currency,
+                archived,
+                created_at_ms,
+                updated_at_ms
+            )
+            VALUES (?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(account_key)
+            DO UPDATE SET
+                name = excluded.name,
+                account_type = excluded.account_type,
+                base_currency = excluded.base_currency,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (
+                str(account_key or "manual_spot").strip() or "manual_spot",
+                str(name or "Manual Spot").strip() or "Manual Spot",
+                str(account_type or "spot").strip().lower() or "spot",
+                str(base_currency or "USDT").strip().upper() or "USDT",
+                now_ms,
+                now_ms,
+            ),
+        )
+
+
+def append_portfolio_transaction(transaction: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+    record = _portfolio_transaction_record(transaction)
+    account_key = str(record[1])
+    with _connection(path) as connection:
+        account_row = connection.execute(
+            "SELECT 1 FROM portfolio_accounts WHERE account_key = ? LIMIT 1",
+            (account_key,),
+        ).fetchone()
+        if account_row is None:
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            connection.execute(
+                """
+                INSERT INTO portfolio_accounts (
+                    account_key,
+                    name,
+                    account_type,
+                    base_currency,
+                    archived,
+                    created_at_ms,
+                    updated_at_ms
+                )
+                VALUES (?, ?, 'spot', ?, 0, ?, ?)
+                """,
+                (account_key, account_key.replace("_", " ").title(), str(record[6] or "USDT"), now_ms, now_ms),
+            )
+        connection.execute(
+            """
+            INSERT INTO portfolio_transactions (
+                transaction_id,
+                account_key,
+                executed_at_ms,
+                executed_at_text,
+                tx_type,
+                asset_symbol,
+                quote_symbol,
+                quantity,
+                price,
+                fee_amount,
+                fee_asset,
+                source,
+                status,
+                note,
+                external_order_id,
+                payload_json,
+                created_at_ms,
+                updated_at_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            record,
+        )
+
+    payload = dict(transaction)
+    payload.setdefault("transaction_id", record[0])
+    payload.setdefault("account_key", record[1])
+    payload.setdefault("executed_at", record[3])
+    return payload
+
+
+def list_portfolio_transactions(
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+    newest_first: bool = True,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    sql = f"""
+        SELECT
+            id,
+            transaction_id,
+            account_key,
+            executed_at_ms,
+            executed_at_text,
+            tx_type,
+            asset_symbol,
+            quote_symbol,
+            quantity,
+            price,
+            fee_amount,
+            fee_asset,
+            source,
+            status,
+            note,
+            external_order_id,
+            payload_json,
+            created_at_ms,
+            updated_at_ms
+        FROM portfolio_transactions
+        ORDER BY executed_at_ms {"DESC" if newest_first else "ASC"}, id {"DESC" if newest_first else "ASC"}
+    """
+    params: list[Any] = []
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+        if offset > 0:
+            sql += " OFFSET ?"
+            params.append(offset)
+    elif offset > 0:
+        sql += " LIMIT -1 OFFSET ?"
+        params.append(offset)
+
+    with _connection(path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        payload = json.loads(row["payload_json"])
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.update(
+            {
+                "id": int(row["id"]),
+                "transaction_id": str(row["transaction_id"]),
+                "account_key": str(row["account_key"]),
+                "executed_at": str(row["executed_at_text"]),
+                "executed_at_ms": int(row["executed_at_ms"]),
+                "tx_type": str(row["tx_type"]),
+                "asset_symbol": str(row["asset_symbol"]),
+                "quote_symbol": str(row["quote_symbol"]),
+                "quantity": float(row["quantity"]),
+                "price": float(row["price"]) if row["price"] is not None else None,
+                "fee_amount": float(row["fee_amount"]) if row["fee_amount"] is not None else None,
+                "fee_asset": str(row["fee_asset"]) if row["fee_asset"] is not None else None,
+                "source": str(row["source"]),
+                "status": str(row["status"]),
+                "note": str(row["note"]) if row["note"] is not None else None,
+                "external_order_id": str(row["external_order_id"]) if row["external_order_id"] is not None else None,
+            }
+        )
+        output.append(payload)
+    return output
+
+
+def count_portfolio_transactions(path: Path | None = None) -> int:
+    with _connection(path) as connection:
+        row = connection.execute("SELECT COUNT(*) AS count FROM portfolio_transactions").fetchone()
+    return int(row["count"]) if row is not None else 0

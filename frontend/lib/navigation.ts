@@ -6,6 +6,7 @@ export type PrimaryLink = {
 
 export const PRIMARY_LINKS: PrimaryLink[] = [
   { href: "/dashboard", label: "Office" },
+  { href: "/treasury", label: "Treasury" },
   { href: "/chart", label: "Market Map", mobileLabel: "Map" },
   { href: "/logs", label: "Ledger" }
 ];
