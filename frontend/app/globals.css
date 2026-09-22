@@ -2670,14 +2670,16 @@ pre {
   color: #f0f5fc;
 }
 
-.treasury-custody-panel {
+.treasury-custody-panel,
+.treasury-policy-panel {
   grid-column: 1 / -1;
   min-width: 0;
   border-top: 1px solid rgba(106, 124, 150, 0.18);
   padding-top: 0.5rem;
 }
 
-.treasury-custody-panel summary {
+.treasury-custody-panel summary,
+.treasury-policy-panel summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2688,7 +2690,8 @@ pre {
   font-size: 0.8rem;
 }
 
-.treasury-custody-summary {
+.treasury-custody-summary,
+.treasury-policy-summary {
   display: flex;
   justify-content: flex-end;
   flex-wrap: wrap;
@@ -2746,6 +2749,36 @@ pre {
 
 .treasury-custody-disclaimer {
   margin: 0;
+}
+
+.treasury-policy-summary > span {
+  color: #d9ae45;
+}
+
+.treasury-policy-content {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+  border-radius: 0.7rem;
+  padding: 0.7rem;
+  background: rgba(6, 10, 16, 0.56);
+}
+
+.treasury-policy-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.treasury-policy-form .dialog-user-btn {
+  min-width: 9rem;
+}
+
+.treasury-policy-note {
+  margin: 0;
+  color: #8f9db2;
+  font-size: 0.72rem;
 }
 
 .treasury-ledger-stack {
@@ -3916,11 +3949,13 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-column: 1 / -1;
   }
 
-  .treasury-custody-panel summary {
+  .treasury-custody-panel summary,
+  .treasury-policy-panel summary {
     align-items: flex-start;
   }
 
-  .treasury-custody-summary {
+  .treasury-custody-summary,
+  .treasury-policy-summary {
     display: grid;
     justify-items: end;
   }
@@ -3931,6 +3966,15 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-custody-note,
   .treasury-custody-form .dialog-user-btn {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .treasury-policy-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .treasury-policy-form .dialog-user-btn {
     grid-column: 1 / -1;
     width: 100%;
   }
@@ -4477,21 +4521,25 @@ body.logs-page-active .logs-page-panel .log-box {
     text-align: left;
   }
 
-  .treasury-custody-panel summary {
+  .treasury-custody-panel summary,
+  .treasury-policy-panel summary {
     display: grid;
   }
 
-  .treasury-custody-summary {
+  .treasury-custody-summary,
+  .treasury-policy-summary {
     justify-items: start;
   }
 
   .treasury-custody-breakdown,
-  .treasury-custody-form {
+  .treasury-custody-form,
+  .treasury-policy-form {
     grid-template-columns: 1fr;
   }
 
   .treasury-custody-note,
-  .treasury-custody-form .dialog-user-btn {
+  .treasury-custody-form .dialog-user-btn,
+  .treasury-policy-form .dialog-user-btn {
     grid-column: auto;
   }
 

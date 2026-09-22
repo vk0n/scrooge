@@ -10,6 +10,7 @@ from services.portfolio_service import (
     create_portfolio_transaction,
     load_portfolio_snapshot,
     set_portfolio_transaction_status,
+    update_portfolio_asset_policy,
 )
 
 router = APIRouter()
@@ -42,6 +43,12 @@ class PortfolioTransactionStatusRequest(BaseModel):
     status: Literal["settled", "voided"]
 
 
+class PortfolioAssetPolicyRequest(BaseModel):
+    quote_symbol: str = Field(default="USDT", min_length=1, max_length=24)
+    target_quantity: float = Field(..., gt=0)
+    minimum_holding_pct: float = Field(..., ge=0, le=100)
+
+
 @router.get("")
 def get_portfolio(transaction_offset: int = Query(default=0, ge=0)) -> dict[str, object]:
     try:
@@ -68,6 +75,19 @@ def add_custody_transfer(data: CustodyTransferRequest) -> dict[str, object]:
         payload, warnings = create_custody_transfer(data.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {**payload, "warnings": warnings}
+
+
+@router.post("/assets/{asset_symbol}/policy")
+def update_asset_policy(asset_symbol: str, data: PortfolioAssetPolicyRequest) -> dict[str, object]:
+    try:
+        payload, warnings = update_portfolio_asset_policy(asset_symbol, data.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {**payload, "warnings": warnings}

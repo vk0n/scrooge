@@ -269,6 +269,69 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         self.assertEqual(snapshot["holdings"][0]["unassigned_quantity"], 1)
         self.assertEqual(snapshot["transactions"][0]["custody_location"], "unassigned")
+        self.assertEqual(snapshot["holdings"][0]["target_quantity"], 1)
+        self.assertEqual(snapshot["holdings"][0]["minimum_holding_pct"], 100)
+
+    def test_existing_holding_initializes_safe_policy_once(self):
+        self.add("BTC", 1, 90)
+        initial, _ = portfolio_service.load_portfolio_snapshot()
+
+        self.add("BTC", 0.5, 80)
+        portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "sell",
+                "asset_symbol": "BTC",
+                "quantity": 0.25,
+                "price": 100,
+                "quote_symbol": "USDT",
+            }
+        )
+        updated, _ = portfolio_service.load_portfolio_snapshot()
+
+        self.assertEqual(initial["holdings"][0]["target_quantity"], 1)
+        self.assertEqual(initial["holdings"][0]["minimum_holding_pct"], 100)
+        self.assertEqual(updated["holdings"][0]["quantity"], 1.25)
+        self.assertEqual(updated["holdings"][0]["target_quantity"], 1)
+
+    def test_asset_policy_can_be_updated_without_changing_holding(self):
+        self.add("BTC", 1, 90)
+
+        result, _ = portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {
+                "quote_symbol": "USDT",
+                "target_quantity": 0.8,
+                "minimum_holding_pct": 75,
+            },
+        )
+
+        holding = result["portfolio"]["holdings"][0]
+        self.assertEqual(result["policy"]["target_quantity"], 0.8)
+        self.assertEqual(result["policy"]["minimum_holding_pct"], 75)
+        self.assertEqual(holding["quantity"], 1)
+        self.assertEqual(holding["target_quantity"], 0.8)
+        self.assertEqual(holding["minimum_holding_pct"], 75)
+
+    def test_asset_policy_validates_target_and_minimum_holding(self):
+        self.add("BTC", 1, 90)
+
+        with self.assertRaisesRegex(ValueError, "greater than zero"):
+            portfolio_service.update_portfolio_asset_policy(
+                "BTC",
+                {"target_quantity": 0, "minimum_holding_pct": 100},
+            )
+        with self.assertRaisesRegex(ValueError, "between 0% and 100%"):
+            portfolio_service.update_portfolio_asset_policy(
+                "BTC",
+                {"target_quantity": 1, "minimum_holding_pct": 101},
+            )
+
+    def test_unknown_asset_policy_cannot_be_created(self):
+        with self.assertRaisesRegex(LookupError, "not found"):
+            portfolio_service.update_portfolio_asset_policy(
+                "BTC",
+                {"target_quantity": 1, "minimum_holding_pct": 100},
+            )
 
 
 if __name__ == "__main__":

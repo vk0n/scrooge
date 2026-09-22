@@ -12,8 +12,8 @@ from typing import Any, Iterator
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 5
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Portfolio custody locations"
+RUNTIME_DB_SCHEMA_VERSION = 6
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Portfolio asset policies"
 
 
 class RuntimeDbError(OSError):
@@ -346,6 +346,18 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_portfolio_transactions_asset
         ON portfolio_transactions(asset_symbol, quote_symbol, status);
+
+        CREATE TABLE IF NOT EXISTS portfolio_asset_policies (
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            target_quantity REAL NOT NULL,
+            minimum_holding_pct REAL NOT NULL DEFAULT 100,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (account_key, asset_symbol, quote_symbol),
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
 
         CREATE TABLE IF NOT EXISTS portfolio_daily_snapshots (
             account_key TEXT NOT NULL,
@@ -1064,6 +1076,137 @@ def count_portfolio_transactions(*, account_key: str | None = None, path: Path |
                 (account_key,),
             ).fetchone()
     return int(row["count"]) if row is not None else 0
+
+
+def list_portfolio_asset_policies(
+    *,
+    account_key: str = "manual_spot",
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    with _connection(path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                account_key,
+                asset_symbol,
+                quote_symbol,
+                target_quantity,
+                minimum_holding_pct,
+                created_at_ms,
+                updated_at_ms
+            FROM portfolio_asset_policies
+            WHERE account_key = ?
+            ORDER BY asset_symbol ASC, quote_symbol ASC
+            """,
+            (normalized_account,),
+        ).fetchall()
+    return [
+        {
+            "account_key": str(row["account_key"]),
+            "asset_symbol": str(row["asset_symbol"]),
+            "quote_symbol": str(row["quote_symbol"]),
+            "target_quantity": float(row["target_quantity"]),
+            "minimum_holding_pct": float(row["minimum_holding_pct"]),
+            "created_at_ms": int(row["created_at_ms"]),
+            "updated_at_ms": int(row["updated_at_ms"]),
+        }
+        for row in rows
+    ]
+
+
+def ensure_portfolio_asset_policies(
+    policies: list[dict[str, Any]],
+    *,
+    account_key: str = "manual_spot",
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    records: list[tuple[Any, ...]] = []
+    for policy in policies:
+        asset_symbol = str(policy.get("asset_symbol") or "").strip().upper()
+        target_quantity = _as_float_or_none(policy.get("target_quantity"))
+        minimum_holding_pct = _as_float_or_none(policy.get("minimum_holding_pct"))
+        if not asset_symbol or target_quantity is None:
+            continue
+        records.append(
+            (
+                normalized_account,
+                asset_symbol,
+                str(policy.get("quote_symbol") or "USDT").strip().upper() or "USDT",
+                target_quantity,
+                minimum_holding_pct if minimum_holding_pct is not None else 100.0,
+                now_ms,
+                now_ms,
+            )
+        )
+    if records:
+        with _connection(path) as connection:
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO portfolio_asset_policies (
+                    account_key,
+                    asset_symbol,
+                    quote_symbol,
+                    target_quantity,
+                    minimum_holding_pct,
+                    created_at_ms,
+                    updated_at_ms
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                records,
+            )
+    return list_portfolio_asset_policies(account_key=normalized_account, path=path)
+
+
+def upsert_portfolio_asset_policy(
+    policy: dict[str, Any],
+    *,
+    account_key: str = "manual_spot",
+    path: Path | None = None,
+) -> dict[str, Any]:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    asset_symbol = str(policy.get("asset_symbol") or "").strip().upper()
+    quote_symbol = str(policy.get("quote_symbol") or "USDT").strip().upper() or "USDT"
+    target_quantity = _as_float_or_none(policy.get("target_quantity"))
+    minimum_holding_pct = _as_float_or_none(policy.get("minimum_holding_pct"))
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO portfolio_asset_policies (
+                account_key,
+                asset_symbol,
+                quote_symbol,
+                target_quantity,
+                minimum_holding_pct,
+                created_at_ms,
+                updated_at_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_key, asset_symbol, quote_symbol) DO UPDATE SET
+                target_quantity = excluded.target_quantity,
+                minimum_holding_pct = excluded.minimum_holding_pct,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (
+                normalized_account,
+                asset_symbol,
+                quote_symbol,
+                target_quantity,
+                minimum_holding_pct,
+                now_ms,
+                now_ms,
+            ),
+        )
+    policies = list_portfolio_asset_policies(account_key=normalized_account, path=path)
+    return next(
+        policy
+        for policy in policies
+        if policy["asset_symbol"] == asset_symbol and policy["quote_symbol"] == quote_symbol
+    )
 
 
 def upsert_portfolio_daily_snapshot(

@@ -35,6 +35,8 @@ type PortfolioHolding = {
   binance_quantity: number;
   cold_storage_quantity: number;
   unassigned_quantity: number;
+  target_quantity: number;
+  minimum_holding_pct: number;
 };
 
 type PortfolioTransaction = {
@@ -79,6 +81,17 @@ type PortfolioPayload = {
 
 type CreatePortfolioTransactionResponse = {
   transaction: PortfolioTransaction;
+  portfolio: Omit<PortfolioPayload, "warnings">;
+  warnings: string[];
+};
+
+type UpdatePortfolioPolicyResponse = {
+  policy: {
+    asset_symbol: string;
+    quote_symbol: string;
+    target_quantity: number;
+    minimum_holding_pct: number;
+  };
   portfolio: Omit<PortfolioPayload, "warnings">;
   warnings: string[];
 };
@@ -443,6 +456,94 @@ function CustodyPanel({
   );
 }
 
+function AssetPolicyPanel({
+  holding,
+  onUpdated,
+}: {
+  holding: PortfolioHolding;
+  onUpdated: (response: UpdatePortfolioPolicyResponse) => void;
+}): JSX.Element {
+  const [targetQuantity, setTargetQuantity] = useState<string>(String(holding.target_quantity));
+  const [minimumHoldingPct, setMinimumHoldingPct] = useState<string>(String(holding.minimum_holding_pct));
+  const [saving, setSaving] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setTargetQuantity(String(holding.target_quantity));
+    setMinimumHoldingPct(String(holding.minimum_holding_pct));
+  }, [holding.target_quantity, holding.minimum_holding_pct]);
+
+  async function submitPolicy(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetchApi<UpdatePortfolioPolicyResponse>(
+        `/api/portfolio/assets/${encodeURIComponent(holding.asset_symbol)}/policy`,
+        {
+          method: "POST",
+          body: {
+            quote_symbol: holding.quote_symbol,
+            target_quantity: asNumber(targetQuantity),
+            minimum_holding_pct: asNumber(minimumHoldingPct),
+          },
+        }
+      );
+      onUpdated(response);
+    } catch (policyError) {
+      setError(policyError instanceof Error ? policyError.message : "Could not update the asset policy.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <details className="treasury-policy-panel">
+      <summary>
+        <span>Policy</span>
+        <span className="treasury-policy-summary">
+          Target {formatNumber(holding.target_quantity, 8)} {holding.asset_symbol}
+          <span>Minimum {formatPercent(holding.minimum_holding_pct)}</span>
+        </span>
+      </summary>
+      <div className="treasury-policy-content">
+        <form className="treasury-policy-form" onSubmit={(event) => void submitPolicy(event)}>
+          <label className="dialog-user-field">
+            Target Holding
+            <input
+              type="number"
+              value={targetQuantity}
+              min="0.00000001"
+              step="any"
+              onChange={(event) => setTargetQuantity(event.target.value)}
+              required
+            />
+          </label>
+          <label className="dialog-user-field">
+            Minimum Holding %
+            <input
+              type="number"
+              value={minimumHoldingPct}
+              min="0"
+              max="100"
+              step="any"
+              onChange={(event) => setMinimumHoldingPct(event.target.value)}
+              required
+            />
+          </label>
+          <button type="submit" className="dialog-user-btn" disabled={saving}>
+            {saving ? "Saving..." : "Update Policy"}
+          </button>
+        </form>
+        <p className="treasury-policy-note">
+          Target stays fixed when the Stack changes. Minimum Holding is always measured against Target.
+        </p>
+        {error ? <p className="form-error">{error}</p> : null}
+      </div>
+    </details>
+  );
+}
+
 export default function TreasuryPage(): JSX.Element {
   const [portfolio, setPortfolio] = useState<PortfolioPayload | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -596,7 +697,6 @@ export default function TreasuryPage(): JSX.Element {
           <header className="treasury-section-head">
             <div>
               <h1>Treasury Overview</h1>
-              <p className="muted">Manual spot ledger today, control-plane foundation tomorrow.</p>
               {summary?.prices_updated_at ? (
                 <p className="treasury-price-freshness">Prices checked {formatDateTimeEu(summary.prices_updated_at)}</p>
               ) : null}
@@ -909,6 +1009,10 @@ export default function TreasuryPage(): JSX.Element {
                   <CustodyPanel
                     holding={holding}
                     onTransferred={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
+                  />
+                  <AssetPolicyPanel
+                    holding={holding}
+                    onUpdated={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
                   />
                 </article>
               ))}

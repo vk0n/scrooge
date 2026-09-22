@@ -24,10 +24,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 from shared.runtime_db import (  # noqa: E402
     append_portfolio_transaction,
     count_portfolio_transactions,
+    ensure_portfolio_asset_policies,
     list_portfolio_daily_snapshots,
     list_portfolio_transactions,
     load_runtime_state_snapshot,
     runtime_db_path,
+    upsert_portfolio_asset_policy,
     upsert_portfolio_daily_snapshot,
     update_portfolio_transaction_status,
 )
@@ -325,6 +327,29 @@ def _summary_from_holdings(holdings: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _attach_asset_policies(holdings: list[dict[str, Any]]) -> None:
+    policies = ensure_portfolio_asset_policies(
+        [
+            {
+                "asset_symbol": holding["asset_symbol"],
+                "quote_symbol": holding["quote_symbol"],
+                "target_quantity": holding["quantity"],
+                "minimum_holding_pct": 100.0,
+            }
+            for holding in holdings
+        ],
+        account_key=DEFAULT_ACCOUNT_KEY,
+    )
+    policy_by_asset = {
+        (str(policy["asset_symbol"]), str(policy["quote_symbol"])): policy
+        for policy in policies
+    }
+    for holding in holdings:
+        policy = policy_by_asset.get((holding["asset_symbol"], holding["quote_symbol"]))
+        holding["target_quantity"] = _as_float(policy.get("target_quantity")) if policy else holding["quantity"]
+        holding["minimum_holding_pct"] = _as_float(policy.get("minimum_holding_pct")) if policy else 100.0
+
+
 PORTFOLIO_TRANSACTION_PAGE_SIZE = 5
 PORTFOLIO_TIMELINE_DAYS = 180
 
@@ -361,6 +386,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     normalized_offset = max(0, int(transaction_offset))
     transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     holdings, warnings = _derive_holdings(transactions)
+    _attach_asset_policies(holdings)
     summary = _summary_from_holdings(holdings)
     timeline = _portfolio_timeline(summary, holdings, warnings)
     newest_transactions = list_portfolio_transactions(
@@ -469,6 +495,42 @@ def create_custody_transfer(payload: dict[str, Any]) -> tuple[dict[str, Any], li
     appended = append_portfolio_transaction(transaction)
     snapshot, warnings = load_portfolio_snapshot()
     return {"transaction": appended, "portfolio": snapshot}, warnings
+
+
+def update_portfolio_asset_policy(
+    asset_symbol: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    normalized_asset = _clean_symbol(asset_symbol)
+    quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
+    target_quantity = _as_float(payload.get("target_quantity"))
+    minimum_holding_pct = _as_float(payload.get("minimum_holding_pct"))
+    if not normalized_asset:
+        raise ValueError("Asset symbol is required.")
+    if target_quantity is None or target_quantity <= 0:
+        raise ValueError("Target Holding must be greater than zero.")
+    if minimum_holding_pct is None or not 0 <= minimum_holding_pct <= 100:
+        raise ValueError("Minimum Holding must be between 0% and 100%.")
+
+    transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
+    holdings, _ = _derive_holdings(transactions)
+    if not any(
+        holding["asset_symbol"] == normalized_asset and holding["quote_symbol"] == quote_symbol
+        for holding in holdings
+    ):
+        raise LookupError("Treasury asset was not found.")
+
+    policy = upsert_portfolio_asset_policy(
+        {
+            "asset_symbol": normalized_asset,
+            "quote_symbol": quote_symbol,
+            "target_quantity": target_quantity,
+            "minimum_holding_pct": minimum_holding_pct,
+        },
+        account_key=DEFAULT_ACCOUNT_KEY,
+    )
+    snapshot, warnings = load_portfolio_snapshot()
+    return {"policy": policy, "portfolio": snapshot}, warnings
 
 
 def set_portfolio_transaction_status(
