@@ -699,6 +699,11 @@ function pointsToXY(points: IndicatorPoint[]): { x: string[]; y: Array<number | 
   };
 }
 
+function indicatorTraceMode(values: Array<number | null>): "lines" | "lines+markers" {
+  const validCount = values.filter((value) => typeof value === "number" && Number.isFinite(value)).length;
+  return validCount === 1 ? "lines+markers" : "lines";
+}
+
 function collectIndicatorValues(points: IndicatorPoint[] | undefined): Array<{ tsMs: number; value: number }> {
   if (!points?.length) {
     return [];
@@ -1144,10 +1149,11 @@ function ChartContent(): JSX.Element {
         const emaLabel = emaInterval ? `EMA(${emaPeriod}, ${emaInterval})` : `EMA(${emaPeriod})`;
         traces.push({
           type: "scatter",
-          mode: "lines",
+          mode: indicatorTraceMode(ema.y),
           name: emaLabel,
           x: ema.x,
           y: ema.y,
+          marker: { color: CHART_THEME.ema, size: 5 },
           line: { color: CHART_THEME.ema, width: 1.4 },
         });
       }
@@ -1159,26 +1165,29 @@ function ChartContent(): JSX.Element {
         traces.push(
           {
             type: "scatter",
-            mode: "lines",
+            mode: indicatorTraceMode(upper.y),
             name: "BB Upper",
             x: upper.x,
             y: upper.y,
+            marker: { color: CHART_THEME.bbUpperLower, size: 5 },
             line: { color: CHART_THEME.bbUpperLower, width: 1, dash: "dot" },
           },
           {
             type: "scatter",
-            mode: "lines",
+            mode: indicatorTraceMode(middle.y),
             name: "BB Middle",
             x: middle.x,
             y: middle.y,
+            marker: { color: CHART_THEME.bbMiddle, size: 5 },
             line: { color: CHART_THEME.bbMiddle, width: 1, dash: "dash" },
           },
           {
             type: "scatter",
-            mode: "lines",
+            mode: indicatorTraceMode(lower.y),
             name: "BB Lower",
             x: lower.x,
             y: lower.y,
+            marker: { color: CHART_THEME.bbUpperLower, size: 5 },
             line: { color: CHART_THEME.bbUpperLower, width: 1, dash: "dot" },
           }
         );
@@ -1381,10 +1390,11 @@ function ChartContent(): JSX.Element {
             [
               {
                 type: "scatter",
-                mode: "lines",
+                mode: indicatorTraceMode(rsi.y),
                 name: rsiLabel,
                 x: rsi.x,
                 y: rsi.y,
+                marker: { color: CHART_THEME.rsi, size: 5 },
                 line: { color: CHART_THEME.rsi, width: 1.4 },
               },
             ],

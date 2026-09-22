@@ -117,18 +117,22 @@ class StrategyChartTests(unittest.TestCase):
         self.recorder.flush(force=True)
         self.assertEqual(self.rows()[0]["time"], "2026-09-01T11:01:02+00:00")
 
-    def build_payload(self, *, recorded=True):
+    def build_payload(self, *, recorded=True, source="dataset"):
         ts = int(datetime(2026, 9, 1, 11, tzinfo=UTC).timestamp() * 1000)
         candle = dict(time=chart_service._iso_from_ts_ms(ts), ts_ms=ts,
                       open=78_000, high=78_010, low=77_990, close=78_000, volume=1)
         if recorded:
             candle.update(ema=99_000, rsi=90, bbl=98_000, bbm=99_000, bbu=100_000)
+        price_candle = candle if source == "dataset" else {
+            key: value for key, value in candle.items() if key not in {"ema", "rsi", "bbl", "bbm", "bbu"}
+        }
         with (
             patch.object(chart_service, "load_config", return_value={"strategy_mode": "realtime"}),
             patch.object(chart_service, "load_state", return_value=({}, [])),
             patch.object(chart_service, "load_trade_history", return_value=([], [])),
             patch.object(chart_service, "load_balance_history", return_value=([], [])),
-            patch.object(chart_service, "_fetch_candles", return_value=([candle], [], "dataset", "1m")),
+            patch.object(chart_service, "_fetch_candles", return_value=([price_candle], [], source, "1m")),
+            patch.object(chart_service, "_fetch_candles_from_dataset", return_value=([candle], [])),
             patch.object(chart_service, "_fetch_candles_from_binance", side_effect=AssertionError("recalculation")),
         ):
             return chart_service.build_chart_payload("BTCUSDT", "1d", "1m", end="2026-09-01T11:01:00Z")
@@ -137,9 +141,49 @@ class StrategyChartTests(unittest.TestCase):
         self.recorder.observe(snapshot(), self.runtime)
         self.recorder.flush(force=True)
         payload = self.build_payload()
+        self.assertEqual(payload["indicator_source"], "dataset+strategy_decisions")
+        self.assertEqual([point["value"] for point in payload["indicators"]["ema"]], [99_000, 77_410])
+        self.assertEqual(payload["range_end"], "2026-09-01T11:00:10+00:00")
+
+    def test_partial_recording_keeps_history_for_all_indicators(self):
+        history = chart_service._build_indicators_from_candle_fields([
+            dict(time=f"2026-09-01T11:0{minute}:00+00:00", ema=78_000 + minute,
+                 rsi=40 + minute, bbl=77_000 + minute, bbm=78_000 + minute, bbu=79_000 + minute)
+            for minute in range(5)
+        ])
+        self.recorder.observe(snapshot("2026-09-01 11:02:00"), self.runtime)
+        self.recorder.flush(force=True)
+        recorded, _ = chart_service._build_recorded_strategy_indicators("BTCUSDT", 0, 9_999_999_999_999)
+        merged = chart_service._merge_indicator_history(history, recorded)
+        series = [merged["ema"], merged["rsi"], *merged["bollinger"].values()]
+        for points in series:
+            self.assertEqual(len(points), 3)
+            self.assertEqual(points[-1]["time"], "2026-09-01T11:02:00+00:00")
+            self.assertEqual([point["time"] for point in points[:2]], [
+                "2026-09-01T11:00:00+00:00", "2026-09-01T11:01:00+00:00",
+            ])
+        self.assertEqual(merged["ema"][-1]["value"], 77_410)
+        self.assertEqual(merged["rsi"][-1]["value"], 35)
+        self.assertEqual(merged["bollinger"]["lower"][-1]["value"], 78_800)
+
+    def test_recording_without_legacy_history_is_still_returned(self):
+        self.recorder.observe(snapshot(), self.runtime)
+        self.recorder.flush(force=True)
+        payload = self.build_payload(recorded=False)
         self.assertEqual(payload["indicator_source"], "strategy_decisions")
         self.assertEqual(payload["indicators"]["ema"][0]["value"], 77_410)
-        self.assertEqual(payload["range_end"], "2026-09-01T11:00:10+00:00")
+
+    def test_binance_candles_keep_dataset_history_with_new_decisions(self):
+        self.recorder.observe(snapshot(), self.runtime)
+        self.recorder.flush(force=True)
+        payload = self.build_payload(source="binance")
+        self.assertEqual(payload["indicator_source"], "dataset+strategy_decisions")
+        self.assertEqual([point["value"] for point in payload["indicators"]["rsi"]], [90, 35])
+
+    def test_legacy_history_without_recordings_is_still_returned(self):
+        payload = self.build_payload()
+        self.assertEqual(payload["indicator_source"], "dataset")
+        self.assertEqual(payload["indicators"]["ema"][0]["value"], 99_000)
 
     def test_missing_indicators_are_not_recomputed_on_chart_timeframe(self):
         payload = self.build_payload(recorded=False)

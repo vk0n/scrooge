@@ -735,6 +735,33 @@ def _build_indicators_from_candle_fields(candles: list[dict[str, Any]]) -> dict[
     }
 
 
+def _merge_indicator_history(history: dict[str, Any], recorded: dict[str, Any]) -> dict[str, Any]:
+    if not recorded:
+        return history
+    if not history:
+        return recorded
+
+    def merge_series(previous: list[dict[str, Any]], decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not decisions:
+            return previous
+        first_decision_ms = _parse_time_to_ms(decisions[0]["time"])
+        # Legacy values belong only before recorded decisions begin, never after.
+        prefix = [
+            point for point in previous
+            if (ts_ms := _parse_time_to_ms(point["time"])) is not None and ts_ms < first_decision_ms
+        ]
+        return prefix + decisions
+
+    return {
+        "ema": merge_series(history.get("ema", []), recorded.get("ema", [])),
+        "rsi": merge_series(history.get("rsi", []), recorded.get("rsi", [])),
+        "bollinger": {
+            band: merge_series(history.get("bollinger", {}).get(band, []), recorded.get("bollinger", {}).get(band, []))
+            for band in ("upper", "middle", "lower")
+        },
+    }
+
+
 def _build_strategy_fallback_indicators(
     symbol: str,
     config: dict[str, Any],
@@ -1313,7 +1340,8 @@ def build_chart_payload(
             if latest_decision_ms is not None:
                 range_end_ms = max(range_end_ms, latest_decision_ms)
 
-    if include_indicators and candles and not indicators:
+    if include_indicators and candles:
+        recorded_indicators = indicators
         indicator_candles = candles
         if source_used != "dataset":
             dataset_indicator_candles, dataset_indicator_warnings = _fetch_candles_from_dataset(
@@ -1331,8 +1359,12 @@ def build_chart_payload(
                     if range_start_ms <= candle["ts_ms"] <= range_end_ms
                 ]
 
-        indicators = _build_indicators_from_candle_fields(indicator_candles)
-        if indicators:
+        historical_indicators = _build_indicators_from_candle_fields(indicator_candles)
+        indicators = _merge_indicator_history(historical_indicators, recorded_indicators)
+        if recorded_indicators:
+            if indicators != recorded_indicators:
+                indicator_source = "dataset+strategy_decisions"
+        elif indicators:
             indicator_source = "dataset"
         else:
             warnings.append("No recorded strategy indicators in this window. Indicator lines are unavailable.")
