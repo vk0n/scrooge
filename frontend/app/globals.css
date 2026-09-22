@@ -2107,7 +2107,8 @@ pre {
 
 .trade-history-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-areas: "later latest indicator earlier";
   align-items: center;
   gap: 0.72rem;
   margin-top: 0.12rem;
@@ -2120,18 +2121,19 @@ pre {
   color: #aab4c6;
   font-size: 0.82rem;
   line-height: 1.35;
+  grid-area: indicator;
 }
 
-.trade-history-toolbar-center {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.68rem;
+.trade-history-nav-later {
+  grid-area: later;
+}
+
+.trade-history-nav-earlier {
+  grid-area: earlier;
 }
 
 .trade-history-latest-button {
-  flex: 0 0 auto;
+  grid-area: latest;
   min-width: 6.6rem;
   justify-content: center;
 }
@@ -2211,6 +2213,26 @@ pre {
   font-size: 1rem;
   line-height: 1.2;
   overflow-wrap: anywhere;
+}
+
+.treasury-summary-card strong.treasury-total-value {
+  color: #e1b84f;
+  text-shadow: 0 0 10px rgba(225, 184, 79, 0.14);
+}
+
+.treasury-total-dollar.value-positive {
+  color: var(--value-positive-surface);
+  text-shadow: 0 0 8px rgba(67, 219, 163, 0.42);
+}
+
+.treasury-total-dollar.value-negative {
+  color: var(--value-negative-surface);
+  text-shadow: 0 0 8px rgba(255, 113, 134, 0.42);
+}
+
+.treasury-total-dollar.value-neutral {
+  color: #dce4f1;
+  text-shadow: 0 0 8px rgba(220, 228, 241, 0.24);
 }
 
 .treasury-summary-card .value-positive,
@@ -3684,6 +3706,25 @@ body.logs-page-active .logs-page-panel .log-box {
     display: none;
   }
 
+  .trade-history-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "indicator indicator"
+      "later earlier"
+      "latest latest";
+    gap: 0.5rem;
+  }
+
+  .trade-history-nav-button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .trade-history-latest-button {
+    justify-self: center;
+    width: min(100%, 12rem);
+  }
+
   .log-line {
     grid-template-columns: 1fr;
     gap: 0.28rem;
@@ -4135,24 +4176,6 @@ body.logs-page-active .logs-page-panel .log-box {
     width: 100%;
   }
 
-  .trade-history-toolbar {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-areas:
-      "indicator indicator"
-      "later earlier";
-    gap: 0.5rem;
-  }
-
-  .trade-history-toolbar-center {
-    grid-area: indicator;
-    flex-direction: column;
-    gap: 0.45rem;
-  }
-
-  .trade-history-latest-button {
-    width: min(100%, 12rem);
-  }
-
   .trade-history-summary {
     padding: 0.78rem 0.9rem;
   }
@@ -4175,22 +4198,8 @@ body.logs-page-active .logs-page-panel .log-box {
     white-space: nowrap;
   }
 
-  .trade-history-nav-button:first-of-type {
-    grid-area: later;
-  }
-
   .trade-history-page-indicator {
     text-align: center;
-  }
-
-  .trade-history-nav-button:last-of-type,
-  .trade-history-nav-button:first-of-type {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .trade-history-nav-button:last-of-type {
-    grid-area: earlier;
   }
 
   .trade-history-primary-grid {

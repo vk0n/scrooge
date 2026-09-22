@@ -319,11 +319,22 @@ export default function TreasuryPage(): JSX.Element {
           <div className="treasury-summary-grid">
             <div className="treasury-summary-card treasury-summary-card-hero">
               <span className="treasury-summary-label">Total Treasure</span>
-              <strong>{formatCurrency(summary?.total_value ?? 0)}</strong>
+              <strong className="vault-value treasury-total-value">
+                <span>{formatNumber(summary?.total_value ?? 0)}</span>
+                <span
+                  className={signedToneClass(summary?.unrealized_pnl, "vault-dollar treasury-total-dollar")}
+                  aria-hidden="true"
+                >
+                  $
+                </span>
+              </strong>
             </div>
             <div className="treasury-summary-card">
               <span className="treasury-summary-label">Invested Capital</span>
-              <strong>{formatCurrency(summary?.invested_capital ?? 0)}</strong>
+              <strong className="vault-value">
+                <span>{formatNumber(summary?.invested_capital ?? 0)}</span>
+                <span className="vault-dollar" aria-hidden="true">$</span>
+              </strong>
             </div>
             <div className="treasury-summary-card">
               <span className="treasury-summary-label">Floating Gain</span>
@@ -564,30 +575,28 @@ export default function TreasuryPage(): JSX.Element {
                 <div className="toolbar trade-history-toolbar treasury-ledger-toolbar">
                   <button
                     type="button"
-                    className="dialog-user-btn trade-history-nav-button"
+                    className="dialog-user-btn trade-history-nav-button trade-history-nav-later"
                     disabled={loading || !hasLaterTransactions}
                     onClick={() => void loadPortfolio(Math.max(0, transactionOffset - transactionLimit))}
                   >
                     Later
                   </button>
-                  <div className="trade-history-toolbar-center">
-                    <span className="trade-history-page-indicator">
-                      Showing {transactionRangeStart}-{transactionRangeEnd} of {transactionCount}
-                    </span>
-                    {hasLaterTransactions ? (
-                      <button
-                        type="button"
-                        className="dialog-user-btn trade-history-latest-button"
-                        disabled={loading}
-                        onClick={() => void loadPortfolio(0)}
-                      >
-                        Latest
-                      </button>
-                    ) : null}
-                  </div>
+                  {hasLaterTransactions ? (
+                    <button
+                      type="button"
+                      className="dialog-user-btn trade-history-latest-button"
+                      disabled={loading}
+                      onClick={() => void loadPortfolio(0)}
+                    >
+                      Latest
+                    </button>
+                  ) : null}
+                  <span className="trade-history-page-indicator">
+                    Showing {transactionRangeStart}-{transactionRangeEnd} of {transactionCount}
+                  </span>
                   <button
                     type="button"
-                    className="dialog-user-btn trade-history-nav-button"
+                    className="dialog-user-btn trade-history-nav-button trade-history-nav-earlier"
                     disabled={loading || !hasEarlierTransactions}
                     onClick={() => void loadPortfolio(transactionOffset + transactionLimit)}
                   >

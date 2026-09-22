@@ -2258,30 +2258,28 @@ function DashboardContent(): JSX.Element {
                   <div className="toolbar trade-history-toolbar">
                     <button
                       type="button"
-                      className="dialog-user-btn trade-history-nav-button"
+                      className="dialog-user-btn trade-history-nav-button trade-history-nav-later"
                       onClick={() => setTradeHistoryPage((currentPage) => Math.max(0, currentPage - 1))}
                       disabled={tradeHistoryPageIndex === 0}
                     >
                       Later
                     </button>
-                    <div className="trade-history-toolbar-center">
-                      <span className="trade-history-page-indicator">
-                        Showing {tradeHistoryRangeStart}-{tradeHistoryRangeEnd} of {tradeHistoryTotal} for{" "}
-                        {selectedPerformanceWindow.proseLabel}
-                      </span>
-                      {tradeHistoryPageIndex > 0 ? (
-                        <button
-                          type="button"
-                          className="dialog-user-btn trade-history-latest-button"
-                          onClick={() => setTradeHistoryPage(0)}
-                        >
-                          Latest
-                        </button>
-                      ) : null}
-                    </div>
+                    {tradeHistoryPageIndex > 0 ? (
+                      <button
+                        type="button"
+                        className="dialog-user-btn trade-history-latest-button"
+                        onClick={() => setTradeHistoryPage(0)}
+                      >
+                        Latest
+                      </button>
+                    ) : null}
+                    <span className="trade-history-page-indicator">
+                      Showing {tradeHistoryRangeStart}-{tradeHistoryRangeEnd} of {tradeHistoryTotal} for{" "}
+                      {selectedPerformanceWindow.proseLabel}
+                    </span>
                     <button
                       type="button"
-                      className="dialog-user-btn trade-history-nav-button"
+                      className="dialog-user-btn trade-history-nav-button trade-history-nav-earlier"
                       onClick={() =>
                         setTradeHistoryPage((currentPage) => Math.min(Math.max(0, tradeHistoryPageCount - 1), currentPage + 1))
                       }
