@@ -898,6 +898,41 @@ def append_portfolio_transaction(transaction: dict[str, Any], path: Path | None 
     return payload
 
 
+def update_portfolio_transaction_status(
+    transaction_id: str,
+    status: str,
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    normalized_id = str(transaction_id or "").strip()
+    normalized_status = str(status or "").strip().lower()
+    if not normalized_id or normalized_status not in {"settled", "voided"}:
+        return None
+
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        row = connection.execute(
+            "SELECT payload_json FROM portfolio_transactions WHERE transaction_id = ? LIMIT 1",
+            (normalized_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row["payload_json"])
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["status"] = normalized_status
+        connection.execute(
+            """
+            UPDATE portfolio_transactions
+            SET status = ?, payload_json = ?, updated_at_ms = ?
+            WHERE transaction_id = ?
+            """,
+            (normalized_status, _json_text(payload), now_ms, normalized_id),
+        )
+
+    updated = list_portfolio_transactions(path=path)
+    return next((item for item in updated if item.get("transaction_id") == normalized_id), None)
+
+
 def list_portfolio_transactions(
     *,
     limit: int | None = None,

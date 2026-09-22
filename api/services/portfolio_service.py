@@ -27,6 +27,7 @@ from shared.runtime_db import (  # noqa: E402
     list_portfolio_transactions,
     load_runtime_state_snapshot,
     runtime_db_path,
+    update_portfolio_transaction_status,
 )
 
 DEFAULT_ACCOUNT_KEY = "manual_spot"
@@ -47,7 +48,7 @@ PRICE_ENDPOINTS = [
     if endpoint.strip()
 ]
 
-_PRICE_CACHE: dict[str, tuple[float, float]] = {}
+_PRICE_CACHE: dict[str, tuple[float, float, str]] = {}
 
 
 def _clean_symbol(value: Any, *, default: str | None = None) -> str:
@@ -69,33 +70,34 @@ def _now_text() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _state_price(asset_symbol: str, quote_symbol: str) -> float | None:
+def _state_price(asset_symbol: str, quote_symbol: str) -> tuple[float | None, str | None]:
     try:
         state = load_runtime_state_snapshot()
     except OSError:
-        return None
+        return None, None
     if not isinstance(state, dict):
-        return None
+        return None, None
     state_symbol = _clean_symbol(state.get("symbol"))
     expected_symbol = f"{asset_symbol}{quote_symbol}"
     if state_symbol != expected_symbol:
-        return None
-    return _as_float(state.get("last_price"))
+        return None, None
+    timestamp = str(state.get("last_price_updated_at") or "").strip() or None
+    return _as_float(state.get("last_price")), timestamp
 
 
-def _fetch_market_price(asset_symbol: str, quote_symbol: str) -> tuple[float | None, str | None]:
+def _fetch_market_price(asset_symbol: str, quote_symbol: str) -> tuple[float | None, str | None, str | None]:
     if asset_symbol in STABLE_ASSETS and quote_symbol in STABLE_ASSETS:
-        return 1.0, None
+        return 1.0, None, _now_text()
 
-    state_price = _state_price(asset_symbol, quote_symbol)
+    state_price, state_price_updated_at = _state_price(asset_symbol, quote_symbol)
     if state_price is not None:
-        return state_price, None
+        return state_price, None, state_price_updated_at
 
     pair = f"{asset_symbol}{quote_symbol}"
     cached = _PRICE_CACHE.get(pair)
     now = time.monotonic()
     if cached is not None and now - cached[0] <= PRICE_CACHE_SECONDS:
-        return cached[1], None
+        return cached[1], None, cached[2]
 
     last_error: str | None = None
     for endpoint in PRICE_ENDPOINTS:
@@ -108,9 +110,10 @@ def _fetch_market_price(asset_symbol: str, quote_symbol: str) -> tuple[float | N
             continue
         price = _as_float(payload.get("price") if isinstance(payload, dict) else None)
         if price is not None:
-            _PRICE_CACHE[pair] = (now, price)
-            return price, None
-    return None, f"Market price unavailable for {pair}: {last_error or 'no price source returned a value'}"
+            fetched_at = _now_text()
+            _PRICE_CACHE[pair] = (now, price, fetched_at)
+            return price, None, fetched_at
+    return None, f"Market price unavailable for {pair}: {last_error or 'no price source returned a value'}", None
 
 
 def _empty_bucket(asset_symbol: str, quote_symbol: str) -> dict[str, Any]:
@@ -152,10 +155,8 @@ def _apply_transaction(bucket: dict[str, Any], transaction: dict[str, Any]) -> N
         bucket["cost_basis"] = max(0.0, current_cost - average_cost * quantity) if next_quantity > 0 else 0.0
 
 
-def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+def _derive_buckets(transactions: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
     buckets: dict[tuple[str, str], dict[str, Any]] = {}
-    warnings: list[str] = []
-
     for transaction in transactions:
         if str(transaction.get("status") or "settled").lower() != "settled":
             continue
@@ -166,6 +167,24 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
         key = (asset_symbol, quote_symbol)
         bucket = buckets.setdefault(key, _empty_bucket(asset_symbol, quote_symbol))
         _apply_transaction(bucket, transaction)
+    return buckets
+
+
+def _validate_nonnegative_stacks(transactions: list[dict[str, Any]]) -> None:
+    for bucket in _derive_buckets(transactions).values():
+        quantity = float(bucket["quantity"])
+        if quantity < -0.00000001:
+            asset_symbol = str(bucket["asset_symbol"])
+            quote_symbol = str(bucket["quote_symbol"])
+            raise ValueError(
+                f"This change would reduce {asset_symbol}/{quote_symbol} below zero "
+                f"by {abs(quantity):.8f} {asset_symbol}."
+            )
+
+
+def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    buckets = _derive_buckets(transactions)
+    warnings: list[str] = []
 
     holdings: list[dict[str, Any]] = []
     priced_value_total = 0.0
@@ -176,7 +195,7 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
         asset_symbol = str(bucket["asset_symbol"])
         quote_symbol = str(bucket["quote_symbol"])
         cost_basis = float(bucket["cost_basis"])
-        market_price, warning = _fetch_market_price(asset_symbol, quote_symbol)
+        market_price, warning, market_price_updated_at = _fetch_market_price(asset_symbol, quote_symbol)
         if warning:
             warnings.append(warning)
         market_value = quantity * market_price if market_price is not None else None
@@ -191,6 +210,7 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
                 "average_cost": cost_basis / quantity if quantity > 0 and cost_basis > 0 else None,
                 "invested_capital": cost_basis,
                 "market_price": market_price,
+                "market_price_updated_at": market_price_updated_at,
                 "market_value": market_value,
                 "unrealized_pnl": unrealized_pnl,
                 "unrealized_pnl_pct": (unrealized_pnl / cost_basis) * 100 if unrealized_pnl is not None and cost_basis > 0 else None,
@@ -203,7 +223,12 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
         market_value = _as_float(holding.get("market_value"))
         holding["allocation_pct"] = (market_value / priced_value_total) * 100 if market_value is not None and priced_value_total > 0 else None
 
-    holdings.sort(key=lambda item: _as_float(item.get("market_value")) or 0.0, reverse=True)
+    holdings.sort(
+        key=lambda item: (
+            -(_as_float(item.get("allocation_pct")) or 0.0),
+            str(item.get("asset_symbol") or ""),
+        )
+    )
     return holdings, warnings
 
 
@@ -217,6 +242,11 @@ def _summary_from_holdings(holdings: list[dict[str, Any]]) -> dict[str, Any]:
         if bool(holding.get("is_dry_powder"))
     )
     largest = max(holdings, key=lambda item: _as_float(item.get("market_value")) or 0.0, default=None)
+    price_timestamps = [
+        str(holding["market_price_updated_at"])
+        for holding in holdings
+        if holding.get("market_price") is not None and holding.get("market_price_updated_at")
+    ]
     return {
         "total_value": total_value,
         "invested_capital": invested_capital,
@@ -226,6 +256,7 @@ def _summary_from_holdings(holdings: list[dict[str, Any]]) -> dict[str, Any]:
         "dry_powder_pct": (dry_powder / total_value) * 100 if total_value > 0 else None,
         "largest_position": largest,
         "holding_count": len(holdings),
+        "prices_updated_at": min(price_timestamps) if price_timestamps else None,
     }
 
 
@@ -283,6 +314,34 @@ def create_portfolio_transaction(payload: dict[str, Any]) -> tuple[dict[str, Any
         "note": str(payload.get("note") or "").strip() or None,
         "external_order_id": str(payload.get("external_order_id") or "").strip() or None,
     }
+    transactions = list_portfolio_transactions(newest_first=False)
+    _validate_nonnegative_stacks([*transactions, transaction])
     appended = append_portfolio_transaction(transaction)
     snapshot, warnings = load_portfolio_snapshot()
     return {"transaction": appended, "portfolio": snapshot}, warnings
+
+
+def set_portfolio_transaction_status(
+    transaction_id: str,
+    status: str,
+) -> tuple[dict[str, Any], list[str]]:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"settled", "voided"}:
+        raise ValueError("Transaction status must be settled or voided.")
+    transactions = list_portfolio_transactions(newest_first=False)
+    transaction_found = False
+    proposed_transactions: list[dict[str, Any]] = []
+    for transaction in transactions:
+        proposed = dict(transaction)
+        if proposed.get("transaction_id") == transaction_id:
+            proposed["status"] = normalized_status
+            transaction_found = True
+        proposed_transactions.append(proposed)
+    if not transaction_found:
+        raise LookupError("Treasury entry was not found.")
+    _validate_nonnegative_stacks(proposed_transactions)
+    transaction = update_portfolio_transaction_status(transaction_id, normalized_status)
+    if transaction is None:
+        raise LookupError("Treasury entry was not found.")
+    snapshot, warnings = load_portfolio_snapshot()
+    return {"transaction": transaction, "portfolio": snapshot}, warnings

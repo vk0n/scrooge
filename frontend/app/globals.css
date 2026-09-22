@@ -2148,6 +2148,12 @@ pre {
   gap: 0.78rem;
 }
 
+.treasury-price-freshness {
+  margin: 0.18rem 0 0;
+  color: #8491a5;
+  font-size: 0.72rem;
+}
+
 .treasury-refresh-btn {
   min-width: 10.5rem;
 }
@@ -2212,15 +2218,26 @@ pre {
   border-color: rgba(83, 98, 121, 0.42);
 }
 
+.treasury-form-toggle {
+  min-width: 9rem;
+}
+
 .treasury-form {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.62rem;
   align-items: end;
+  margin-top: 0.72rem;
 }
 
 .treasury-form-wide {
   grid-column: span 2;
+}
+
+.treasury-field-hint {
+  color: #8996aa;
+  font-size: 0.7rem;
+  font-weight: 400;
 }
 
 .treasury-submit-btn {
@@ -2236,14 +2253,32 @@ pre {
 
 .treasury-holding-card {
   display: grid;
-  gap: 0.72rem;
-  border: 1px solid rgba(66, 143, 111, 0.34);
+  gap: 0.5rem;
+  border: 1px solid rgba(95, 108, 128, 0.34);
   border-radius: 1.05rem;
-  padding: 0.88rem;
+  padding: 0.72rem 0.8rem;
+  background: linear-gradient(180deg, rgba(16, 20, 27, 0.94), rgba(10, 14, 20, 0.98));
+  box-shadow: inset 0 0 0 1px rgba(132, 150, 178, 0.04);
+}
+
+.treasury-holding-card-positive {
+  border-color: rgba(48, 160, 113, 0.42);
   background:
     radial-gradient(circle at top right, rgba(53, 196, 128, 0.1), transparent 38%),
     linear-gradient(180deg, rgba(17, 28, 24, 0.92), rgba(11, 17, 15, 0.97));
   box-shadow: inset 0 0 0 1px rgba(106, 215, 162, 0.04);
+}
+
+.treasury-holding-card-negative {
+  border-color: rgba(193, 81, 97, 0.42);
+  background:
+    radial-gradient(circle at top right, rgba(220, 72, 96, 0.1), transparent 38%),
+    linear-gradient(180deg, rgba(31, 17, 21, 0.92), rgba(18, 11, 14, 0.97));
+  box-shadow: inset 0 0 0 1px rgba(238, 112, 132, 0.04);
+}
+
+.treasury-holding-card-neutral {
+  border-color: rgba(132, 145, 165, 0.38);
 }
 
 .treasury-holding-head {
@@ -2271,7 +2306,8 @@ pre {
 
 .treasury-holding-lines {
   display: grid;
-  gap: 0.42rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.38rem 0.8rem;
 }
 
 .treasury-holding-lines > div {
@@ -2281,7 +2317,13 @@ pre {
   gap: 0.72rem;
   min-width: 0;
   border-top: 1px solid rgba(106, 124, 150, 0.16);
-  padding-top: 0.42rem;
+  padding-top: 0.36rem;
+}
+
+.treasury-holding-lines > div:first-child,
+.treasury-holding-lines > div:nth-child(4),
+.treasury-holding-lines > div:nth-child(5) {
+  grid-column: 1 / -1;
 }
 
 .treasury-holding-lines span {
@@ -2298,6 +2340,30 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.treasury-holding-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.42rem;
+  padding-top: 0.08rem;
+}
+
+.treasury-holding-actions button {
+  border: 1px solid rgba(104, 123, 151, 0.42);
+  border-radius: 0.58rem;
+  padding: 0.3rem 0.52rem;
+  background: rgba(15, 21, 30, 0.7);
+  color: #b9c4d6;
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.treasury-holding-actions button:hover {
+  border-color: rgba(137, 171, 216, 0.7);
+  background: rgba(27, 43, 63, 0.76);
+  color: #f0f5fc;
+}
+
 .treasury-ledger-stack {
   display: grid;
   gap: 0.52rem;
@@ -2305,13 +2371,49 @@ pre {
 
 .treasury-ledger-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.72rem;
   border: 1px solid rgba(95, 108, 128, 0.28);
   border-radius: 0.9rem;
   padding: 0.62rem 0.72rem;
   background: rgba(13, 16, 22, 0.5);
+}
+
+.treasury-ledger-row-voided {
+  opacity: 0.62;
+  border-style: dashed;
+}
+
+.treasury-ledger-row-voided .treasury-ledger-entry {
+  text-decoration: line-through;
+}
+
+.treasury-ledger-main small {
+  margin-left: 0.55rem;
+  color: #aab4c6;
+  font-size: 0.72rem;
+}
+
+.treasury-ledger-action {
+  border: 1px solid rgba(104, 123, 151, 0.48);
+  border-radius: 999px;
+  padding: 0.2rem 0.58rem;
+  background: rgba(20, 27, 38, 0.8);
+  color: #b9c4d6;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.treasury-ledger-action:hover:not(:disabled) {
+  border-color: rgba(137, 171, 216, 0.72);
+  color: #edf4ff;
+}
+
+.treasury-ledger-action:disabled {
+  cursor: wait;
+  opacity: 0.58;
 }
 
 .treasury-ledger-type {
@@ -3367,6 +3469,7 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-refresh-btn,
+  .treasury-form-toggle,
   .treasury-submit-btn {
     width: 100%;
   }
@@ -3391,13 +3494,18 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-ledger-row {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: start;
   }
 
   .treasury-ledger-meta {
     grid-column: 2;
     white-space: normal;
+  }
+
+  .treasury-ledger-action {
+    grid-column: 3;
+    grid-row: 1 / span 2;
   }
 
   .kv-grid {
@@ -3883,13 +3991,13 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-holding-lines > div {
-    align-items: start;
-    flex-direction: column;
-    gap: 0.18rem;
+    align-items: baseline;
+    flex-direction: row;
+    gap: 0.45rem;
   }
 
   .treasury-holding-lines strong {
-    text-align: left;
+    text-align: right;
   }
 
   .kv-grid {

@@ -5,7 +5,11 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from services.portfolio_service import create_portfolio_transaction, load_portfolio_snapshot
+from services.portfolio_service import (
+    create_portfolio_transaction,
+    load_portfolio_snapshot,
+    set_portfolio_transaction_status,
+)
 
 router = APIRouter()
 
@@ -20,6 +24,10 @@ class PortfolioTransactionRequest(BaseModel):
     fee_asset: str | None = Field(default=None, max_length=24)
     executed_at: str | None = Field(default=None, max_length=64)
     note: str | None = Field(default=None, max_length=500)
+
+
+class PortfolioTransactionStatusRequest(BaseModel):
+    status: Literal["settled", "voided"]
 
 
 @router.get("")
@@ -37,6 +45,22 @@ def add_portfolio_transaction(data: PortfolioTransactionRequest) -> dict[str, ob
         payload, warnings = create_portfolio_transaction(data.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {**payload, "warnings": warnings}
+
+
+@router.post("/transactions/{transaction_id}/status")
+def update_transaction_status(
+    transaction_id: str,
+    data: PortfolioTransactionStatusRequest,
+) -> dict[str, object]:
+    try:
+        payload, warnings = set_portfolio_transaction_status(transaction_id, data.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {**payload, "warnings": warnings}

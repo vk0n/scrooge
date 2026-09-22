@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
 import { fetchApi } from "../../lib/api";
@@ -15,6 +15,7 @@ type PortfolioSummary = {
   dry_powder_pct: number | null;
   largest_position: PortfolioHolding | null;
   holding_count: number;
+  prices_updated_at: string | null;
 };
 
 type PortfolioHolding = {
@@ -24,6 +25,7 @@ type PortfolioHolding = {
   average_cost: number | null;
   invested_capital: number;
   market_price: number | null;
+  market_price_updated_at: string | null;
   market_value: number | null;
   unrealized_pnl: number | null;
   unrealized_pnl_pct: number | null;
@@ -162,6 +164,13 @@ function transactionToneClass(type: PortfolioTransactionType): string {
   return "treasury-ledger-type";
 }
 
+function holdingToneClass(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value === 0) {
+    return "treasury-holding-card treasury-holding-card-neutral";
+  }
+  return `treasury-holding-card ${value > 0 ? "treasury-holding-card-positive" : "treasury-holding-card-negative"}`;
+}
+
 function mergePortfolioPayload(payload: Omit<PortfolioPayload, "warnings">, warnings: string[]): PortfolioPayload {
   return {
     ...payload,
@@ -173,8 +182,11 @@ export default function TreasuryPage(): JSX.Element {
   const [portfolio, setPortfolio] = useState<PortfolioPayload | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
+  const [updatingTransactionId, setUpdatingTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<TransactionFormState>(EMPTY_FORM);
+  const [formExpanded, setFormExpanded] = useState<boolean>(false);
+  const formPanelRef = useRef<HTMLElement | null>(null);
 
   async function loadPortfolio(): Promise<void> {
     setError(null);
@@ -213,6 +225,7 @@ export default function TreasuryPage(): JSX.Element {
       });
       setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));
       setForm(EMPTY_FORM);
+      setFormExpanded(false);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Could not add treasure.");
     } finally {
@@ -220,10 +233,56 @@ export default function TreasuryPage(): JSX.Element {
     }
   }
 
+  async function setTransactionStatus(transaction: PortfolioTransaction): Promise<void> {
+    const nextStatus = transaction.status === "voided" ? "settled" : "voided";
+    if (
+      nextStatus === "voided" &&
+      !window.confirm(`Void this ${transactionLabel(transaction.tx_type).toLowerCase()} entry for ${transaction.asset_symbol}?`)
+    ) {
+      return;
+    }
+    setUpdatingTransactionId(transaction.transaction_id);
+    setError(null);
+    try {
+      const response = await fetchApi<CreatePortfolioTransactionResponse>(
+        `/api/portfolio/transactions/${encodeURIComponent(transaction.transaction_id)}/status`,
+        { method: "POST", body: { status: nextStatus } }
+      );
+      setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Could not update the Treasury entry.");
+    } finally {
+      setUpdatingTransactionId(null);
+    }
+  }
+
+  function prepareHoldingTransaction(holding: PortfolioHolding, txType: "buy" | "sell"): void {
+    setForm({
+      ...EMPTY_FORM,
+      tx_type: txType,
+      asset_symbol: holding.asset_symbol,
+      quote_symbol: holding.quote_symbol,
+      fee_asset: holding.quote_symbol,
+    });
+    setFormExpanded(true);
+    window.requestAnimationFrame(() => {
+      formPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
+
   const summary = portfolio?.summary;
-  const holdings = portfolio?.holdings ?? [];
+  const holdings = [...(portfolio?.holdings ?? [])].sort((left, right) => {
+    const allocationDifference = (right.allocation_pct ?? -1) - (left.allocation_pct ?? -1);
+    return allocationDifference || left.asset_symbol.localeCompare(right.asset_symbol);
+  });
   const transactions = portfolio?.transactions ?? [];
   const largestBag = summary?.largest_position;
+  const reducingHolding =
+    form.tx_type === "sell" || form.tx_type === "withdraw"
+      ? holdings.find(
+          (holding) => holding.asset_symbol === form.asset_symbol && holding.quote_symbol === form.quote_symbol
+        )
+      : null;
 
   return (
     <AuthGate>
@@ -235,6 +294,9 @@ export default function TreasuryPage(): JSX.Element {
             <div>
               <h1>Treasury Overview</h1>
               <p className="muted">Manual spot ledger today, control-plane foundation tomorrow.</p>
+              {summary?.prices_updated_at ? (
+                <p className="treasury-price-freshness">Prices checked {formatDateTimeEu(summary.prices_updated_at)}</p>
+              ) : null}
             </div>
             <button type="button" className="dialog-user-btn treasury-refresh-btn" onClick={() => void loadPortfolio()} disabled={loading}>
               Refresh Treasury
@@ -273,14 +335,24 @@ export default function TreasuryPage(): JSX.Element {
           </div>
         </section>
 
-        <section className="section-block treasury-form-panel">
+        <section ref={formPanelRef} className="section-block treasury-form-panel">
           <header className="treasury-section-head">
             <div>
               <h2>Add Treasure</h2>
-              <p className="muted">Each entry lands in the Treasury ledger and holdings are derived from it.</p>
+              <p className="muted">
+                {formExpanded ? "Each entry lands in the Treasury ledger and holdings are derived from it." : "Record a new vault movement."}
+              </p>
             </div>
+            <button
+              type="button"
+              className="dialog-user-btn treasury-form-toggle"
+              aria-expanded={formExpanded}
+              onClick={() => setFormExpanded((current) => !current)}
+            >
+              {formExpanded ? "Close Entry" : "Add Treasure"}
+            </button>
           </header>
-          <form className="treasury-form" onSubmit={(event) => void submitTransaction(event)}>
+          {formExpanded ? <form className="treasury-form" onSubmit={(event) => void submitTransaction(event)}>
             <label className="dialog-user-field">
               Action
               <select
@@ -312,10 +384,16 @@ export default function TreasuryPage(): JSX.Element {
                 value={form.quantity}
                 placeholder="0.25"
                 min="0"
+                max={reducingHolding?.quantity}
                 step="any"
                 onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))}
                 required
               />
+              {reducingHolding ? (
+                <small className="treasury-field-hint">
+                  Available: {formatNumber(reducingHolding.quantity, 8)} {reducingHolding.asset_symbol}
+                </small>
+              ) : null}
             </label>
             <label className="dialog-user-field">
               Entry Cost
@@ -373,7 +451,7 @@ export default function TreasuryPage(): JSX.Element {
             <button type="submit" className="dialog-user-btn treasury-submit-btn" disabled={saving}>
               {saving ? "Adding Treasure..." : "Add Treasure"}
             </button>
-          </form>
+          </form> : null}
         </section>
 
         <section className="section-block">
@@ -389,7 +467,7 @@ export default function TreasuryPage(): JSX.Element {
           ) : (
             <div className="treasury-holdings-grid">
               {holdings.map((holding) => (
-                <article key={`${holding.asset_symbol}-${holding.quote_symbol}`} className="treasury-holding-card">
+                <article key={`${holding.asset_symbol}-${holding.quote_symbol}`} className={holdingToneClass(holding.unrealized_pnl)}>
                   <header className="treasury-holding-head">
                     <span className="treasury-coin">{holding.asset_symbol}</span>
                     <span className="treasury-share">{formatPercent(holding.allocation_pct)}</span>
@@ -416,14 +494,14 @@ export default function TreasuryPage(): JSX.Element {
                     <div>
                       <span>Floating Gain</span>
                       <strong className={signedToneClass(holding.unrealized_pnl, "treasury-inline-value")}>
-                        {formatSignedCurrency(holding.unrealized_pnl)}
+                        {formatSignedCurrency(holding.unrealized_pnl)} · {formatPercent(holding.unrealized_pnl_pct)}
                       </strong>
                     </div>
-                    <div>
-                      <span>Share of Vault</span>
-                      <strong>{formatPercent(holding.allocation_pct)}</strong>
-                    </div>
                   </div>
+                  <footer className="treasury-holding-actions">
+                    <button type="button" onClick={() => prepareHoldingTransaction(holding, "buy")}>Add</button>
+                    <button type="button" onClick={() => prepareHoldingTransaction(holding, "sell")}>Reduce</button>
+                  </footer>
                 </article>
               ))}
             </div>
@@ -443,13 +521,31 @@ export default function TreasuryPage(): JSX.Element {
           ) : (
             <div className="treasury-ledger-stack">
               {transactions.map((transaction) => (
-                <article key={transaction.transaction_id} className="treasury-ledger-row">
+                <article
+                  key={transaction.transaction_id}
+                  className={`treasury-ledger-row${transaction.status === "voided" ? " treasury-ledger-row-voided" : ""}`}
+                >
                   <span className={transactionToneClass(transaction.tx_type)}>{transactionLabel(transaction.tx_type)}</span>
                   <span className="treasury-ledger-main">
-                    {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
-                    {transaction.price ? ` at ${formatCurrency(transaction.price, 6)}` : ""}
+                    <span className="treasury-ledger-entry">
+                      {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
+                      {transaction.price ? ` at ${formatCurrency(transaction.price, 6)}` : ""}
+                    </span>
+                    {transaction.status === "voided" ? <small>Voided</small> : null}
                   </span>
                   <span className="treasury-ledger-meta">{formatDateTimeEu(transaction.executed_at)}</span>
+                  <button
+                    type="button"
+                    className="treasury-ledger-action"
+                    disabled={updatingTransactionId === transaction.transaction_id}
+                    onClick={() => void setTransactionStatus(transaction)}
+                  >
+                    {updatingTransactionId === transaction.transaction_id
+                      ? "Saving..."
+                      : transaction.status === "voided"
+                        ? "Restore"
+                        : "Void"}
+                  </button>
                 </article>
               ))}
             </div>
