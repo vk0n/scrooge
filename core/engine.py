@@ -152,6 +152,7 @@ class RealtimeStrategyProcessor:
     processed_price_ticks: int = 0
     emitted_snapshots: int = 0
     tick_seen_small_open_times: set[int] = field(default_factory=set)
+    snapshot_observer: Callable[[DiscreteRowSnapshot, StrategyRuntime], None] | None = None
 
     def bootstrap_from_frames(
         self,
@@ -177,6 +178,8 @@ class RealtimeStrategyProcessor:
         if snapshot is None:
             return
         self.on_row(snapshot, self.runtime)
+        if self.snapshot_observer is not None:
+            self.snapshot_observer(snapshot, self.runtime)
         if not self.runtime.live:
             self.runtime.balance_history.append(self.runtime.balance)
         self.emitted_snapshots += 1
@@ -2588,6 +2591,7 @@ def process_discrete_row(
             )
         elif isinstance(entry_decision, EntryDecision):
             position = build_position_from_entry(entry_decision, row_ts=row_ts)
+            position["decision_time"] = row_ts
             position["entry_rsi"] = rsi
             refresh_position_snapshot(position, price, config.leverage, row_ts)
             entry_fee = entry_decision.size * price * config.fee_rate
@@ -2693,6 +2697,7 @@ def process_discrete_row(
                                     "stake_mode": position.get("stake_mode"),
                                     "trigger": position.get("trigger"),
                                     "entry_rsi": position.get("entry_rsi"),
+                                    "decision_time": row_ts,
                                     "entry_fee_paid": position.get("entry_fee_paid"),
                                     "entry_order_id": position.get("entry_order_id"),
                                     "entry_execution_time": position.get("entry_execution_time"),
@@ -2944,6 +2949,7 @@ def run_strategy_on_snapshot(
     execution_mode: str = "simulated",
     runtime_mode: str | None = None,
     indicator_inputs: dict[str, str] | None = None,
+    snapshot_observer: Callable[[DiscreteRowSnapshot, StrategyRuntime], None] | None = None,
 ):
     normalized_runtime_mode = str(
         runtime_mode or os.getenv("SCROOGE_RUNTIME_MODE", "live" if live else "backtest")
@@ -2996,6 +3002,8 @@ def run_strategy_on_snapshot(
         indicator_inputs=normalized_indicator_inputs,
     )
     process_discrete_row(snapshot, runtime, config, technical_logger)
+    if snapshot_observer is not None:
+        snapshot_observer(snapshot, runtime)
     runtime.balance_history.append(runtime.balance)
 
     return finalize_strategy_runtime(

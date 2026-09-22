@@ -19,6 +19,7 @@ from backtest.dataset import fetch_historical
 from bot.event_log import get_technical_logger
 from bot.market_stream import LiveMarketStream
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
+from bot.strategy_chart import StrategyChartRecorder
 from bot.trade import (
     close_position,
     get_balance,
@@ -557,6 +558,7 @@ if __name__ == "__main__":
         last_balance_refresh_monotonic = 0.0
         last_strategy_candle_open_time: str | None = None
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
+        chart_recorder = StrategyChartRecorder(symbol)
         command_kwargs = _build_command_kwargs(symbol, leverage=lvrg, fee_rate=0.0005)
         runtime_context: dict[str, Any] = {"state": state}
 
@@ -714,6 +716,8 @@ if __name__ == "__main__":
                 df_medium=df_medium,
                 df_big=df_big,
             )
+            chart_recorder.symbol = symbol
+            processor.snapshot_observer = chart_recorder.observe
             return processor
 
         realtime_processor = (
@@ -837,6 +841,10 @@ if __name__ == "__main__":
                             state = realtime_processor.runtime.state
                             runtime_context["state"] = state
                             chart_balance = state.get("balance")
+                        try:
+                            chart_recorder.flush()
+                        except OSError as exc:
+                            technical_logger.warning("strategy_chart_persist_failed error=%s", exc)
                         chart_row = live_market_stream.take_ready_strategy_row() if live_market_stream is not None else None
                         if chart_row is not None:
                             try:
@@ -903,6 +911,7 @@ if __name__ == "__main__":
                         )
 
                     with state_lock:
+                        chart_recorder.symbol = symbol
                         balance, trades, balance_history, state = run_strategy_on_snapshot(
                             row,
                             live,
@@ -914,9 +923,14 @@ if __name__ == "__main__":
                             state=state,
                             allow_entries=trading_enabled,
                             indicator_inputs=indicator_inputs,
+                            snapshot_observer=chart_recorder.observe,
                             **params,
                         )
                         runtime_context["state"] = state
+                    try:
+                        chart_recorder.flush()
+                    except OSError as exc:
+                        technical_logger.warning("strategy_chart_persist_failed error=%s", exc)
                     last_strategy_candle_open_time = latest_candle_open_time
                     last_chart_dataset_ts_ms = _append_latest_chart_candle(
                         row=row,
@@ -930,6 +944,10 @@ if __name__ == "__main__":
                     technical_logger.exception("live_loop_error error=%s", e)
                     time.sleep(max(1, control_poll_slice_seconds))
         finally:
+            try:
+                chart_recorder.flush(force=True)
+            except OSError as exc:
+                technical_logger.warning("strategy_chart_persist_failed error=%s", exc)
             if live_market_stream is not None:
                 live_market_stream.stop()
                 live_market_stream = None

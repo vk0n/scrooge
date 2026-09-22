@@ -15,6 +15,7 @@ from typing import Any
 from services.config_service import load_config
 from services.history_service import load_balance_history, load_trade_history
 from services.state_service import load_state
+from shared.runtime_db import list_strategy_chart_snapshots
 
 
 BINANCE_FUTURES_KLINES_URL = os.getenv("SCROOGE_CHART_KLINES_URL", "https://fapi.binance.com/fapi/v1/klines")
@@ -833,6 +834,23 @@ def _build_strategy_fallback_indicators(
     return indicators, warnings
 
 
+def _build_recorded_strategy_indicators(
+    symbol: str, start_ms: int, end_ms: int,
+) -> tuple[dict[str, Any], list[str]]:
+    rows = list_strategy_chart_snapshots(symbol, start_ms, end_ms)
+    if not rows:
+        return {}, []
+    # Preserve entry decisions even when a wide chart window needs downsampling.
+    step = max(1, math.ceil(len(rows) / max(1, CHART_DATASET_MAX_CANDLES)))
+    selected = [row for index, row in enumerate(rows) if index % step == 0 or row["kind"] == "entry"]
+    if selected[-1] is not rows[-1]:
+        selected.append(rows[-1])
+    warnings = []
+    if rows[-1]["ts_ms"] < end_ms - 120_000:
+        warnings.append("Strategy indicators have no recent decision samples in this window.")
+    return _build_indicators_from_candle_fields(selected), warnings
+
+
 def _normalize_open_position(position: Any) -> dict[str, Any] | None:
     if not isinstance(position, dict):
         return None
@@ -1270,55 +1288,57 @@ def build_chart_payload(
     range_start_ms = candles[0]["ts_ms"] if candles else None
     range_end_ms = candles[-1]["ts_ms"] if candles else None
 
-    markers = _build_markers(state=state_for_chart, range_start_ms=range_start_ms, range_end_ms=range_end_ms) if candles else {
-        "entries": [],
-        "exits": [],
-        "stop_loss": [],
-        "take_profit": [],
-        "liquidation": [],
-    }
     open_position = _normalize_open_position(state_for_chart.get("position"))
     current_levels = _build_current_levels(open_position)
     rsi_levels = _build_rsi_levels(config)
     entry_rule_spec = _build_entry_rule_spec(config)
     indicator_spec = _build_indicator_spec(config)
     indicators: dict[str, Any] = {}
+    indicator_source: str | None = None
     if include_indicators and candles:
+        decision_end_ms = end_ms if end_ms is not None else min(
+            int(datetime.now(UTC).timestamp() * 1000),
+            range_end_ms + 2 * _parse_interval_to_ms(interval_used),
+        )
+        try:
+            indicators, decision_warnings = _build_recorded_strategy_indicators(
+                resolved_symbol, range_start_ms, decision_end_ms,
+            )
+            warnings.extend(decision_warnings)
+        except OSError as exc:
+            warnings.append(f"Recorded strategy indicators unavailable: {exc}")
+        if indicators:
+            indicator_source = "strategy_decisions"
+            latest_decision_ms = _parse_time_to_ms(indicators["ema"][-1]["time"])
+            if latest_decision_ms is not None:
+                range_end_ms = max(range_end_ms, latest_decision_ms)
+
+    if include_indicators and candles and not indicators:
         indicator_candles = candles
         if source_used != "dataset":
             dataset_indicator_candles, dataset_indicator_warnings = _fetch_candles_from_dataset(
                 symbol=resolved_symbol,
                 period_ms=period_ms,
                 interval=interval_used,
-                end_ms=end_ms,
+                end_ms=range_end_ms,
             )
             for warning in dataset_indicator_warnings:
                 if warning not in warnings:
                     warnings.append(warning)
             if dataset_indicator_candles:
-                indicator_candles = dataset_indicator_candles
+                indicator_candles = [
+                    candle for candle in dataset_indicator_candles
+                    if range_start_ms <= candle["ts_ms"] <= range_end_ms
+                ]
 
         indicators = _build_indicators_from_candle_fields(indicator_candles)
-        if not indicators:
-            strategy_fallback_indicators, strategy_fallback_warnings = _build_strategy_fallback_indicators(
-                symbol=resolved_symbol,
-                config=config,
-                target_candles=candles,
-                period_ms=period_ms,
-                end_ms=range_end_ms,
-            )
-            for warning in strategy_fallback_warnings:
-                if warning not in warnings:
-                    warnings.append(warning)
-            if strategy_fallback_indicators:
-                warnings.append("Dataset indicators unavailable, falling back to Binance strategy indicators.")
-                indicators = strategy_fallback_indicators
-            else:
-                warnings.append(
-                    "Dataset indicators unavailable, and strategy-aligned Binance indicators failed. "
-                    "Falling back to computed indicators from chart candles."
-                )
-                indicators = _build_indicators(candles, indicator_spec=indicator_spec)
+        if indicators:
+            indicator_source = "dataset"
+        else:
+            warnings.append("No recorded strategy indicators in this window. Indicator lines are unavailable.")
+    markers = _build_markers(state=state_for_chart, range_start_ms=range_start_ms, range_end_ms=range_end_ms) if candles else {
+        "entries": [], "exits": [], "stop_loss": [], "take_profit": [], "liquidation": [],
+    }
     equity_curve = _build_equity_curve_from_candle_balance(candles)
     if not equity_curve:
         equity_curve = _build_equity_curve(
@@ -1345,6 +1365,7 @@ def build_chart_payload(
         "rsi_levels": rsi_levels,
         "entry_rule_spec": entry_rule_spec,
         "indicator_spec": indicator_spec,
+        "indicator_source": indicator_source,
         "open_position": open_position,
         "indicators": indicators,
         "equity_curve": equity_curve,

@@ -210,6 +210,13 @@ The control plane provides:
 - charting from runtime/backtest artifacts
 - push notification subscription management
 
+Live chart indicators come from the snapshots evaluated by the trading engine.
+SQLite stores the latest sample per minute plus exact entry-decision samples;
+changing the chart candle interval does not recalculate EMA, RSI, or Bollinger Bands.
+These records start accumulating after the updated bot starts. Older windows can
+use legacy CSV indicators, but missing indicators are not reconstructed
+from Binance candles. Deploy the bot and API together to enable this data source.
+
 ### Local backtests
 
 Run against `config/backtest.yaml`:

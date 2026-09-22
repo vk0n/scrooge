@@ -12,8 +12,8 @@ from typing import Any, Iterator
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 2
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Portfolio ledger schema"
+RUNTIME_DB_SCHEMA_VERSION = 3
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Strategy decision chart snapshots"
 
 
 class RuntimeDbError(OSError):
@@ -291,6 +291,17 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_ui_log_entries_sort
         ON ui_log_entries(sort_ts_ms DESC, id DESC);
 
+        CREATE TABLE IF NOT EXISTS strategy_chart_snapshots (
+            symbol TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            bucket_ms INTEGER NOT NULL,
+            ts_ms INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (symbol, kind, bucket_ms)
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_chart_time
+        ON strategy_chart_snapshots(symbol, ts_ms);
+
         CREATE TABLE IF NOT EXISTS portfolio_accounts (
             account_key TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -374,6 +385,32 @@ def _connection(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         raise RuntimeDbError(f"Runtime database operation failed at {resolved_path}: {exc}") from exc
     finally:
         connection.close()
+
+
+def save_strategy_chart_snapshots(rows: list[dict[str, Any]], path: Path | None = None) -> None:
+    if not rows:
+        return
+    with _connection(path) as connection:
+        connection.executemany(
+            """INSERT INTO strategy_chart_snapshots
+               (symbol, kind, bucket_ms, ts_ms, payload_json) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(symbol, kind, bucket_ms) DO UPDATE SET
+               ts_ms=excluded.ts_ms, payload_json=excluded.payload_json
+               WHERE excluded.ts_ms >= strategy_chart_snapshots.ts_ms""",
+            [(row["symbol"], row["kind"], row["bucket_ms"], row["ts_ms"], _json_text(row)) for row in rows],
+        )
+
+
+def list_strategy_chart_snapshots(
+    symbol: str, start_ms: int, end_ms: int, path: Path | None = None,
+) -> list[dict[str, Any]]:
+    with _connection(path) as connection:
+        rows = connection.execute(
+            """SELECT payload_json FROM strategy_chart_snapshots
+               WHERE symbol=? AND ts_ms BETWEEN ? AND ? ORDER BY ts_ms, kind""",
+            (symbol, start_ms, end_ms),
+        ).fetchall()
+    return [json.loads(row["payload_json"]) for row in rows]
 
 
 def bootstrap_runtime_db(

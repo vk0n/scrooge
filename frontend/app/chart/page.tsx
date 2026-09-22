@@ -1019,7 +1019,9 @@ function ChartContent(): JSX.Element {
       const candleClose = data.candles.map((candle) => candle.close);
       const candleTimesMs = candleX.map((time) => toTimestampMs(time) ?? Number.NaN);
       const chartStartMs = candleTimesMs.find((value) => Number.isFinite(value)) ?? null;
-      const chartEndMs = [...candleTimesMs].reverse().find((value) => Number.isFinite(value)) ?? null;
+      const lastCandleMs = [...candleTimesMs].reverse().find((value) => Number.isFinite(value)) ?? null;
+      const payloadEndMs = toTimestampMs(toChartDisplayTime(data.range_end));
+      const chartEndMs = lastCandleMs === null ? payloadEndMs : Math.max(lastCandleMs, payloadEndMs ?? lastCandleMs);
       const boundedVisibleRange =
         chartStartMs !== null && chartEndMs !== null
           ? clampVisibleXRange(visibleXRangeRef.current, chartStartMs, chartEndMs)
