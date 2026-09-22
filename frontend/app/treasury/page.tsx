@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
 import { fetchApi } from "../../lib/api";
@@ -49,10 +49,20 @@ type PortfolioTransaction = {
   note: string | null;
 };
 
+type PortfolioTimelinePoint = {
+  snapshot_date: string;
+  captured_at_ms: number;
+  total_value: number;
+  invested_capital: number;
+  unrealized_pnl: number;
+  dry_powder: number;
+};
+
 type PortfolioPayload = {
   path: string;
   summary: PortfolioSummary;
   holdings: PortfolioHolding[];
+  timeline: PortfolioTimelinePoint[];
   transactions: PortfolioTransaction[];
   transaction_count: number;
   transaction_limit: number;
@@ -91,6 +101,19 @@ const EMPTY_FORM: TransactionFormState = {
   executed_at: "",
   note: "",
 };
+
+const ALLOCATION_COLORS = [
+  "#d9ae45",
+  "#39c997",
+  "#5b9bd5",
+  "#e17c58",
+  "#a786d8",
+  "#65b8c6",
+  "#d36984",
+  "#8eaa62",
+  "#cc8e45",
+  "#7888bd",
+];
 
 function asNumber(value: string): number | null {
   const trimmed = value.trim();
@@ -180,6 +203,87 @@ function mergePortfolioPayload(payload: Omit<PortfolioPayload, "warnings">, warn
   };
 }
 
+function formatTimelineDate(value: string): string {
+  const [year, month, day] = value.split("-");
+  return year && month && day ? `${day}.${month}.${year}` : value;
+}
+
+function buildTimelineCoordinates(
+  timeline: PortfolioTimelinePoint[],
+  valueKey: "total_value" | "unrealized_pnl"
+): Array<{ x: number; y: number; point: PortfolioTimelinePoint }> {
+  const width = 600;
+  const height = 150;
+  const paddingX = 14;
+  const paddingY = 16;
+  const values = timeline.map((point) => point[valueKey]);
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const spread = maximum - minimum || Math.max(Math.abs(maximum) * 0.04, 1);
+  return timeline.map((point, index) => ({
+    x: timeline.length === 1 ? width / 2 : paddingX + (index / (timeline.length - 1)) * (width - paddingX * 2),
+    y: timeline.length === 1
+      ? height / 2
+      : paddingY + ((maximum - point[valueKey]) / spread) * (height - paddingY * 2),
+    point,
+  }));
+}
+
+function TimelineSeries({
+  title,
+  timeline,
+  valueKey,
+  tone,
+}: {
+  title: string;
+  timeline: PortfolioTimelinePoint[];
+  valueKey: "total_value" | "unrealized_pnl";
+  tone: "gold" | "positive" | "negative" | "neutral";
+}): JSX.Element {
+  const coordinates = timeline.length ? buildTimelineCoordinates(timeline, valueKey) : [];
+  const linePoints = coordinates.map(({ x, y }) => `${x},${y}`).join(" ");
+  const areaPath = coordinates.length > 1
+    ? `M ${coordinates[0].x} 150 L ${coordinates.map(({ x, y }) => `${x} ${y}`).join(" L ")} L ${coordinates[coordinates.length - 1].x} 150 Z`
+    : "";
+  const latest = timeline.at(-1)?.[valueKey];
+  const values = timeline.map((point) => point[valueKey]);
+  const formatValue = (value: number | null | undefined): string =>
+    valueKey === "unrealized_pnl" ? formatSignedCurrency(value) : formatCurrency(value);
+
+  return (
+    <div className={`treasury-timeline-series treasury-timeline-series-${tone}`}>
+      <header>
+        <span>{title}</span>
+        <strong>{formatValue(latest)}</strong>
+      </header>
+      <div className="treasury-timeline-chart">
+        {coordinates.length ? (
+          <svg viewBox="0 0 600 150" role="img" aria-label={`${title} daily timeline`} preserveAspectRatio="none">
+            <line x1="0" y1="75" x2="600" y2="75" className="treasury-timeline-gridline" />
+            {areaPath ? <path d={areaPath} className="treasury-timeline-area" /> : null}
+            {linePoints ? <polyline points={linePoints} className="treasury-timeline-line" /> : null}
+            {coordinates.map(({ x, y, point }) => (
+              <circle key={point.snapshot_date} cx={x} cy={y} r={coordinates.length === 1 ? 5 : 3}>
+                <title>
+                  {formatTimelineDate(point.snapshot_date)}: {formatValue(point[valueKey])}
+                </title>
+              </circle>
+            ))}
+          </svg>
+        ) : (
+          <span>Awaiting the first daily mark.</span>
+        )}
+      </div>
+      {values.length ? (
+        <footer>
+          <span>Low {formatValue(Math.min(...values))}</span>
+          <span>High {formatValue(Math.max(...values))}</span>
+        </footer>
+      ) : null}
+    </div>
+  );
+}
+
 export default function TreasuryPage(): JSX.Element {
   const [portfolio, setPortfolio] = useState<PortfolioPayload | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -190,7 +294,7 @@ export default function TreasuryPage(): JSX.Element {
   const [formExpanded, setFormExpanded] = useState<boolean>(false);
   const formPanelRef = useRef<HTMLElement | null>(null);
 
-  async function loadPortfolio(transactionOffset = portfolio?.transaction_offset ?? 0): Promise<void> {
+  const loadPortfolio = useCallback(async (transactionOffset: number): Promise<void> => {
     setError(null);
     setLoading(true);
     try {
@@ -201,11 +305,11 @@ export default function TreasuryPage(): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     void loadPortfolio(0);
-  }, []);
+  }, [loadPortfolio]);
 
   async function submitTransaction(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -278,6 +382,31 @@ export default function TreasuryPage(): JSX.Element {
     const allocationDifference = (right.allocation_pct ?? -1) - (left.allocation_pct ?? -1);
     return allocationDifference || left.asset_symbol.localeCompare(right.asset_symbol);
   });
+  const timeline = portfolio?.timeline ?? [];
+  const allocationHoldings = holdings.filter(
+    (holding) => typeof holding.allocation_pct === "number" && holding.allocation_pct > 0
+  );
+  let allocationCursor = 0;
+  const allocationStops = allocationHoldings.map((holding, index) => {
+    const start = allocationCursor;
+    allocationCursor = index === allocationHoldings.length - 1
+      ? 100
+      : allocationCursor + (holding.allocation_pct ?? 0);
+    return `${ALLOCATION_COLORS[index % ALLOCATION_COLORS.length]} ${start}% ${allocationCursor}%`;
+  });
+  const allocationGradient = allocationStops.length
+    ? `conic-gradient(${allocationStops.join(", ")})`
+    : "conic-gradient(#273140 0% 100%)";
+  const topThreeAllocation = allocationHoldings
+    .slice(0, 3)
+    .reduce((total, holding) => total + (holding.allocation_pct ?? 0), 0);
+  const latestTimelinePnl = timeline.at(-1)?.unrealized_pnl;
+  const timelinePnlTone =
+    typeof latestTimelinePnl !== "number" || latestTimelinePnl === 0
+      ? "neutral"
+      : latestTimelinePnl > 0
+        ? "positive"
+        : "negative";
   const transactions = portfolio?.transactions ?? [];
   const transactionCount = portfolio?.transaction_count ?? 0;
   const transactionLimit = portfolio?.transaction_limit ?? 5;
@@ -308,7 +437,12 @@ export default function TreasuryPage(): JSX.Element {
                 <p className="treasury-price-freshness">Prices checked {formatDateTimeEu(summary.prices_updated_at)}</p>
               ) : null}
             </div>
-            <button type="button" className="dialog-user-btn treasury-refresh-btn" onClick={() => void loadPortfolio()} disabled={loading}>
+            <button
+              type="button"
+              className="dialog-user-btn treasury-refresh-btn"
+              onClick={() => void loadPortfolio(portfolio?.transaction_offset ?? 0)}
+              disabled={loading}
+            >
               Refresh Treasury
             </button>
           </header>
@@ -353,6 +487,77 @@ export default function TreasuryPage(): JSX.Element {
               <strong>{largestBag ? largestBag.asset_symbol : "No Treasure Yet"}</strong>
               <span className="treasury-summary-note">{largestBag ? formatPercent(largestBag.allocation_pct) : "Awaiting first coin"}</span>
             </div>
+          </div>
+
+          <div className="treasury-visibility-grid">
+            <article className="treasury-insight-card treasury-allocation-card">
+              <header className="treasury-insight-head">
+                <div>
+                  <h2>Treasure Map</h2>
+                  <p className="muted">How the vault is divided right now.</p>
+                </div>
+                <span className="treasury-insight-count">{allocationHoldings.length} coins</span>
+              </header>
+
+              <div className="treasury-allocation-content">
+                <div
+                  className="treasury-allocation-donut"
+                  style={{ background: allocationGradient }}
+                  role="img"
+                  aria-label="Current Treasury allocation"
+                >
+                  <div>
+                    <strong>{formatPercent(topThreeAllocation)}</strong>
+                    <span>Top 3</span>
+                  </div>
+                </div>
+                {allocationHoldings.length ? <ol className="treasury-allocation-legend">
+                  {allocationHoldings.map((holding, index) => (
+                    <li key={`${holding.asset_symbol}-${holding.quote_symbol}`}>
+                      <span
+                        className="treasury-allocation-swatch"
+                        style={{ backgroundColor: ALLOCATION_COLORS[index % ALLOCATION_COLORS.length] }}
+                        aria-hidden="true"
+                      />
+                      <strong>{holding.asset_symbol}</strong>
+                      <span>{formatPercent(holding.allocation_pct)}</span>
+                      <small>{formatCurrency(holding.market_value)}</small>
+                    </li>
+                  ))}
+                </ol> : <p className="treasury-allocation-empty">Add treasure to draw the map.</p>}
+              </div>
+              <footer className="treasury-allocation-foot">
+                <span>Top 3 concentration <strong>{formatPercent(topThreeAllocation)}</strong></span>
+                <span>Dry Powder <strong>{formatPercent(summary?.dry_powder_pct)}</strong></span>
+              </footer>
+            </article>
+
+            <article className="treasury-insight-card treasury-timeline-card">
+              <header className="treasury-insight-head">
+                <div>
+                  <h2>Treasury Timeline</h2>
+                  <p className="muted">Daily valuation marks from the Control Plane.</p>
+                </div>
+                <span className="treasury-insight-count">
+                  {timeline.length} {timeline.length === 1 ? "day" : "days"}
+                </span>
+              </header>
+              <div className="treasury-timeline-grid">
+                <TimelineSeries title="Treasure Value" timeline={timeline} valueKey="total_value" tone="gold" />
+                <TimelineSeries title="Floating PnL" timeline={timeline} valueKey="unrealized_pnl" tone={timelinePnlTone} />
+              </div>
+              <footer className="treasury-timeline-range">
+                {timeline.length ? (
+                  <>
+                    <span>{formatTimelineDate(timeline[0].snapshot_date)}</span>
+                    <span>Daily marks</span>
+                    <span>{formatTimelineDate(timeline[timeline.length - 1].snapshot_date)}</span>
+                  </>
+                ) : (
+                  <span>Refresh Treasury to place the first mark.</span>
+                )}
+              </footer>
+            </article>
           </div>
         </section>
 

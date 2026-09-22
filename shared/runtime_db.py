@@ -12,8 +12,8 @@ from typing import Any, Iterator
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 3
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Strategy decision chart snapshots"
+RUNTIME_DB_SCHEMA_VERSION = 4
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Portfolio daily valuation snapshots"
 
 
 class RuntimeDbError(OSError):
@@ -340,6 +340,23 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_portfolio_transactions_asset
         ON portfolio_transactions(asset_symbol, quote_symbol, status);
+
+        CREATE TABLE IF NOT EXISTS portfolio_daily_snapshots (
+            account_key TEXT NOT NULL,
+            snapshot_date TEXT NOT NULL,
+            captured_at_ms INTEGER NOT NULL,
+            total_value REAL NOT NULL,
+            invested_capital REAL NOT NULL,
+            unrealized_pnl REAL NOT NULL,
+            dry_powder REAL NOT NULL,
+            holdings_json TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (account_key, snapshot_date),
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_portfolio_daily_snapshots_time
+        ON portfolio_daily_snapshots(account_key, captured_at_ms ASC);
         """
     )
     connection.execute(
@@ -1011,3 +1028,122 @@ def count_portfolio_transactions(path: Path | None = None) -> int:
     with _connection(path) as connection:
         row = connection.execute("SELECT COUNT(*) AS count FROM portfolio_transactions").fetchone()
     return int(row["count"]) if row is not None else 0
+
+
+def upsert_portfolio_daily_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    account_key: str = "manual_spot",
+    path: Path | None = None,
+) -> dict[str, Any]:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    now = datetime.now(timezone.utc)
+    snapshot_date = str(snapshot.get("snapshot_date") or now.date().isoformat()).strip()
+    captured_at_ms = int(snapshot.get("captured_at_ms") or now.timestamp() * 1000)
+    holdings = snapshot.get("holdings") if isinstance(snapshot.get("holdings"), list) else []
+    payload = {
+        **snapshot,
+        "account_key": normalized_account,
+        "snapshot_date": snapshot_date,
+        "captured_at_ms": captured_at_ms,
+        "holdings": holdings,
+    }
+    total_value = _as_float_or_none(payload.get("total_value")) or 0.0
+    invested_capital = _as_float_or_none(payload.get("invested_capital")) or 0.0
+    unrealized_pnl = _as_float_or_none(payload.get("unrealized_pnl")) or 0.0
+    dry_powder = _as_float_or_none(payload.get("dry_powder")) or 0.0
+
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO portfolio_daily_snapshots (
+                account_key,
+                snapshot_date,
+                captured_at_ms,
+                total_value,
+                invested_capital,
+                unrealized_pnl,
+                dry_powder,
+                holdings_json,
+                payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_key, snapshot_date) DO UPDATE SET
+                captured_at_ms = excluded.captured_at_ms,
+                total_value = excluded.total_value,
+                invested_capital = excluded.invested_capital,
+                unrealized_pnl = excluded.unrealized_pnl,
+                dry_powder = excluded.dry_powder,
+                holdings_json = excluded.holdings_json,
+                payload_json = excluded.payload_json
+            """,
+            (
+                normalized_account,
+                snapshot_date,
+                captured_at_ms,
+                total_value,
+                invested_capital,
+                unrealized_pnl,
+                dry_powder,
+                _json_text(holdings),
+                _json_text(payload),
+            ),
+        )
+
+    return {
+        **payload,
+        "total_value": total_value,
+        "invested_capital": invested_capital,
+        "unrealized_pnl": unrealized_pnl,
+        "dry_powder": dry_powder,
+    }
+
+
+def list_portfolio_daily_snapshots(
+    *,
+    account_key: str = "manual_spot",
+    limit: int = 180,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_limit = max(1, min(int(limit), 730))
+    with _connection(path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                snapshot_date,
+                captured_at_ms,
+                total_value,
+                invested_capital,
+                unrealized_pnl,
+                dry_powder,
+                holdings_json,
+                payload_json
+            FROM portfolio_daily_snapshots
+            WHERE account_key = ?
+            ORDER BY captured_at_ms DESC
+            LIMIT ?
+            """,
+            (normalized_account, normalized_limit),
+        ).fetchall()
+
+    snapshots: list[dict[str, Any]] = []
+    for row in reversed(rows):
+        payload = json.loads(row["payload_json"])
+        if not isinstance(payload, dict):
+            payload = {}
+        holdings = json.loads(row["holdings_json"])
+        payload.update(
+            {
+                "account_key": normalized_account,
+                "snapshot_date": str(row["snapshot_date"]),
+                "captured_at_ms": int(row["captured_at_ms"]),
+                "total_value": float(row["total_value"]),
+                "invested_capital": float(row["invested_capital"]),
+                "unrealized_pnl": float(row["unrealized_pnl"]),
+                "dry_powder": float(row["dry_powder"]),
+                "holdings": holdings if isinstance(holdings, list) else [],
+            }
+        )
+        snapshots.append(payload)
+    return snapshots

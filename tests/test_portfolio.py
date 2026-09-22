@@ -117,6 +117,35 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             list(reversed(transaction_ids))[5:],
         )
 
+    def test_timeline_keeps_one_latest_valuation_per_day(self):
+        self.add("BTC", 1, 90)
+        self.add("ETH", 1, 10)
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        self.assertEqual(len(snapshot["timeline"]), 1)
+        point = snapshot["timeline"][0]
+        self.assertEqual(point["total_value"], 120.0)
+        self.assertEqual(point["invested_capital"], 100.0)
+        self.assertEqual(point["unrealized_pnl"], 20.0)
+        self.assertEqual(
+            [holding["asset_symbol"] for holding in point["holdings"]],
+            ["BTC", "ETH"],
+        )
+
+    def test_timeline_skips_incomplete_market_valuation(self):
+        self.prices.stop()
+        with patch.object(
+            portfolio_service,
+            "_fetch_market_price",
+            return_value=(None, "price unavailable", None),
+        ):
+            self.add("SOL", 1, 10)
+            snapshot, warnings = portfolio_service.load_portfolio_snapshot()
+
+        self.assertEqual(snapshot["timeline"], [])
+        self.assertTrue(any("Timeline was not updated" in warning for warning in warnings))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,9 +24,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 from shared.runtime_db import (  # noqa: E402
     append_portfolio_transaction,
     count_portfolio_transactions,
+    list_portfolio_daily_snapshots,
     list_portfolio_transactions,
     load_runtime_state_snapshot,
     runtime_db_path,
+    upsert_portfolio_daily_snapshot,
     update_portfolio_transaction_status,
 )
 
@@ -261,12 +263,43 @@ def _summary_from_holdings(holdings: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 PORTFOLIO_TRANSACTION_PAGE_SIZE = 5
+PORTFOLIO_TIMELINE_DAYS = 180
+
+
+def _portfolio_timeline(summary: dict[str, Any], holdings: list[dict[str, Any]], warnings: list[str]) -> list[dict[str, Any]]:
+    prices_complete = all(holding.get("market_value") is not None for holding in holdings)
+    if prices_complete:
+        captured_at = datetime.now(timezone.utc)
+        upsert_portfolio_daily_snapshot(
+            {
+                "snapshot_date": captured_at.date().isoformat(),
+                "captured_at_ms": int(captured_at.timestamp() * 1000),
+                "total_value": summary["total_value"],
+                "invested_capital": summary["invested_capital"],
+                "unrealized_pnl": summary["unrealized_pnl"],
+                "dry_powder": summary["dry_powder"],
+                "holdings": [
+                    {
+                        "asset_symbol": holding["asset_symbol"],
+                        "market_value": holding["market_value"],
+                        "allocation_pct": holding["allocation_pct"],
+                    }
+                    for holding in holdings
+                ],
+            },
+            account_key=DEFAULT_ACCOUNT_KEY,
+        )
+    elif holdings:
+        warnings.append("Treasury Timeline was not updated because one or more assets are awaiting a market price.")
+    return list_portfolio_daily_snapshots(account_key=DEFAULT_ACCOUNT_KEY, limit=PORTFOLIO_TIMELINE_DAYS)
 
 
 def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, Any], list[str]]:
     normalized_offset = max(0, int(transaction_offset))
     transactions = list_portfolio_transactions(newest_first=False)
     holdings, warnings = _derive_holdings(transactions)
+    summary = _summary_from_holdings(holdings)
+    timeline = _portfolio_timeline(summary, holdings, warnings)
     newest_transactions = list_portfolio_transactions(
         limit=PORTFOLIO_TRANSACTION_PAGE_SIZE,
         offset=normalized_offset,
@@ -275,8 +308,9 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     return (
         {
             "path": str(runtime_db_path()),
-            "summary": _summary_from_holdings(holdings),
+            "summary": summary,
             "holdings": holdings,
+            "timeline": timeline,
             "transactions": newest_transactions,
             "transaction_count": count_portfolio_transactions(),
             "transaction_limit": PORTFOLIO_TRANSACTION_PAGE_SIZE,
