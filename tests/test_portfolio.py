@@ -98,6 +98,25 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         snapshot, _ = portfolio_service.load_portfolio_snapshot()
         self.assertEqual(snapshot["transactions"][-1]["status"], "settled")
 
+    def test_ledger_returns_five_latest_transactions_with_pagination(self):
+        transaction_ids = [self.add("BTC", 1, 90)["transaction_id"] for _ in range(7)]
+
+        first_page, _ = portfolio_service.load_portfolio_snapshot()
+        second_page, _ = portfolio_service.load_portfolio_snapshot(transaction_offset=5)
+
+        self.assertEqual(first_page["transaction_count"], 7)
+        self.assertEqual(first_page["transaction_limit"], 5)
+        self.assertEqual(first_page["transaction_offset"], 0)
+        self.assertEqual(
+            [transaction["transaction_id"] for transaction in first_page["transactions"]],
+            list(reversed(transaction_ids))[:5],
+        )
+        self.assertEqual(second_page["transaction_offset"], 5)
+        self.assertEqual(
+            [transaction["transaction_id"] for transaction in second_page["transactions"]],
+            list(reversed(transaction_ids))[5:],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,6 +55,8 @@ type PortfolioPayload = {
   holdings: PortfolioHolding[];
   transactions: PortfolioTransaction[];
   transaction_count: number;
+  transaction_limit: number;
+  transaction_offset: number;
   warnings: string[];
 };
 
@@ -188,10 +190,11 @@ export default function TreasuryPage(): JSX.Element {
   const [formExpanded, setFormExpanded] = useState<boolean>(false);
   const formPanelRef = useRef<HTMLElement | null>(null);
 
-  async function loadPortfolio(): Promise<void> {
+  async function loadPortfolio(transactionOffset = portfolio?.transaction_offset ?? 0): Promise<void> {
     setError(null);
+    setLoading(true);
     try {
-      const payload = await fetchApi<PortfolioPayload>("/api/portfolio");
+      const payload = await fetchApi<PortfolioPayload>(`/api/portfolio?transaction_offset=${transactionOffset}`);
       setPortfolio(payload);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Treasury is unavailable.");
@@ -201,7 +204,7 @@ export default function TreasuryPage(): JSX.Element {
   }
 
   useEffect(() => {
-    void loadPortfolio();
+    void loadPortfolio(0);
   }, []);
 
   async function submitTransaction(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -276,6 +279,13 @@ export default function TreasuryPage(): JSX.Element {
     return allocationDifference || left.asset_symbol.localeCompare(right.asset_symbol);
   });
   const transactions = portfolio?.transactions ?? [];
+  const transactionCount = portfolio?.transaction_count ?? 0;
+  const transactionLimit = portfolio?.transaction_limit ?? 5;
+  const transactionOffset = portfolio?.transaction_offset ?? 0;
+  const transactionRangeStart = transactionCount > 0 ? transactionOffset + 1 : 0;
+  const transactionRangeEnd = Math.min(transactionOffset + transactions.length, transactionCount);
+  const hasLaterTransactions = transactionOffset > 0;
+  const hasEarlierTransactions = transactionOffset + transactions.length < transactionCount;
   const largestBag = summary?.largest_position;
   const reducingHolding =
     form.tx_type === "sell" || form.tx_type === "withdraw"
@@ -519,36 +529,73 @@ export default function TreasuryPage(): JSX.Element {
           {transactions.length === 0 ? (
             <p className="trade-history-empty-sheet">No Treasury entries yet.</p>
           ) : (
-            <div className="treasury-ledger-stack">
-              {transactions.map((transaction) => (
-                <article
-                  key={transaction.transaction_id}
-                  className={`treasury-ledger-row${transaction.status === "voided" ? " treasury-ledger-row-voided" : ""}`}
-                >
-                  <span className={transactionToneClass(transaction.tx_type)}>{transactionLabel(transaction.tx_type)}</span>
-                  <span className="treasury-ledger-main">
-                    <span className="treasury-ledger-entry">
-                      {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
-                      {transaction.price ? ` at ${formatCurrency(transaction.price, 6)}` : ""}
+            <>
+              <div className="treasury-ledger-stack">
+                {transactions.map((transaction) => (
+                  <article
+                    key={transaction.transaction_id}
+                    className={`treasury-ledger-row${transaction.status === "voided" ? " treasury-ledger-row-voided" : ""}`}
+                  >
+                    <span className={transactionToneClass(transaction.tx_type)}>{transactionLabel(transaction.tx_type)}</span>
+                    <span className="treasury-ledger-main">
+                      <span className="treasury-ledger-entry">
+                        {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
+                        {transaction.price ? ` at ${formatCurrency(transaction.price, 6)}` : ""}
+                      </span>
+                      {transaction.status === "voided" ? <small>Voided</small> : null}
                     </span>
-                    {transaction.status === "voided" ? <small>Voided</small> : null}
-                  </span>
-                  <span className="treasury-ledger-meta">{formatDateTimeEu(transaction.executed_at)}</span>
+                    <span className="treasury-ledger-meta">{formatDateTimeEu(transaction.executed_at)}</span>
+                    <button
+                      type="button"
+                      className="treasury-ledger-action"
+                      disabled={updatingTransactionId === transaction.transaction_id}
+                      onClick={() => void setTransactionStatus(transaction)}
+                    >
+                      {updatingTransactionId === transaction.transaction_id
+                        ? "Saving..."
+                        : transaction.status === "voided"
+                          ? "Restore"
+                          : "Void"}
+                    </button>
+                  </article>
+                ))}
+              </div>
+              {transactionCount > transactionLimit ? (
+                <div className="toolbar trade-history-toolbar treasury-ledger-toolbar">
                   <button
                     type="button"
-                    className="treasury-ledger-action"
-                    disabled={updatingTransactionId === transaction.transaction_id}
-                    onClick={() => void setTransactionStatus(transaction)}
+                    className="dialog-user-btn trade-history-nav-button"
+                    disabled={loading || !hasLaterTransactions}
+                    onClick={() => void loadPortfolio(Math.max(0, transactionOffset - transactionLimit))}
                   >
-                    {updatingTransactionId === transaction.transaction_id
-                      ? "Saving..."
-                      : transaction.status === "voided"
-                        ? "Restore"
-                        : "Void"}
+                    Later
                   </button>
-                </article>
-              ))}
-            </div>
+                  <div className="trade-history-toolbar-center">
+                    <span className="trade-history-page-indicator">
+                      Showing {transactionRangeStart}-{transactionRangeEnd} of {transactionCount}
+                    </span>
+                    {hasLaterTransactions ? (
+                      <button
+                        type="button"
+                        className="dialog-user-btn trade-history-latest-button"
+                        disabled={loading}
+                        onClick={() => void loadPortfolio(0)}
+                      >
+                        Latest
+                      </button>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="dialog-user-btn trade-history-nav-button"
+                    disabled={loading || !hasEarlierTransactions}
+                    onClick={() => void loadPortfolio(transactionOffset + transactionLimit)}
+                  >
+                    Earlier
+                  </button>
+                </div>
+              ) : null}
+            </>
           )}
         </section>
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from services.portfolio_service import (
@@ -31,9 +31,9 @@ class PortfolioTransactionStatusRequest(BaseModel):
 
 
 @router.get("")
-def get_portfolio() -> dict[str, object]:
+def get_portfolio(transaction_offset: int = Query(default=0, ge=0)) -> dict[str, object]:
     try:
-        payload, warnings = load_portfolio_snapshot()
+        payload, warnings = load_portfolio_snapshot(transaction_offset=transaction_offset)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {**payload, "warnings": warnings}

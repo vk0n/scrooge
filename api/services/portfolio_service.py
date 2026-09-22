@@ -260,10 +260,18 @@ def _summary_from_holdings(holdings: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def load_portfolio_snapshot() -> tuple[dict[str, Any], list[str]]:
+PORTFOLIO_TRANSACTION_PAGE_SIZE = 5
+
+
+def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, Any], list[str]]:
+    normalized_offset = max(0, int(transaction_offset))
     transactions = list_portfolio_transactions(newest_first=False)
     holdings, warnings = _derive_holdings(transactions)
-    newest_transactions = list_portfolio_transactions(limit=25, newest_first=True)
+    newest_transactions = list_portfolio_transactions(
+        limit=PORTFOLIO_TRANSACTION_PAGE_SIZE,
+        offset=normalized_offset,
+        newest_first=True,
+    )
     return (
         {
             "path": str(runtime_db_path()),
@@ -271,6 +279,8 @@ def load_portfolio_snapshot() -> tuple[dict[str, Any], list[str]]:
             "holdings": holdings,
             "transactions": newest_transactions,
             "transaction_count": count_portfolio_transactions(),
+            "transaction_limit": PORTFOLIO_TRANSACTION_PAGE_SIZE,
+            "transaction_offset": normalized_offset,
         },
         warnings,
     )

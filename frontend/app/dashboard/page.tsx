@@ -2264,10 +2264,21 @@ function DashboardContent(): JSX.Element {
                     >
                       Later
                     </button>
-                    <span className="trade-history-page-indicator">
-                      Showing {tradeHistoryRangeStart}-{tradeHistoryRangeEnd} of {tradeHistoryTotal} for{" "}
-                      {selectedPerformanceWindow.proseLabel}
-                    </span>
+                    <div className="trade-history-toolbar-center">
+                      <span className="trade-history-page-indicator">
+                        Showing {tradeHistoryRangeStart}-{tradeHistoryRangeEnd} of {tradeHistoryTotal} for{" "}
+                        {selectedPerformanceWindow.proseLabel}
+                      </span>
+                      {tradeHistoryPageIndex > 0 ? (
+                        <button
+                          type="button"
+                          className="dialog-user-btn trade-history-latest-button"
+                          onClick={() => setTradeHistoryPage(0)}
+                        >
+                          Latest
+                        </button>
+                      ) : null}
+                    </div>
                     <button
                       type="button"
                       className="dialog-user-btn trade-history-nav-button"
