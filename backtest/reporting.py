@@ -351,12 +351,14 @@ def _build_trade_diagnostics_figure(trades: pd.DataFrame, equity_series: pd.Seri
 
     if not monthly_returns.empty:
         bar_colors = np.where(monthly_returns >= 0, "#26d39a", "#ff7488")
+        month_labels = [pd.Timestamp(value).strftime("%b %Y") for value in monthly_returns.index]
         fig.add_trace(
             go.Bar(
-                x=monthly_returns.index,
+                x=month_labels,
                 y=monthly_returns.values,
                 name="Monthly Return %",
                 marker=dict(color=bar_colors),
+                hovertemplate="Month %{x}<br>Return %{y:.2f}%<extra></extra>",
             ),
             row=2,
             col=1,
@@ -371,6 +373,7 @@ def _build_trade_diagnostics_figure(trades: pd.DataFrame, equity_series: pd.Seri
     )
     fig.update_yaxes(title_text="PnL ($)", row=1, col=1)
     fig.update_yaxes(title_text="Return %", row=2, col=1)
+    fig.update_xaxes(type="category", row=2, col=1)
     return fig
 
 
