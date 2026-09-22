@@ -36,6 +36,7 @@ DEFAULT_ACCOUNT_KEY = "manual_spot"
 DEFAULT_QUOTE = "USDT"
 STABLE_ASSETS = {"USDT", "USDC", "FDUSD", "BUSD", "DAI", "TUSD", "USD"}
 TRANSACTION_TYPES = {"buy", "sell", "deposit", "withdraw", "adjustment"}
+CUSTODY_LOCATIONS = {"unassigned", "binance", "cold_storage"}
 PRICE_CACHE_SECONDS = float(os.getenv("SCROOGE_PORTFOLIO_PRICE_CACHE_SECONDS", "30") or "30")
 PRICE_TIMEOUT_SECONDS = float(os.getenv("SCROOGE_PORTFOLIO_PRICE_TIMEOUT_SECONDS", "4") or "4")
 PRICE_ENDPOINTS = [
@@ -118,10 +119,18 @@ def _fetch_market_price(asset_symbol: str, quote_symbol: str) -> tuple[float | N
     return None, f"Market price unavailable for {pair}: {last_error or 'no price source returned a value'}", None
 
 
-def _empty_bucket(asset_symbol: str, quote_symbol: str) -> dict[str, Any]:
+def _clean_custody(value: Any, *, default: str = "unassigned") -> str:
+    normalized = str(value or default).strip().lower() or default
+    if normalized not in CUSTODY_LOCATIONS:
+        raise ValueError("Custody location must be Binance, Cold Storage, or Unassigned.")
+    return normalized
+
+
+def _empty_bucket(asset_symbol: str, quote_symbol: str, custody_location: str) -> dict[str, Any]:
     return {
         "asset_symbol": asset_symbol,
         "quote_symbol": quote_symbol,
+        "custody_location": custody_location,
         "quantity": 0.0,
         "cost_basis": 0.0,
     }
@@ -157,8 +166,8 @@ def _apply_transaction(bucket: dict[str, Any], transaction: dict[str, Any]) -> N
         bucket["cost_basis"] = max(0.0, current_cost - average_cost * quantity) if next_quantity > 0 else 0.0
 
 
-def _derive_buckets(transactions: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
-    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+def _derive_buckets(transactions: list[dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
     for transaction in transactions:
         if str(transaction.get("status") or "settled").lower() != "settled":
             continue
@@ -166,8 +175,33 @@ def _derive_buckets(transactions: list[dict[str, Any]]) -> dict[tuple[str, str],
         quote_symbol = _clean_symbol(transaction.get("quote_symbol"), default=DEFAULT_QUOTE)
         if not asset_symbol:
             continue
-        key = (asset_symbol, quote_symbol)
-        bucket = buckets.setdefault(key, _empty_bucket(asset_symbol, quote_symbol))
+        tx_type = str(transaction.get("tx_type") or "").lower()
+        if tx_type == "custody_transfer":
+            source_custody = _clean_custody(transaction.get("source_custody"))
+            destination_custody = _clean_custody(transaction.get("destination_custody"))
+            quantity = _as_float(transaction.get("quantity")) or 0.0
+            source_key = (asset_symbol, quote_symbol, source_custody)
+            destination_key = (asset_symbol, quote_symbol, destination_custody)
+            source_bucket = buckets.setdefault(
+                source_key,
+                _empty_bucket(asset_symbol, quote_symbol, source_custody),
+            )
+            destination_bucket = buckets.setdefault(
+                destination_key,
+                _empty_bucket(asset_symbol, quote_symbol, destination_custody),
+            )
+            source_quantity = float(source_bucket["quantity"])
+            source_cost = float(source_bucket["cost_basis"])
+            average_cost = source_cost / source_quantity if source_quantity > 0 else 0.0
+            moved_cost = average_cost * quantity
+            source_bucket["quantity"] = source_quantity - quantity
+            source_bucket["cost_basis"] = max(0.0, source_cost - moved_cost)
+            destination_bucket["quantity"] = float(destination_bucket["quantity"]) + quantity
+            destination_bucket["cost_basis"] = float(destination_bucket["cost_basis"]) + moved_cost
+            continue
+        custody_location = _clean_custody(transaction.get("custody_location"))
+        key = (asset_symbol, quote_symbol, custody_location)
+        bucket = buckets.setdefault(key, _empty_bucket(asset_symbol, quote_symbol, custody_location))
         _apply_transaction(bucket, transaction)
     return buckets
 
@@ -178,8 +212,9 @@ def _validate_nonnegative_stacks(transactions: list[dict[str, Any]]) -> None:
         if quantity < -0.00000001:
             asset_symbol = str(bucket["asset_symbol"])
             quote_symbol = str(bucket["quote_symbol"])
+            custody_location = str(bucket["custody_location"])
             raise ValueError(
-                f"This change would reduce {asset_symbol}/{quote_symbol} below zero "
+                f"This change would reduce {asset_symbol}/{quote_symbol} in {custody_location} below zero "
                 f"by {abs(quantity):.8f} {asset_symbol}."
             )
 
@@ -188,9 +223,33 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
     buckets = _derive_buckets(transactions)
     warnings: list[str] = []
 
+    aggregate_buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for bucket in buckets.values():
+        quantity = float(bucket["quantity"])
+        if abs(quantity) < 0.00000001:
+            continue
+        key = (str(bucket["asset_symbol"]), str(bucket["quote_symbol"]))
+        aggregate = aggregate_buckets.setdefault(
+            key,
+            {
+                "asset_symbol": key[0],
+                "quote_symbol": key[1],
+                "quantity": 0.0,
+                "cost_basis": 0.0,
+                "custody": {location: {"quantity": 0.0, "cost_basis": 0.0} for location in CUSTODY_LOCATIONS},
+            },
+        )
+        custody_location = str(bucket["custody_location"])
+        aggregate["quantity"] += quantity
+        aggregate["cost_basis"] += float(bucket["cost_basis"])
+        aggregate["custody"][custody_location] = {
+            "quantity": quantity,
+            "cost_basis": float(bucket["cost_basis"]),
+        }
+
     holdings: list[dict[str, Any]] = []
     priced_value_total = 0.0
-    for bucket in buckets.values():
+    for bucket in aggregate_buckets.values():
         quantity = float(bucket["quantity"])
         if abs(quantity) < 0.00000001:
             continue
@@ -218,6 +277,10 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
                 "unrealized_pnl_pct": (unrealized_pnl / cost_basis) * 100 if unrealized_pnl is not None and cost_basis > 0 else None,
                 "allocation_pct": None,
                 "is_dry_powder": asset_symbol in STABLE_ASSETS,
+                "custody": bucket["custody"],
+                "binance_quantity": float(bucket["custody"]["binance"]["quantity"]),
+                "cold_storage_quantity": float(bucket["custody"]["cold_storage"]["quantity"]),
+                "unassigned_quantity": float(bucket["custody"]["unassigned"]["quantity"]),
             }
         )
 
@@ -296,7 +359,7 @@ def _portfolio_timeline(summary: dict[str, Any], holdings: list[dict[str, Any]],
 
 def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, Any], list[str]]:
     normalized_offset = max(0, int(transaction_offset))
-    transactions = list_portfolio_transactions(newest_first=False)
+    transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     holdings, warnings = _derive_holdings(transactions)
     summary = _summary_from_holdings(holdings)
     timeline = _portfolio_timeline(summary, holdings, warnings)
@@ -304,6 +367,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
         limit=PORTFOLIO_TRANSACTION_PAGE_SIZE,
         offset=normalized_offset,
         newest_first=True,
+        account_key=DEFAULT_ACCOUNT_KEY,
     )
     return (
         {
@@ -312,7 +376,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
             "holdings": holdings,
             "timeline": timeline,
             "transactions": newest_transactions,
-            "transaction_count": count_portfolio_transactions(),
+            "transaction_count": count_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY),
             "transaction_limit": PORTFOLIO_TRANSACTION_PAGE_SIZE,
             "transaction_offset": normalized_offset,
         },
@@ -338,13 +402,14 @@ def create_portfolio_transaction(payload: dict[str, Any]) -> tuple[dict[str, Any
         raise ValueError("Entry cost is required for buy and sell transactions.")
 
     quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
+    custody_location = _clean_custody(payload.get("custody_location"))
     fee_amount = _as_float(payload.get("fee_amount"))
     if fee_amount is not None and fee_amount < 0:
         raise ValueError("Fee cannot be negative.")
 
     transaction = {
         "transaction_id": str(uuid.uuid4()),
-        "account_key": str(payload.get("account_key") or DEFAULT_ACCOUNT_KEY).strip() or DEFAULT_ACCOUNT_KEY,
+        "account_key": DEFAULT_ACCOUNT_KEY,
         "executed_at": str(payload.get("executed_at") or "").strip() or _now_text(),
         "tx_type": tx_type,
         "asset_symbol": asset_symbol,
@@ -357,8 +422,49 @@ def create_portfolio_transaction(payload: dict[str, Any]) -> tuple[dict[str, Any
         "status": str(payload.get("status") or "settled").strip().lower() or "settled",
         "note": str(payload.get("note") or "").strip() or None,
         "external_order_id": str(payload.get("external_order_id") or "").strip() or None,
+        "custody_location": custody_location,
+        "source_custody": None,
+        "destination_custody": None,
     }
-    transactions = list_portfolio_transactions(newest_first=False)
+    transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
+    _validate_nonnegative_stacks([*transactions, transaction])
+    appended = append_portfolio_transaction(transaction)
+    snapshot, warnings = load_portfolio_snapshot()
+    return {"transaction": appended, "portfolio": snapshot}, warnings
+
+
+def create_custody_transfer(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    asset_symbol = _clean_symbol(payload.get("asset_symbol"))
+    if not asset_symbol:
+        raise ValueError("Asset symbol is required.")
+    quantity = _as_float(payload.get("quantity"))
+    if quantity is None or quantity <= 0:
+        raise ValueError("Quantity must be greater than zero.")
+    source_custody = _clean_custody(payload.get("source_custody"))
+    destination_custody = _clean_custody(payload.get("destination_custody"))
+    if source_custody == destination_custody:
+        raise ValueError("Source and destination custody must be different.")
+    quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
+    transaction = {
+        "transaction_id": str(uuid.uuid4()),
+        "account_key": DEFAULT_ACCOUNT_KEY,
+        "executed_at": str(payload.get("executed_at") or "").strip() or _now_text(),
+        "tx_type": "custody_transfer",
+        "asset_symbol": asset_symbol,
+        "quote_symbol": quote_symbol,
+        "quantity": quantity,
+        "price": None,
+        "fee_amount": None,
+        "fee_asset": None,
+        "source": "manual",
+        "status": "settled",
+        "note": str(payload.get("note") or "").strip() or None,
+        "external_order_id": None,
+        "custody_location": "unassigned",
+        "source_custody": source_custody,
+        "destination_custody": destination_custody,
+    }
+    transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     _validate_nonnegative_stacks([*transactions, transaction])
     appended = append_portfolio_transaction(transaction)
     snapshot, warnings = load_portfolio_snapshot()
@@ -372,7 +478,7 @@ def set_portfolio_transaction_status(
     normalized_status = str(status or "").strip().lower()
     if normalized_status not in {"settled", "voided"}:
         raise ValueError("Transaction status must be settled or voided.")
-    transactions = list_portfolio_transactions(newest_first=False)
+    transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     transaction_found = False
     proposed_transactions: list[dict[str, Any]] = []
     for transaction in transactions:

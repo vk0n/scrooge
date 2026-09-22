@@ -12,8 +12,8 @@ from typing import Any, Iterator
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 4
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Portfolio daily valuation snapshots"
+RUNTIME_DB_SCHEMA_VERSION = 5
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Portfolio custody locations"
 
 
 class RuntimeDbError(OSError):
@@ -196,6 +196,9 @@ def _portfolio_transaction_record(transaction: dict[str, Any]) -> tuple[Any, ...
         str(payload.get("status") or "settled").strip().lower(),
         str(payload.get("note") or "").strip() or None,
         str(payload.get("external_order_id") or "").strip() or None,
+        str(payload.get("custody_location") or "unassigned").strip().lower() or "unassigned",
+        str(payload.get("source_custody") or "").strip().lower() or None,
+        str(payload.get("destination_custody") or "").strip().lower() or None,
         _json_text(payload),
         now_ms,
         now_ms,
@@ -329,6 +332,9 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'settled',
             note TEXT,
             external_order_id TEXT,
+            custody_location TEXT NOT NULL DEFAULT 'unassigned',
+            source_custody TEXT,
+            destination_custody TEXT,
             payload_json TEXT NOT NULL,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
@@ -359,6 +365,17 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         ON portfolio_daily_snapshots(account_key, captured_at_ms ASC);
         """
     )
+    transaction_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(portfolio_transactions)").fetchall()
+    }
+    for column_name, definition in (
+        ("custody_location", "TEXT NOT NULL DEFAULT 'unassigned'"),
+        ("source_custody", "TEXT"),
+        ("destination_custody", "TEXT"),
+    ):
+        if column_name not in transaction_columns:
+            connection.execute(f"ALTER TABLE portfolio_transactions ADD COLUMN {column_name} {definition}")
     connection.execute(
         """
         INSERT OR IGNORE INTO portfolio_accounts (
@@ -899,11 +916,14 @@ def append_portfolio_transaction(transaction: dict[str, Any], path: Path | None 
                 status,
                 note,
                 external_order_id,
+                custody_location,
+                source_custody,
+                destination_custody,
                 payload_json,
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             record,
         )
@@ -955,6 +975,7 @@ def list_portfolio_transactions(
     limit: int | None = None,
     offset: int = 0,
     newest_first: bool = True,
+    account_key: str | None = None,
     path: Path | None = None,
 ) -> list[dict[str, Any]]:
     sql = f"""
@@ -975,13 +996,19 @@ def list_portfolio_transactions(
             status,
             note,
             external_order_id,
+            custody_location,
+            source_custody,
+            destination_custody,
             payload_json,
             created_at_ms,
             updated_at_ms
         FROM portfolio_transactions
-        ORDER BY executed_at_ms {"DESC" if newest_first else "ASC"}, id {"DESC" if newest_first else "ASC"}
     """
     params: list[Any] = []
+    if account_key is not None:
+        sql += " WHERE account_key = ?"
+        params.append(account_key)
+    sql += f' ORDER BY executed_at_ms {"DESC" if newest_first else "ASC"}, id {"DESC" if newest_first else "ASC"}'
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
@@ -1018,15 +1045,24 @@ def list_portfolio_transactions(
                 "status": str(row["status"]),
                 "note": str(row["note"]) if row["note"] is not None else None,
                 "external_order_id": str(row["external_order_id"]) if row["external_order_id"] is not None else None,
+                "custody_location": str(row["custody_location"] or "unassigned"),
+                "source_custody": str(row["source_custody"]) if row["source_custody"] is not None else None,
+                "destination_custody": str(row["destination_custody"]) if row["destination_custody"] is not None else None,
             }
         )
         output.append(payload)
     return output
 
 
-def count_portfolio_transactions(path: Path | None = None) -> int:
+def count_portfolio_transactions(*, account_key: str | None = None, path: Path | None = None) -> int:
     with _connection(path) as connection:
-        row = connection.execute("SELECT COUNT(*) AS count FROM portfolio_transactions").fetchone()
+        if account_key is None:
+            row = connection.execute("SELECT COUNT(*) AS count FROM portfolio_transactions").fetchone()
+        else:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM portfolio_transactions WHERE account_key = ?",
+                (account_key,),
+            ).fetchone()
     return int(row["count"]) if row is not None else 0
 
 

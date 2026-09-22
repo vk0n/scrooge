@@ -2670,6 +2670,84 @@ pre {
   color: #f0f5fc;
 }
 
+.treasury-custody-panel {
+  grid-column: 1 / -1;
+  min-width: 0;
+  border-top: 1px solid rgba(106, 124, 150, 0.18);
+  padding-top: 0.5rem;
+}
+
+.treasury-custody-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  color: #d4dceb;
+  cursor: pointer;
+  list-style-position: inside;
+  font-size: 0.8rem;
+}
+
+.treasury-custody-summary {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.8rem;
+  color: #94a2b7;
+  font-size: 0.72rem;
+}
+
+.treasury-custody-content {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.65rem;
+  border-radius: 0.7rem;
+  padding: 0.7rem;
+  background: rgba(6, 10, 16, 0.56);
+}
+
+.treasury-custody-breakdown {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.treasury-custody-breakdown > div {
+  display: grid;
+  gap: 0.2rem;
+  border: 1px solid rgba(91, 112, 143, 0.28);
+  border-radius: 0.55rem;
+  padding: 0.5rem 0.6rem;
+  background: rgba(17, 24, 34, 0.56);
+}
+
+.treasury-custody-breakdown span,
+.treasury-custody-disclaimer {
+  color: #8f9db2;
+  font-size: 0.72rem;
+}
+
+.treasury-custody-breakdown strong {
+  color: #eef3fb;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.treasury-custody-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 0.72fr)) minmax(10rem, 1.4fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.treasury-custody-form .dialog-user-btn {
+  min-width: 8.5rem;
+}
+
+.treasury-custody-disclaimer {
+  margin: 0;
+}
+
 .treasury-ledger-stack {
   display: grid;
   gap: 0.52rem;
@@ -3838,6 +3916,25 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-column: 1 / -1;
   }
 
+  .treasury-custody-panel summary {
+    align-items: flex-start;
+  }
+
+  .treasury-custody-summary {
+    display: grid;
+    justify-items: end;
+  }
+
+  .treasury-custody-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .treasury-custody-note,
+  .treasury-custody-form .dialog-user-btn {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
   .treasury-ledger-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: start;
@@ -4378,6 +4475,24 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-holding-lines strong {
     text-align: left;
+  }
+
+  .treasury-custody-panel summary {
+    display: grid;
+  }
+
+  .treasury-custody-summary {
+    justify-items: start;
+  }
+
+  .treasury-custody-breakdown,
+  .treasury-custody-form {
+    grid-template-columns: 1fr;
+  }
+
+  .treasury-custody-note,
+  .treasury-custody-form .dialog-user-btn {
+    grid-column: auto;
   }
 
   .kv-grid {

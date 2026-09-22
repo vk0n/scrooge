@@ -31,6 +31,10 @@ type PortfolioHolding = {
   unrealized_pnl_pct: number | null;
   allocation_pct: number | null;
   is_dry_powder: boolean;
+  custody: Record<CustodyLocation, { quantity: number; cost_basis: number }>;
+  binance_quantity: number;
+  cold_storage_quantity: number;
+  unassigned_quantity: number;
 };
 
 type PortfolioTransaction = {
@@ -47,6 +51,9 @@ type PortfolioTransaction = {
   source: string;
   status: string;
   note: string | null;
+  custody_location: CustodyLocation;
+  source_custody: CustodyLocation | null;
+  destination_custody: CustodyLocation | null;
 };
 
 type PortfolioTimelinePoint = {
@@ -76,7 +83,8 @@ type CreatePortfolioTransactionResponse = {
   warnings: string[];
 };
 
-type PortfolioTransactionType = "buy" | "sell" | "deposit" | "withdraw" | "adjustment";
+type PortfolioTransactionType = "buy" | "sell" | "deposit" | "withdraw" | "adjustment" | "custody_transfer";
+type CustodyLocation = "unassigned" | "binance" | "cold_storage";
 
 type TransactionFormState = {
   tx_type: PortfolioTransactionType;
@@ -88,6 +96,7 @@ type TransactionFormState = {
   fee_asset: string;
   executed_at: string;
   note: string;
+  custody_location: CustodyLocation;
 };
 
 const EMPTY_FORM: TransactionFormState = {
@@ -100,7 +109,16 @@ const EMPTY_FORM: TransactionFormState = {
   fee_asset: "USDT",
   executed_at: "",
   note: "",
+  custody_location: "unassigned",
 };
+
+const CUSTODY_LABELS: Record<CustodyLocation, string> = {
+  unassigned: "Unassigned",
+  binance: "Binance",
+  cold_storage: "Cold Storage",
+};
+
+const CUSTODY_LOCATIONS = Object.keys(CUSTODY_LABELS) as CustodyLocation[];
 
 const ALLOCATION_COLORS = [
   "#d9ae45",
@@ -164,6 +182,9 @@ function signedToneClass(value: number | null | undefined, baseClass: string): s
 }
 
 function transactionLabel(type: PortfolioTransactionType): string {
+  if (type === "custody_transfer") {
+    return "Custody Move";
+  }
   if (type === "buy") {
     return "Buy";
   }
@@ -187,6 +208,16 @@ function transactionToneClass(type: PortfolioTransactionType): string {
     return "treasury-ledger-type treasury-ledger-type-negative";
   }
   return "treasury-ledger-type";
+}
+
+function custodyQuantity(holding: PortfolioHolding, location: CustodyLocation): number {
+  return holding.custody?.[location]?.quantity ?? 0;
+}
+
+function primaryCustody(holding: PortfolioHolding): CustodyLocation {
+  return CUSTODY_LOCATIONS.reduce((largest, location) =>
+    custodyQuantity(holding, location) > custodyQuantity(holding, largest) ? location : largest
+  , "unassigned" as CustodyLocation);
 }
 
 function holdingToneClass(value: number | null | undefined): string {
@@ -284,6 +315,134 @@ function TimelineSeries({
   );
 }
 
+function CustodyPanel({
+  holding,
+  onTransferred,
+}: {
+  holding: PortfolioHolding;
+  onTransferred: (response: CreatePortfolioTransactionResponse) => void;
+}): JSX.Element {
+  const initialSource = primaryCustody(holding);
+  const [source, setSource] = useState<CustodyLocation>(initialSource);
+  const [destination, setDestination] = useState<CustodyLocation>(
+    initialSource === "binance" ? "cold_storage" : "binance"
+  );
+  const [quantity, setQuantity] = useState<string>("");
+  const [note, setNote] = useState<string>("");
+  const [saving, setSaving] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const available = custodyQuantity(holding, source);
+
+  function changeSource(nextSource: CustodyLocation): void {
+    setSource(nextSource);
+    if (destination === nextSource) {
+      setDestination(CUSTODY_LOCATIONS.find((location) => location !== nextSource) ?? "unassigned");
+    }
+    setQuantity("");
+  }
+
+  async function submitTransfer(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetchApi<CreatePortfolioTransactionResponse>("/api/portfolio/custody-transfers", {
+        method: "POST",
+        body: {
+          asset_symbol: holding.asset_symbol,
+          quote_symbol: holding.quote_symbol,
+          quantity: asNumber(quantity),
+          source_custody: source,
+          destination_custody: destination,
+          note,
+        },
+      });
+      setQuantity("");
+      setNote("");
+      onTransferred(response);
+    } catch (transferError) {
+      setError(transferError instanceof Error ? transferError.message : "Could not record the custody move.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <details className="treasury-custody-panel">
+      <summary>
+        <span>Custody</span>
+        <span className="treasury-custody-summary">
+          {CUSTODY_LOCATIONS.map((location) => (
+            <span key={location}>
+              {CUSTODY_LABELS[location]} {formatNumber(custodyQuantity(holding, location), 8)}
+            </span>
+          ))}
+        </span>
+      </summary>
+      <div className="treasury-custody-content">
+        <div className="treasury-custody-breakdown">
+          {CUSTODY_LOCATIONS.map((location) => (
+            <div key={location}>
+              <span>{CUSTODY_LABELS[location]}</span>
+              <strong>{formatNumber(custodyQuantity(holding, location), 8)} {holding.asset_symbol}</strong>
+            </div>
+          ))}
+        </div>
+        <form className="treasury-custody-form" onSubmit={(event) => void submitTransfer(event)}>
+          <label className="dialog-user-field">
+            From
+            <select value={source} onChange={(event) => changeSource(event.target.value as CustodyLocation)}>
+              {CUSTODY_LOCATIONS.map((location) => (
+                <option key={location} value={location} disabled={custodyQuantity(holding, location) <= 0}>
+                  {CUSTODY_LABELS[location]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="dialog-user-field">
+            To
+            <select value={destination} onChange={(event) => setDestination(event.target.value as CustodyLocation)}>
+              {CUSTODY_LOCATIONS.filter((location) => location !== source).map((location) => (
+                <option key={location} value={location}>{CUSTODY_LABELS[location]}</option>
+              ))}
+            </select>
+          </label>
+          <label className="dialog-user-field">
+            Stack
+            <input
+              type="number"
+              value={quantity}
+              min="0"
+              max={available}
+              step="any"
+              placeholder={formatNumber(available, 8)}
+              onChange={(event) => setQuantity(event.target.value)}
+              required
+            />
+          </label>
+          <label className="dialog-user-field treasury-custody-note">
+            Note
+            <input
+              type="text"
+              value={note}
+              maxLength={500}
+              placeholder="Optional custody note"
+              onChange={(event) => setNote(event.target.value)}
+            />
+          </label>
+          <button type="submit" className="dialog-user-btn" disabled={saving || available <= 0}>
+            {saving ? "Recording..." : "Record Move"}
+          </button>
+        </form>
+        <p className="treasury-custody-disclaimer">
+          Accounting only. No exchange or blockchain transfer is initiated.
+        </p>
+        {error ? <p className="form-error">{error}</p> : null}
+      </div>
+    </details>
+  );
+}
+
 export default function TreasuryPage(): JSX.Element {
   const [portfolio, setPortfolio] = useState<PortfolioPayload | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -328,6 +487,7 @@ export default function TreasuryPage(): JSX.Element {
           fee_asset: form.fee_asset,
           executed_at: form.executed_at,
           note: form.note,
+          custody_location: form.custody_location,
         },
       });
       setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));
@@ -370,6 +530,7 @@ export default function TreasuryPage(): JSX.Element {
       asset_symbol: holding.asset_symbol,
       quote_symbol: holding.quote_symbol,
       fee_asset: holding.quote_symbol,
+      custody_location: primaryCustody(holding),
     });
     setFormExpanded(true);
     window.requestAnimationFrame(() => {
@@ -422,6 +583,9 @@ export default function TreasuryPage(): JSX.Element {
           (holding) => holding.asset_symbol === form.asset_symbol && holding.quote_symbol === form.quote_symbol
         )
       : null;
+  const reducingAvailable = reducingHolding
+    ? custodyQuantity(reducingHolding, form.custody_location)
+    : null;
 
   return (
     <AuthGate>
@@ -604,20 +768,34 @@ export default function TreasuryPage(): JSX.Element {
               />
             </label>
             <label className="dialog-user-field">
+              Custody
+              <select
+                value={form.custody_location}
+                onChange={(event) => setForm((current) => ({
+                  ...current,
+                  custody_location: event.target.value as CustodyLocation,
+                }))}
+              >
+                {CUSTODY_LOCATIONS.map((location) => (
+                  <option key={location} value={location}>{CUSTODY_LABELS[location]}</option>
+                ))}
+              </select>
+            </label>
+            <label className="dialog-user-field">
               Stack
               <input
                 type="number"
                 value={form.quantity}
                 placeholder="0.25"
                 min="0"
-                max={reducingHolding?.quantity}
+                max={reducingAvailable ?? undefined}
                 step="any"
                 onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))}
                 required
               />
               {reducingHolding ? (
                 <small className="treasury-field-hint">
-                  Available: {formatNumber(reducingHolding.quantity, 8)} {reducingHolding.asset_symbol}
+                  Available in {CUSTODY_LABELS[form.custody_location]}: {formatNumber(reducingAvailable, 8)} {reducingHolding.asset_symbol}
                 </small>
               ) : null}
             </label>
@@ -728,6 +906,10 @@ export default function TreasuryPage(): JSX.Element {
                     <button type="button" onClick={() => prepareHoldingTransaction(holding, "buy")}>Add</button>
                     <button type="button" onClick={() => prepareHoldingTransaction(holding, "sell")}>Reduce</button>
                   </footer>
+                  <CustodyPanel
+                    holding={holding}
+                    onTransferred={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
+                  />
                 </article>
               ))}
             </div>
@@ -756,7 +938,11 @@ export default function TreasuryPage(): JSX.Element {
                     <span className="treasury-ledger-main">
                       <span className="treasury-ledger-entry">
                         {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
-                        {transaction.price ? ` at ${formatCurrency(transaction.price, 6)}` : ""}
+                        {transaction.tx_type === "custody_transfer" && transaction.source_custody && transaction.destination_custody
+                          ? ` from ${CUSTODY_LABELS[transaction.source_custody]} to ${CUSTODY_LABELS[transaction.destination_custody]}`
+                          : transaction.price
+                            ? ` at ${formatCurrency(transaction.price, 6)}`
+                            : ` in ${CUSTODY_LABELS[transaction.custody_location]}`}
                       </span>
                       {transaction.status === "voided" ? <small>Voided</small> : null}
                     </span>
