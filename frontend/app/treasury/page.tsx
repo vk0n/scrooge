@@ -320,20 +320,20 @@ export default function TreasuryPage(): JSX.Element {
             <div className="treasury-summary-card treasury-summary-card-hero">
               <span className="treasury-summary-label">Total Treasure</span>
               <strong className="vault-value treasury-total-value">
-                <span>{formatNumber(summary?.total_value ?? 0)}</span>
                 <span
-                  className={signedToneClass(summary?.unrealized_pnl, "vault-dollar treasury-total-dollar")}
+                  className={signedToneClass(summary?.unrealized_pnl, "treasury-total-dollar")}
                   aria-hidden="true"
                 >
                   $
                 </span>
+                <span>{formatNumber(summary?.total_value ?? 0)}</span>
               </strong>
             </div>
             <div className="treasury-summary-card">
               <span className="treasury-summary-label">Invested Capital</span>
               <strong className="vault-value">
-                <span>{formatNumber(summary?.invested_capital ?? 0)}</span>
                 <span className="vault-dollar" aria-hidden="true">$</span>
+                <span>{formatNumber(summary?.invested_capital ?? 0)}</span>
               </strong>
             </div>
             <div className="treasury-summary-card">

@@ -2216,6 +2216,7 @@ pre {
 }
 
 .treasury-summary-card strong.treasury-total-value {
+  gap: 0;
   color: #e1b84f;
   text-shadow: 0 0 10px rgba(225, 184, 79, 0.14);
 }
