@@ -2755,6 +2755,10 @@ pre {
   color: #d9ae45;
 }
 
+.treasury-policy-summary > strong {
+  font-weight: 600;
+}
+
 .treasury-policy-content {
   display: grid;
   gap: 0.55rem;
@@ -2769,6 +2773,70 @@ pre {
   grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
   align-items: end;
   gap: 0.5rem;
+}
+
+.treasury-policy-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.treasury-policy-metrics > div {
+  display: grid;
+  gap: 0.2rem;
+  border: 1px solid rgba(91, 112, 143, 0.28);
+  border-radius: 0.55rem;
+  padding: 0.5rem 0.6rem;
+  background: rgba(17, 24, 34, 0.56);
+}
+
+.treasury-policy-metrics span {
+  color: #8f9db2;
+  font-size: 0.72rem;
+}
+
+.treasury-policy-metrics strong {
+  color: #eef3fb;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.treasury-policy-metric-sellable {
+  background: rgba(17, 24, 34, 0.56) !important;
+}
+
+.treasury-policy-metric-sellable-positive {
+  border-color: rgba(46, 172, 121, 0.42) !important;
+  background: rgba(24, 89, 64, 0.18) !important;
+}
+
+.treasury-policy-metric-sellable-positive strong {
+  color: var(--value-positive-surface);
+}
+
+.treasury-policy-metric-sellable-warning {
+  border-color: rgba(193, 81, 97, 0.48) !important;
+  background: rgba(101, 29, 43, 0.2) !important;
+}
+
+.treasury-policy-metric-sellable-warning strong {
+  color: var(--value-negative-surface);
+}
+
+.treasury-inventory-note {
+  margin: 0;
+  color: #9eabbf;
+  font-size: 0.72rem;
+}
+
+.treasury-inventory-note-warning {
+  color: var(--value-negative-surface);
+}
+
+.treasury-inventory-basis {
+  margin: -0.25rem 0 0;
+  color: #78869b;
+  font-size: 0.68rem;
 }
 
 .treasury-policy-form .dialog-user-btn {
@@ -3974,6 +4042,14 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .treasury-policy-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .treasury-policy-metric-sellable {
+    grid-column: 1 / -1;
+  }
+
   .treasury-policy-form .dialog-user-btn {
     grid-column: 1 / -1;
     width: 100%;
@@ -4533,13 +4609,18 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-custody-breakdown,
   .treasury-custody-form,
-  .treasury-policy-form {
+  .treasury-policy-form,
+  .treasury-policy-metrics {
     grid-template-columns: 1fr;
   }
 
   .treasury-custody-note,
   .treasury-custody-form .dialog-user-btn,
   .treasury-policy-form .dialog-user-btn {
+    grid-column: auto;
+  }
+
+  .treasury-policy-metric-sellable {
     grid-column: auto;
   }
 

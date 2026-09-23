@@ -31,7 +31,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.prices.start()
         self.addCleanup(self.prices.stop)
 
-    def add(self, asset: str, quantity: float, price: float) -> dict:
+    def add(self, asset: str, quantity: float, price: float, custody_location: str = "unassigned") -> dict:
         result, _ = portfolio_service.create_portfolio_transaction(
             {
                 "tx_type": "buy",
@@ -39,6 +39,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
                 "quantity": quantity,
                 "price": price,
                 "quote_symbol": "USDT",
+                "custody_location": custody_location,
             }
         )
         return result["transaction"]
@@ -331,6 +332,88 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             portfolio_service.update_portfolio_asset_policy(
                 "BTC",
                 {"target_quantity": 1, "minimum_holding_pct": 100},
+            )
+
+    def test_sellable_inventory_respects_policy_and_binance_balance(self):
+        self.add("BTC", 300, 90, "binance")
+        self.add("BTC", 800, 90, "cold_storage")
+
+        result, _ = portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1000, "minimum_holding_pct": 80},
+        )
+
+        holding = result["portfolio"]["holdings"][0]
+        self.assertEqual(holding["quantity"], 1100)
+        self.assertEqual(holding["protected_floor_quantity"], 800)
+        self.assertEqual(holding["amount_above_protected_floor"], 300)
+        self.assertEqual(holding["immediately_sellable_quantity"], 300)
+        self.assertFalse(holding["sellable_inventory_is_exchange_verified"])
+        self.assertEqual(holding["target_delta_quantity"], 100)
+
+    def test_sellable_inventory_is_capped_by_binance_custody(self):
+        self.add("BTC", 100, 90, "binance")
+        self.add("BTC", 1000, 90, "cold_storage")
+
+        result, _ = portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1000, "minimum_holding_pct": 80},
+        )
+
+        holding = result["portfolio"]["holdings"][0]
+        self.assertEqual(holding["amount_above_protected_floor"], 300)
+        self.assertEqual(holding["immediately_sellable_quantity"], 100)
+
+    def test_holding_below_protected_floor_has_no_sellable_inventory(self):
+        self.add("BTC", 700, 90, "binance")
+
+        result, _ = portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1000, "minimum_holding_pct": 80},
+        )
+
+        holding = result["portfolio"]["holdings"][0]
+        self.assertEqual(holding["protected_floor_quantity"], 800)
+        self.assertEqual(holding["amount_below_protected_floor"], 100)
+        self.assertEqual(holding["amount_above_protected_floor"], 0)
+        self.assertEqual(holding["immediately_sellable_quantity"], 0)
+
+    def test_custody_move_changes_liquidity_but_not_policy_surplus(self):
+        self.add("BTC", 1000, 90)
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1000, "minimum_holding_pct": 80},
+        )
+        before, _ = portfolio_service.load_portfolio_snapshot()
+
+        moved, _ = portfolio_service.create_custody_transfer(
+            {
+                "asset_symbol": "BTC",
+                "quantity": 150,
+                "source_custody": "unassigned",
+                "destination_custody": "binance",
+            }
+        )
+
+        before_holding = before["holdings"][0]
+        holding = moved["portfolio"]["holdings"][0]
+        self.assertEqual(before_holding["amount_above_protected_floor"], 200)
+        self.assertEqual(before_holding["immediately_sellable_quantity"], 0)
+        self.assertEqual(holding["amount_above_protected_floor"], 200)
+        self.assertEqual(holding["immediately_sellable_quantity"], 150)
+
+    def test_dry_powder_does_not_receive_asset_policy(self):
+        self.add("USDT", 500, 1, "binance")
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        holding = snapshot["holdings"][0]
+        self.assertIsNone(holding["target_quantity"])
+        self.assertEqual(holding["immediately_sellable_quantity"], 0)
+        with self.assertRaisesRegex(ValueError, "Dry Powder"):
+            portfolio_service.update_portfolio_asset_policy(
+                "USDT",
+                {"target_quantity": 500, "minimum_holding_pct": 100},
             )
 
 

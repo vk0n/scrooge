@@ -35,8 +35,16 @@ type PortfolioHolding = {
   binance_quantity: number;
   cold_storage_quantity: number;
   unassigned_quantity: number;
-  target_quantity: number;
-  minimum_holding_pct: number;
+  target_quantity: number | null;
+  minimum_holding_pct: number | null;
+  protected_floor_quantity: number;
+  protected_holding_quantity: number;
+  amount_above_protected_floor: number;
+  amount_below_protected_floor: number;
+  immediately_sellable_quantity: number;
+  sellable_inventory_is_exchange_verified: boolean;
+  target_delta_quantity: number | null;
+  target_delta_pct: number | null;
 };
 
 type PortfolioTransaction = {
@@ -463,15 +471,22 @@ function AssetPolicyPanel({
   holding: PortfolioHolding;
   onUpdated: (response: UpdatePortfolioPolicyResponse) => void;
 }): JSX.Element {
-  const [targetQuantity, setTargetQuantity] = useState<string>(String(holding.target_quantity));
-  const [minimumHoldingPct, setMinimumHoldingPct] = useState<string>(String(holding.minimum_holding_pct));
+  const [targetQuantity, setTargetQuantity] = useState<string>(String(holding.target_quantity ?? holding.quantity));
+  const [minimumHoldingPct, setMinimumHoldingPct] = useState<string>(String(holding.minimum_holding_pct ?? 100));
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const inventoryMessage = holding.amount_below_protected_floor > 0
+    ? `Current Holding is ${formatNumber(holding.amount_below_protected_floor, 8)} ${holding.asset_symbol} below the Protected Floor.`
+    : holding.amount_above_protected_floor <= 0
+      ? "The full position is currently protected by policy."
+      : holding.immediately_sellable_quantity < holding.amount_above_protected_floor
+        ? `Binance custody limits immediate inventory to ${formatNumber(holding.immediately_sellable_quantity, 8)} ${holding.asset_symbol}.`
+        : "The full amount above the Protected Floor is available on Binance.";
 
   useEffect(() => {
-    setTargetQuantity(String(holding.target_quantity));
-    setMinimumHoldingPct(String(holding.minimum_holding_pct));
-  }, [holding.target_quantity, holding.minimum_holding_pct]);
+    setTargetQuantity(String(holding.target_quantity ?? holding.quantity));
+    setMinimumHoldingPct(String(holding.minimum_holding_pct ?? 100));
+  }, [holding.target_quantity, holding.minimum_holding_pct, holding.quantity]);
 
   async function submitPolicy(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -504,9 +519,48 @@ function AssetPolicyPanel({
         <span className="treasury-policy-summary">
           Target {formatNumber(holding.target_quantity, 8)} {holding.asset_symbol}
           <span>Minimum {formatPercent(holding.minimum_holding_pct)}</span>
+          <strong className={holding.immediately_sellable_quantity > 0 ? "value-positive" : "value-neutral"}>
+            Sellable {formatNumber(holding.immediately_sellable_quantity, 8)}
+          </strong>
         </span>
       </summary>
       <div className="treasury-policy-content">
+        <div className="treasury-policy-metrics">
+          <div>
+            <span>Current Total</span>
+            <strong>{formatNumber(holding.quantity, 8)} {holding.asset_symbol}</strong>
+          </div>
+          <div>
+            <span>Protected Floor</span>
+            <strong>{formatNumber(holding.protected_floor_quantity, 8)} {holding.asset_symbol}</strong>
+          </div>
+          <div>
+            <span>Above Floor</span>
+            <strong>{formatNumber(holding.amount_above_protected_floor, 8)} {holding.asset_symbol}</strong>
+          </div>
+          <div>
+            <span>On Binance</span>
+            <strong>{formatNumber(holding.binance_quantity, 8)} {holding.asset_symbol}</strong>
+          </div>
+          <div className={`treasury-policy-metric-sellable${
+            holding.amount_below_protected_floor > 0
+              ? " treasury-policy-metric-sellable-warning"
+              : holding.immediately_sellable_quantity > 0
+                ? " treasury-policy-metric-sellable-positive"
+                : ""
+          }`}>
+            <span>Immediately Sellable</span>
+            <strong>{formatNumber(holding.immediately_sellable_quantity, 8)} {holding.asset_symbol}</strong>
+          </div>
+        </div>
+        <p className={`treasury-inventory-note${holding.amount_below_protected_floor > 0 ? " treasury-inventory-note-warning" : ""}`}>
+          {inventoryMessage}
+        </p>
+        {!holding.sellable_inventory_is_exchange_verified ? (
+          <p className="treasury-inventory-basis">
+            Based on Treasury custody records. Live Binance balance is not verified yet.
+          </p>
+        ) : null}
         <form className="treasury-policy-form" onSubmit={(event) => void submitPolicy(event)}>
           <label className="dialog-user-field">
             Target Holding
@@ -1010,10 +1064,12 @@ export default function TreasuryPage(): JSX.Element {
                     holding={holding}
                     onTransferred={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
                   />
-                  <AssetPolicyPanel
-                    holding={holding}
-                    onUpdated={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
-                  />
+                  {!holding.is_dry_powder ? (
+                    <AssetPolicyPanel
+                      holding={holding}
+                      onUpdated={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
+                    />
+                  ) : null}
                 </article>
               ))}
             </div>

@@ -328,6 +328,7 @@ def _summary_from_holdings(holdings: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _attach_asset_policies(holdings: list[dict[str, Any]]) -> None:
+    managed_holdings = [holding for holding in holdings if not bool(holding.get("is_dry_powder"))]
     policies = ensure_portfolio_asset_policies(
         [
             {
@@ -336,7 +337,7 @@ def _attach_asset_policies(holdings: list[dict[str, Any]]) -> None:
                 "target_quantity": holding["quantity"],
                 "minimum_holding_pct": 100.0,
             }
-            for holding in holdings
+            for holding in managed_holdings
         ],
         account_key=DEFAULT_ACCOUNT_KEY,
     )
@@ -345,9 +346,53 @@ def _attach_asset_policies(holdings: list[dict[str, Any]]) -> None:
         for policy in policies
     }
     for holding in holdings:
+        if bool(holding.get("is_dry_powder")):
+            holding.update(
+                {
+                    "target_quantity": None,
+                    "minimum_holding_pct": None,
+                    "protected_floor_quantity": 0.0,
+                    "protected_holding_quantity": 0.0,
+                    "amount_above_protected_floor": 0.0,
+                    "amount_below_protected_floor": 0.0,
+                    "immediately_sellable_quantity": 0.0,
+                    "sellable_inventory_is_exchange_verified": False,
+                    "target_delta_quantity": None,
+                    "target_delta_pct": None,
+                }
+            )
+            continue
         policy = policy_by_asset.get((holding["asset_symbol"], holding["quote_symbol"]))
         holding["target_quantity"] = _as_float(policy.get("target_quantity")) if policy else holding["quantity"]
         holding["minimum_holding_pct"] = _as_float(policy.get("minimum_holding_pct")) if policy else 100.0
+        _attach_inventory_state(holding)
+
+
+def _attach_inventory_state(holding: dict[str, Any]) -> None:
+    current_quantity = max(0.0, _as_float(holding.get("quantity")) or 0.0)
+    target_quantity = max(0.0, _as_float(holding.get("target_quantity")) or 0.0)
+    minimum_holding_pct = min(100.0, max(0.0, _as_float(holding.get("minimum_holding_pct")) or 0.0))
+    binance_quantity = max(0.0, _as_float(holding.get("binance_quantity")) or 0.0)
+    protected_floor = target_quantity * minimum_holding_pct / 100.0
+    amount_above_floor = max(0.0, current_quantity - protected_floor)
+    amount_below_floor = max(0.0, protected_floor - current_quantity)
+
+    holding.update(
+        {
+            "protected_floor_quantity": protected_floor,
+            "protected_holding_quantity": min(current_quantity, protected_floor),
+            "amount_above_protected_floor": amount_above_floor,
+            "amount_below_protected_floor": amount_below_floor,
+            "immediately_sellable_quantity": min(amount_above_floor, binance_quantity),
+            "sellable_inventory_is_exchange_verified": False,
+            "target_delta_quantity": current_quantity - target_quantity,
+            "target_delta_pct": (
+                ((current_quantity - target_quantity) / target_quantity) * 100
+                if target_quantity > 0
+                else None
+            ),
+        }
+    )
 
 
 PORTFOLIO_TRANSACTION_PAGE_SIZE = 5
@@ -507,6 +552,8 @@ def update_portfolio_asset_policy(
     minimum_holding_pct = _as_float(payload.get("minimum_holding_pct"))
     if not normalized_asset:
         raise ValueError("Asset symbol is required.")
+    if normalized_asset in STABLE_ASSETS:
+        raise ValueError("Dry Powder does not use an asset holding policy.")
     if target_quantity is None or target_quantity <= 0:
         raise ValueError("Target Holding must be greater than zero.")
     if minimum_holding_pct is None or not 0 <= minimum_holding_pct <= 100:
