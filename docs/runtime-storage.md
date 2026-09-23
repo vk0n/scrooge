@@ -63,6 +63,11 @@ reconciled idempotently by their transaction IDs.
 Swing economics and exchange execution identity, but they do not replace `portfolio_transactions` or participate
 directly in the holdings/cost-basis projection. Existing Treasury transactions are not backfilled into Swings.
 
+The per-asset Asset Ledger is a read-only chronological projection over both domains. Its `All` view interleaves
+Treasury accounting entries with compact Swing lifecycle entries; `Open` and `Closed` filter Swing lifecycle state.
+Expanding a Swing exposes its own executions, fees, remaining quantity, and realized/unrealized economics. Building
+this projection does not create Swings, submit orders, settle fills, or mutate portfolio accounting.
+
 A Swing objective is explicitly `accumulate_cash`, `accumulate_asset`, or unset. Closed Swing economics expose both
 net quote cash flow and net asset change. A positive net asset gain from a closed `accumulate_asset` Swing can produce
 an upward-only Target Holding ratchet proposal; Phase 1 does not apply that proposal or mutate portfolio policy. Normal

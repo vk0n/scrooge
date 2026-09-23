@@ -11,6 +11,7 @@ from services.portfolio_service import (
     create_spot_order_preview,
     get_spot_order_intent,
     load_portfolio_asset_transactions,
+    load_portfolio_asset_ledger,
     load_portfolio_snapshot,
     set_portfolio_transaction_status,
     update_portfolio_asset_policy,
@@ -120,6 +121,26 @@ def get_asset_transactions(
             asset_symbol,
             quote_symbol=quote_symbol,
             transaction_offset=transaction_offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/assets/{asset_symbol}/ledger")
+def get_asset_ledger(
+    asset_symbol: str,
+    quote_symbol: str = Query(default="USDT", min_length=1, max_length=24),
+    entry_filter: Literal["all", "open", "closed"] = Query(default="all", alias="filter"),
+    entry_offset: int = Query(default=0, ge=0),
+) -> dict[str, object]:
+    try:
+        return load_portfolio_asset_ledger(
+            asset_symbol,
+            quote_symbol=quote_symbol,
+            entry_filter=entry_filter,
+            entry_offset=entry_offset,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

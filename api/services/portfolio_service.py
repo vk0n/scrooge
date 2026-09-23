@@ -28,6 +28,8 @@ from shared.runtime_db import (  # noqa: E402
     ensure_portfolio_asset_policies,
     load_exchange_account_snapshot,
     load_spot_order_intent,
+    list_spot_swing_executions,
+    list_spot_swings,
     list_portfolio_daily_snapshots,
     list_portfolio_transactions,
     load_runtime_state_snapshot,
@@ -36,6 +38,7 @@ from shared.runtime_db import (  # noqa: E402
     upsert_portfolio_daily_snapshot,
     update_portfolio_transaction_status,
 )
+from shared.spot_swing import calculate_swing_economics  # noqa: E402
 from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction  # noqa: E402
 
 DEFAULT_ACCOUNT_KEY = "manual_spot"
@@ -47,6 +50,8 @@ PRICE_CACHE_SECONDS = float(os.getenv("SCROOGE_PORTFOLIO_PRICE_CACHE_SECONDS", "
 PRICE_TIMEOUT_SECONDS = float(os.getenv("SCROOGE_PORTFOLIO_PRICE_TIMEOUT_SECONDS", "4") or "4")
 SPOT_BALANCE_STALE_AFTER_SECONDS = float(os.getenv("SCROOGE_SPOT_BALANCE_STALE_AFTER_SECONDS", "180") or "180")
 SPOT_ORDER_PREVIEW_TTL_SECONDS = float(os.getenv("SCROOGE_SPOT_ORDER_PREVIEW_TTL_SECONDS", "60") or "60")
+ASSET_LEDGER_PAGE_SIZE = 5
+ASSET_LEDGER_FILTERS = {"all", "open", "closed"}
 PRICE_ENDPOINTS = [
     endpoint.strip()
     for endpoint in (
@@ -626,6 +631,96 @@ def load_portfolio_asset_transactions(
         ),
         "transaction_limit": PORTFOLIO_TRANSACTION_PAGE_SIZE,
         "transaction_offset": normalized_offset,
+    }
+
+
+def load_portfolio_asset_ledger(
+    asset_symbol: str,
+    *,
+    quote_symbol: str = DEFAULT_QUOTE,
+    entry_filter: str = "all",
+    entry_offset: int = 0,
+) -> dict[str, Any]:
+    normalized_asset = _clean_symbol(asset_symbol)
+    normalized_quote = _clean_symbol(quote_symbol, default=DEFAULT_QUOTE) or DEFAULT_QUOTE
+    normalized_filter = str(entry_filter or "all").strip().lower()
+    normalized_offset = max(0, int(entry_offset))
+    if not normalized_asset:
+        raise ValueError("Asset symbol is required.")
+    if normalized_filter not in ASSET_LEDGER_FILTERS:
+        raise ValueError("Asset Ledger filter must be all, open, or closed.")
+
+    entries: list[dict[str, Any]] = []
+    if normalized_filter == "all":
+        transactions = list_portfolio_transactions(
+            newest_first=False,
+            account_key=DEFAULT_ACCOUNT_KEY,
+            asset_symbol=normalized_asset,
+            quote_symbol=normalized_quote,
+        )
+        entries.extend(
+            {
+                "entry_type": "transaction",
+                "entry_id": f"transaction:{transaction['transaction_id']}",
+                "occurred_at_ms": int(transaction["executed_at_ms"]),
+                "occurred_at": transaction["executed_at"],
+                "transaction": transaction,
+            }
+            for transaction in transactions
+        )
+
+    market_price, _, market_price_updated_at = _fetch_market_price(normalized_asset, normalized_quote)
+    swings = list_spot_swings(
+        account_key=DEFAULT_ACCOUNT_KEY,
+        asset_symbol=normalized_asset,
+        quote_symbol=normalized_quote,
+    )
+    for swing in swings:
+        executions = list_spot_swing_executions(swing["swing_id"])
+        economics = calculate_swing_economics(swing, executions, current_price=market_price)
+        derived_status = str(economics["status"])
+        if normalized_filter == "open" and derived_status == "closed":
+            continue
+        if normalized_filter == "closed" and derived_status != "closed":
+            continue
+        opened_at_ms = int(swing["opened_at_ms"])
+        entries.append(
+            {
+                "entry_type": "swing",
+                "entry_id": f"swing:{swing['swing_id']}",
+                "occurred_at_ms": opened_at_ms,
+                "occurred_at": datetime.fromtimestamp(
+                    opened_at_ms / 1000,
+                    tz=timezone.utc,
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "swing": {
+                    **swing,
+                    "status": derived_status,
+                    "current_market_price": market_price,
+                    "market_price_updated_at": market_price_updated_at,
+                    "age_seconds": max(
+                        0,
+                        int(((swing.get("closed_at_ms") or time.time() * 1000) - opened_at_ms) / 1000),
+                    ),
+                    "economics": economics,
+                    "executions": executions,
+                },
+            }
+        )
+
+    entries.sort(
+        key=lambda item: (int(item["occurred_at_ms"]), str(item["entry_id"])),
+        reverse=True,
+    )
+    paged_entries = entries[normalized_offset:normalized_offset + ASSET_LEDGER_PAGE_SIZE]
+    return {
+        "asset_symbol": normalized_asset,
+        "quote_symbol": normalized_quote,
+        "filter": normalized_filter,
+        "entries": paged_entries,
+        "entry_count": len(entries),
+        "entry_limit": ASSET_LEDGER_PAGE_SIZE,
+        "entry_offset": normalized_offset,
     }
 
 

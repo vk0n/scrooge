@@ -3161,6 +3161,33 @@ pre {
   margin-top: 0.62rem;
 }
 
+.treasury-ledger-filter {
+  display: inline-flex;
+  gap: 0.3rem;
+  margin-top: 0.62rem;
+  border: 1px solid rgba(95, 108, 128, 0.28);
+  border-radius: 999px;
+  padding: 0.2rem;
+  background: rgba(8, 12, 18, 0.58);
+}
+
+.treasury-ledger-filter button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.28rem 0.68rem;
+  background: transparent;
+  color: #8f9db2;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.treasury-ledger-filter button:hover,
+.treasury-ledger-filter .treasury-ledger-filter-active {
+  background: rgba(37, 57, 82, 0.78);
+  color: #edf4ff;
+}
+
 .treasury-ledger-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
@@ -3248,6 +3275,206 @@ pre {
 
 .treasury-ledger-toolbar {
   margin-top: 0.72rem;
+}
+
+.treasury-swing-row {
+  overflow: hidden;
+  border: 1px solid rgba(91, 126, 168, 0.42);
+  border-radius: 0.9rem;
+  background:
+    radial-gradient(circle at top right, rgba(57, 111, 169, 0.09), transparent 36%),
+    rgba(11, 17, 25, 0.78);
+}
+
+.treasury-swing-row-closed {
+  border-color: rgba(96, 126, 111, 0.38);
+}
+
+.treasury-swing-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto 0.7rem;
+  align-items: center;
+  gap: 0.72rem;
+  width: 100%;
+  border: 0;
+  padding: 0.62rem 0.72rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.treasury-swing-toggle:focus-visible {
+  outline: 2px solid rgba(104, 158, 216, 0.82);
+  outline-offset: -2px;
+}
+
+.treasury-swing-toggle[aria-expanded="true"] .treasury-holding-chevron {
+  transform: rotate(225deg) translate(-0.08rem, -0.08rem);
+}
+
+.treasury-swing-type {
+  border-color: rgba(92, 145, 205, 0.72);
+  background: rgba(32, 70, 108, 0.3);
+  color: #cfe5ff;
+}
+
+.treasury-swing-summary {
+  display: grid;
+  gap: 0.14rem;
+  min-width: 0;
+}
+
+.treasury-swing-summary strong {
+  color: #eef4fc;
+  font-size: 0.8rem;
+}
+
+.treasury-swing-summary span {
+  overflow: hidden;
+  color: #aeb9ca;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.treasury-swing-status {
+  border: 1px solid rgba(83, 141, 198, 0.55);
+  border-radius: 999px;
+  padding: 0.16rem 0.52rem;
+  background: rgba(27, 66, 103, 0.24);
+  color: #bcd9f7;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.treasury-swing-status-closed {
+  border-color: rgba(73, 151, 112, 0.48);
+  background: rgba(30, 91, 64, 0.22);
+  color: #a6dfc3;
+}
+
+.treasury-swing-status-accepting_loss {
+  border-color: rgba(193, 81, 97, 0.62);
+  background: rgba(101, 29, 43, 0.24);
+  color: var(--value-negative-surface);
+}
+
+.treasury-swing-pnl {
+  min-width: 5.5rem;
+  font-size: 0.82rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.treasury-swing-details {
+  display: grid;
+  gap: 0.68rem;
+  border-top: 1px solid rgba(95, 118, 149, 0.24);
+  padding: 0.72rem;
+  background: rgba(6, 10, 16, 0.46);
+}
+
+.treasury-swing-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.42rem;
+}
+
+.treasury-swing-metrics > span {
+  display: grid;
+  gap: 0.18rem;
+  border: 1px solid rgba(89, 108, 136, 0.25);
+  border-radius: 0.52rem;
+  padding: 0.45rem 0.52rem;
+  background: rgba(15, 22, 32, 0.64);
+}
+
+.treasury-swing-metrics small,
+.treasury-swing-execution-head small,
+.treasury-swing-footer {
+  color: #8492a7;
+  font-size: 0.68rem;
+}
+
+.treasury-swing-metrics strong {
+  overflow-wrap: anywhere;
+  color: #e7edf6;
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.treasury-swing-reason {
+  margin: 0;
+  border-left: 2px solid rgba(217, 174, 69, 0.62);
+  padding: 0.2rem 0.58rem;
+  color: #c6b27d;
+  font-size: 0.72rem;
+}
+
+.treasury-swing-execution-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #dce4f1;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.treasury-swing-executions {
+  display: grid;
+  gap: 0.36rem;
+}
+
+.treasury-swing-executions > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.55rem;
+  border-top: 1px solid rgba(95, 108, 128, 0.2);
+  padding-top: 0.42rem;
+  color: #9ba8bb;
+  font-size: 0.7rem;
+}
+
+.treasury-swing-executions strong {
+  color: #e6edf7;
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.treasury-swing-side {
+  min-width: 2.9rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.1rem 0.36rem;
+  font-size: 0.64rem;
+  text-align: center;
+}
+
+.treasury-swing-side-buy {
+  color: var(--value-positive-surface);
+}
+
+.treasury-swing-side-sell {
+  color: var(--value-negative-surface);
+}
+
+.treasury-swing-footer {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  border-top: 1px solid rgba(95, 108, 128, 0.2);
+  padding-top: 0.55rem;
+}
+
+.treasury-swing-footer strong {
+  color: #aeb9ca;
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .trade-pulse-grid {
@@ -4478,6 +4705,41 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-row: 1 / span 2;
   }
 
+  .treasury-swing-toggle {
+    grid-template-columns: auto minmax(0, 1fr) 0.7rem;
+    gap: 0.48rem 0.62rem;
+  }
+
+  .treasury-swing-status {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: start;
+  }
+
+  .treasury-swing-pnl {
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    text-align: left;
+  }
+
+  .treasury-swing-toggle > .treasury-holding-chevron {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
+  .treasury-swing-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .treasury-swing-executions > div {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .treasury-swing-executions time {
+    grid-column: 2 / -1;
+  }
+
   .kv-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.48rem;
@@ -5093,6 +5355,25 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-custody-action-bar {
     grid-template-columns: 1fr;
+  }
+
+  .treasury-ledger-filter {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .treasury-swing-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .treasury-swing-executions > div {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .treasury-swing-executions > div > span:nth-child(3),
+  .treasury-swing-executions time {
+    grid-column: 2;
   }
 
   .treasury-policy-metric-sellable {

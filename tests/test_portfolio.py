@@ -11,7 +11,12 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 from services import portfolio_service
-from shared.runtime_db import mark_exchange_account_snapshot_error, save_exchange_account_snapshot
+from shared.runtime_db import (
+    append_spot_swing_execution,
+    create_spot_swing,
+    mark_exchange_account_snapshot_error,
+    save_exchange_account_snapshot,
+)
 
 
 class PortfolioPhaseOneTests(unittest.TestCase):
@@ -127,6 +132,100 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             [transaction["transaction_id"] for transaction in second_page["transactions"]],
             list(reversed(transaction_ids))[5:],
         )
+
+    def test_asset_ledger_combines_transactions_and_independent_swings(self):
+        portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "buy",
+                "asset_symbol": "BTC",
+                "quantity": 1,
+                "price": 90,
+                "quote_symbol": "USDT",
+                "executed_at": "1970-01-01 00:00:01",
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "closed-swing",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+                "opened_at_ms": 2_000,
+            }
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "closed-buy",
+                "swing_id": "closed-swing",
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "quantity": 1,
+                "price": 80,
+                "source": "strategy",
+                "executed_at_ms": 2_100,
+            }
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "closed-sell",
+                "swing_id": "closed-swing",
+                "symbol": "BTCUSDT",
+                "side": "sell",
+                "quantity": 1,
+                "price": 100,
+                "source": "strategy",
+                "executed_at_ms": 2_200,
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "open-swing",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_asset",
+                "source": "strategy",
+                "opened_at_ms": 3_000,
+            }
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "open-sell",
+                "swing_id": "open-swing",
+                "symbol": "BTCUSDT",
+                "side": "sell",
+                "quantity": 0.25,
+                "price": 110,
+                "fee_amount": 0.01,
+                "fee_asset": "BNB",
+                "source": "strategy",
+                "executed_at_ms": 3_100,
+            }
+        )
+
+        ledger = portfolio_service.load_portfolio_asset_ledger("BTC")
+
+        self.assertEqual(ledger["entry_count"], 3)
+        self.assertEqual(
+            [entry["entry_type"] for entry in ledger["entries"]],
+            ["swing", "swing", "transaction"],
+        )
+        open_swing = ledger["entries"][0]["swing"]
+        self.assertEqual(open_swing["swing_id"], "open-swing")
+        self.assertEqual(open_swing["economics"]["status"], "open")
+        self.assertEqual(open_swing["economics"]["remaining_quantity"], 0.25)
+        self.assertEqual(open_swing["economics"]["unrealized_pnl_quote"], 2.5)
+        self.assertEqual(open_swing["economics"]["unpriced_fees_by_asset"], {"BNB": 0.01})
+        closed_swing = ledger["entries"][1]["swing"]
+        self.assertEqual(closed_swing["economics"]["realized_pnl_quote"], 20)
+        self.assertEqual(len(closed_swing["executions"]), 2)
+
+        open_ledger = portfolio_service.load_portfolio_asset_ledger("BTC", entry_filter="open")
+        closed_ledger = portfolio_service.load_portfolio_asset_ledger("BTC", entry_filter="closed")
+        self.assertEqual([entry["swing"]["swing_id"] for entry in open_ledger["entries"]], ["open-swing"])
+        self.assertEqual([entry["swing"]["swing_id"] for entry in closed_ledger["entries"]], ["closed-swing"])
 
     def test_asset_ledger_is_filtered_and_paginated(self):
         btc_ids = [self.add("BTC", 1, 90)["transaction_id"] for _ in range(7)]

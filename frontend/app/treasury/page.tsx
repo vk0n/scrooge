@@ -168,13 +168,85 @@ type CreatePortfolioTransactionResponse = {
   warnings: string[];
 };
 
-type AssetTransactionPayload = {
+type SpotSwingExecution = {
+  execution_id: string;
+  side: "buy" | "sell";
+  quantity: number;
+  price: number;
+  quote_quantity: number | null;
+  fee_amount: number | null;
+  fee_asset: string | null;
+  source: "manual" | "strategy";
+  reason_text: string | null;
+  executed_at: string;
+};
+
+type SpotSwingEconomics = {
+  status: "open" | "partially_closed" | "accepting_loss" | "closed";
+  origin_side: "buy" | "sell";
+  closing_side: "buy" | "sell";
+  opening_quantity: number;
+  closing_quantity: number;
+  remaining_quantity: number;
+  weighted_opening_price: number | null;
+  weighted_closing_price: number | null;
+  realized_pnl_quote: number;
+  realized_cash_gain_quote: number | null;
+  realized_net_asset_change: number | null;
+  realized_asset_gain: number | null;
+  target_ratchet_quantity: number;
+  unrealized_pnl_quote: number | null;
+  fees_by_asset: Record<string, number>;
+  unpriced_fees_by_asset: Record<string, number>;
+};
+
+type SpotSwing = {
+  swing_id: string;
   asset_symbol: string;
   quote_symbol: string;
-  transactions: PortfolioTransaction[];
-  transaction_count: number;
-  transaction_limit: number;
-  transaction_offset: number;
+  origin_side: "buy" | "sell";
+  trading_objective: "accumulate_cash" | "accumulate_asset" | null;
+  status: SpotSwingEconomics["status"];
+  planned_quantity: number | null;
+  reference_state: Record<string, unknown>;
+  strategy_reason: Record<string, unknown>;
+  source: "manual" | "strategy";
+  close_reason: string | null;
+  opened_at_ms: number;
+  closed_at_ms: number | null;
+  current_market_price: number | null;
+  market_price_updated_at: string | null;
+  age_seconds: number;
+  economics: SpotSwingEconomics;
+  executions: SpotSwingExecution[];
+};
+
+type AssetLedgerEntry =
+  | {
+      entry_type: "transaction";
+      entry_id: string;
+      occurred_at_ms: number;
+      occurred_at: string;
+      transaction: PortfolioTransaction;
+    }
+  | {
+      entry_type: "swing";
+      entry_id: string;
+      occurred_at_ms: number;
+      occurred_at: string;
+      swing: SpotSwing;
+    };
+
+type AssetLedgerFilter = "all" | "open" | "closed";
+
+type AssetLedgerPayload = {
+  asset_symbol: string;
+  quote_symbol: string;
+  filter: AssetLedgerFilter;
+  entries: AssetLedgerEntry[];
+  entry_count: number;
+  entry_limit: number;
+  entry_offset: number;
 };
 
 type UpdatePortfolioPolicyResponse = {
@@ -313,6 +385,38 @@ function transactionToneClass(type: PortfolioTransactionType): string {
     return "treasury-ledger-type treasury-ledger-type-negative";
   }
   return "treasury-ledger-type";
+}
+
+function swingStatusLabel(status: SpotSwingEconomics["status"]): string {
+  return status.replaceAll("_", " ").toUpperCase();
+}
+
+function swingIdentity(swingId: string): string {
+  const compact = swingId.replaceAll("-", "");
+  return `Swing #${compact.slice(-6).toUpperCase()}`;
+}
+
+function formatSwingAge(seconds: number): string {
+  const normalized = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(normalized / 86400);
+  if (days > 0) return `${days}d ${Math.floor((normalized % 86400) / 3600)}h`;
+  const hours = Math.floor(normalized / 3600);
+  if (hours > 0) return `${hours}h ${Math.floor((normalized % 3600) / 60)}m`;
+  return `${Math.floor(normalized / 60)}m`;
+}
+
+function swingObjectiveLabel(objective: SpotSwing["trading_objective"]): string {
+  if (objective === "accumulate_cash") return "Accumulate Cash";
+  if (objective === "accumulate_asset") return "Accumulate Asset";
+  return "Not Set";
+}
+
+function swingReasonText(reason: Record<string, unknown>): string | null {
+  for (const key of ["message", "reason", "summary", "signal"]) {
+    const value = reason[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return Object.keys(reason).length ? JSON.stringify(reason) : null;
 }
 
 function custodyQuantity(holding: PortfolioHolding, location: CustodyLocation): number {
@@ -1103,6 +1207,91 @@ function AssetPolicyPanel({
   );
 }
 
+function SwingLedgerRow({ swing, occurredAt }: { swing: SpotSwing; occurredAt: string }): JSX.Element {
+  const [expanded, setExpanded] = useState<boolean>(false);
+  const economics = swing.economics;
+  const pnl = economics.status === "closed"
+    ? economics.realized_pnl_quote
+    : economics.unrealized_pnl_quote;
+  const quantity = economics.opening_quantity || swing.planned_quantity;
+  const fees = Object.entries(economics.fees_by_asset);
+  const reason = swingReasonText(swing.strategy_reason);
+
+  return (
+    <article className={`treasury-swing-row treasury-swing-row-${economics.status}`}>
+      <button
+        type="button"
+        className="treasury-swing-toggle"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <span className="treasury-ledger-type treasury-swing-type">Swing</span>
+        <span className="treasury-swing-summary">
+          <strong>{swingIdentity(swing.swing_id)}</strong>
+          <span>
+            {swing.origin_side.toUpperCase()} {formatNumber(quantity, 8)} {swing.asset_symbol}
+            {economics.weighted_opening_price !== null
+              ? ` at ${formatCurrency(economics.weighted_opening_price, 6)}`
+              : " · Awaiting first execution"}
+          </span>
+        </span>
+        <span className={`treasury-swing-status treasury-swing-status-${economics.status}`}>
+          {swingStatusLabel(economics.status)}
+        </span>
+        <strong className={signedToneClass(pnl, "treasury-swing-pnl")}>{formatSignedCurrency(pnl)}</strong>
+        <span className="treasury-holding-chevron" aria-hidden="true" />
+      </button>
+      {expanded ? (
+        <div className="treasury-swing-details">
+          <div className="treasury-swing-metrics">
+            <span><small>Origin</small><strong>{swing.origin_side.toUpperCase()}</strong></span>
+            <span><small>Objective</small><strong>{swingObjectiveLabel(swing.trading_objective)}</strong></span>
+            <span><small>Remaining</small><strong>{formatNumber(economics.remaining_quantity, 8)} {swing.asset_symbol}</strong></span>
+            <span><small>Opened</small><strong>{formatDateTimeEu(occurredAt)}</strong></span>
+            <span><small>Age</small><strong>{formatSwingAge(swing.age_seconds)}</strong></span>
+            <span><small>Market Price</small><strong>{formatCurrency(swing.current_market_price, 6)}</strong></span>
+            <span><small>Realized PnL</small><strong className={signedToneClass(economics.realized_pnl_quote, "")}>{formatSignedCurrency(economics.realized_pnl_quote)}</strong></span>
+            <span><small>Open PnL</small><strong className={signedToneClass(economics.unrealized_pnl_quote, "")}>{formatSignedCurrency(economics.unrealized_pnl_quote)}</strong></span>
+          </div>
+          {reason ? <p className="treasury-swing-reason">Scrooge&apos;s note: {reason}</p> : null}
+          <div className="treasury-swing-execution-head">
+            <span>Executions</span>
+            <small>{swing.executions.length} {swing.executions.length === 1 ? "fill" : "fills"}</small>
+          </div>
+          {swing.executions.length ? (
+            <div className="treasury-swing-executions">
+              {swing.executions.map((execution) => (
+                <div key={execution.execution_id}>
+                  <span className={`treasury-swing-side treasury-swing-side-${execution.side}`}>
+                    {execution.side.toUpperCase()}
+                  </span>
+                  <strong>{formatNumber(execution.quantity, 8)} {swing.asset_symbol} at {formatCurrency(execution.price, 6)}</strong>
+                  <span>
+                    Fee {execution.fee_amount
+                      ? `${formatNumber(execution.fee_amount, 8)} ${execution.fee_asset ?? "Unknown"}`
+                      : "none"}
+                  </span>
+                  <time>{formatDateTimeEu(execution.executed_at)}</time>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="status-performance-note">No executions have reached this Swing yet.</p>
+          )}
+          <footer className="treasury-swing-footer">
+            <span>Full ID <strong>{swing.swing_id}</strong></span>
+            <span>
+              Fees <strong>{fees.length
+                ? fees.map(([asset, amount]) => `${formatNumber(amount, 8)} ${asset}`).join(" · ")
+                : "None"}</strong>
+            </span>
+          </footer>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 function AssetLedger({
   holding,
   refreshKey,
@@ -1112,19 +1301,21 @@ function AssetLedger({
   refreshKey: string;
   onPortfolioUpdated: (response: CreatePortfolioTransactionResponse) => void;
 }): JSX.Element {
-  const [ledger, setLedger] = useState<AssetTransactionPayload | null>(null);
+  const [ledger, setLedger] = useState<AssetLedgerPayload | null>(null);
+  const [filter, setFilter] = useState<AssetLedgerFilter>("all");
   const [loading, setLoading] = useState<boolean>(true);
   const [updatingTransactionId, setUpdatingTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
 
-  const loadTransactions = useCallback(async (offset: number): Promise<void> => {
+  const loadEntries = useCallback(async (offset: number): Promise<void> => {
     setLoading(true);
     setError(null);
     try {
-      const payload = await fetchApi<AssetTransactionPayload>(
-        `/api/portfolio/assets/${encodeURIComponent(holding.asset_symbol)}/transactions` +
-        `?quote_symbol=${encodeURIComponent(holding.quote_symbol)}&transaction_offset=${offset}`
+      const payload = await fetchApi<AssetLedgerPayload>(
+        `/api/portfolio/assets/${encodeURIComponent(holding.asset_symbol)}/ledger` +
+        `?quote_symbol=${encodeURIComponent(holding.quote_symbol)}` +
+        `&filter=${encodeURIComponent(filter)}&entry_offset=${offset}`
       );
       setLedger(payload);
     } catch (loadError) {
@@ -1132,11 +1323,17 @@ function AssetLedger({
     } finally {
       setLoading(false);
     }
-  }, [holding.asset_symbol, holding.quote_symbol]);
+  }, [filter, holding.asset_symbol, holding.quote_symbol]);
 
   useEffect(() => {
-    if (expanded) void loadTransactions(0);
-  }, [expanded, loadTransactions, refreshKey]);
+    if (expanded) void loadEntries(0);
+  }, [expanded, loadEntries, refreshKey]);
+
+  function changeFilter(nextFilter: AssetLedgerFilter): void {
+    if (nextFilter === filter) return;
+    setFilter(nextFilter);
+    setLedger(null);
+  }
 
   async function setTransactionStatus(transaction: PortfolioTransaction): Promise<void> {
     const nextStatus = transaction.status === "voided" ? "settled" : "voided";
@@ -1153,7 +1350,7 @@ function AssetLedger({
         `/api/portfolio/transactions/${encodeURIComponent(transaction.transaction_id)}/status`,
         { method: "POST", body: { status: nextStatus } }
       );
-      await loadTransactions(ledger?.transaction_offset ?? 0);
+      await loadEntries(ledger?.entry_offset ?? 0);
       onPortfolioUpdated(response);
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Could not update the Treasury entry.");
@@ -1162,14 +1359,14 @@ function AssetLedger({
     }
   }
 
-  const transactions = ledger?.transactions ?? [];
-  const count = ledger?.transaction_count ?? 0;
-  const limit = ledger?.transaction_limit ?? 5;
-  const offset = ledger?.transaction_offset ?? 0;
+  const entries = ledger?.entries ?? [];
+  const count = ledger?.entry_count ?? 0;
+  const limit = ledger?.entry_limit ?? 5;
+  const offset = ledger?.entry_offset ?? 0;
   const rangeStart = count > 0 ? offset + 1 : 0;
-  const rangeEnd = Math.min(offset + transactions.length, count);
+  const rangeEnd = Math.min(offset + entries.length, count);
   const hasLater = offset > 0;
-  const hasEarlier = offset + transactions.length < count;
+  const hasEarlier = offset + entries.length < count;
 
   return (
     <section className="treasury-asset-ledger">
@@ -1185,53 +1382,78 @@ function AssetLedger({
           <span className="treasury-asset-panel-chevron" aria-hidden="true" />
         </button>
       </header>
+      {expanded ? (
+        <div className="treasury-ledger-filter" aria-label="Asset Ledger filter">
+          {(["all", "open", "closed"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={filter === value ? "treasury-ledger-filter-active" : undefined}
+              aria-pressed={filter === value}
+              onClick={() => changeFilter(value)}
+            >
+              {value[0].toUpperCase() + value.slice(1)}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {expanded && loading && !ledger ? <p className="status-performance-note">Opening the ledger...</p> : null}
       {expanded && error ? <p className="form-error">{error}</p> : null}
-      {expanded && !loading && transactions.length === 0 ? (
-        <p className="trade-history-empty-sheet">No entries for {holding.asset_symbol} yet.</p>
+      {expanded && !loading && entries.length === 0 ? (
+        <p className="trade-history-empty-sheet">
+          {filter === "all"
+            ? `No entries for ${holding.asset_symbol} yet.`
+            : `No ${filter} Swings for ${holding.asset_symbol}.`}
+        </p>
       ) : null}
-      {expanded && transactions.length ? (
+      {expanded && entries.length ? (
         <>
           <div className="treasury-ledger-stack">
-            {transactions.map((transaction) => (
-              <article
-                key={transaction.transaction_id}
-                className={`treasury-ledger-row${transaction.status === "voided" ? " treasury-ledger-row-voided" : ""}`}
-              >
-                <span className={transactionToneClass(transaction.tx_type)}>{transactionLabel(transaction.tx_type)}</span>
-                <span className="treasury-ledger-main">
-                  <span className="treasury-ledger-entry">
-                    {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
-                    {transaction.tx_type === "custody_transfer" && transaction.source_custody && transaction.destination_custody
-                      ? ` from ${CUSTODY_LABELS[transaction.source_custody]} to ${CUSTODY_LABELS[transaction.destination_custody]}`
-                      : transaction.price
-                        ? ` at ${formatCurrency(transaction.price, 6)}`
-                        : ` in ${CUSTODY_LABELS[transaction.custody_location]}`}
-                  </span>
-                  {transaction.status === "voided" ? <small>Voided</small> : null}
-                </span>
-                <span className="treasury-ledger-meta">{formatDateTimeEu(transaction.executed_at)}</span>
-                <button
-                  type="button"
-                  className="treasury-ledger-action"
-                  disabled={updatingTransactionId === transaction.transaction_id}
-                  onClick={() => void setTransactionStatus(transaction)}
+            {entries.map((entry) => {
+              if (entry.entry_type === "swing") {
+                return <SwingLedgerRow key={entry.entry_id} swing={entry.swing} occurredAt={entry.occurred_at} />;
+              }
+              const transaction = entry.transaction;
+              return (
+                <article
+                  key={entry.entry_id}
+                  className={`treasury-ledger-row${transaction.status === "voided" ? " treasury-ledger-row-voided" : ""}`}
                 >
-                  {updatingTransactionId === transaction.transaction_id
-                    ? "Saving..."
-                    : transaction.status === "voided"
-                      ? "Restore"
-                      : "Void"}
-                </button>
-              </article>
-            ))}
+                  <span className={transactionToneClass(transaction.tx_type)}>{transactionLabel(transaction.tx_type)}</span>
+                  <span className="treasury-ledger-main">
+                    <span className="treasury-ledger-entry">
+                      {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
+                      {transaction.tx_type === "custody_transfer" && transaction.source_custody && transaction.destination_custody
+                        ? ` from ${CUSTODY_LABELS[transaction.source_custody]} to ${CUSTODY_LABELS[transaction.destination_custody]}`
+                        : transaction.price
+                          ? ` at ${formatCurrency(transaction.price, 6)}`
+                          : ` in ${CUSTODY_LABELS[transaction.custody_location]}`}
+                    </span>
+                    {transaction.status === "voided" ? <small>Voided</small> : null}
+                  </span>
+                  <span className="treasury-ledger-meta">{formatDateTimeEu(transaction.executed_at)}</span>
+                  <button
+                    type="button"
+                    className="treasury-ledger-action"
+                    disabled={updatingTransactionId === transaction.transaction_id}
+                    onClick={() => void setTransactionStatus(transaction)}
+                  >
+                    {updatingTransactionId === transaction.transaction_id
+                      ? "Saving..."
+                      : transaction.status === "voided"
+                        ? "Restore"
+                        : "Void"}
+                  </button>
+                </article>
+              );
+            })}
           </div>
           <div className="toolbar trade-history-toolbar treasury-ledger-toolbar">
             <button
               type="button"
               className="dialog-user-btn trade-history-nav-button trade-history-nav-later"
               disabled={loading || !hasLater}
-              onClick={() => void loadTransactions(Math.max(0, offset - limit))}
+              onClick={() => void loadEntries(Math.max(0, offset - limit))}
             >
               Later
             </button>
@@ -1240,7 +1462,7 @@ function AssetLedger({
                 type="button"
                 className="dialog-user-btn trade-history-latest-button"
                 disabled={loading}
-                onClick={() => void loadTransactions(0)}
+                onClick={() => void loadEntries(0)}
               >
                 Latest
               </button>
@@ -1252,7 +1474,7 @@ function AssetLedger({
               type="button"
               className="dialog-user-btn trade-history-nav-button trade-history-nav-earlier"
               disabled={loading || !hasEarlier}
-              onClick={() => void loadTransactions(offset + limit)}
+              onClick={() => void loadEntries(offset + limit)}
             >
               Earlier
             </button>
