@@ -2176,7 +2176,7 @@ pre {
 
 .treasury-summary-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.62rem;
 }
 
@@ -2266,82 +2266,6 @@ pre {
     linear-gradient(135deg, rgba(25, 31, 42, 0.82), rgba(10, 14, 20, 0.96)),
     radial-gradient(circle at top right, rgba(205, 164, 66, 0.08), transparent 42%);
   box-shadow: inset 0 0 0 1px rgba(132, 150, 178, 0.05);
-}
-
-.treasury-exchange-card {
-  min-width: 0;
-  border: 1px solid rgba(72, 120, 124, 0.42);
-  border-radius: 14px;
-  padding: 0.86rem;
-  background:
-    radial-gradient(circle at top right, rgba(49, 178, 151, 0.1), transparent 34%),
-    linear-gradient(135deg, rgba(14, 24, 27, 0.9), rgba(9, 14, 20, 0.97));
-}
-
-.treasury-exchange-status {
-  flex: 0 0 auto;
-  border: 1px solid rgba(113, 127, 149, 0.54);
-  border-radius: 999px;
-  padding: 0.18rem 0.58rem;
-  color: #aeb9ca;
-  background: rgba(76, 89, 109, 0.18);
-  font-size: 0.72rem;
-  white-space: nowrap;
-}
-
-.treasury-exchange-status-live {
-  border-color: rgba(42, 157, 115, 0.66);
-  color: var(--value-positive-surface);
-  background: rgba(29, 93, 67, 0.24);
-}
-
-.treasury-exchange-status-error {
-  border-color: rgba(193, 81, 97, 0.68);
-  color: var(--value-negative-surface);
-  background: rgba(101, 29, 43, 0.22);
-}
-
-.treasury-exchange-status-stale {
-  border-color: rgba(164, 127, 51, 0.62);
-  color: #e7c775;
-  background: rgba(91, 64, 18, 0.24);
-}
-
-.treasury-exchange-metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.58rem;
-}
-
-.treasury-exchange-metrics > div {
-  display: grid;
-  gap: 0.24rem;
-  min-width: 0;
-  border-left: 1px solid rgba(84, 118, 124, 0.26);
-  padding: 0.24rem 0.68rem;
-}
-
-.treasury-exchange-metrics > div:first-child {
-  border-left: 0;
-  padding-left: 0;
-}
-
-.treasury-exchange-metrics span,
-.treasury-exchange-note {
-  color: #8f9caf;
-  font-size: 0.7rem;
-}
-
-.treasury-exchange-metrics strong {
-  color: #e8eff8;
-  font-size: 0.86rem;
-  overflow-wrap: anywhere;
-}
-
-.treasury-exchange-note {
-  margin: 0.68rem 0 0;
-  border-top: 1px solid rgba(84, 118, 124, 0.2);
-  padding-top: 0.58rem;
 }
 
 .treasury-inventory-basis-warning {
@@ -2605,10 +2529,6 @@ pre {
   text-align: right;
 }
 
-.treasury-form-panel {
-  border-color: rgba(83, 98, 121, 0.42);
-}
-
 .treasury-form-toggle {
   min-width: 9rem;
 }
@@ -2770,22 +2690,6 @@ pre {
   cursor: pointer;
   list-style-position: inside;
   font-size: 0.8rem;
-}
-
-.treasury-spot-order-readiness {
-  border: 1px solid rgba(173, 126, 48, 0.58);
-  border-radius: 999px;
-  padding: 0.16rem 0.52rem;
-  color: #d9b75e;
-  background: rgba(85, 59, 17, 0.22);
-  font-size: 0.68rem;
-  white-space: nowrap;
-}
-
-.treasury-spot-order-readiness-live {
-  border-color: rgba(42, 157, 115, 0.66);
-  color: var(--value-positive-surface);
-  background: rgba(29, 93, 67, 0.24);
 }
 
 .treasury-spot-order-content {
@@ -4202,15 +4106,6 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-template-columns: 1fr;
   }
 
-  .treasury-exchange-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .treasury-exchange-metrics > div:nth-child(3) {
-    border-left: 0;
-    padding-left: 0;
-  }
-
   .treasury-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.5rem;
@@ -4812,10 +4707,6 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-template-columns: 1fr;
   }
 
-  .treasury-exchange-metrics {
-    grid-template-columns: 1fr;
-  }
-
   .treasury-spot-order-form,
   .treasury-spot-order-preview > div {
     grid-template-columns: 1fr;
@@ -4839,17 +4730,6 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-spot-execute-btn {
     width: 100%;
-  }
-
-  .treasury-exchange-metrics > div {
-    border-top: 1px solid rgba(84, 118, 124, 0.2);
-    border-left: 0;
-    padding: 0.48rem 0 0;
-  }
-
-  .treasury-exchange-metrics > div:first-child {
-    border-top: 0;
-    padding-top: 0;
   }
 
   .treasury-allocation-content {

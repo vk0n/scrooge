@@ -638,18 +638,9 @@ function SpotOrderPanel({
 
   return (
     <details className="treasury-spot-order-panel">
-      <summary>
-        <span>Trade on Binance</span>
-        <span className={`treasury-spot-order-readiness${executionReady ? " treasury-spot-order-readiness-live" : ""}`}>
-          {executionReady ? "Real execution ready" : "Execution locked"}
-        </span>
-      </summary>
+      <summary>Trade on Binance</summary>
       <div className="treasury-spot-order-content">
-        {!exchange?.spot_execution_enabled ? (
-          <p className="treasury-spot-order-lock">
-            Real Spot execution is disabled by the deployment safety switch.
-          </p>
-        ) : !exchange?.is_balance_verified ? (
+        {!exchange?.is_balance_verified ? (
           <p className="treasury-spot-order-lock">A fresh Binance Spot snapshot is required.</p>
         ) : null}
         <form className="treasury-spot-order-form" onSubmit={(event) => void requestPreview(event)}>
@@ -1004,7 +995,6 @@ export default function TreasuryPage(): JSX.Element {
   const transactionRangeEnd = Math.min(transactionOffset + transactions.length, transactionCount);
   const hasLaterTransactions = transactionOffset > 0;
   const hasEarlierTransactions = transactionOffset + transactions.length < transactionCount;
-  const largestBag = summary?.largest_position;
   const reducingHolding =
     form.tx_type === "sell" || form.tx_type === "withdraw"
       ? holdings.find(
@@ -1014,19 +1004,6 @@ export default function TreasuryPage(): JSX.Element {
   const reducingAvailable = reducingHolding
     ? custodyQuantity(reducingHolding, form.custody_location)
     : null;
-  const exchangeStatusLabel = exchange?.is_balance_verified
-    ? "Live"
-    : exchange?.status === "error"
-      ? "Refresh Failed"
-      : exchange?.is_stale && exchange.captured_at
-        ? "Stale"
-        : "Awaiting Snapshot";
-  const exchangeStatusTone = exchange?.is_balance_verified
-    ? " treasury-exchange-status-live"
-    : exchange?.status === "error"
-      ? " treasury-exchange-status-error"
-      : " treasury-exchange-status-stale";
-
   return (
     <AuthGate>
       <section className="panel page-shell treasury-page-shell">
@@ -1084,11 +1061,6 @@ export default function TreasuryPage(): JSX.Element {
               <span className="treasury-summary-label">Dry Powder</span>
               <strong>{formatCurrency(summary?.dry_powder ?? 0)}</strong>
               <span className="treasury-summary-note">{formatPercent(summary?.dry_powder_pct)} of vault</span>
-            </div>
-            <div className="treasury-summary-card">
-              <span className="treasury-summary-label">Largest Bag</span>
-              <strong>{largestBag ? largestBag.asset_symbol : "No Treasure Yet"}</strong>
-              <span className="treasury-summary-note">{largestBag ? formatPercent(largestBag.allocation_pct) : "Awaiting first coin"}</span>
             </div>
           </div>
 
@@ -1163,45 +1135,13 @@ export default function TreasuryPage(): JSX.Element {
             </article>
           </div>
 
-          <article className="treasury-exchange-card">
-            <header className="treasury-insight-head">
-              <div>
-                <h2>Binance Spot</h2>
-                <p className="muted">Read-only exchange inventory for reconciliation and future execution.</p>
-              </div>
-              <span className={`treasury-exchange-status${exchangeStatusTone}`}>{exchangeStatusLabel}</span>
-            </header>
-            <div className="treasury-exchange-metrics">
-              <div>
-                <span>Available USDT</span>
-                <strong>{exchange?.usdt_free == null ? "--" : formatCurrency(exchange.usdt_free)}</strong>
-              </div>
-              <div>
-                <span>Locked USDT</span>
-                <strong>{exchange?.usdt_locked == null ? "--" : formatCurrency(exchange.usdt_locked)}</strong>
-              </div>
-              <div>
-                <span>Assets on Exchange</span>
-                <strong>{exchange?.balances.length ?? 0}</strong>
-              </div>
-              <div>
-                <span>Last Verified</span>
-                <strong>{exchange?.captured_at ? formatDateTimeEu(exchange.captured_at) : "Not available"}</strong>
-              </div>
-            </div>
-            <p className="treasury-exchange-note">
-              Exchange balances are visibility only and are not added to Total Treasure unless they are represented in the Treasury ledger.
-            </p>
-          </article>
         </section>
 
-        <section ref={formPanelRef} className="section-block treasury-form-panel">
+        <section ref={formPanelRef} className="section-block">
           <header className="treasury-section-head">
             <div>
-              <h2>Add Treasure</h2>
-              <p className="muted">
-                {formExpanded ? "Each entry lands in the Treasury ledger and holdings are derived from it." : "Record a new vault movement."}
-              </p>
+              <h2>Vault Holdings</h2>
+              <p className="muted">Current stacks derived from settled Treasury entries.</p>
             </div>
             <button
               type="button"
@@ -1326,15 +1266,6 @@ export default function TreasuryPage(): JSX.Element {
               {saving ? "Adding Treasure..." : "Add Treasure"}
             </button>
           </form> : null}
-        </section>
-
-        <section className="section-block">
-          <header className="treasury-section-head">
-            <div>
-              <h2>Vault Holdings</h2>
-              <p className="muted">Current stacks derived from settled Treasury entries.</p>
-            </div>
-          </header>
 
           {holdings.length === 0 ? (
             <p className="trade-history-empty-sheet">The treasury is empty. Add your first treasure.</p>
@@ -1382,11 +1313,21 @@ export default function TreasuryPage(): JSX.Element {
                   />
                   {!holding.is_dry_powder ? (
                     <>
-                      <SpotOrderPanel
-                        holding={holding}
-                        exchange={exchange}
-                        onExecuted={() => loadPortfolio(0)}
-                      />
+                      {exchange?.spot_execution_enabled ? (
+                        <SpotOrderPanel
+                          key={[
+                            holding.target_quantity,
+                            holding.minimum_holding_pct,
+                            holding.protected_floor_quantity,
+                            holding.immediately_sellable_quantity,
+                            holding.exchange_binance_free_quantity,
+                            exchange.captured_at,
+                          ].join(":")}
+                          holding={holding}
+                          exchange={exchange}
+                          onExecuted={() => loadPortfolio(0)}
+                        />
+                      ) : null}
                       <AssetPolicyPanel
                         holding={holding}
                         exchange={exchange}
