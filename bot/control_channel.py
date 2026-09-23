@@ -22,7 +22,16 @@ REDIS_DB = int(os.getenv("SCROOGE_REDIS_DB", "0"))
 CONTROL_QUEUE_KEY = os.getenv("SCROOGE_CONTROL_QUEUE_KEY", "scrooge:control:queue")
 COMMAND_STATUS_PREFIX = os.getenv("SCROOGE_COMMAND_STATUS_PREFIX", "scrooge:control:command:")
 COMMAND_STATUS_TTL_SECONDS = int(os.getenv("SCROOGE_COMMAND_STATUS_TTL_SECONDS", "86400"))
-SUPPORTED_ACTIONS = {"start", "stop", "restart", "close_position", "suggest_trade", "update_sl", "update_tp"}
+SUPPORTED_ACTIONS = {
+    "start",
+    "stop",
+    "restart",
+    "close_position",
+    "suggest_trade",
+    "update_sl",
+    "update_tp",
+    "spot_order",
+}
 TRADE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 technical_logger = get_technical_logger()
 
@@ -232,6 +241,7 @@ def process_pending_commands(
     get_order_execution_summary_fn: Callable[[str, Any], dict[str, Any] | None] | None = None,
     leverage: float | None = None,
     fee_rate: float | None = None,
+    execute_spot_order_fn: Callable[[str], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """
     Consume queued control commands and apply them to bot runtime state.
@@ -290,6 +300,7 @@ def process_pending_commands(
         try:
             was_enabled = bool(state.get("trading_enabled", True))
             event_ts = utc_now_text(TRADE_TIMESTAMP_FORMAT)
+            command_result: dict[str, Any] | None = None
             if action == "start":
                 state["trading_enabled"] = True
                 message = "Trading resumed." if not was_enabled else "Trading is already running."
@@ -565,6 +576,31 @@ def process_pending_commands(
                             save_state_fn(state)
 
                     message = "Manual close submitted; awaiting exchange confirmation."
+            elif action == "spot_order":
+                if execute_spot_order_fn is None:
+                    raise ValueError("Spot-order executor is not configured")
+                intent_id = str(command_payload.get("intent_id") or "").strip()
+                if not intent_id:
+                    raise ValueError("Spot-order intent ID is required")
+                command_result = execute_spot_order_fn(intent_id)
+                side = str(command_result.get("side") or "spot").upper()
+                asset = str(command_result.get("asset_symbol") or "asset")
+                quantity = _as_float(command_result.get("executed_quantity"))
+                message = (
+                    f"Binance Spot {side} filled for "
+                    f"{quantity if quantity is not None else 'confirmed quantity'} {asset}."
+                )
+                emit_event(
+                    code="manual_spot_order_executed",
+                    category="command",
+                    ts=event_ts,
+                    persist_ui=True,
+                    symbol=command_result.get("asset_symbol"),
+                    side=command_result.get("side"),
+                    quantity=quantity,
+                    order_id=command_result.get("order_id"),
+                    intent_id=intent_id,
+                )
             else:
                 raise ValueError(f"Unsupported action: {action}")
 
@@ -593,15 +629,18 @@ def process_pending_commands(
             )
             continue
 
+        completed_fields: dict[str, Any] = {
+            "status": "completed",
+            "updated_at": _now_iso(),
+            "message": message,
+            "trading_status": _status_snapshot(state),
+        }
+        if command_result is not None:
+            completed_fields["result"] = command_result
         _update_status(
             client,
             command_id,
-            {
-                "status": "completed",
-                "updated_at": _now_iso(),
-                "message": message,
-                "trading_status": _status_snapshot(state),
-            },
+            completed_fields,
             logger,
         )
         _log_message(logger, "info", f"[CONTROL] Applied command {action} ({command_id})")

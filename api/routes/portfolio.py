@@ -2,16 +2,20 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from services.portfolio_service import (
     create_custody_transfer,
     create_portfolio_transaction,
+    create_spot_order_preview,
+    get_spot_order_intent,
     load_portfolio_snapshot,
     set_portfolio_transaction_status,
     update_portfolio_asset_policy,
 )
+from services.spot_order_service import queue_spot_order_intent
+from services.system_service import get_service_status
 
 router = APIRouter()
 
@@ -47,6 +51,17 @@ class PortfolioAssetPolicyRequest(BaseModel):
     quote_symbol: str = Field(default="USDT", min_length=1, max_length=24)
     target_quantity: float = Field(..., gt=0)
     minimum_holding_pct: float = Field(..., ge=0, le=100)
+
+
+class SpotOrderPreviewRequest(BaseModel):
+    asset_symbol: str = Field(..., min_length=1, max_length=24)
+    quote_symbol: str = Field(default="USDT", min_length=1, max_length=24)
+    side: Literal["buy", "sell"]
+    quantity: float = Field(..., gt=0)
+
+
+class SpotOrderExecuteRequest(BaseModel):
+    confirmation: Literal["CONFIRM_SPOT_ORDER"]
 
 
 @router.get("")
@@ -107,3 +122,54 @@ def update_transaction_status(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {**payload, "warnings": warnings}
+
+
+@router.post("/spot-orders/preview")
+def preview_spot_order(data: SpotOrderPreviewRequest) -> dict[str, object]:
+    try:
+        return create_spot_order_preview(data.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+@router.get("/spot-orders/{intent_id}")
+def spot_order_status(intent_id: str) -> dict[str, object]:
+    try:
+        return get_spot_order_intent(intent_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+@router.post("/spot-orders/{intent_id}/execute")
+def execute_spot_order(
+    intent_id: str,
+    data: SpotOrderExecuteRequest,
+    request: Request,
+) -> dict[str, object]:
+    del data
+    try:
+        service_status = get_service_status()
+    except RuntimeError:
+        service_status = None
+    if service_status is not None and not service_status.running:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Scrooge runtime is offline. A real Spot order cannot be delivered safely.",
+        )
+    requested_by = "basic-user" if request.headers.get("Authorization", "").startswith("Basic ") else "unknown"
+    try:
+        return queue_spot_order_intent(intent_id, requested_by=requested_by)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc

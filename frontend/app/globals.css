@@ -2751,7 +2751,8 @@ pre {
 }
 
 .treasury-custody-panel,
-.treasury-policy-panel {
+.treasury-policy-panel,
+.treasury-spot-order-panel {
   grid-column: 1 / -1;
   min-width: 0;
   border-top: 1px solid rgba(106, 124, 150, 0.18);
@@ -2759,7 +2760,8 @@ pre {
 }
 
 .treasury-custody-panel summary,
-.treasury-policy-panel summary {
+.treasury-policy-panel summary,
+.treasury-spot-order-panel summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2768,6 +2770,146 @@ pre {
   cursor: pointer;
   list-style-position: inside;
   font-size: 0.8rem;
+}
+
+.treasury-spot-order-readiness {
+  border: 1px solid rgba(173, 126, 48, 0.58);
+  border-radius: 999px;
+  padding: 0.16rem 0.52rem;
+  color: #d9b75e;
+  background: rgba(85, 59, 17, 0.22);
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.treasury-spot-order-readiness-live {
+  border-color: rgba(42, 157, 115, 0.66);
+  color: var(--value-positive-surface);
+  background: rgba(29, 93, 67, 0.24);
+}
+
+.treasury-spot-order-content {
+  display: grid;
+  gap: 0.62rem;
+  margin-top: 0.65rem;
+  border: 1px solid rgba(137, 103, 43, 0.28);
+  border-radius: 0.72rem;
+  padding: 0.72rem;
+  background:
+    radial-gradient(circle at top right, rgba(220, 171, 61, 0.08), transparent 38%),
+    rgba(6, 10, 16, 0.68);
+}
+
+.treasury-spot-order-lock {
+  margin: 0;
+  border: 1px solid rgba(174, 126, 48, 0.4);
+  border-radius: 0.58rem;
+  padding: 0.48rem 0.58rem;
+  color: #e0c178;
+  background: rgba(81, 56, 16, 0.2);
+  font-size: 0.74rem;
+}
+
+.treasury-spot-order-form {
+  display: grid;
+  grid-template-columns: minmax(7.5rem, 0.7fr) minmax(10rem, 1.2fr) auto;
+  align-items: end;
+  gap: 0.52rem;
+}
+
+.treasury-spot-order-form .dialog-user-btn {
+  min-width: 11rem;
+}
+
+.treasury-spot-order-capacity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.1rem;
+  color: #8f9db2;
+  font-size: 0.7rem;
+}
+
+.treasury-spot-order-capacity strong {
+  color: #dfe7f2;
+  font-weight: 500;
+}
+
+.treasury-spot-order-preview {
+  display: grid;
+  gap: 0.62rem;
+  border: 1px solid rgba(85, 137, 190, 0.62);
+  border-radius: 0.72rem;
+  padding: 0.68rem;
+  background: linear-gradient(135deg, rgba(17, 33, 50, 0.78), rgba(9, 14, 21, 0.94));
+}
+
+.treasury-spot-order-preview-sell {
+  border-color: rgba(190, 72, 89, 0.66);
+  background: linear-gradient(135deg, rgba(66, 19, 30, 0.52), rgba(13, 12, 18, 0.94));
+}
+
+.treasury-spot-order-preview > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.62rem;
+}
+
+.treasury-spot-order-preview > header span {
+  color: #f1c766;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+}
+
+.treasury-spot-order-preview > header strong {
+  color: #f2f5fa;
+  font-size: 0.86rem;
+}
+
+.treasury-spot-order-preview > div {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.46rem;
+}
+
+.treasury-spot-order-preview > div > span {
+  display: grid;
+  gap: 0.16rem;
+  border-left: 1px solid rgba(112, 130, 155, 0.22);
+  padding-left: 0.5rem;
+  color: #8f9db2;
+  font-size: 0.68rem;
+}
+
+.treasury-spot-order-preview > div > span:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.treasury-spot-order-preview > div strong {
+  color: #e7edf7;
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.treasury-spot-execute-btn {
+  justify-self: end;
+  min-width: 12rem;
+  border-color: rgba(211, 163, 64, 0.82);
+  background: linear-gradient(180deg, rgba(91, 63, 18, 0.86), rgba(50, 34, 12, 0.94));
+  color: #ffe2a0;
+}
+
+.treasury-spot-order-preview-sell .treasury-spot-execute-btn {
+  border-color: rgba(205, 73, 91, 0.82);
+  background: linear-gradient(180deg, rgba(107, 28, 43, 0.86), rgba(58, 17, 27, 0.94));
+  color: #ffc3cc;
+}
+
+.treasury-spot-order-stage {
+  margin: 0;
+  color: #aeb9ca;
+  font-size: 0.72rem;
 }
 
 .treasury-custody-summary,
@@ -4107,7 +4249,8 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-custody-panel summary,
-  .treasury-policy-panel summary {
+  .treasury-policy-panel summary,
+  .treasury-spot-order-panel summary {
     align-items: flex-start;
   }
 
@@ -4115,6 +4258,19 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-policy-summary {
     display: grid;
     justify-items: end;
+  }
+
+  .treasury-spot-order-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .treasury-spot-order-form .dialog-user-btn {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .treasury-spot-order-preview > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .treasury-custody-form {
@@ -4658,6 +4814,31 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-exchange-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .treasury-spot-order-form,
+  .treasury-spot-order-preview > div {
+    grid-template-columns: 1fr;
+  }
+
+  .treasury-spot-order-preview > header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .treasury-spot-order-preview > div > span {
+    border-top: 1px solid rgba(112, 130, 155, 0.2);
+    border-left: 0;
+    padding: 0.4rem 0 0;
+  }
+
+  .treasury-spot-order-preview > div > span:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .treasury-spot-execute-btn {
+    width: 100%;
   }
 
   .treasury-exchange-metrics > div {

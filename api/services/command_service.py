@@ -16,6 +16,7 @@ CONTROL_QUEUE_KEY = os.getenv("SCROOGE_CONTROL_QUEUE_KEY", "scrooge:control:queu
 COMMAND_STATUS_PREFIX = os.getenv("SCROOGE_COMMAND_STATUS_PREFIX", "scrooge:control:command:")
 COMMAND_STATUS_TTL_SECONDS = int(os.getenv("SCROOGE_COMMAND_STATUS_TTL_SECONDS", "86400"))
 COMMAND_STALE_AFTER_SECONDS = int(os.getenv("SCROOGE_COMMAND_STALE_AFTER_SECONDS", "20"))
+SPOT_ORDER_COMMAND_STALE_AFTER_SECONDS = int(os.getenv("SCROOGE_SPOT_ORDER_COMMAND_STALE_AFTER_SECONDS", "90"))
 SUPPORTED_ACTIONS = {
     "start",
     "stop",
@@ -24,6 +25,7 @@ SUPPORTED_ACTIONS = {
     "suggest_trade",
     "update_sl",
     "update_tp",
+    "spot_order",
 }
 
 
@@ -61,24 +63,32 @@ def _apply_status_ttl(pipe: redis.client.Pipeline, status_key: str) -> None:
         pipe.expire(status_key, COMMAND_STATUS_TTL_SECONDS)
 
 
-def enqueue_control_command(action: str, requested_by: str | None, payload: dict[str, Any] | None = None) -> dict[str, str]:
+def enqueue_control_command(
+    action: str,
+    requested_by: str | None,
+    payload: dict[str, Any] | None = None,
+    *,
+    command_id: str | None = None,
+) -> dict[str, str]:
     normalized_action = action.strip().lower()
     if normalized_action not in SUPPORTED_ACTIONS:
         raise ValueError(f"Unsupported action: {action}")
 
-    command_id = uuid.uuid4().hex
+    resolved_command_id = str(command_id or uuid.uuid4().hex).strip()
+    if not resolved_command_id:
+        raise ValueError("Command ID is required.")
     created_at = _now_iso()
-    status_key = _status_key(command_id)
+    status_key = _status_key(resolved_command_id)
 
     command_payload = {
-        "id": command_id,
+        "id": resolved_command_id,
         "action": normalized_action,
         "payload": payload or {},
         "requested_by": requested_by or "unknown",
         "created_at": created_at,
     }
     status_payload = {
-        "command_id": command_id,
+        "command_id": resolved_command_id,
         "action": normalized_action,
         "status": "pending",
         "message": "",
@@ -99,7 +109,7 @@ def enqueue_control_command(action: str, requested_by: str | None, payload: dict
         raise RuntimeError(f"Failed to enqueue control command: {exc}") from exc
 
     return {
-        "command_id": command_id,
+        "command_id": resolved_command_id,
         "status": "pending",
         "queued_at": created_at,
         "action": normalized_action,
@@ -115,12 +125,13 @@ def get_command_status(command_id: str) -> dict[str, Any] | None:
     if not payload:
         return None
 
-    raw_command_payload = payload.get("payload")
-    if raw_command_payload:
-        try:
-            payload["payload"] = json.loads(raw_command_payload)
-        except json.JSONDecodeError:
-            payload["payload"] = raw_command_payload
+    for field_name in ("payload", "result", "trading_status"):
+        raw_value = payload.get(field_name)
+        if raw_value:
+            try:
+                payload[field_name] = json.loads(raw_value)
+            except json.JSONDecodeError:
+                payload[field_name] = raw_value
 
     status_value = str(payload.get("status", "")).strip().lower()
     if status_value in {"pending", "processing"}:
@@ -129,7 +140,12 @@ def get_command_status(command_id: str) -> dict[str, Any] | None:
         reference_ts = updated_at or created_at
         if reference_ts is not None:
             age_seconds = (datetime.now(UTC) - reference_ts.astimezone(UTC)).total_seconds()
-            if age_seconds >= COMMAND_STALE_AFTER_SECONDS:
+            stale_after_seconds = (
+                SPOT_ORDER_COMMAND_STALE_AFTER_SECONDS
+                if payload.get("action") == "spot_order"
+                else COMMAND_STALE_AFTER_SECONDS
+            )
+            if age_seconds >= stale_after_seconds:
                 payload["status"] = "failed"
                 payload["message"] = (
                     "The instruction sat unanswered on Scrooge's desk for too long. "

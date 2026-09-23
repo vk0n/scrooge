@@ -39,6 +39,46 @@ type PortfolioExchange = {
   }>;
   usdt_free: number | null;
   usdt_locked: number | null;
+  spot_execution_enabled: boolean;
+};
+
+type SpotOrderIntent = {
+  intent_id: string;
+  client_order_id: string;
+  symbol: string;
+  asset_symbol: string;
+  quote_symbol: string;
+  side: "buy" | "sell";
+  requested_quantity: number;
+  estimated_price: number;
+  estimated_quote_value: number;
+  available_quote_quantity: number | null;
+  available_asset_quantity: number | null;
+  protected_floor_quantity: number | null;
+  policy_sellable_quantity: number | null;
+  projected_holding_quantity: number | null;
+  status: string;
+  preview_expires_at_ms?: number;
+};
+
+type SpotOrderQueueResponse = {
+  command_id: string;
+  status: string;
+  intent: SpotOrderIntent;
+  idempotent_replay: boolean;
+};
+
+type ControlCommandStatus = {
+  command_id: string;
+  action: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  message?: string;
+  result?: {
+    order_id?: string;
+    executed_quantity?: number;
+    executed_quote_quantity?: number;
+    average_price?: number;
+  };
 };
 
 type PortfolioHolding = {
@@ -487,6 +527,186 @@ function CustodyPanel({
         <p className="treasury-custody-disclaimer">
           Accounting only. No exchange or blockchain transfer is initiated.
         </p>
+        {error ? <p className="form-error">{error}</p> : null}
+      </div>
+    </details>
+  );
+}
+
+async function waitForSpotOrder(commandId: string): Promise<ControlCommandStatus> {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    const command = await fetchApi<ControlCommandStatus>(`/api/control/commands/${encodeURIComponent(commandId)}`);
+    if (command.status === "completed" || command.status === "failed") {
+      return command;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+  }
+  throw new Error("Spot order is still awaiting confirmation. Check the Treasury Ledger before retrying.");
+}
+
+function SpotOrderPanel({
+  holding,
+  exchange,
+  onExecuted,
+}: {
+  holding: PortfolioHolding;
+  exchange: PortfolioExchange | null;
+  onExecuted: () => Promise<void>;
+}): JSX.Element {
+  const [side, setSide] = useState<"buy" | "sell">("buy");
+  const [quantity, setQuantity] = useState<string>("");
+  const [preview, setPreview] = useState<SpotOrderIntent | null>(null);
+  const [stage, setStage] = useState<string | null>(null);
+  const [busy, setBusy] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const executionReady = Boolean(exchange?.spot_execution_enabled && exchange?.is_balance_verified && exchange?.can_trade);
+
+  function resetPreview(nextSide?: "buy" | "sell"): void {
+    if (nextSide) {
+      setSide(nextSide);
+    }
+    setPreview(null);
+    setStage(null);
+    setError(null);
+  }
+
+  async function requestPreview(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setStage("Checking policy and Binance inventory...");
+    try {
+      const result = await fetchApi<SpotOrderIntent>("/api/portfolio/spot-orders/preview", {
+        method: "POST",
+        body: {
+          asset_symbol: holding.asset_symbol,
+          quote_symbol: holding.quote_symbol,
+          side,
+          quantity: asNumber(quantity),
+        },
+      });
+      setPreview(result);
+      setStage("Preview ready. No order has been sent.");
+    } catch (previewError) {
+      setPreview(null);
+      setStage(null);
+      setError(previewError instanceof Error ? previewError.message : "Could not prepare the Spot order preview.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function executeOrder(): Promise<void> {
+    if (!preview) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `Send a REAL Binance Spot ${preview.side.toUpperCase()} for ${formatNumber(preview.requested_quantity, 8)} ${preview.asset_symbol}?\n\nEstimated value: ${formatCurrency(preview.estimated_quote_value)}\nThis action may execute immediately and cannot be undone.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setStage("Order accepted by the Control Plane and awaiting Scrooge...");
+    try {
+      const queued = await fetchApi<SpotOrderQueueResponse>(
+        `/api/portfolio/spot-orders/${encodeURIComponent(preview.intent_id)}/execute`,
+        { method: "POST", body: { confirmation: "CONFIRM_SPOT_ORDER" } }
+      );
+      setStage("Scrooge is validating fresh balances and submitting the order...");
+      const command = await waitForSpotOrder(queued.command_id);
+      if (command.status !== "completed") {
+        throw new Error(command.message || "Binance Spot order failed.");
+      }
+      const executedQuantity = command.result?.executed_quantity;
+      setStage(
+        typeof executedQuantity === "number"
+          ? `Filled ${formatNumber(executedQuantity, 8)} ${preview.asset_symbol}. Treasury Ledger updated.`
+          : command.message || "Order filled. Treasury Ledger updated."
+      );
+      setPreview(null);
+      setQuantity("");
+      await onExecuted();
+    } catch (executeError) {
+      setError(executeError instanceof Error ? executeError.message : "Could not execute the Binance Spot order.");
+      setStage("Execution did not complete cleanly. Review the message and Treasury Ledger before taking any further action.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <details className="treasury-spot-order-panel">
+      <summary>
+        <span>Trade on Binance</span>
+        <span className={`treasury-spot-order-readiness${executionReady ? " treasury-spot-order-readiness-live" : ""}`}>
+          {executionReady ? "Real execution ready" : "Execution locked"}
+        </span>
+      </summary>
+      <div className="treasury-spot-order-content">
+        {!exchange?.spot_execution_enabled ? (
+          <p className="treasury-spot-order-lock">
+            Real Spot execution is disabled by the deployment safety switch.
+          </p>
+        ) : !exchange?.is_balance_verified ? (
+          <p className="treasury-spot-order-lock">A fresh Binance Spot snapshot is required.</p>
+        ) : null}
+        <form className="treasury-spot-order-form" onSubmit={(event) => void requestPreview(event)}>
+          <label className="dialog-user-field">
+            Side
+            <select
+              value={side}
+              onChange={(event) => resetPreview(event.target.value as "buy" | "sell")}
+              disabled={busy}
+            >
+              <option value="buy">Buy</option>
+              <option value="sell">Sell</option>
+            </select>
+          </label>
+          <label className="dialog-user-field">
+            Quantity ({holding.asset_symbol})
+            <input
+              type="number"
+              min="0.00000001"
+              step="any"
+              value={quantity}
+              onChange={(event) => {
+                setQuantity(event.target.value);
+                setPreview(null);
+                setStage(null);
+              }}
+              required
+              disabled={busy}
+            />
+          </label>
+          <button type="submit" className="dialog-user-btn" disabled={busy || !executionReady}>
+            {busy ? "Checking..." : "Preview Real Order"}
+          </button>
+        </form>
+        <div className="treasury-spot-order-capacity">
+          <span>Available USDT <strong>{formatCurrency(exchange?.usdt_free)}</strong></span>
+          <span>Binance Free <strong>{formatNumber(holding.exchange_binance_free_quantity, 8)} {holding.asset_symbol}</strong></span>
+          <span>Sellable <strong>{formatNumber(holding.immediately_sellable_quantity, 8)} {holding.asset_symbol}</strong></span>
+        </div>
+        {preview ? (
+          <section className={`treasury-spot-order-preview treasury-spot-order-preview-${preview.side}`}>
+            <header>
+              <span>REAL ORDER PREVIEW</span>
+              <strong>{preview.side.toUpperCase()} {formatNumber(preview.requested_quantity, 8)} {preview.asset_symbol}</strong>
+            </header>
+            <div>
+              <span>Estimated Price <strong>{formatCurrency(preview.estimated_price, 6)}</strong></span>
+              <span>Estimated Value <strong>{formatCurrency(preview.estimated_quote_value)}</strong></span>
+              <span>Projected Holding <strong>{formatNumber(preview.projected_holding_quantity, 8)} {preview.asset_symbol}</strong></span>
+              <span>Protected Floor <strong>{formatNumber(preview.protected_floor_quantity, 8)} {preview.asset_symbol}</strong></span>
+            </div>
+            <button type="button" className="dialog-user-btn treasury-spot-execute-btn" disabled={busy} onClick={() => void executeOrder()}>
+              {busy ? "Executing..." : `Confirm Real ${preview.side === "buy" ? "Buy" : "Sell"}`}
+            </button>
+          </section>
+        ) : null}
+        {stage ? <p className="treasury-spot-order-stage">{stage}</p> : null}
         {error ? <p className="form-error">{error}</p> : null}
       </div>
     </details>
@@ -1161,11 +1381,18 @@ export default function TreasuryPage(): JSX.Element {
                     onTransferred={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
                   />
                   {!holding.is_dry_powder ? (
-                    <AssetPolicyPanel
-                      holding={holding}
-                      exchange={exchange}
-                      onUpdated={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
-                    />
+                    <>
+                      <SpotOrderPanel
+                        holding={holding}
+                        exchange={exchange}
+                        onExecuted={() => loadPortfolio(0)}
+                      />
+                      <AssetPolicyPanel
+                        holding={holding}
+                        exchange={exchange}
+                        onUpdated={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
+                      />
+                    </>
                   ) : null}
                 </article>
               ))}

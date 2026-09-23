@@ -19,6 +19,7 @@ from backtest.dataset import fetch_historical
 from bot.event_log import get_technical_logger
 from bot.market_stream import LiveMarketStream
 from bot.spot_account import SpotBalanceMonitor
+from bot.spot_execution import SpotOrderExecutor
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.strategy_chart import StrategyChartRecorder
 from bot.trade import (
@@ -471,7 +472,13 @@ def _sync_exchange_position_snapshot_into_state(
     current_position["exchange_position_updated_at"] = ts_label
 
 
-def _build_command_kwargs(symbol: str, *, leverage: float, fee_rate: float) -> dict[str, Any]:
+def _build_command_kwargs(
+    symbol: str,
+    *,
+    leverage: float,
+    fee_rate: float,
+    spot_order_executor: SpotOrderExecutor | None = None,
+) -> dict[str, Any]:
     return {
         "symbol": symbol,
         "close_position_fn": close_position,
@@ -483,6 +490,7 @@ def _build_command_kwargs(symbol: str, *, leverage: float, fee_rate: float) -> d
         "get_order_execution_summary_fn": get_order_execution_summary,
         "leverage": leverage,
         "fee_rate": fee_rate,
+        "execute_spot_order_fn": spot_order_executor.execute if spot_order_executor is not None else None,
     }
 
 
@@ -566,7 +574,13 @@ if __name__ == "__main__":
         last_strategy_candle_open_time: str | None = None
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
         chart_recorder = StrategyChartRecorder(symbol)
-        command_kwargs = _build_command_kwargs(symbol, leverage=lvrg, fee_rate=0.0005)
+        spot_order_executor = SpotOrderExecutor(spot_client, logger=technical_logger, db_path=db_path)
+        command_kwargs = _build_command_kwargs(
+            symbol,
+            leverage=lvrg,
+            fee_rate=0.0005,
+            spot_order_executor=spot_order_executor,
+        )
         runtime_context: dict[str, Any] = {"state": state}
 
         technical_logger.info(
@@ -766,7 +780,12 @@ if __name__ == "__main__":
                         indicator_inputs = _resolve_live_indicator_inputs(cfg, strategy_mode=strategy_mode)
                         params = cfg["params"]
                         set_leverage(symbol, lvrg)
-                        command_kwargs = _build_command_kwargs(symbol, leverage=lvrg, fee_rate=0.0005)
+                        command_kwargs = _build_command_kwargs(
+                            symbol,
+                            leverage=lvrg,
+                            fee_rate=0.0005,
+                            spot_order_executor=spot_order_executor,
+                        )
                         if live_market_stream is not None:
                             live_market_stream.update_config(
                                 symbol=symbol,

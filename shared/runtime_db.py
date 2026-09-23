@@ -12,8 +12,8 @@ from typing import Any, Iterator
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 7
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Exchange account balance snapshots"
+RUNTIME_DB_SCHEMA_VERSION = 8
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Binance Spot order intents"
 
 
 class RuntimeDbError(OSError):
@@ -385,6 +385,42 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
                 REFERENCES exchange_account_snapshots(venue, account_type)
                 ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS spot_order_intents (
+            intent_id TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL,
+            venue TEXT NOT NULL DEFAULT 'binance',
+            symbol TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            requested_quantity REAL NOT NULL,
+            estimated_price REAL NOT NULL,
+            estimated_quote_value REAL NOT NULL,
+            available_quote_quantity REAL,
+            available_asset_quantity REAL,
+            protected_floor_quantity REAL,
+            policy_sellable_quantity REAL,
+            projected_holding_quantity REAL,
+            status TEXT NOT NULL,
+            command_id TEXT UNIQUE,
+            client_order_id TEXT NOT NULL UNIQUE,
+            exchange_order_id TEXT,
+            executed_quantity REAL,
+            executed_quote_quantity REAL,
+            average_price REAL,
+            fee_amount REAL,
+            fee_asset TEXT,
+            error TEXT,
+            request_json TEXT NOT NULL,
+            result_json TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_spot_order_intents_created
+        ON spot_order_intents(created_at_ms DESC);
 
         CREATE TABLE IF NOT EXISTS portfolio_daily_snapshots (
             account_key TEXT NOT NULL,
@@ -1446,6 +1482,199 @@ def load_exchange_account_snapshot(
             for row in balance_rows
         ],
     }
+
+
+def _spot_order_intent_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    request_payload = json.loads(row["request_json"])
+    result_payload = json.loads(row["result_json"]) if row["result_json"] else None
+    return {
+        "intent_id": str(row["intent_id"]),
+        "account_key": str(row["account_key"]),
+        "venue": str(row["venue"]),
+        "symbol": str(row["symbol"]),
+        "asset_symbol": str(row["asset_symbol"]),
+        "quote_symbol": str(row["quote_symbol"]),
+        "side": str(row["side"]),
+        "requested_quantity": float(row["requested_quantity"]),
+        "estimated_price": float(row["estimated_price"]),
+        "estimated_quote_value": float(row["estimated_quote_value"]),
+        "available_quote_quantity": (
+            float(row["available_quote_quantity"])
+            if row["available_quote_quantity"] is not None
+            else None
+        ),
+        "available_asset_quantity": (
+            float(row["available_asset_quantity"])
+            if row["available_asset_quantity"] is not None
+            else None
+        ),
+        "protected_floor_quantity": (
+            float(row["protected_floor_quantity"])
+            if row["protected_floor_quantity"] is not None
+            else None
+        ),
+        "policy_sellable_quantity": (
+            float(row["policy_sellable_quantity"])
+            if row["policy_sellable_quantity"] is not None
+            else None
+        ),
+        "projected_holding_quantity": (
+            float(row["projected_holding_quantity"])
+            if row["projected_holding_quantity"] is not None
+            else None
+        ),
+        "status": str(row["status"]),
+        "command_id": str(row["command_id"]) if row["command_id"] is not None else None,
+        "client_order_id": str(row["client_order_id"]),
+        "exchange_order_id": (
+            str(row["exchange_order_id"])
+            if row["exchange_order_id"] is not None
+            else None
+        ),
+        "executed_quantity": (
+            float(row["executed_quantity"])
+            if row["executed_quantity"] is not None
+            else None
+        ),
+        "executed_quote_quantity": (
+            float(row["executed_quote_quantity"])
+            if row["executed_quote_quantity"] is not None
+            else None
+        ),
+        "average_price": float(row["average_price"]) if row["average_price"] is not None else None,
+        "fee_amount": float(row["fee_amount"]) if row["fee_amount"] is not None else None,
+        "fee_asset": str(row["fee_asset"]) if row["fee_asset"] is not None else None,
+        "error": str(row["error"]) if row["error"] is not None else None,
+        "request": request_payload if isinstance(request_payload, dict) else {},
+        "result": result_payload if isinstance(result_payload, dict) else None,
+        "created_at_ms": int(row["created_at_ms"]),
+        "updated_at_ms": int(row["updated_at_ms"]),
+    }
+
+
+def create_spot_order_intent(intent: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    intent_id = str(intent.get("intent_id") or "").strip()
+    account_key = str(intent.get("account_key") or "manual_spot").strip() or "manual_spot"
+    client_order_id = str(intent.get("client_order_id") or intent_id).strip()
+    if not intent_id or not client_order_id:
+        raise ValueError("Spot order intent requires stable intent and client order IDs.")
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO spot_order_intents (
+                intent_id, account_key, venue, symbol, asset_symbol, quote_symbol,
+                side, requested_quantity, estimated_price, estimated_quote_value,
+                available_quote_quantity, available_asset_quantity,
+                protected_floor_quantity, policy_sellable_quantity,
+                projected_holding_quantity, status, command_id, client_order_id,
+                request_json, created_at_ms, updated_at_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'previewed', NULL, ?, ?, ?, ?)
+            """,
+            (
+                intent_id,
+                account_key,
+                str(intent.get("venue") or "binance").strip().lower() or "binance",
+                str(intent.get("symbol") or "").strip().upper(),
+                str(intent.get("asset_symbol") or "").strip().upper(),
+                str(intent.get("quote_symbol") or "USDT").strip().upper() or "USDT",
+                str(intent.get("side") or "").strip().lower(),
+                float(intent["requested_quantity"]),
+                float(intent["estimated_price"]),
+                float(intent["estimated_quote_value"]),
+                _as_float_or_none(intent.get("available_quote_quantity")),
+                _as_float_or_none(intent.get("available_asset_quantity")),
+                _as_float_or_none(intent.get("protected_floor_quantity")),
+                _as_float_or_none(intent.get("policy_sellable_quantity")),
+                _as_float_or_none(intent.get("projected_holding_quantity")),
+                client_order_id,
+                _json_text(intent),
+                now_ms,
+                now_ms,
+            ),
+        )
+    created = load_spot_order_intent(intent_id, path=path)
+    if created is None:
+        raise RuntimeDbError("Spot order intent was not persisted.")
+    return created
+
+
+def load_spot_order_intent(intent_id: str, path: Path | None = None) -> dict[str, Any] | None:
+    normalized_id = str(intent_id or "").strip()
+    if not normalized_id:
+        return None
+    with _connection(path) as connection:
+        row = connection.execute(
+            "SELECT * FROM spot_order_intents WHERE intent_id = ? LIMIT 1",
+            (normalized_id,),
+        ).fetchone()
+    return _spot_order_intent_from_row(row) if row is not None else None
+
+
+def reserve_spot_order_intent(
+    intent_id: str,
+    *,
+    command_id: str,
+    path: Path | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
+    normalized_id = str(intent_id or "").strip()
+    normalized_command_id = str(command_id or "").strip()
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE spot_order_intents
+            SET status = 'queueing', command_id = ?, updated_at_ms = ?
+            WHERE intent_id = ? AND status = 'previewed'
+            """,
+            (normalized_command_id, now_ms, normalized_id),
+        )
+        row = connection.execute(
+            "SELECT * FROM spot_order_intents WHERE intent_id = ? LIMIT 1",
+            (normalized_id,),
+        ).fetchone()
+    return (_spot_order_intent_from_row(row) if row is not None else None, cursor.rowcount == 1)
+
+
+def update_spot_order_intent(
+    intent_id: str,
+    updates: dict[str, Any],
+    *,
+    expected_statuses: set[str] | None = None,
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    allowed_fields = {
+        "status",
+        "command_id",
+        "exchange_order_id",
+        "executed_quantity",
+        "executed_quote_quantity",
+        "average_price",
+        "fee_amount",
+        "fee_asset",
+        "error",
+        "result_json",
+    }
+    normalized_updates = {key: value for key, value in updates.items() if key in allowed_fields}
+    if "result_json" in normalized_updates:
+        normalized_updates["result_json"] = _json_text(normalized_updates["result_json"])
+    if not normalized_updates:
+        return load_spot_order_intent(intent_id, path=path)
+    normalized_updates["updated_at_ms"] = int(datetime.now(timezone.utc).timestamp() * 1000)
+    assignments = ", ".join(f"{field} = ?" for field in normalized_updates)
+    params = list(normalized_updates.values())
+    sql = f"UPDATE spot_order_intents SET {assignments} WHERE intent_id = ?"
+    params.append(str(intent_id or "").strip())
+    if expected_statuses:
+        placeholders = ", ".join("?" for _ in expected_statuses)
+        sql += f" AND status IN ({placeholders})"
+        params.extend(sorted(expected_statuses))
+    with _connection(path) as connection:
+        cursor = connection.execute(sql, params)
+    if cursor.rowcount != 1:
+        return None
+    return load_spot_order_intent(intent_id, path=path)
 
 
 def upsert_portfolio_daily_snapshot(

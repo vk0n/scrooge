@@ -491,6 +491,57 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(failed_holding["immediately_sellable_quantity"], 0)
         self.assertFalse(failed_holding["sellable_inventory_is_exchange_verified"])
 
+    def test_spot_sell_preview_enforces_policy_and_persists_intent(self):
+        self.add("BTC", 1, 90, "binance")
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1, "minimum_holding_pct": 50},
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+
+        preview = portfolio_service.create_spot_order_preview(
+            {"asset_symbol": "BTC", "side": "sell", "quantity": 0.25}
+        )
+
+        self.assertEqual(preview["status"], "previewed")
+        self.assertEqual(preview["side"], "sell")
+        self.assertEqual(preview["estimated_quote_value"], 25)
+        self.assertEqual(preview["protected_floor_quantity"], 0.5)
+        self.assertEqual(preview["projected_holding_quantity"], 0.75)
+        self.assertEqual(len(preview["client_order_id"]), 35)
+
+        with self.assertRaisesRegex(ValueError, "immediately sellable"):
+            portfolio_service.create_spot_order_preview(
+                {"asset_symbol": "BTC", "side": "sell", "quantity": 0.6}
+            )
+
+    def test_spot_buy_preview_requires_available_usdt(self):
+        self.add("BTC", 1, 90, "binance")
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 20, "locked": 0},
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "only \\$20.00 USDT"):
+            portfolio_service.create_spot_order_preview(
+                {"asset_symbol": "BTC", "side": "buy", "quantity": 0.25}
+            )
+
     def test_dry_powder_does_not_receive_asset_policy(self):
         self.add("USDT", 500, 1, "binance")
 

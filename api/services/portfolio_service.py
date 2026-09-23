@@ -24,8 +24,10 @@ if str(_PROJECT_ROOT) not in sys.path:
 from shared.runtime_db import (  # noqa: E402
     append_portfolio_transaction,
     count_portfolio_transactions,
+    create_spot_order_intent,
     ensure_portfolio_asset_policies,
     load_exchange_account_snapshot,
+    load_spot_order_intent,
     list_portfolio_daily_snapshots,
     list_portfolio_transactions,
     load_runtime_state_snapshot,
@@ -43,6 +45,7 @@ CUSTODY_LOCATIONS = {"unassigned", "binance", "cold_storage"}
 PRICE_CACHE_SECONDS = float(os.getenv("SCROOGE_PORTFOLIO_PRICE_CACHE_SECONDS", "30") or "30")
 PRICE_TIMEOUT_SECONDS = float(os.getenv("SCROOGE_PORTFOLIO_PRICE_TIMEOUT_SECONDS", "4") or "4")
 SPOT_BALANCE_STALE_AFTER_SECONDS = float(os.getenv("SCROOGE_SPOT_BALANCE_STALE_AFTER_SECONDS", "180") or "180")
+SPOT_ORDER_PREVIEW_TTL_SECONDS = float(os.getenv("SCROOGE_SPOT_ORDER_PREVIEW_TTL_SECONDS", "60") or "60")
 PRICE_ENDPOINTS = [
     endpoint.strip()
     for endpoint in (
@@ -75,6 +78,16 @@ def _as_float(value: Any) -> float | None:
 
 def _now_text() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _spot_execution_enabled() -> bool:
+    return str(os.getenv("SCROOGE_SPOT_EXECUTION_ENABLED", "0") or "0").strip().lower() not in {
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def _state_price(asset_symbol: str, quote_symbol: str) -> tuple[float | None, str | None]:
@@ -417,6 +430,7 @@ def _load_spot_exchange_state() -> dict[str, Any]:
             "balances": [],
             "usdt_free": None,
             "usdt_locked": None,
+            "spot_execution_enabled": _spot_execution_enabled(),
         }
 
     captured_at_ms = _as_float(snapshot.get("captured_at_ms"))
@@ -457,6 +471,7 @@ def _load_spot_exchange_state() -> dict[str, Any]:
         "balances": balances,
         "usdt_free": _as_float(usdt.get("free")) if isinstance(usdt, dict) else 0.0,
         "usdt_locked": _as_float(usdt.get("locked")) if isinstance(usdt, dict) else 0.0,
+        "spot_execution_enabled": _spot_execution_enabled(),
     }
 
 
@@ -555,6 +570,99 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
         },
         warnings,
     )
+
+
+def create_spot_order_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    asset_symbol = _clean_symbol(payload.get("asset_symbol"))
+    quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
+    side = str(payload.get("side") or "").strip().lower()
+    requested_quantity = _as_float(payload.get("quantity"))
+    if not asset_symbol or asset_symbol in STABLE_ASSETS:
+        raise ValueError("Choose a managed Treasury asset for Spot execution.")
+    if quote_symbol != DEFAULT_QUOTE:
+        raise ValueError("Manual Spot execution currently supports the shared USDT pool only.")
+    if side not in {"buy", "sell"}:
+        raise ValueError("Spot order side must be buy or sell.")
+    if requested_quantity is None or requested_quantity <= 0:
+        raise ValueError("Spot order quantity must be greater than zero.")
+
+    snapshot, _ = load_portfolio_snapshot()
+    exchange = snapshot["exchange"]
+    if not exchange.get("is_balance_verified"):
+        raise ValueError("A fresh Binance Spot balance snapshot is required before previewing a real order.")
+    if exchange.get("can_trade") is not True:
+        raise ValueError("Binance reports that Spot trading is unavailable for this account.")
+    holding = next(
+        (
+            item
+            for item in snapshot["holdings"]
+            if item["asset_symbol"] == asset_symbol and item["quote_symbol"] == quote_symbol
+        ),
+        None,
+    )
+    if holding is None:
+        raise LookupError("Treasury asset was not found.")
+    estimated_price = _as_float(holding.get("market_price"))
+    if estimated_price is None or estimated_price <= 0:
+        raise ValueError("A current market price is required before previewing a real order.")
+
+    estimated_quote_value = requested_quantity * estimated_price
+    available_quote = _as_float(exchange.get("usdt_free")) or 0.0
+    available_asset = _as_float(holding.get("exchange_binance_free_quantity")) or 0.0
+    protected_floor = _as_float(holding.get("protected_floor_quantity")) or 0.0
+    policy_sellable = _as_float(holding.get("policy_sellable_quantity")) or 0.0
+    immediate_sellable = _as_float(holding.get("immediately_sellable_quantity")) or 0.0
+    current_quantity = _as_float(holding.get("quantity")) or 0.0
+    projected_holding = current_quantity + requested_quantity if side == "buy" else current_quantity - requested_quantity
+
+    if side == "buy" and estimated_quote_value > available_quote + 0.00000001:
+        raise ValueError(
+            f"Estimated order value is ${estimated_quote_value:,.2f}, but Binance has only ${available_quote:,.2f} USDT free."
+        )
+    if side == "sell":
+        if requested_quantity > immediate_sellable + 0.00000001:
+            raise ValueError(
+                f"Requested sell exceeds the immediately sellable inventory of {immediate_sellable:.8f} {asset_symbol}."
+            )
+        if projected_holding < protected_floor - 0.00000001:
+            raise ValueError(
+                f"Requested sell would reduce the holding below the Protected Floor of {protected_floor:.8f} {asset_symbol}."
+            )
+
+    intent_id = uuid.uuid4().hex
+    return create_spot_order_intent(
+        {
+            "intent_id": intent_id,
+            "client_order_id": f"scr{intent_id}",
+            "account_key": DEFAULT_ACCOUNT_KEY,
+            "venue": "binance",
+            "symbol": f"{asset_symbol}{quote_symbol}",
+            "asset_symbol": asset_symbol,
+            "quote_symbol": quote_symbol,
+            "side": side,
+            "requested_quantity": requested_quantity,
+            "estimated_price": estimated_price,
+            "estimated_quote_value": estimated_quote_value,
+            "available_quote_quantity": available_quote,
+            "available_asset_quantity": available_asset,
+            "protected_floor_quantity": protected_floor,
+            "policy_sellable_quantity": policy_sellable,
+            "projected_holding_quantity": projected_holding,
+            "preview_expires_at_ms": int((time.time() + SPOT_ORDER_PREVIEW_TTL_SECONDS) * 1000),
+        }
+    )
+
+
+def get_spot_order_intent(intent_id: str) -> dict[str, Any]:
+    intent = load_spot_order_intent(intent_id)
+    if intent is None:
+        raise LookupError("Spot order preview was not found.")
+    intent["preview_expires_at_ms"] = int(intent["created_at_ms"] + SPOT_ORDER_PREVIEW_TTL_SECONDS * 1000)
+    intent["is_preview_expired"] = (
+        intent["status"] == "previewed"
+        and time.time() * 1000 > intent["preview_expires_at_ms"]
+    )
+    return intent
 
 
 def create_portfolio_transaction(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
