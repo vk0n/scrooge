@@ -2539,12 +2539,69 @@ pre {
   min-width: 9rem;
 }
 
+.treasury-intake-panel {
+  margin-top: 0.72rem;
+  border: 1px solid rgba(92, 111, 139, 0.28);
+  border-radius: 0.82rem;
+  padding: 0.72rem;
+  background:
+    radial-gradient(circle at top right, rgba(211, 167, 61, 0.06), transparent 38%),
+    rgba(7, 11, 17, 0.46);
+}
+
+.treasury-intake-modes {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(9rem, 1fr));
+  gap: 0.28rem;
+  border: 1px solid rgba(95, 116, 148, 0.34);
+  border-radius: 0.68rem;
+  padding: 0.24rem;
+  background: rgba(7, 11, 17, 0.72);
+}
+
+.treasury-intake-modes button {
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  padding: 0.42rem 0.72rem;
+  background: transparent;
+  color: #94a2b7;
+  font: inherit;
+  cursor: pointer;
+}
+
+.treasury-intake-modes button:hover {
+  color: #e7edf7;
+}
+
+.treasury-intake-modes .treasury-intake-mode-active {
+  border-color: rgba(122, 158, 207, 0.62);
+  background: linear-gradient(180deg, rgba(33, 49, 70, 0.92), rgba(20, 29, 43, 0.96));
+  color: #edf4ff;
+}
+
 .treasury-form {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.62rem;
   align-items: end;
   margin-top: 0.72rem;
+}
+
+.treasury-binance-intake {
+  display: grid;
+  grid-template-columns: minmax(9rem, 0.34fr) minmax(0, 1fr);
+  gap: 0.62rem;
+  align-items: end;
+  margin-top: 0.72rem;
+}
+
+.treasury-binance-intake .treasury-intake-copy,
+.treasury-binance-intake .treasury-spot-order-panel {
+  grid-column: 1 / -1;
+}
+
+.treasury-binance-intake-coin {
+  max-width: 18rem;
 }
 
 .treasury-intake-copy {
@@ -2667,7 +2724,13 @@ pre {
   line-height: 1;
 }
 
-.treasury-trading-state-unlocked {
+.treasury-trading-state-asset {
+  border-color: rgba(220, 174, 54, 0.58);
+  background: rgba(116, 79, 12, 0.24);
+  color: #f0c95b;
+}
+
+.treasury-trading-state-cash {
   border-color: rgba(48, 172, 121, 0.5);
   background: rgba(22, 91, 64, 0.22);
   color: #71ddb0;
@@ -2838,6 +2901,10 @@ pre {
   grid-template-columns: minmax(7.5rem, 0.7fr) minmax(10rem, 1.2fr) auto;
   align-items: end;
   gap: 0.52rem;
+}
+
+.treasury-spot-order-panel-intake .treasury-spot-order-form {
+  grid-template-columns: minmax(10rem, 1fr) auto;
 }
 
 .treasury-spot-order-form .dialog-user-btn {
@@ -3080,7 +3147,7 @@ pre {
 
 .treasury-policy-form {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   align-items: end;
   gap: 0.5rem;
 }
@@ -3150,6 +3217,7 @@ pre {
 }
 
 .treasury-policy-form .dialog-user-btn {
+  justify-self: end;
   min-width: 9rem;
 }
 
@@ -4618,6 +4686,19 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.5rem;
+  }
+
+  .treasury-intake-modes {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .treasury-binance-intake {
+    grid-template-columns: 1fr;
+  }
+
+  .treasury-binance-intake-coin {
+    max-width: none;
   }
 
   .treasury-form-wide,

@@ -269,6 +269,7 @@ type UpdatePortfolioPolicyResponse = {
 type PortfolioTransactionType = "buy" | "sell" | "deposit" | "withdraw" | "adjustment" | "custody_transfer";
 type CustodyLocation = "unassigned" | "binance" | "cold_storage";
 type CustodyAction = "move" | "bring_in" | "release";
+type TreasureIntakeMode = "bring_in" | "buy_binance";
 
 type TreasureIntakeFormState = {
   asset_symbol: string;
@@ -890,13 +891,21 @@ async function waitForSpotOrder(commandId: string): Promise<ControlCommandStatus
 
 function SpotOrderPanel({
   holding,
+  assetSymbol,
+  quoteSymbol = "USDT",
+  treasuryIntake = false,
   exchange,
   onExecuted,
 }: {
-  holding: PortfolioHolding;
+  holding?: PortfolioHolding;
+  assetSymbol?: string;
+  quoteSymbol?: string;
+  treasuryIntake?: boolean;
   exchange: PortfolioExchange | null;
   onExecuted: () => Promise<void>;
 }): JSX.Element {
+  const resolvedAsset = holding?.asset_symbol ?? assetSymbol?.trim().toUpperCase() ?? "";
+  const resolvedQuote = holding?.quote_symbol ?? quoteSymbol;
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [quantity, setQuantity] = useState<string>("");
   const [preview, setPreview] = useState<SpotOrderIntent | null>(null);
@@ -923,10 +932,11 @@ function SpotOrderPanel({
       const result = await fetchApi<SpotOrderIntent>("/api/portfolio/spot-orders/preview", {
         method: "POST",
         body: {
-          asset_symbol: holding.asset_symbol,
-          quote_symbol: holding.quote_symbol,
+          asset_symbol: resolvedAsset,
+          quote_symbol: resolvedQuote,
           side,
           quantity: asNumber(quantity),
+          treasury_intake: treasuryIntake,
         },
       });
       setPreview(result);
@@ -981,25 +991,30 @@ function SpotOrderPanel({
   }
 
   return (
-    <section className="treasury-spot-order-panel" aria-label={`Trade ${holding.asset_symbol} on Binance`}>
+    <section
+      className={`treasury-spot-order-panel${treasuryIntake ? " treasury-spot-order-panel-intake" : ""}`}
+      aria-label={`Trade ${resolvedAsset || "a new treasure"} on Binance`}
+    >
       <div className="treasury-spot-order-content">
         {!exchange?.is_balance_verified ? (
           <p className="treasury-spot-order-lock">A fresh Binance Spot snapshot is required.</p>
         ) : null}
         <form className="treasury-spot-order-form" onSubmit={(event) => void requestPreview(event)}>
+          {treasuryIntake ? null : (
+            <label className="dialog-user-field">
+              Side
+              <select
+                value={side}
+                onChange={(event) => resetPreview(event.target.value as "buy" | "sell")}
+                disabled={busy}
+              >
+                <option value="buy">Buy</option>
+                <option value="sell">Sell</option>
+              </select>
+            </label>
+          )}
           <label className="dialog-user-field">
-            Side
-            <select
-              value={side}
-              onChange={(event) => resetPreview(event.target.value as "buy" | "sell")}
-              disabled={busy}
-            >
-              <option value="buy">Buy</option>
-              <option value="sell">Sell</option>
-            </select>
-          </label>
-          <label className="dialog-user-field">
-            Quantity ({holding.asset_symbol})
+            Quantity ({resolvedAsset || "Coin"})
             <input
               type="number"
               min="0.00000001"
@@ -1014,14 +1029,20 @@ function SpotOrderPanel({
               disabled={busy}
             />
           </label>
-          <button type="submit" className="dialog-user-btn" disabled={busy || !executionReady}>
-            {busy ? "Checking..." : "Preview Real Order"}
+          <button type="submit" className="dialog-user-btn" disabled={busy || !executionReady || !resolvedAsset}>
+            {busy ? "Checking..." : treasuryIntake ? "Preview Real Buy" : "Preview Real Order"}
           </button>
         </form>
         <div className="treasury-spot-order-capacity">
           <span>Available USDT <strong>{formatCurrency(exchange?.usdt_free)}</strong></span>
-          <span>Binance Free <strong>{formatNumber(holding.exchange_binance_free_quantity, 8)} {holding.asset_symbol}</strong></span>
-          <span>Sellable <strong>{formatNumber(holding.immediately_sellable_quantity, 8)} {holding.asset_symbol}</strong></span>
+          {holding ? (
+            <>
+              <span>Binance Free <strong>{formatNumber(holding.exchange_binance_free_quantity, 8)} {holding.asset_symbol}</strong></span>
+              <span>Sellable <strong>{formatNumber(holding.immediately_sellable_quantity, 8)} {holding.asset_symbol}</strong></span>
+            </>
+          ) : (
+            <span>New policy <strong>Target quantity · 100% protected</strong></span>
+          )}
         </div>
         {preview ? (
           <section className={`treasury-spot-order-preview treasury-spot-order-preview-${preview.side}`}>
@@ -1033,7 +1054,11 @@ function SpotOrderPanel({
               <span>Estimated Price <strong>{formatCurrency(preview.estimated_price, 6)}</strong></span>
               <span>Estimated Value <strong>{formatCurrency(preview.estimated_quote_value)}</strong></span>
               <span>Projected Holding <strong>{formatNumber(preview.projected_holding_quantity, 8)} {preview.asset_symbol}</strong></span>
-              <span>Protected Floor <strong>{formatNumber(preview.protected_floor_quantity, 8)} {preview.asset_symbol}</strong></span>
+              {treasuryIntake ? (
+                <span>Initial Policy <strong>100% protected · Accumulate Cash</strong></span>
+              ) : (
+                <span>Protected Floor <strong>{formatNumber(preview.protected_floor_quantity, 8)} {preview.asset_symbol}</strong></span>
+              )}
             </div>
             <button type="button" className="dialog-user-btn treasury-spot-execute-btn" disabled={busy} onClick={() => void executeOrder()}>
               {busy ? "Executing..." : `Confirm Real ${preview.side === "buy" ? "Buy" : "Sell"}`}
@@ -1058,7 +1083,7 @@ function AssetPolicyPanel({
 }): JSX.Element {
   const [targetQuantity, setTargetQuantity] = useState<string>(String(holding.target_quantity ?? holding.quantity));
   const [minimumHoldingPct, setMinimumHoldingPct] = useState<string>(String(holding.minimum_holding_pct ?? 100));
-  const [tradingObjective, setTradingObjective] = useState<string>(holding.trading_objective ?? "");
+  const [tradingObjective, setTradingObjective] = useState<string>(holding.trading_objective ?? "accumulate_cash");
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
@@ -1077,7 +1102,7 @@ function AssetPolicyPanel({
   useEffect(() => {
     setTargetQuantity(String(holding.target_quantity ?? holding.quantity));
     setMinimumHoldingPct(String(holding.minimum_holding_pct ?? 100));
-    setTradingObjective(holding.trading_objective ?? "");
+    setTradingObjective(holding.trading_objective ?? "accumulate_cash");
   }, [holding.target_quantity, holding.minimum_holding_pct, holding.trading_objective, holding.quantity]);
 
   async function submitPolicy(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -1093,7 +1118,7 @@ function AssetPolicyPanel({
             quote_symbol: holding.quote_symbol,
             target_quantity: asNumber(targetQuantity),
             minimum_holding_pct: asNumber(minimumHoldingPct),
-            trading_objective: tradingObjective || null,
+            trading_objective: tradingObjective,
           },
         }
       );
@@ -1118,7 +1143,7 @@ function AssetPolicyPanel({
           <span className="treasury-policy-summary">
             Target {formatNumber(holding.target_quantity, 8)} {holding.asset_symbol}
             <span>Minimum {formatPercent(holding.minimum_holding_pct)}</span>
-            <span>{swingObjectiveLabel(holding.trading_objective)}</span>
+            <span>{swingObjectiveLabel(holding.trading_objective ?? "accumulate_cash")}</span>
             <strong className={holding.immediately_sellable_quantity > 0 ? "value-positive" : "value-neutral"}>
               Sellable {formatNumber(holding.immediately_sellable_quantity, 8)}
             </strong>
@@ -1207,7 +1232,6 @@ function AssetPolicyPanel({
           <label className="dialog-user-field">
             Trading Objective
             <select value={tradingObjective} onChange={(event) => setTradingObjective(event.target.value)}>
-              <option value="">Not set</option>
               <option value="accumulate_cash">Accumulate Cash</option>
               <option value="accumulate_asset">Accumulate Asset</option>
             </select>
@@ -1521,13 +1545,29 @@ function HoldingCard({
       ? "unlocked"
       : "locked"
   );
-  const tradingStateTitle = tradingState === "unlocked"
-    ? "Spot policy unlocked: Minimum Holding is below 100%."
-    : !executionEnabled
-      ? "Spot trading locked: real execution is disabled."
-      : holding.is_dry_powder
-        ? "Vault Reserve is not managed by an asset trading policy."
-        : "Spot policy locked: Minimum Holding is 100%.";
+  const tradingBadge = tradingState === "unlocked" && holding.trading_objective === "accumulate_asset"
+    ? {
+        icon: "\u{1FA99}",
+        tone: "asset",
+        title: `Scrooge is using Bargains to accumulate more ${holding.asset_symbol}.`,
+      }
+    : tradingState === "unlocked" && holding.trading_objective === "accumulate_cash"
+      ? {
+          icon: "\u{1F4B5}",
+          tone: "cash",
+          title: "Scrooge is using Bargains to accumulate more USDT.",
+        }
+      : {
+          icon: "\u{1F512}",
+          tone: "locked",
+          title: !executionEnabled
+            ? "Scrooge's automatic Bargains are disabled."
+            : holding.is_dry_powder
+              ? "Vault Reserve is not managed by an asset trading policy."
+              : holding.trading_objective === null
+                ? "Choose a Trading Objective before Scrooge can bargain with this asset."
+                : "Scrooge keeps the full holding protected by policy.",
+        };
   const refreshKey = [
     holding.quantity,
     holding.invested_capital,
@@ -1549,12 +1589,12 @@ function HoldingCard({
             <span className="treasury-coin-line">
               <span className="treasury-coin">{holding.asset_symbol}</span>
               <span
-                className={`treasury-trading-state treasury-trading-state-${tradingState}`}
-                title={tradingStateTitle}
+                className={`treasury-trading-state treasury-trading-state-${tradingBadge.tone}`}
+                title={tradingBadge.title}
                 role="img"
-                aria-label={tradingStateTitle}
+                aria-label={tradingBadge.title}
               >
-                {tradingState === "unlocked" ? "\u{1F513}" : "\u{1F512}"}
+                {tradingBadge.icon}
               </span>
             </span>
             <span className="treasury-share">{formatPercent(holding.allocation_pct)}</span>
@@ -1612,6 +1652,8 @@ export default function TreasuryPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<TreasureIntakeFormState>(EMPTY_INTAKE_FORM);
   const [formExpanded, setFormExpanded] = useState<boolean>(false);
+  const [intakeMode, setIntakeMode] = useState<TreasureIntakeMode>("bring_in");
+  const [buyAssetSymbol, setBuyAssetSymbol] = useState<string>("");
 
   const loadPortfolio = useCallback(async (): Promise<void> => {
     setError(null);
@@ -1663,6 +1705,7 @@ export default function TreasuryPage(): JSX.Element {
   const summary = portfolio?.summary;
   const exchange = portfolio?.exchange ?? null;
   const spotExecutionEnabled = exchange?.spot_execution_enabled === true;
+  const activeIntakeMode: TreasureIntakeMode = spotExecutionEnabled ? intakeMode : "bring_in";
   const holdings = [...(portfolio?.holdings ?? [])].sort((left, right) => {
     const allocationDifference = (right.allocation_pct ?? -1) - (left.allocation_pct ?? -1);
     return allocationDifference || left.asset_symbol.localeCompare(right.asset_symbol);
@@ -1858,105 +1901,168 @@ export default function TreasuryPage(): JSX.Element {
               {formExpanded ? "Close Intake" : "Add Treasure"}
             </button>
           </header>
-          {formExpanded ? <form className="treasury-form" onSubmit={(event) => void submitTransaction(event)}>
-            <p className="treasury-intake-copy">
-              Bring a new treasure under Scrooge&apos;s care and place it in its first custody location.
-            </p>
-            <label className="dialog-user-field">
-              Coin
-              <input
-                type="text"
-                value={form.asset_symbol}
-                placeholder="BTC"
-                autoCapitalize="characters"
-                onChange={(event) => setForm((current) => ({ ...current, asset_symbol: event.target.value.toUpperCase() }))}
-                required
-              />
-            </label>
-            <label className="dialog-user-field">
-              Custody
-              <select
-                value={form.custody_location}
-                onChange={(event) => setForm((current) => ({
-                  ...current,
-                  custody_location: event.target.value as CustodyLocation,
-                }))}
-              >
-                {CUSTODY_LOCATIONS.map((location) => (
-                  <option key={location} value={location}>{CUSTODY_LABELS[location]}</option>
-                ))}
-              </select>
-            </label>
-            <label className="dialog-user-field">
-              Stack
-              <input
-                type="number"
-                value={form.quantity}
-                placeholder="0.25"
-                min="0"
-                step="any"
-                onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))}
-                required
-              />
-            </label>
-            <label className="dialog-user-field">
-              Entry Cost
-              <input
-                type="number"
-                value={form.price}
-                placeholder="65000"
-                min="0"
-                step="any"
-                onChange={(event) => setForm((current) => ({ ...current, price: event.target.value }))}
-                required={!STABLE_ASSETS.has(form.asset_symbol)}
-              />
-            </label>
-            <label className="dialog-user-field">
-              Quote
-              <input
-                type="text"
-                value={form.quote_symbol}
-                autoCapitalize="characters"
-                onChange={(event) => {
-                  const quote = event.target.value.toUpperCase();
-                  setForm((current) => ({ ...current, quote_symbol: quote, fee_asset: current.fee_asset || quote }));
-                }}
-                required
-              />
-            </label>
-            <label className="dialog-user-field">
-              Fee
-              <input
-                type="number"
-                value={form.fee_amount}
-                placeholder="0"
-                min="0"
-                step="any"
-                onChange={(event) => setForm((current) => ({ ...current, fee_amount: event.target.value }))}
-              />
-            </label>
-            <label className="dialog-user-field">
-              Fee Coin
-              <input
-                type="text"
-                value={form.fee_asset}
-                autoCapitalize="characters"
-                onChange={(event) => setForm((current) => ({ ...current, fee_asset: event.target.value.toUpperCase() }))}
-              />
-            </label>
-            <label className="dialog-user-field treasury-form-wide">
-              Treasury Notes
-              <input
-                type="text"
-                value={form.note}
-                placeholder="Thesis, source, or exit thought"
-                onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))}
-              />
-            </label>
-            <button type="submit" className="dialog-user-btn treasury-submit-btn" disabled={saving}>
-              {saving ? "Adding Treasure..." : "Add Treasure"}
-            </button>
-          </form> : null}
+          {formExpanded ? (
+            <div className="treasury-intake-panel">
+              {spotExecutionEnabled ? (
+                <div className="treasury-intake-modes" aria-label="Add Treasure method">
+                  <button
+                    type="button"
+                    className={activeIntakeMode === "bring_in" ? "treasury-intake-mode-active" : undefined}
+                    aria-pressed={activeIntakeMode === "bring_in"}
+                    onClick={() => {
+                      setIntakeMode("bring_in");
+                      setError(null);
+                    }}
+                  >
+                    Bring Into Vault
+                  </button>
+                  <button
+                    type="button"
+                    className={activeIntakeMode === "buy_binance" ? "treasury-intake-mode-active" : undefined}
+                    aria-pressed={activeIntakeMode === "buy_binance"}
+                    onClick={() => {
+                      setIntakeMode("buy_binance");
+                      setError(null);
+                    }}
+                  >
+                    Buy on Binance
+                  </button>
+                </div>
+              ) : null}
+
+              {activeIntakeMode === "bring_in" ? (
+                <form className="treasury-form" onSubmit={(event) => void submitTransaction(event)}>
+                  <p className="treasury-intake-copy">
+                    Bring a new treasure under Scrooge&apos;s care and place it in its first custody location.
+                  </p>
+                  <label className="dialog-user-field">
+                    Coin
+                    <input
+                      type="text"
+                      value={form.asset_symbol}
+                      placeholder="BTC"
+                      autoCapitalize="characters"
+                      onChange={(event) => setForm((current) => ({ ...current, asset_symbol: event.target.value.toUpperCase() }))}
+                      required
+                    />
+                  </label>
+                  <label className="dialog-user-field">
+                    Custody
+                    <select
+                      value={form.custody_location}
+                      onChange={(event) => setForm((current) => ({
+                        ...current,
+                        custody_location: event.target.value as CustodyLocation,
+                      }))}
+                    >
+                      {CUSTODY_LOCATIONS.map((location) => (
+                        <option key={location} value={location}>{CUSTODY_LABELS[location]}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="dialog-user-field">
+                    Stack
+                    <input
+                      type="number"
+                      value={form.quantity}
+                      placeholder="0.25"
+                      min="0"
+                      step="any"
+                      onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))}
+                      required
+                    />
+                  </label>
+                  <label className="dialog-user-field">
+                    Entry Cost
+                    <input
+                      type="number"
+                      value={form.price}
+                      placeholder="65000"
+                      min="0"
+                      step="any"
+                      onChange={(event) => setForm((current) => ({ ...current, price: event.target.value }))}
+                      required={!STABLE_ASSETS.has(form.asset_symbol)}
+                    />
+                  </label>
+                  <label className="dialog-user-field">
+                    Quote
+                    <input
+                      type="text"
+                      value={form.quote_symbol}
+                      autoCapitalize="characters"
+                      onChange={(event) => {
+                        const quote = event.target.value.toUpperCase();
+                        setForm((current) => ({ ...current, quote_symbol: quote, fee_asset: current.fee_asset || quote }));
+                      }}
+                      required
+                    />
+                  </label>
+                  <label className="dialog-user-field">
+                    Fee
+                    <input
+                      type="number"
+                      value={form.fee_amount}
+                      placeholder="0"
+                      min="0"
+                      step="any"
+                      onChange={(event) => setForm((current) => ({ ...current, fee_amount: event.target.value }))}
+                    />
+                  </label>
+                  <label className="dialog-user-field">
+                    Fee Coin
+                    <input
+                      type="text"
+                      value={form.fee_asset}
+                      autoCapitalize="characters"
+                      onChange={(event) => setForm((current) => ({ ...current, fee_asset: event.target.value.toUpperCase() }))}
+                    />
+                  </label>
+                  <label className="dialog-user-field treasury-form-wide">
+                    Treasury Notes
+                    <input
+                      type="text"
+                      value={form.note}
+                      placeholder="Thesis, source, or exit thought"
+                      onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))}
+                    />
+                  </label>
+                  <button type="submit" className="dialog-user-btn treasury-submit-btn" disabled={saving}>
+                    {saving ? "Adding Treasure..." : "Add Treasure"}
+                  </button>
+                </form>
+              ) : (
+                <section className="treasury-binance-intake">
+                  <p className="treasury-intake-copy">
+                    Buy a new treasure on Binance. It enters the vault only after Binance confirms the fill.
+                  </p>
+                  <label className="dialog-user-field treasury-binance-intake-coin">
+                    Coin
+                    <input
+                      type="text"
+                      value={buyAssetSymbol}
+                      placeholder="BTC"
+                      autoCapitalize="characters"
+                      onChange={(event) => setBuyAssetSymbol(event.target.value.toUpperCase())}
+                      required
+                    />
+                  </label>
+                  <SpotOrderPanel
+                    key={buyAssetSymbol}
+                    assetSymbol={buyAssetSymbol}
+                    quoteSymbol="USDT"
+                    treasuryIntake
+                    exchange={exchange}
+                    onExecuted={async () => {
+                      setBuyAssetSymbol("");
+                      setFormExpanded(false);
+                      setIntakeMode("bring_in");
+                      await loadPortfolio();
+                    }}
+                  />
+                </section>
+              )}
+            </div>
+          ) : null}
 
           {holdings.length === 0 ? (
             <p className="trade-history-empty-sheet">The treasury is empty. Add your first treasure.</p>

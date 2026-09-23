@@ -51,10 +51,11 @@ class FakeSpotExecutionClient:
         return {"symbol": kwargs["symbol"], "price": "100"}
 
     def get_symbol_info(self, symbol):
+        base_asset = symbol.removesuffix("USDT")
         return {
             "symbol": symbol,
             "status": "TRADING",
-            "baseAsset": "BTC",
+            "baseAsset": base_asset,
             "quoteAsset": "USDT",
             "filters": [
                 {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "100", "stepSize": "0.001"},
@@ -233,6 +234,38 @@ class SpotExecutionTests(unittest.TestCase):
                 "filled",
             ],
         )
+
+    def test_treasury_intake_creates_holding_and_locked_policy_only_after_fill(self):
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [{"asset_symbol": "USDT", "free": 100, "locked": 0}],
+            }
+        )
+        preview = portfolio_service.create_spot_order_preview(
+            {
+                "asset_symbol": "ETH",
+                "side": "buy",
+                "quantity": 0.2504,
+                "treasury_intake": True,
+            }
+        )
+        before, _ = portfolio_service.load_portfolio_snapshot()
+        self.assertNotIn("ETH", {holding["asset_symbol"] for holding in before["holdings"]})
+        self._queue_preview(preview)
+        client = FakeSpotExecutionClient()
+        executor = SpotOrderExecutor(client, logger=logging.getLogger("test.spot-execution"), db_path=self.db_path)
+
+        executor.execute(preview["intent_id"])
+
+        after, _ = portfolio_service.load_portfolio_snapshot()
+        holding = next(item for item in after["holdings"] if item["asset_symbol"] == "ETH")
+        self.assertEqual(client.order_params["quantity"], "0.25")
+        self.assertEqual(holding["quantity"], 0.25)
+        self.assertEqual(holding["target_quantity"], 0.2504)
+        self.assertEqual(holding["minimum_holding_pct"], 100)
+        self.assertEqual(holding["trading_objective"], "accumulate_cash")
 
     def test_strategy_fill_uses_same_executor_and_updates_linked_swing(self):
         save_exchange_account_snapshot(

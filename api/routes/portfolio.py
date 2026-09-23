@@ -53,7 +53,7 @@ class PortfolioAssetPolicyRequest(BaseModel):
     quote_symbol: str = Field(default="USDT", min_length=1, max_length=24)
     target_quantity: float = Field(..., gt=0)
     minimum_holding_pct: float = Field(..., ge=0, le=100)
-    trading_objective: Literal["accumulate_cash", "accumulate_asset"] | None = None
+    trading_objective: Literal["accumulate_cash", "accumulate_asset"] = "accumulate_cash"
 
 
 class SpotOrderPreviewRequest(BaseModel):
@@ -61,6 +61,7 @@ class SpotOrderPreviewRequest(BaseModel):
     quote_symbol: str = Field(default="USDT", min_length=1, max_length=24)
     side: Literal["buy", "sell"]
     quantity: float = Field(..., gt=0)
+    treasury_intake: bool = False
 
 
 class SpotOrderExecuteRequest(BaseModel):

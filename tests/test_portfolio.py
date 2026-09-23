@@ -559,6 +559,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         self.assertEqual(initial["holdings"][0]["target_quantity"], 1)
         self.assertEqual(initial["holdings"][0]["minimum_holding_pct"], 100)
+        self.assertEqual(initial["holdings"][0]["trading_objective"], "accumulate_cash")
         self.assertEqual(updated["holdings"][0]["quantity"], 1.25)
         self.assertEqual(updated["holdings"][0]["target_quantity"], 1)
 
@@ -853,6 +854,36 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             portfolio_service.create_spot_order_preview(
                 {"asset_symbol": "BTC", "side": "buy", "quantity": 0.25}
             )
+
+    def test_treasury_intake_previews_buy_without_creating_empty_holding(self):
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [{"asset_symbol": "USDT", "free": 100, "locked": 0}],
+            }
+        )
+
+        with self.assertRaisesRegex(LookupError, "Treasury asset was not found"):
+            portfolio_service.create_spot_order_preview(
+                {"asset_symbol": "ETH", "side": "buy", "quantity": 2}
+            )
+
+        preview = portfolio_service.create_spot_order_preview(
+            {
+                "asset_symbol": "ETH",
+                "side": "buy",
+                "quantity": 2,
+                "treasury_intake": True,
+            }
+        )
+
+        self.assertEqual(preview["estimated_quote_value"], 40)
+        self.assertEqual(preview["projected_holding_quantity"], 2)
+        self.assertTrue(preview["request"]["treasury_intake"])
+        self.assertEqual(preview["request"]["initial_target_quantity"], 2)
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+        self.assertEqual(snapshot["holdings"], [])
 
     def test_dry_powder_does_not_receive_asset_policy(self):
         self.add("USDT", 500, 1, "binance")

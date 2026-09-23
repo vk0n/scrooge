@@ -427,7 +427,7 @@ class SpotSwingMigrationTests(unittest.TestCase):
             self.assertEqual(transactions[0]["price"], 1.997)
             self.assertEqual(policies[0]["target_quantity"], 1000)
             self.assertEqual(policies[0]["minimum_holding_pct"], 80)
-            self.assertIsNone(policies[0]["trading_objective"])
+            self.assertEqual(policies[0]["trading_objective"], "accumulate_cash")
             self.assertEqual(intent["source"], "manual")
             self.assertIsNone(intent["swing_id"])
             self.assertEqual(list_spot_swings(path=db_path), [])

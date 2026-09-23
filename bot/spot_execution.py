@@ -13,6 +13,7 @@ from shared.runtime_db import (
     apply_spot_swing_target_ratchet,
     append_portfolio_transaction,
     append_spot_swing_execution,
+    ensure_portfolio_asset_policies,
     list_portfolio_transactions,
     list_spot_order_intents,
     load_spot_order_intent,
@@ -255,6 +256,8 @@ class SpotOrderExecutor:
         return response
 
     def _validate_for_submission(self, intent: dict[str, Any]) -> Decimal:
+        request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
+        treasury_intake = bool(request.get("treasury_intake"))
         if intent["source"] == "strategy":
             if not intent.get("swing_id"):
                 raise ValueError("Strategy Spot orders must belong to a Swing.")
@@ -297,10 +300,16 @@ class SpotOrderExecutor:
             ),
             None,
         )
-        if holding is None:
+        if treasury_intake and holding is not None:
+            raise ValueError(
+                f"{intent['asset_symbol']} entered the Treasury after preview. Use its Binance custody Trade action."
+            )
+        if holding is None and not (treasury_intake and intent["source"] == "manual" and intent["side"] == "buy"):
             raise ValueError("Treasury asset disappeared before execution.")
         quantity_float = float(quantity)
         if intent["side"] == "sell":
+            if holding is None:
+                raise ValueError("A real Spot sell requires an existing Treasury holding.")
             immediate = _as_float(holding.get("immediately_sellable_quantity")) or 0.0
             projected = (_as_float(holding.get("quantity")) or 0.0) - quantity_float
             protected_floor = _as_float(holding.get("protected_floor_quantity")) or 0.0
@@ -446,6 +455,25 @@ class SpotOrderExecutor:
             if persisted_transaction is None:
                 persisted_transaction = append_portfolio_transaction(transaction, path=self.db_path)
             project_portfolio_transaction(persisted_transaction, path=self.db_path)
+
+            request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
+            if bool(request.get("treasury_intake")):
+                initial_target = _as_float(request.get("initial_target_quantity"))
+                if initial_target is None or initial_target <= 0:
+                    raise ValueError("Treasury intake is missing its requested Target Holding.")
+                ensure_portfolio_asset_policies(
+                    [
+                        {
+                            "asset_symbol": intent["asset_symbol"],
+                            "quote_symbol": intent["quote_symbol"],
+                            "target_quantity": initial_target,
+                            "minimum_holding_pct": 100.0,
+                            "trading_objective": "accumulate_cash",
+                        }
+                    ],
+                    account_key=intent["account_key"],
+                    path=self.db_path,
+                )
 
             if intent.get("swing_id"):
                 fills = summary.get("fills") if isinstance(summary.get("fills"), list) else []

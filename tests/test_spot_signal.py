@@ -275,7 +275,7 @@ class RollingSpotSignalMonitorTests(unittest.TestCase):
             db_path=self.db_path,
         )
 
-    def test_monitor_persists_signal_and_policy_eligibility_separately(self):
+    def test_monitor_uses_cash_objective_when_policy_does_not_specify_one(self):
         self.policy("NEAR", objective="accumulate_cash")
         self.policy("XRP", objective=None)
         client = FakeTickerClient(
@@ -295,8 +295,9 @@ class RollingSpotSignalMonitorTests(unittest.TestCase):
         self.assertTrue(near["strategy_eligible"])
         self.assertEqual(near["eligibility_reason"], "eligible")
         self.assertEqual(xrp["opportunity"], "buy")
-        self.assertFalse(xrp["strategy_eligible"])
-        self.assertEqual(xrp["eligibility_reason"], "trading_objective_unset")
+        self.assertEqual(xrp["trading_objective"], "accumulate_cash")
+        self.assertTrue(xrp["strategy_eligible"])
+        self.assertEqual(xrp["eligibility_reason"], "eligible")
 
     def test_fully_protected_policy_is_not_strategy_eligible(self):
         self.policy("NEAR", objective="accumulate_asset", minimum=100)

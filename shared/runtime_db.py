@@ -370,8 +370,8 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             quote_symbol TEXT NOT NULL DEFAULT 'USDT',
             target_quantity REAL NOT NULL,
             minimum_holding_pct REAL NOT NULL DEFAULT 100,
-            trading_objective TEXT CHECK (
-                trading_objective IS NULL OR trading_objective IN ('accumulate_cash', 'accumulate_asset')
+            trading_objective TEXT NOT NULL DEFAULT 'accumulate_cash' CHECK (
+                trading_objective IN ('accumulate_cash', 'accumulate_asset')
             ),
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
@@ -640,8 +640,13 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
     if "trading_objective" not in policy_columns:
         connection.execute(
             "ALTER TABLE portfolio_asset_policies ADD COLUMN trading_objective "
-            "TEXT CHECK (trading_objective IS NULL OR trading_objective IN ('accumulate_cash', 'accumulate_asset'))"
+            "TEXT NOT NULL DEFAULT 'accumulate_cash' "
+            "CHECK (trading_objective IN ('accumulate_cash', 'accumulate_asset'))"
         )
+    connection.execute(
+        "UPDATE portfolio_asset_policies SET trading_objective = 'accumulate_cash' "
+        "WHERE trading_objective IS NULL"
+    )
     intent_columns = {
         str(row["name"])
         for row in connection.execute("PRAGMA table_info(spot_order_intents)").fetchall()
@@ -1571,7 +1576,7 @@ def list_portfolio_asset_policies(
             "quote_symbol": str(row["quote_symbol"]),
             "target_quantity": float(row["target_quantity"]),
             "minimum_holding_pct": float(row["minimum_holding_pct"]),
-            "trading_objective": str(row["trading_objective"]) if row["trading_objective"] is not None else None,
+            "trading_objective": str(row["trading_objective"] or "accumulate_cash"),
             "created_at_ms": int(row["created_at_ms"]),
             "updated_at_ms": int(row["updated_at_ms"]),
         }
@@ -1592,7 +1597,7 @@ def ensure_portfolio_asset_policies(
         asset_symbol = str(policy.get("asset_symbol") or "").strip().upper()
         target_quantity = _as_float_or_none(policy.get("target_quantity"))
         minimum_holding_pct = _as_float_or_none(policy.get("minimum_holding_pct"))
-        trading_objective = str(policy.get("trading_objective") or "").strip().lower() or None
+        trading_objective = str(policy.get("trading_objective") or "accumulate_cash").strip().lower()
         if not asset_symbol or target_quantity is None:
             continue
         records.append(
@@ -1640,7 +1645,7 @@ def upsert_portfolio_asset_policy(
     target_quantity = _as_float_or_none(policy.get("target_quantity"))
     minimum_holding_pct = _as_float_or_none(policy.get("minimum_holding_pct"))
     if "trading_objective" in policy:
-        trading_objective = str(policy.get("trading_objective") or "").strip().lower() or None
+        trading_objective = str(policy.get("trading_objective") or "accumulate_cash").strip().lower()
     else:
         existing = next(
             (
@@ -1650,7 +1655,8 @@ def upsert_portfolio_asset_policy(
             ),
             None,
         )
-        trading_objective = existing.get("trading_objective") if existing is not None else None
+        trading_objective = existing.get("trading_objective") if existing is not None else "accumulate_cash"
+        trading_objective = trading_objective or "accumulate_cash"
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     with _connection(path) as connection:
         connection.execute(

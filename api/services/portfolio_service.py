@@ -755,6 +755,7 @@ def _create_spot_order_intent_preview(
     quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
     side = str(payload.get("side") or "").strip().lower()
     requested_quantity = _as_float(payload.get("quantity"))
+    treasury_intake = bool(payload.get("treasury_intake"))
     if not asset_symbol or asset_symbol in STABLE_ASSETS:
         raise ValueError("Choose a managed Treasury asset for Spot execution.")
     if quote_symbol != DEFAULT_QUOTE:
@@ -763,6 +764,8 @@ def _create_spot_order_intent_preview(
         raise ValueError("Spot order side must be buy or sell.")
     if requested_quantity is None or requested_quantity <= 0:
         raise ValueError("Spot order quantity must be greater than zero.")
+    if treasury_intake and (normalized_source != "manual" or side != "buy"):
+        raise ValueError("Treasury intake is available only for manual Binance Spot buys.")
 
     normalized_swing_id = str(swing_id or "").strip() or None
     normalized_reason_text = str(reason_text or "").strip() or None
@@ -796,19 +799,28 @@ def _create_spot_order_intent_preview(
         ),
         None,
     )
-    if holding is None:
+    if treasury_intake and holding is not None:
+        raise ValueError(
+            f"{asset_symbol} is already under Scrooge's care. Use Trade in its Binance custody card instead."
+        )
+    if holding is None and not treasury_intake:
         raise LookupError("Treasury asset was not found.")
-    estimated_price = _as_float(holding.get("market_price"))
+    estimated_price = _as_float(holding.get("market_price")) if holding is not None else None
+    if estimated_price is None and treasury_intake:
+        estimated_price, _, _ = _fetch_market_price(asset_symbol, quote_symbol)
     if estimated_price is None or estimated_price <= 0:
         raise ValueError("A current market price is required before previewing a real order.")
 
     estimated_quote_value = requested_quantity * estimated_price
     available_quote = _as_float(exchange.get("usdt_free")) or 0.0
-    available_asset = _as_float(holding.get("exchange_binance_free_quantity")) or 0.0
-    protected_floor = _as_float(holding.get("protected_floor_quantity")) or 0.0
-    policy_sellable = _as_float(holding.get("policy_sellable_quantity")) or 0.0
-    immediate_sellable = _as_float(holding.get("immediately_sellable_quantity")) or 0.0
-    current_quantity = _as_float(holding.get("quantity")) or 0.0
+    if holding is None:
+        available_asset = protected_floor = policy_sellable = immediate_sellable = current_quantity = 0.0
+    else:
+        available_asset = _as_float(holding.get("exchange_binance_free_quantity")) or 0.0
+        protected_floor = _as_float(holding.get("protected_floor_quantity")) or 0.0
+        policy_sellable = _as_float(holding.get("policy_sellable_quantity")) or 0.0
+        immediate_sellable = _as_float(holding.get("immediately_sellable_quantity")) or 0.0
+        current_quantity = _as_float(holding.get("quantity")) or 0.0
     projected_holding = current_quantity + requested_quantity if side == "buy" else current_quantity - requested_quantity
 
     if side == "buy" and estimated_quote_value > available_quote + 0.00000001:
@@ -848,6 +860,8 @@ def _create_spot_order_intent_preview(
             "swing_id": normalized_swing_id,
             "reason_text": normalized_reason_text,
             "reason": normalized_reason,
+            "treasury_intake": treasury_intake,
+            "initial_target_quantity": requested_quantity if treasury_intake else None,
             "preview_expires_at_ms": int((time.time() + SPOT_ORDER_PREVIEW_TTL_SECONDS) * 1000),
         }
     )
@@ -987,7 +1001,7 @@ def update_portfolio_asset_policy(
     target_quantity = _as_float(payload.get("target_quantity"))
     minimum_holding_pct = _as_float(payload.get("minimum_holding_pct"))
     objective_was_provided = "trading_objective" in payload
-    trading_objective = str(payload.get("trading_objective") or "").strip().lower() or None
+    trading_objective = str(payload.get("trading_objective") or "accumulate_cash").strip().lower()
     if not normalized_asset:
         raise ValueError("Asset symbol is required.")
     if normalized_asset in STABLE_ASSETS:
@@ -996,8 +1010,8 @@ def update_portfolio_asset_policy(
         raise ValueError("Target Holding must be greater than zero.")
     if minimum_holding_pct is None or not 0 <= minimum_holding_pct <= 100:
         raise ValueError("Minimum Holding must be between 0% and 100%.")
-    if objective_was_provided and trading_objective not in {None, "accumulate_cash", "accumulate_asset"}:
-        raise ValueError("Trading Objective must be Accumulate Cash, Accumulate Asset, or unset.")
+    if objective_was_provided and trading_objective not in {"accumulate_cash", "accumulate_asset"}:
+        raise ValueError("Trading Objective must be Accumulate Cash or Accumulate Asset.")
 
     transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     holdings, _ = _derive_holdings(transactions)
