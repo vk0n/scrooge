@@ -118,8 +118,25 @@ switch or a per-asset auto-trading toggle.
   `BUY` opportunities.
 - Market opportunity and strategy eligibility are stored separately. Missing Trading Objective, a fully protected
   policy, disabled execution, or unavailable market data cannot become an eligible strategy action.
-- The signal monitor does not create a Swing, create an order intent, submit an order, size by indicators, or mutate
-  Treasury accounting. Those remain later strategy/execution phases.
+- The signal monitor does not create a Swing, create an order intent, submit an order, or mutate Treasury accounting.
+  Those remain later strategy/execution phases.
+
+## Spot Indicator Sizing Boundaries
+
+- Indicators are evaluated only after rolling 24-hour movement has produced `BUY` or `SELL`. `HOLD` does not fetch
+  indicator candles and always keeps a zero final tranche.
+- Spot uses its own strictly closed-candle context instead of coupling to Futures execution: RSI 11, EMA 50,
+  Bollinger 20/2, and ATR 14 on Binance Spot candles configured by `SCROOGE_SPOT_INDICATOR_INTERVAL` (`1h` by default).
+- RSI, Bollinger, and EMA provide directional sizing evidence. ATR is preserved as volatility context only and cannot
+  create or reverse an opportunity.
+- Initial sizing tiers are weak `0.5x`, neutral `1.0x`, strong `1.25x`, and very strong `1.5x`; the ordered modifiers
+  are configurable with `SCROOGE_SPOT_INDICATOR_SIZING_MODIFIERS`.
+- Three confirmations without conflicts are very strong; at least two are strong; conflicting evidence that dominates
+  confirmations is weak; remaining mixed or partial context is neutral.
+- Missing indicator data applies the conservative weak modifier while preserving the rolling signal. The context,
+  confirmations, conflicts, tier, modifier, and final tranche percentage remain in the persisted signal snapshot.
+- Indicator sizing still does not create Swings, order intents, or orders. Portfolio and exchange limits remain a later
+  progressive execution concern.
 
 ## Treasury Custody Boundaries
 

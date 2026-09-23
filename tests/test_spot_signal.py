@@ -5,23 +5,38 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bot.spot_signal import RollingSpotSignalMonitor, spot_signal_config_from_env
+from bot.spot_signal import (
+    RollingSpotSignalMonitor,
+    calculate_spot_indicator_context,
+    spot_indicator_sizing_config_from_env,
+    spot_signal_config_from_env,
+)
 from shared.runtime_db import (
     bootstrap_runtime_db,
     load_spot_signal_snapshot,
     upsert_portfolio_asset_policy,
 )
 from shared.spot_signal import ROLLING_WINDOW_MS, SpotSignalConfig, evaluate_rolling_24h_opportunity
+from shared.spot_sizing import IndicatorSizingConfig, apply_indicator_sizing
 
 
 class FakeTickerClient:
-    def __init__(self, tickers):
+    def __init__(self, tickers, klines=None):
         self.tickers = tickers
+        self.klines = klines or {}
         self.calls = []
+        self.kline_calls = []
 
     def get_ticker(self, **kwargs):
         self.calls.append(kwargs)
         return self.tickers[kwargs["symbol"]]
+
+    def get_klines(self, **kwargs):
+        self.kline_calls.append(kwargs)
+        symbol = kwargs["symbol"]
+        if symbol in self.klines:
+            return self.klines[symbol]
+        return spot_klines(float(self.tickers[symbol]["openPrice"]))
 
 
 def rolling_ticker(open_price: float, last_price: float) -> dict:
@@ -31,6 +46,27 @@ def rolling_ticker(open_price: float, last_price: float) -> dict:
         "openTime": 1_000,
         "closeTime": 1_000 + ROLLING_WINDOW_MS,
     }
+
+
+def spot_klines(price: float, *, count: int = 60) -> list[list]:
+    close_at_ms = 1_000 + ROLLING_WINDOW_MS
+    interval_ms = 60 * 60 * 1000
+    rows = []
+    for index in range(count):
+        open_time = close_at_ms - ((count - index) * interval_ms)
+        close_time = open_time + interval_ms - 1
+        rows.append(
+            [
+                open_time,
+                str(price),
+                str(price * 1.002),
+                str(price * 0.998),
+                str(price),
+                "100",
+                close_time,
+            ]
+        )
+    return rows
 
 
 class SpotSignalDomainTests(unittest.TestCase):
@@ -87,6 +123,128 @@ class SpotSignalDomainTests(unittest.TestCase):
 
         self.assertEqual(config.levels_pct, (4.0, 7.0))
         self.assertEqual(config.base_tranches_pct, (15.0, 35.0))
+
+
+class SpotIndicatorSizingTests(unittest.TestCase):
+    def signal(self, opportunity: str, *, base_tranche_pct: float = 20, current_price: float = 110) -> dict:
+        return {
+            "opportunity": opportunity,
+            "level": 2 if opportunity != "hold" else 0,
+            "base_tranche_pct": base_tranche_pct if opportunity != "hold" else 0,
+            "current_price": current_price,
+        }
+
+    def test_indicators_cannot_turn_hold_into_buy_or_sell(self):
+        result = apply_indicator_sizing(
+            self.signal("hold"),
+            {"rsi": 99, "bb_lower": 80, "bb_upper": 90, "ema": 90, "atr": 4},
+        )
+
+        self.assertEqual(result["opportunity"], "hold")
+        self.assertEqual(result["indicator_status"], "not_applicable")
+        self.assertEqual(result["final_tranche_pct"], 0)
+
+    def test_three_directional_confirmations_apply_very_strong_modifier(self):
+        result = apply_indicator_sizing(
+            self.signal("sell"),
+            {"rsi": 78, "bb_lower": 90, "bb_upper": 105, "ema": 100, "atr": 4},
+        )
+
+        self.assertEqual(result["opportunity"], "sell")
+        self.assertEqual(result["indicator_assessment"]["tier"], "very_strong")
+        self.assertEqual(result["sizing_modifier"], 1.5)
+        self.assertEqual(result["final_tranche_pct"], 30)
+
+    def test_conflicting_context_reduces_but_does_not_reverse_signal(self):
+        result = apply_indicator_sizing(
+            self.signal("sell"),
+            {"rsi": 20, "bb_lower": 115, "bb_upper": 125, "ema": 120, "atr": 4},
+        )
+
+        self.assertEqual(result["opportunity"], "sell")
+        self.assertEqual(result["indicator_assessment"]["tier"], "weak")
+        self.assertEqual(result["sizing_modifier"], 0.5)
+        self.assertEqual(result["final_tranche_pct"], 10)
+
+    def test_two_confirmations_without_conflicts_apply_strong_modifier(self):
+        result = apply_indicator_sizing(
+            self.signal("sell"),
+            {"rsi": 75, "bb_lower": 90, "bb_upper": 120, "ema": 100, "atr": 4},
+        )
+
+        self.assertEqual(result["indicator_assessment"]["tier"], "strong")
+        self.assertEqual(result["sizing_modifier"], 1.25)
+        self.assertEqual(result["final_tranche_pct"], 25)
+
+    def test_one_confirmation_uses_neutral_modifier(self):
+        result = apply_indicator_sizing(
+            self.signal("sell"),
+            {"rsi": 50, "bb_lower": 90, "bb_upper": 120, "ema": 100, "atr": 4},
+        )
+
+        self.assertEqual(result["indicator_assessment"]["tier"], "neutral")
+        self.assertEqual(result["sizing_modifier"], 1)
+        self.assertEqual(result["final_tranche_pct"], 20)
+
+    def test_missing_context_uses_conservative_modifier(self):
+        result = apply_indicator_sizing(
+            self.signal("buy"),
+            None,
+            indicator_error="klines unavailable",
+        )
+
+        self.assertEqual(result["opportunity"], "buy")
+        self.assertEqual(result["indicator_status"], "unavailable")
+        self.assertEqual(result["sizing_modifier"], 0.5)
+        self.assertEqual(result["indicator_error"], "klines unavailable")
+
+    def test_custom_modifiers_are_loaded_from_environment(self):
+        with patch.dict(os.environ, {"SCROOGE_SPOT_INDICATOR_SIZING_MODIFIERS": "0.4,0.9,1.2,1.4"}):
+            config = spot_indicator_sizing_config_from_env()
+
+        self.assertEqual(
+            (
+                config.weak_modifier,
+                config.neutral_modifier,
+                config.strong_modifier,
+                config.very_strong_modifier,
+            ),
+            (0.4, 0.9, 1.2, 1.4),
+        )
+
+    def test_indicator_context_uses_only_closed_candles(self):
+        rows = spot_klines(100)
+        current_at_ms = 1_000 + ROLLING_WINDOW_MS
+        rows.append(
+            [current_at_ms, "500", "500", "500", "500", "1", current_at_ms + 3_599_999]
+        )
+
+        context = calculate_spot_indicator_context(
+            rows,
+            current_price=110,
+            evaluated_at_ms=current_at_ms,
+            interval="1h",
+        )
+
+        self.assertEqual(context["candle_count"], 60)
+        self.assertEqual(context["latest_closed_price"], 100)
+        self.assertIn("atr_pct", context)
+
+    def test_modifier_order_is_validated(self):
+        with self.assertRaisesRegex(ValueError, "ordered"):
+            IndicatorSizingConfig(
+                weak_modifier=1,
+                neutral_modifier=0.5,
+                strong_modifier=1.25,
+                very_strong_modifier=1.5,
+            )
+
+    def test_buy_or_sell_requires_positive_base_tranche(self):
+        with self.assertRaisesRegex(ValueError, "positive base tranche"):
+            apply_indicator_sizing(
+                self.signal("buy", base_tranche_pct=0),
+                {"rsi": 20, "bb_lower": 100, "bb_upper": 120, "ema": 115},
+            )
 
 
 class RollingSpotSignalMonitorTests(unittest.TestCase):
@@ -176,6 +334,49 @@ class RollingSpotSignalMonitorTests(unittest.TestCase):
         self.assertFalse(snapshot["strategy_eligible"])
         self.assertEqual(snapshot["eligibility_reason"], "signal_unavailable")
         self.assertEqual(snapshot["error"], "offline")
+
+    def test_sizing_context_is_persisted_for_valid_opportunity(self):
+        self.policy("NEAR", objective="accumulate_cash")
+        client = FakeTickerClient({"NEARUSDT": rolling_ticker(4, 4.4)})
+
+        self.monitor(client).refresh_once()
+        snapshot = load_spot_signal_snapshot("NEAR", path=self.db_path)
+
+        self.assertEqual(snapshot["indicator_status"], "ok")
+        self.assertEqual(snapshot["indicator_context"]["interval"], "1h")
+        self.assertEqual(snapshot["indicator_assessment"]["tier"], "strong")
+        self.assertEqual(snapshot["sizing_modifier"], 1.25)
+        self.assertEqual(snapshot["final_tranche_pct"], 25)
+        self.assertEqual(client.kline_calls[0]["limit"], 60)
+
+    def test_hold_does_not_request_indicator_klines(self):
+        self.policy("NEAR", objective="accumulate_cash")
+        client = FakeTickerClient({"NEARUSDT": rolling_ticker(4, 4.1)})
+
+        self.monitor(client).refresh_once()
+        snapshot = load_spot_signal_snapshot("NEAR", path=self.db_path)
+
+        self.assertEqual(snapshot["opportunity"], "hold")
+        self.assertEqual(snapshot["indicator_status"], "not_applicable")
+        self.assertEqual(snapshot["final_tranche_pct"], 0)
+        self.assertEqual(client.kline_calls, [])
+
+    def test_incomplete_indicator_history_reduces_size_without_invalidating_signal(self):
+        self.policy("NEAR", objective="accumulate_cash")
+        client = FakeTickerClient(
+            {"NEARUSDT": rolling_ticker(4, 4.4)},
+            {"NEARUSDT": spot_klines(4, count=10)},
+        )
+
+        self.monitor(client).refresh_once()
+        snapshot = load_spot_signal_snapshot("NEAR", path=self.db_path)
+
+        self.assertEqual(snapshot["status"], "ok")
+        self.assertEqual(snapshot["opportunity"], "sell")
+        self.assertTrue(snapshot["strategy_eligible"])
+        self.assertEqual(snapshot["indicator_status"], "unavailable")
+        self.assertEqual(snapshot["sizing_modifier"], 0.5)
+        self.assertEqual(snapshot["final_tranche_pct"], 10)
 
 
 if __name__ == "__main__":
