@@ -40,6 +40,7 @@ from shared.runtime_db import (  # noqa: E402
     upsert_portfolio_daily_snapshot,
     update_portfolio_transaction_status,
 )
+from shared.spot_policy import calculate_spot_inventory_policy  # noqa: E402
 from shared.spot_swing import calculate_swing_economics  # noqa: E402
 from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction  # noqa: E402
 
@@ -406,26 +407,26 @@ def _attach_inventory_state(holding: dict[str, Any]) -> None:
     target_quantity = max(0.0, _as_float(holding.get("target_quantity")) or 0.0)
     minimum_holding_pct = min(100.0, max(0.0, _as_float(holding.get("minimum_holding_pct")) or 0.0))
     binance_quantity = max(0.0, _as_float(holding.get("binance_quantity")) or 0.0)
-    protected_floor = target_quantity * minimum_holding_pct / 100.0
-    amount_above_floor = max(0.0, current_quantity - protected_floor)
-    amount_below_floor = max(0.0, protected_floor - current_quantity)
-    policy_sellable = min(amount_above_floor, binance_quantity)
+    policy = calculate_spot_inventory_policy(
+        current_quantity=current_quantity,
+        target_quantity=target_quantity,
+        minimum_holding_pct=minimum_holding_pct,
+        binance_quantity=binance_quantity,
+    )
 
     holding.update(
         {
-            "protected_floor_quantity": protected_floor,
-            "protected_holding_quantity": min(current_quantity, protected_floor),
-            "amount_above_protected_floor": amount_above_floor,
-            "amount_below_protected_floor": amount_below_floor,
-            "policy_sellable_quantity": policy_sellable,
+            "protected_floor_quantity": policy["protected_floor_quantity"],
+            "protected_holding_quantity": policy["protected_holding_quantity"],
+            "amount_above_protected_floor": policy["amount_above_protected_floor"],
+            "amount_below_protected_floor": policy["amount_below_protected_floor"],
+            # This legacy field includes recorded custody; the shared projection also
+            # exposes the economic policy capacity separately for research.
+            "policy_sellable_quantity": policy["custody_sellable_quantity"],
             "immediately_sellable_quantity": 0.0,
             "sellable_inventory_is_exchange_verified": False,
-            "target_delta_quantity": current_quantity - target_quantity,
-            "target_delta_pct": (
-                ((current_quantity - target_quantity) / target_quantity) * 100
-                if target_quantity > 0
-                else None
-            ),
+            "target_delta_quantity": policy["target_delta_quantity"],
+            "target_delta_pct": policy["target_delta_pct"],
         }
     )
 

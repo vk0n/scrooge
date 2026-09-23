@@ -261,6 +261,10 @@ Backtest storage model:
 - `scrooge.sqlite3` is the canonical store for replay state, trade history, balance history, and UI log lines inside the run directory
 - `event_history.jsonl`, `market_events.jsonl`, and the replay/alignment artifacts remain file-based outputs
 
+### Spot Treasury research
+
+The portfolio-level Spot research runner is separate from the Futures backtester and reuses the live Spot decision domain. See [docs/spot-backtesting.md](docs/spot-backtesting.md) for scenario export, deterministic replay semantics, 6-month and 1-year commands, and generated artifacts.
+
 ### Historical aggTrades replay
 
 Example:

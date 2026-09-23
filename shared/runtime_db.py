@@ -17,6 +17,7 @@ from shared.spot_swing import (
     calculate_swing_economics,
     calculate_target_ratchet,
 )
+from shared.spot_strategy import transition_spot_strategy_campaign
 
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -1932,21 +1933,15 @@ def sync_spot_strategy_campaign(
             """,
             (normalized_account, normalized_asset, normalized_quote),
         ).fetchone()
-        prior_side = str(row["active_side"]) if row is not None and row["active_side"] is not None else None
-        if normalized_side == "hold":
-            campaign_id = None
-            active_side = None
-            highest_level = 0
-        elif prior_side != normalized_side:
-            campaign_id = _row_key(
+        transition = transition_spot_strategy_campaign(
+            _spot_strategy_campaign_from_row(row) if row is not None else None,
+            opportunity=normalized_side,
+            signal_level=signal_level,
+            signal_at_ms=signal_at_ms,
+            new_campaign_id=_row_key(
                 [normalized_account, normalized_asset, normalized_quote, normalized_side, int(signal_at_ms)]
-            )[:24]
-            active_side = normalized_side
-            highest_level = 0
-        else:
-            campaign_id = str(row["campaign_id"])
-            active_side = normalized_side
-            highest_level = int(row["highest_completed_level"])
+            )[:24],
+        )
         connection.execute(
             """
             INSERT INTO spot_strategy_campaigns (
@@ -1967,11 +1962,11 @@ def sync_spot_strategy_campaign(
                 normalized_account,
                 normalized_asset,
                 normalized_quote,
-                campaign_id,
-                active_side,
-                highest_level,
-                max(0, int(signal_level)),
-                int(signal_at_ms),
+                transition["campaign_id"],
+                transition["active_side"],
+                transition["highest_completed_level"],
+                transition["last_signal_level"],
+                transition["last_signal_at_ms"],
                 now_ms,
                 now_ms,
             ),

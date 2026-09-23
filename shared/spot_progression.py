@@ -23,7 +23,8 @@ def plan_opening_quantity(signal: dict[str, Any], holding: dict[str, Any]) -> di
     objective = str(signal.get("trading_objective") or "").strip().lower()
     tranche_pct = float(signal.get("final_tranche_pct") or 0.0)
     target_quantity = float(holding.get("target_quantity") or 0.0)
-    minimum_holding_pct = float(holding.get("minimum_holding_pct") or 100.0)
+    minimum_holding_raw = holding.get("minimum_holding_pct")
+    minimum_holding_pct = 100.0 if minimum_holding_raw is None else float(minimum_holding_raw)
     if side not in {"buy", "sell"} or tranche_pct <= 0 or target_quantity <= 0:
         return {"eligible": False, "reason": "no_opening_opportunity", "quantity": 0.0}
     if objective == "accumulate_asset" and side == "buy":

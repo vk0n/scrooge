@@ -1,0 +1,53 @@
+spot_backtest:
+  name: current-10-asset-treasury-template
+  start: 2025-09-23T00:00:00Z
+  end: 2026-09-23T00:00:00Z
+  interval: 1h
+  warmup_candles: 60
+  starting_usdt: 0
+
+  # Quantities are deliberately zero. Prefer --export-current, then review the snapshot.
+  assets:
+    NEAR: &asset_template
+      quantity: 0
+      entry_cost: null
+      custody: {binance: 0, cold_storage: 0, unassigned: 0}
+      target_holding: 0
+      minimum_holding_pct: 100
+      trading_objective: null
+    XRP: *asset_template
+    ATOM: *asset_template
+    ICP: *asset_template
+    GRAM: *asset_template
+    DYDX: *asset_template
+    TIA: *asset_template
+    DOT: *asset_template
+    FIL: *asset_template
+    WCT: *asset_template
+
+  execution:
+    fee_rate: 0.001
+    slippage_bps: 0
+    force_close_at_end: false
+
+  strategy:
+    signal:
+      levels_pct: [5, 8, 12, 18]
+      base_tranches_pct: [10, 20, 30, 40]
+    indicator_sizing:
+      weak_modifier: 0.5
+      neutral_modifier: 1.0
+      strong_modifier: 1.25
+      very_strong_modifier: 1.5
+      rsi_oversold: 30
+      rsi_overbought: 70
+    progression:
+      close_profit_pct: 5
+      estimated_fee_rate: 0.001
+
+  data_cache_dir: ../data/spot_backtest
+  output_dir: ../runtime/spot_backtests/auto
+  near_floor_pct: 1
+  strong_cash_utilization_pct: 80
+  metadata:
+    assumption: User-supplied counterfactual starting Treasury.

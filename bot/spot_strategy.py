@@ -25,10 +25,8 @@ from shared.runtime_db import (
 )
 from shared.spot_progression import (
     ProgressiveSwingConfig,
-    plan_opening_quantity,
-    plan_profitable_close,
 )
-from shared.spot_swing import calculate_swing_economics
+from shared.spot_strategy import plan_spot_strategy_action
 
 ACTIVE_INTENT_STATUSES = {
     "queueing",
@@ -115,47 +113,24 @@ class ProgressiveSpotSwingExecutor:
         exchange = portfolio.get("exchange") if isinstance(portfolio.get("exchange"), dict) else {}
         available_quote = float(exchange.get("usdt_free") or 0.0)
 
-        close_action = self._plan_close(
-            asset=asset,
-            quote=quote,
-            current_price=current_price,
+        decision = plan_spot_strategy_action(
+            signal,
+            holding,
+            campaign,
+            self._swing_states(asset, quote),
             available_quote=available_quote,
+            config=self.config,
         )
-        if close_action is not None:
-            return self._execute_action(close_action)
-
-        if not bool(signal.get("strategy_eligible")) or opportunity == "hold":
+        if decision is None:
             return None
-        if campaign.get("active_side") != opportunity or level <= int(campaign["highest_completed_level"]):
-            return None
-
-        plan = plan_opening_quantity(signal, holding)
-        if not plan.get("eligible"):
-            return None
-        quantity = float(plan["quantity"])
-        if opportunity == "sell":
-            quantity = min(quantity, float(holding.get("immediately_sellable_quantity") or 0.0))
-        else:
-            cash_fraction = min(100.0, float(signal.get("final_tranche_pct") or 0.0)) / 100.0
-            quantity = min(quantity, (available_quote * cash_fraction) / current_price)
-        if quantity <= 0:
-            return None
+        if decision["action_type"] == "close":
+            return self._execute_action(self._persist_close_action(asset, quote, decision))
 
         campaign_id = str(campaign.get("campaign_id") or "")
+        quantity = float(decision["requested_quantity"])
         action_key = f"open:{campaign_id}:level:{level}"
         swing_id = f"swing-{_stable_key(action_key)[:24]}"
-        reason = {
-            "action_type": "open",
-            "signal": opportunity,
-            "signal_level": level,
-            "rolling_change_pct": signal.get("rolling_change_pct"),
-            "base_tranche_pct": signal.get("base_tranche_pct"),
-            "sizing_modifier": signal.get("sizing_modifier"),
-            "final_tranche_pct": signal.get("final_tranche_pct"),
-            "indicator_assessment": signal.get("indicator_assessment"),
-            "campaign_id": campaign_id,
-            "strategy_capacity": plan.get("strategic_capacity"),
-        }
+        reason = decision["reason"]
         action = ensure_spot_strategy_action(
             {
                 "action_key": action_key,
@@ -211,7 +186,20 @@ class ProgressiveSpotSwingExecutor:
         current_price: float,
         available_quote: float,
     ) -> dict[str, Any] | None:
-        candidates: list[tuple[float, int, dict[str, Any]]] = []
+        decision = plan_spot_strategy_action(
+            {"opportunity": "hold", "current_price": current_price},
+            {},
+            {},
+            self._swing_states(asset, quote),
+            available_quote=available_quote,
+            config=self.config,
+        )
+        if decision is None or decision["action_type"] != "close":
+            return None
+        return self._persist_close_action(asset, quote, decision)
+
+    def _swing_states(self, asset: str, quote: str) -> list[dict[str, Any]]:
+        states: list[dict[str, Any]] = []
         for swing in list_spot_swings(
             account_key=self.account_key,
             asset_symbol=asset,
@@ -220,48 +208,31 @@ class ProgressiveSpotSwingExecutor:
         ):
             if swing["source"] != "strategy" or swing["status"] not in {"open", "partially_closed"}:
                 continue
-            executions = list_spot_swing_executions(swing["swing_id"], path=self.db_path)
-            economics = calculate_swing_economics(swing, executions, current_price=current_price)
-            plan = plan_profitable_close(
-                swing,
-                economics,
-                current_price=current_price,
-                available_quote_quantity=available_quote,
-                config=self.config,
+            states.append(
+                {
+                    "swing": swing,
+                    "executions": list_spot_swing_executions(swing["swing_id"], path=self.db_path),
+                }
             )
-            if not plan.get("eligible"):
-                continue
-            action_key = f"close:{swing['swing_id']}:{_stable_key([item['execution_id'] for item in executions])[:16]}"
-            reason = {
-                "action_type": "close",
-                "close_reason": "strategy_profit",
-                "favorable_move_pct": plan["favorable_move_pct"],
-                "close_profit_pct": plan["close_profit_pct"],
-                "weighted_opening_price": plan["opening_price"],
-                "market_price": current_price,
-                "remaining_quantity": economics["remaining_quantity"],
-            }
-            candidates.append(
-                (
-                    float(plan["favorable_move_pct"]),
-                    int(swing["opened_at_ms"]),
-                    {
-                        "action_key": action_key,
-                        "account_key": self.account_key,
-                        "asset_symbol": asset,
-                        "quote_symbol": quote,
-                        "action_type": "close",
-                        "side": plan["side"],
-                        "swing_id": swing["swing_id"],
-                        "requested_quantity": plan["quantity"],
-                        "reason": reason,
-                    },
-                )
-            )
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: (-item[0], item[1]))
-        candidate = candidates[0][2]
+        return states
+
+    def _persist_close_action(
+        self,
+        asset: str,
+        quote: str,
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        executions = list_spot_swing_executions(decision["swing_id"], path=self.db_path)
+        candidate = {
+            "action_key": (
+                f"close:{decision['swing_id']}:"
+                f"{_stable_key([item['execution_id'] for item in executions])[:16]}"
+            ),
+            "account_key": self.account_key,
+            "asset_symbol": asset,
+            "quote_symbol": quote,
+            **decision,
+        }
         action = ensure_spot_strategy_action(candidate, path=self.db_path)
         if action["status"] in {"planned", "retryable"}:
             action = update_spot_strategy_action(

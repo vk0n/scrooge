@@ -28,7 +28,8 @@ from shared.spot_signal import (
     evaluate_rolling_24h_opportunity,
     parse_percentage_series,
 )
-from shared.spot_sizing import IndicatorSizingConfig, apply_indicator_sizing
+from shared.spot_sizing import IndicatorSizingConfig
+from shared.spot_strategy import finalize_spot_strategy_signal, spot_policy_eligibility
 
 DEFAULT_ACCOUNT_KEY = "manual_spot"
 SPOT_INDICATOR_RSI_PERIOD = 11
@@ -177,18 +178,7 @@ def calculate_spot_indicator_context(
 
 
 def _policy_eligibility(policy: dict[str, Any], *, execution_enabled: bool) -> tuple[bool, str]:
-    if not execution_enabled:
-        return False, "execution_disabled"
-    objective = str(policy.get("trading_objective") or "").strip().lower()
-    if objective not in {"accumulate_cash", "accumulate_asset"}:
-        return False, "trading_objective_unset"
-    try:
-        minimum_holding_pct = float(policy.get("minimum_holding_pct", 100.0))
-    except (TypeError, ValueError):
-        return False, "invalid_policy"
-    if minimum_holding_pct >= 100.0:
-        return False, "fully_protected"
-    return True, "eligible"
+    return spot_policy_eligibility(policy, execution_enabled=execution_enabled)
 
 
 class RollingSpotSignalMonitor:
@@ -296,15 +286,13 @@ class RollingSpotSignalMonitor:
                     )
                 except Exception as exc:  # noqa: BLE001
                     indicator_error = str(exc)[:500]
-            sized_signal = apply_indicator_sizing(
+            sized_signal = finalize_spot_strategy_signal(
                 signal,
                 indicator_context,
-                config=self.sizing_config,
-                indicator_error=indicator_error,
-            )
-            strategy_eligible, eligibility_reason = _policy_eligibility(
                 policy,
                 execution_enabled=self.execution_enabled,
+                sizing_config=self.sizing_config,
+                indicator_error=indicator_error,
             )
             snapshot = {
                 **sized_signal,
@@ -312,10 +300,6 @@ class RollingSpotSignalMonitor:
                 "asset_symbol": asset_symbol,
                 "quote_symbol": quote_symbol,
                 "market_symbol": market_symbol,
-                "trading_objective": policy.get("trading_objective"),
-                "strategy_eligible": strategy_eligible,
-                "eligibility_reason": eligibility_reason,
-                "evaluated_at_ms": sized_signal["current_at_ms"],
             }
             saved = save_spot_signal_snapshot(snapshot, account_key=self.account_key, path=self.db_path)
         except Exception as exc:  # noqa: BLE001

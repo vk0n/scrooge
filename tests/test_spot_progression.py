@@ -36,6 +36,20 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         self.assertEqual(plan["strategic_capacity"], 200)
         self.assertEqual(plan["quantity"], 50)
 
+    def test_zero_minimum_holding_exposes_full_target_capacity(self):
+        plan = plan_opening_quantity(
+            {
+                "opportunity": "sell",
+                "trading_objective": "accumulate_cash",
+                "final_tranche_pct": 25,
+            },
+            {"target_quantity": 1000, "minimum_holding_pct": 0},
+        )
+
+        self.assertTrue(plan["eligible"])
+        self.assertEqual(plan["strategic_capacity"], 1000)
+        self.assertEqual(plan["quantity"], 250)
+
     def test_accumulate_asset_does_not_open_buy_origin_in_v1(self):
         plan = plan_opening_quantity(
             {
