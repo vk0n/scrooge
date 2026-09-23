@@ -742,6 +742,13 @@ def create_portfolio_transaction(payload: dict[str, Any]) -> tuple[dict[str, Any
         raise ValueError("Entry cost is required for buy and sell transactions.")
 
     quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
+    if (
+        tx_type == "deposit"
+        and asset_symbol not in STABLE_ASSETS
+        and (price is None or price <= 0)
+    ):
+        raise ValueError("Entry cost is required when bringing a non-stable asset into Treasury.")
+
     custody_location = _clean_custody(payload.get("custody_location"))
     fee_amount = _as_float(payload.get("fee_amount"))
     if fee_amount is not None and fee_amount < 0:

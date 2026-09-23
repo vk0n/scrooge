@@ -209,6 +209,106 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(holding["unassigned_quantity"], 1.25)
         self.assertEqual(result["transaction"]["tx_type"], "custody_transfer")
 
+    def test_non_stable_deposit_requires_entry_cost(self):
+        with self.assertRaisesRegex(ValueError, "Entry cost is required"):
+            portfolio_service.create_portfolio_transaction(
+                {
+                    "tx_type": "deposit",
+                    "asset_symbol": "BTC",
+                    "quantity": 0.5,
+                    "quote_symbol": "USDT",
+                    "custody_location": "binance",
+                }
+            )
+
+    def test_deposit_and_withdraw_cross_treasury_boundary_without_mutating_target(self):
+        self.add("BTC", 1, 90, "binance")
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1, "minimum_holding_pct": 75},
+        )
+
+        deposited, _ = portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "deposit",
+                "asset_symbol": "BTC",
+                "quantity": 0.5,
+                "price": 80,
+                "quote_symbol": "USDT",
+                "custody_location": "cold_storage",
+            }
+        )
+        deposited_holding = deposited["portfolio"]["holdings"][0]
+        self.assertEqual(deposited_holding["quantity"], 1.5)
+        self.assertEqual(deposited_holding["invested_capital"], 130)
+        self.assertEqual(deposited_holding["cold_storage_quantity"], 0.5)
+        self.assertEqual(deposited_holding["target_quantity"], 1)
+        self.assertEqual(deposited_holding["minimum_holding_pct"], 75)
+
+        withdrawn, _ = portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "withdraw",
+                "asset_symbol": "BTC",
+                "quantity": 0.25,
+                "quote_symbol": "USDT",
+                "custody_location": "cold_storage",
+            }
+        )
+        withdrawn_holding = withdrawn["portfolio"]["holdings"][0]
+        self.assertEqual(withdrawn_holding["quantity"], 1.25)
+        self.assertEqual(withdrawn_holding["invested_capital"], 110)
+        self.assertEqual(withdrawn_holding["cold_storage_quantity"], 0.25)
+        self.assertEqual(withdrawn_holding["target_quantity"], 1)
+        self.assertEqual(withdrawn_holding["minimum_holding_pct"], 75)
+
+    def test_stable_deposit_without_price_uses_par_cost_basis(self):
+        result, _ = portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "deposit",
+                "asset_symbol": "USDT",
+                "quantity": 50,
+                "quote_symbol": "USDT",
+                "custody_location": "binance",
+            }
+        )
+
+        holding = result["portfolio"]["holdings"][0]
+        self.assertEqual(holding["quantity"], 50)
+        self.assertEqual(holding["invested_capital"], 50)
+        self.assertEqual(holding["binance_quantity"], 50)
+
+    def test_policy_stays_dormant_after_full_release_and_returns_with_asset(self):
+        self.add("BTC", 1, 90, "binance")
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1, "minimum_holding_pct": 60},
+        )
+        released, _ = portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "withdraw",
+                "asset_symbol": "BTC",
+                "quantity": 1,
+                "quote_symbol": "USDT",
+                "custody_location": "binance",
+            }
+        )
+        self.assertEqual(released["portfolio"]["holdings"], [])
+
+        returned, _ = portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "deposit",
+                "asset_symbol": "BTC",
+                "quantity": 0.5,
+                "price": 80,
+                "quote_symbol": "USDT",
+                "custody_location": "cold_storage",
+            }
+        )
+        holding = returned["portfolio"]["holdings"][0]
+        self.assertEqual(holding["target_quantity"], 1)
+        self.assertEqual(holding["minimum_holding_pct"], 60)
+        self.assertEqual(holding["cold_storage_quantity"], 0.5)
+
     def test_custody_transfer_cannot_exceed_source_location(self):
         portfolio_service.create_portfolio_transaction(
             {

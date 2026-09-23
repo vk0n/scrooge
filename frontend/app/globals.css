@@ -2543,6 +2543,15 @@ pre {
   margin-top: 0.72rem;
 }
 
+.treasury-intake-copy {
+  grid-column: 1 / -1;
+  margin: 0;
+  border-left: 2px solid rgba(217, 174, 69, 0.7);
+  padding: 0.18rem 0.62rem;
+  color: #aab4c6;
+  font-size: 0.78rem;
+}
+
 .treasury-form-wide {
   grid-column: span 2;
 }
@@ -2600,7 +2609,7 @@ pre {
 
 .treasury-holding-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 0.12fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 0.8rem;
 }
@@ -2633,35 +2642,31 @@ pre {
   gap: 0.32rem;
 }
 
+.treasury-coin-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+}
+
 .treasury-trading-state {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
   border: 1px solid rgba(126, 140, 162, 0.38);
-  border-radius: 999px;
-  padding: 0.14rem 0.48rem;
+  border-radius: 0.42rem;
+  padding: 0;
   background: rgba(18, 24, 34, 0.66);
   color: #9ba8bb;
-  font-size: 0.68rem;
-  line-height: 1.2;
-  white-space: nowrap;
+  font-size: 0.72rem;
+  line-height: 1;
 }
 
 .treasury-trading-state-unlocked {
   border-color: rgba(48, 172, 121, 0.5);
   background: rgba(22, 91, 64, 0.22);
   color: #71ddb0;
-}
-
-.treasury-mode-banner-enabled {
-  border-color: rgba(48, 172, 121, 0.42);
-  background:
-    radial-gradient(circle at right, rgba(47, 177, 121, 0.12), transparent 42%),
-    rgba(24, 62, 47, 0.26);
-}
-
-.treasury-mode-banner-disabled {
-  border-color: rgba(133, 112, 74, 0.38);
 }
 
 .treasury-coin {
@@ -2721,29 +2726,6 @@ pre {
 
 .treasury-holding-toggle[aria-expanded="true"] .treasury-holding-chevron {
   transform: rotate(225deg) translate(-0.08rem, -0.08rem);
-}
-
-.treasury-holding-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.42rem;
-}
-
-.treasury-holding-actions button {
-  border: 1px solid rgba(104, 123, 151, 0.42);
-  border-radius: 0.58rem;
-  padding: 0.3rem 0.52rem;
-  background: rgba(15, 21, 30, 0.7);
-  color: #b9c4d6;
-  font: inherit;
-  font-size: 0.74rem;
-  cursor: pointer;
-}
-
-.treasury-holding-actions button:hover {
-  border-color: rgba(137, 171, 216, 0.7);
-  background: rgba(27, 43, 63, 0.76);
-  color: #f0f5fc;
 }
 
 .treasury-asset-controls {
@@ -3019,11 +3001,52 @@ pre {
   font-weight: 500;
 }
 
+.treasury-custody-action-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.42rem;
+  border-top: 1px solid rgba(106, 124, 150, 0.18);
+  padding-top: 0.65rem;
+}
+
+.treasury-custody-action-btn {
+  border: 1px solid rgba(104, 123, 151, 0.34);
+  border-radius: 0.55rem;
+  padding: 0.42rem 0.6rem;
+  background: rgba(13, 19, 27, 0.68);
+  color: #9daabd;
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.treasury-custody-action-btn:hover,
+.treasury-custody-action-btn-active {
+  border-color: rgba(137, 171, 216, 0.72);
+  background: rgba(27, 43, 63, 0.8);
+  color: #eef4fc;
+}
+
 .treasury-custody-form {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 0.72fr)) minmax(10rem, 1.4fr) auto;
   align-items: end;
   gap: 0.5rem;
+}
+
+.treasury-custody-boundary-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.treasury-custody-boundary-note {
+  grid-column: span 2;
+}
+
+.treasury-custody-boundary-submit {
+  grid-column: -2 / -1;
 }
 
 .treasury-custody-form .dialog-user-btn {
@@ -4410,12 +4433,15 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .treasury-custody-form {
+  .treasury-custody-form,
+  .treasury-custody-boundary-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .treasury-custody-note,
-  .treasury-custody-form .dialog-user-btn {
+  .treasury-custody-form .dialog-user-btn,
+  .treasury-custody-boundary-note,
+  .treasury-custody-boundary-submit {
     grid-column: 1 / -1;
     width: 100%;
   }
@@ -5051,6 +5077,7 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-custody-breakdown,
   .treasury-custody-form,
+  .treasury-custody-boundary-form,
   .treasury-policy-form,
   .treasury-policy-metrics {
     grid-template-columns: 1fr;
@@ -5058,8 +5085,14 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-custody-note,
   .treasury-custody-form .dialog-user-btn,
+  .treasury-custody-boundary-note,
+  .treasury-custody-boundary-submit,
   .treasury-policy-form .dialog-user-btn {
     grid-column: auto;
+  }
+
+  .treasury-custody-action-bar {
+    grid-template-columns: 1fr;
   }
 
   .treasury-policy-metric-sellable {

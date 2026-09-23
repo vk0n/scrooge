@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
 import { fetchApi } from "../../lib/api";
@@ -190,9 +190,9 @@ type UpdatePortfolioPolicyResponse = {
 
 type PortfolioTransactionType = "buy" | "sell" | "deposit" | "withdraw" | "adjustment" | "custody_transfer";
 type CustodyLocation = "unassigned" | "binance" | "cold_storage";
+type CustodyAction = "move" | "bring_in" | "release";
 
-type TransactionFormState = {
-  tx_type: PortfolioTransactionType;
+type TreasureIntakeFormState = {
   asset_symbol: string;
   quantity: string;
   price: string;
@@ -204,8 +204,7 @@ type TransactionFormState = {
   custody_location: CustodyLocation;
 };
 
-const EMPTY_FORM: TransactionFormState = {
-  tx_type: "buy",
+const EMPTY_INTAKE_FORM: TreasureIntakeFormState = {
   asset_symbol: "",
   quantity: "",
   price: "",
@@ -224,6 +223,7 @@ const CUSTODY_LABELS: Record<CustodyLocation, string> = {
 };
 
 const CUSTODY_LOCATIONS = Object.keys(CUSTODY_LABELS) as CustodyLocation[];
+const STABLE_ASSETS = new Set(["USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI"]);
 
 const ALLOCATION_COLORS = [
   "#d9ae45",
@@ -297,10 +297,10 @@ function transactionLabel(type: PortfolioTransactionType): string {
     return "Sell";
   }
   if (type === "deposit") {
-    return "Deposit";
+    return "Brought In";
   }
   if (type === "withdraw") {
-    return "Withdraw";
+    return "Released";
   }
   return "Adjustment";
 }
@@ -423,26 +423,34 @@ function TimelineSeries({
 function CustodyPanel({
   holding,
   exchange,
-  onTransferred,
+  onPortfolioUpdated,
   onExecuted,
 }: {
   holding: PortfolioHolding;
   exchange: PortfolioExchange | null;
-  onTransferred: (response: CreatePortfolioTransactionResponse) => void;
+  onPortfolioUpdated: (response: CreatePortfolioTransactionResponse) => void;
   onExecuted: () => Promise<void>;
 }): JSX.Element {
   const initialSource = primaryCustody(holding);
+  const [action, setAction] = useState<CustodyAction>("move");
   const [source, setSource] = useState<CustodyLocation>(initialSource);
   const [destination, setDestination] = useState<CustodyLocation>(
     initialSource === "binance" ? "cold_storage" : "binance"
   );
   const [quantity, setQuantity] = useState<string>("");
   const [note, setNote] = useState<string>("");
+  const [boundaryCustody, setBoundaryCustody] = useState<CustodyLocation>(initialSource);
+  const [boundaryQuantity, setBoundaryQuantity] = useState<string>("");
+  const [entryCost, setEntryCost] = useState<string>("");
+  const [feeAmount, setFeeAmount] = useState<string>("");
+  const [feeAsset, setFeeAsset] = useState<string>(holding.quote_symbol);
+  const [boundaryNote, setBoundaryNote] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
   const [tradeExpanded, setTradeExpanded] = useState<boolean>(false);
   const available = custodyQuantity(holding, source);
+  const releasable = custodyQuantity(holding, boundaryCustody);
   const tradeAvailable = Boolean(
     !holding.is_dry_powder &&
     exchange?.spot_execution_enabled &&
@@ -475,9 +483,54 @@ function CustodyPanel({
       });
       setQuantity("");
       setNote("");
-      onTransferred(response);
+      onPortfolioUpdated(response);
     } catch (transferError) {
       setError(transferError instanceof Error ? transferError.message : "Could not record the custody move.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function changeAction(nextAction: CustodyAction): void {
+    setAction(nextAction);
+    setError(null);
+    setTradeExpanded(false);
+    setBoundaryQuantity("");
+    setEntryCost("");
+    setFeeAmount("");
+    setBoundaryNote("");
+  }
+
+  async function submitBoundaryChange(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const isBringIn = action === "bring_in";
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetchApi<CreatePortfolioTransactionResponse>("/api/portfolio/transactions", {
+        method: "POST",
+        body: {
+          tx_type: isBringIn ? "deposit" : "withdraw",
+          asset_symbol: holding.asset_symbol,
+          quantity: asNumber(boundaryQuantity),
+          price: isBringIn ? asNumber(entryCost) : null,
+          quote_symbol: holding.quote_symbol,
+          fee_amount: isBringIn ? asNumber(feeAmount) : null,
+          fee_asset: isBringIn ? feeAsset : holding.quote_symbol,
+          note: boundaryNote,
+          custody_location: boundaryCustody,
+        },
+      });
+      setBoundaryQuantity("");
+      setEntryCost("");
+      setFeeAmount("");
+      setBoundaryNote("");
+      onPortfolioUpdated(response);
+    } catch (boundaryError) {
+      const fallback = isBringIn
+        ? "Could not bring treasure into the vault."
+        : "Could not release treasure from the vault.";
+      setError(boundaryError instanceof Error ? boundaryError.message : fallback);
     } finally {
       setSaving(false);
     }
@@ -542,54 +595,171 @@ function CustodyPanel({
             onExecuted={onExecuted}
           />
         ) : null}
-        <form className="treasury-custody-form" onSubmit={(event) => void submitTransfer(event)}>
-          <label className="dialog-user-field">
-            From
-            <select value={source} onChange={(event) => changeSource(event.target.value as CustodyLocation)}>
-              {CUSTODY_LOCATIONS.map((location) => (
-                <option key={location} value={location} disabled={custodyQuantity(holding, location) <= 0}>
-                  {CUSTODY_LABELS[location]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="dialog-user-field">
-            To
-            <select value={destination} onChange={(event) => setDestination(event.target.value as CustodyLocation)}>
-              {CUSTODY_LOCATIONS.filter((location) => location !== source).map((location) => (
-                <option key={location} value={location}>{CUSTODY_LABELS[location]}</option>
-              ))}
-            </select>
-          </label>
-          <label className="dialog-user-field">
-            Stack
-            <input
-              type="number"
-              value={quantity}
-              min="0"
-              max={available}
-              step="any"
-              placeholder={formatNumber(available, 8)}
-              onChange={(event) => setQuantity(event.target.value)}
-              required
-            />
-          </label>
-          <label className="dialog-user-field treasury-custody-note">
-            Note
-            <input
-              type="text"
-              value={note}
-              maxLength={500}
-              placeholder="Optional custody note"
-              onChange={(event) => setNote(event.target.value)}
-            />
-          </label>
-          <button type="submit" className="dialog-user-btn" disabled={saving || available <= 0}>
-            {saving ? "Recording..." : "Record Move"}
-          </button>
-        </form>
+        <div className="treasury-custody-action-bar" aria-label="Treasury custody action">
+          {([
+            ["move", "Move Treasure"],
+            ["bring_in", "Bring Treasure In"],
+            ["release", "Release Treasure"],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={`treasury-custody-action-btn${action === value ? " treasury-custody-action-btn-active" : ""}`}
+              aria-pressed={action === value}
+              onClick={() => changeAction(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {action === "move" ? (
+          <form className="treasury-custody-form" onSubmit={(event) => void submitTransfer(event)}>
+            <label className="dialog-user-field">
+              From
+              <select value={source} onChange={(event) => changeSource(event.target.value as CustodyLocation)}>
+                {CUSTODY_LOCATIONS.map((location) => (
+                  <option key={location} value={location} disabled={custodyQuantity(holding, location) <= 0}>
+                    {CUSTODY_LABELS[location]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="dialog-user-field">
+              To
+              <select value={destination} onChange={(event) => setDestination(event.target.value as CustodyLocation)}>
+                {CUSTODY_LOCATIONS.filter((location) => location !== source).map((location) => (
+                  <option key={location} value={location}>{CUSTODY_LABELS[location]}</option>
+                ))}
+              </select>
+            </label>
+            <label className="dialog-user-field">
+              Stack
+              <input
+                type="number"
+                value={quantity}
+                min="0"
+                max={available}
+                step="any"
+                placeholder={formatNumber(available, 8)}
+                onChange={(event) => setQuantity(event.target.value)}
+                required
+              />
+            </label>
+            <label className="dialog-user-field treasury-custody-note">
+              Note
+              <input
+                type="text"
+                value={note}
+                maxLength={500}
+                placeholder="Optional custody note"
+                onChange={(event) => setNote(event.target.value)}
+              />
+            </label>
+            <button type="submit" className="dialog-user-btn" disabled={saving || available <= 0}>
+              {saving ? "Recording..." : "Record Move"}
+            </button>
+          </form>
+        ) : (
+          <form className="treasury-custody-boundary-form" onSubmit={(event) => void submitBoundaryChange(event)}>
+            <label className="dialog-user-field">
+              Custody
+              <select
+                value={boundaryCustody}
+                onChange={(event) => {
+                  setBoundaryCustody(event.target.value as CustodyLocation);
+                  setBoundaryQuantity("");
+                }}
+              >
+                {CUSTODY_LOCATIONS.map((location) => (
+                  <option
+                    key={location}
+                    value={location}
+                    disabled={action === "release" && custodyQuantity(holding, location) <= 0}
+                  >
+                    {CUSTODY_LABELS[location]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="dialog-user-field">
+              Stack
+              <input
+                type="number"
+                value={boundaryQuantity}
+                min="0"
+                max={action === "release" ? releasable : undefined}
+                step="any"
+                placeholder={action === "release" ? formatNumber(releasable, 8) : "0.25"}
+                onChange={(event) => setBoundaryQuantity(event.target.value)}
+                required
+              />
+              {action === "release" ? (
+                <small className="treasury-field-hint">
+                  Available in {CUSTODY_LABELS[boundaryCustody]}: {formatNumber(releasable, 8)} {holding.asset_symbol}
+                </small>
+              ) : null}
+            </label>
+            {action === "bring_in" ? (
+              <>
+                <label className="dialog-user-field">
+                  Entry Cost
+                  <input
+                    type="number"
+                    value={entryCost}
+                    min="0"
+                    step="any"
+                    placeholder={holding.is_dry_powder ? "1" : formatNumber(holding.average_cost, 6)}
+                    onChange={(event) => setEntryCost(event.target.value)}
+                    required={!holding.is_dry_powder}
+                  />
+                </label>
+                <label className="dialog-user-field">
+                  Fee
+                  <input
+                    type="number"
+                    value={feeAmount}
+                    min="0"
+                    step="any"
+                    placeholder="0"
+                    onChange={(event) => setFeeAmount(event.target.value)}
+                  />
+                </label>
+                <label className="dialog-user-field">
+                  Fee Coin
+                  <input
+                    type="text"
+                    value={feeAsset}
+                    autoCapitalize="characters"
+                    onChange={(event) => setFeeAsset(event.target.value.toUpperCase())}
+                  />
+                </label>
+              </>
+            ) : null}
+            <label className="dialog-user-field treasury-custody-boundary-note">
+              Note
+              <input
+                type="text"
+                value={boundaryNote}
+                maxLength={500}
+                placeholder={action === "bring_in" ? "Where this treasure came from" : "Why this treasure leaves the vault"}
+                onChange={(event) => setBoundaryNote(event.target.value)}
+              />
+            </label>
+            <button
+              type="submit"
+              className="dialog-user-btn treasury-custody-boundary-submit"
+              disabled={saving || (action === "release" && releasable <= 0)}
+            >
+              {saving
+                ? "Recording..."
+                : action === "bring_in"
+                  ? "Bring Treasure In"
+                  : "Release Treasure"}
+            </button>
+          </form>
+        )}
         <p className="treasury-custody-disclaimer">
-          Accounting only. No exchange or blockchain transfer is initiated.
+          Treasury accounting only. No exchange or blockchain transfer is initiated.
         </p>
         {error ? <p className="form-error">{error}</p> : null}
       </div> : null}
@@ -1096,13 +1266,11 @@ function AssetLedger({
 function HoldingCard({
   holding,
   exchange,
-  onPrepareTransaction,
   onPortfolioUpdated,
   onReload,
 }: {
   holding: PortfolioHolding;
   exchange: PortfolioExchange | null;
-  onPrepareTransaction: (holding: PortfolioHolding, txType: "buy" | "sell") => void;
   onPortfolioUpdated: (response: CreatePortfolioTransactionResponse | UpdatePortfolioPolicyResponse) => void;
   onReload: () => Promise<void>;
 }): JSX.Element {
@@ -1138,15 +1306,18 @@ function HoldingCard({
           onClick={() => setExpanded((current) => !current)}
         >
           <span className="treasury-holding-head">
-            <span className="treasury-coin">{holding.asset_symbol}</span>
-            <span className="treasury-share">{formatPercent(holding.allocation_pct)}</span>
-            <span
-              className={`treasury-trading-state treasury-trading-state-${tradingState}`}
-              title={tradingStateTitle}
-            >
-              <span aria-hidden="true">{tradingState === "unlocked" ? "\u{1F513}" : "\u{1F512}"}</span>
-              <span>{tradingState === "unlocked" ? "Unlocked" : "Locked"}</span>
+            <span className="treasury-coin-line">
+              <span className="treasury-coin">{holding.asset_symbol}</span>
+              <span
+                className={`treasury-trading-state treasury-trading-state-${tradingState}`}
+                title={tradingStateTitle}
+                role="img"
+                aria-label={tradingStateTitle}
+              >
+                {tradingState === "unlocked" ? "\u{1F513}" : "\u{1F512}"}
+              </span>
             </span>
+            <span className="treasury-share">{formatPercent(holding.allocation_pct)}</span>
           </span>
           <span className="treasury-holding-lines">
             <span>
@@ -1174,10 +1345,6 @@ function HoldingCard({
           </span>
           <span className="treasury-holding-chevron" aria-hidden="true" />
         </button>
-        <footer className="treasury-holding-actions">
-          <button type="button" onClick={() => onPrepareTransaction(holding, "buy")}>Add</button>
-          <button type="button" onClick={() => onPrepareTransaction(holding, "sell")}>Reduce</button>
-        </footer>
       </div>
       {expanded ? (
         <div className="treasury-asset-controls">
@@ -1185,7 +1352,7 @@ function HoldingCard({
             key={`${holding.binance_quantity}:${exchange?.spot_execution_enabled ? 1 : 0}`}
             holding={holding}
             exchange={exchange}
-            onTransferred={onPortfolioUpdated}
+            onPortfolioUpdated={onPortfolioUpdated}
             onExecuted={onReload}
           />
           {executionEnabled && !holding.is_dry_powder ? (
@@ -1203,9 +1370,8 @@ export default function TreasuryPage(): JSX.Element {
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState<TransactionFormState>(EMPTY_FORM);
+  const [form, setForm] = useState<TreasureIntakeFormState>(EMPTY_INTAKE_FORM);
   const [formExpanded, setFormExpanded] = useState<boolean>(false);
-  const formPanelRef = useRef<HTMLElement | null>(null);
 
   const loadPortfolio = useCallback(async (): Promise<void> => {
     setError(null);
@@ -1232,7 +1398,7 @@ export default function TreasuryPage(): JSX.Element {
       const response = await fetchApi<CreatePortfolioTransactionResponse>("/api/portfolio/transactions", {
         method: "POST",
         body: {
-          tx_type: form.tx_type,
+          tx_type: "deposit",
           asset_symbol: form.asset_symbol,
           quantity: asNumber(form.quantity),
           price: asNumber(form.price),
@@ -1245,28 +1411,13 @@ export default function TreasuryPage(): JSX.Element {
         },
       });
       setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));
-      setForm(EMPTY_FORM);
+      setForm(EMPTY_INTAKE_FORM);
       setFormExpanded(false);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Could not add treasure.");
     } finally {
       setSaving(false);
     }
-  }
-
-  function prepareHoldingTransaction(holding: PortfolioHolding, txType: "buy" | "sell"): void {
-    setForm({
-      ...EMPTY_FORM,
-      tx_type: txType,
-      asset_symbol: holding.asset_symbol,
-      quote_symbol: holding.quote_symbol,
-      fee_asset: holding.quote_symbol,
-      custody_location: primaryCustody(holding),
-    });
-    setFormExpanded(true);
-    window.requestAnimationFrame(() => {
-      formPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
   }
 
   const summary = portfolio?.summary;
@@ -1301,24 +1452,15 @@ export default function TreasuryPage(): JSX.Element {
       : latestTimelinePnl > 0
         ? "positive"
         : "negative";
-  const reducingHolding =
-    form.tx_type === "sell" || form.tx_type === "withdraw"
-      ? holdings.find(
-          (holding) => holding.asset_symbol === form.asset_symbol && holding.quote_symbol === form.quote_symbol
-        )
-      : null;
-  const reducingAvailable = reducingHolding
-    ? custodyQuantity(reducingHolding, form.custody_location)
-    : null;
   return (
     <AuthGate>
       <section className="panel page-shell treasury-page-shell">
-        <p className={`dialog-scrooge treasury-mode-banner treasury-mode-banner-${spotExecutionEnabled ? "enabled" : "disabled"}`}>
+        <p className="dialog-scrooge treasury-mode-banner">
           {portfolio === null
-            ? "Scrooge counts the vault before any coin gets a crown."
+            ? "I am counting the vault before any coin gets a crown."
             : spotExecutionEnabled
-              ? "The Spot desk is open. Scrooge sends real orders only after your command."
-              : "The vault is under lock. Scrooge can count every coin, but no real Spot order leaves the desk."}
+              ? "The vault is open for business. I am growing my treasure."
+              : "My vault is under lock. I can count every coin, but none leaves my treasury."}
         </p>
 
         <section className="treasury-overview">
@@ -1449,7 +1591,7 @@ export default function TreasuryPage(): JSX.Element {
 
         </section>
 
-        <section ref={formPanelRef} className="section-block">
+        <section className="section-block">
           <header className="treasury-section-head">
             <div>
               <h2>Vault Holdings</h2>
@@ -1461,23 +1603,13 @@ export default function TreasuryPage(): JSX.Element {
               aria-expanded={formExpanded}
               onClick={() => setFormExpanded((current) => !current)}
             >
-              {formExpanded ? "Close Entry" : "Add Treasure"}
+              {formExpanded ? "Close Intake" : "Add Treasure"}
             </button>
           </header>
           {formExpanded ? <form className="treasury-form" onSubmit={(event) => void submitTransaction(event)}>
-            <label className="dialog-user-field">
-              Action
-              <select
-                value={form.tx_type}
-                onChange={(event) => setForm((current) => ({ ...current, tx_type: event.target.value as PortfolioTransactionType }))}
-              >
-                <option value="buy">Buy</option>
-                <option value="sell">Sell</option>
-                <option value="deposit">Deposit</option>
-                <option value="withdraw">Withdraw</option>
-                <option value="adjustment">Adjustment</option>
-              </select>
-            </label>
+            <p className="treasury-intake-copy">
+              Bring a new treasure under Scrooge&apos;s care and place it in its first custody location.
+            </p>
             <label className="dialog-user-field">
               Coin
               <input
@@ -1510,16 +1642,10 @@ export default function TreasuryPage(): JSX.Element {
                 value={form.quantity}
                 placeholder="0.25"
                 min="0"
-                max={reducingAvailable ?? undefined}
                 step="any"
                 onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))}
                 required
               />
-              {reducingHolding ? (
-                <small className="treasury-field-hint">
-                  Available in {CUSTODY_LABELS[form.custody_location]}: {formatNumber(reducingAvailable, 8)} {reducingHolding.asset_symbol}
-                </small>
-              ) : null}
             </label>
             <label className="dialog-user-field">
               Entry Cost
@@ -1530,6 +1656,7 @@ export default function TreasuryPage(): JSX.Element {
                 min="0"
                 step="any"
                 onChange={(event) => setForm((current) => ({ ...current, price: event.target.value }))}
+                required={!STABLE_ASSETS.has(form.asset_symbol)}
               />
             </label>
             <label className="dialog-user-field">
@@ -1588,7 +1715,6 @@ export default function TreasuryPage(): JSX.Element {
                   key={`${holding.asset_symbol}-${holding.quote_symbol}`}
                   holding={holding}
                   exchange={exchange}
-                  onPrepareTransaction={prepareHoldingTransaction}
                   onPortfolioUpdated={(response) => {
                     setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));
                   }}

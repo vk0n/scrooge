@@ -89,6 +89,19 @@ switch or a per-asset auto-trading toggle.
 - With execution enabled, a managed asset is `locked` at 100% Minimum Holding and `unlocked` below 100%.
 - Dry Powder is not policy-managed and remains `locked`.
 
+## Treasury Custody Boundaries
+
+- `deposit` brings an asset under Treasury jurisdiction in a selected custody location. A non-stable asset must include
+  its entry cost so the accounting projection cannot create a zero-cost holding.
+- `withdraw` releases an asset from Treasury jurisdiction and removes the proportional cost basis from the selected
+  custody location.
+- `custody_transfer` moves an already managed asset between `unassigned`, `binance`, and `cold_storage` without changing
+  total quantity, cost basis, or Target Holding.
+- `buy` and `sell` remain economic executions. They are not used as manual aliases for bringing assets into or releasing
+  them from Treasury.
+- Deposits, withdrawals, and custody movements never mutate Target Holding. A fully withdrawn asset can disappear from
+  current holdings while its stored policy remains dormant for a later return.
+
 Schema changes must be introduced through explicit migration steps in `shared/runtime_db.py`.
 
 ## Fresh Start Rule
