@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,7 +29,7 @@ class LedgerProjectionTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_existing_ui_logs_migrate_to_trades_scope(self) -> None:
-        with sqlite3.connect(self.db_path) as connection:
+        with closing(sqlite3.connect(self.db_path)) as connection:
             connection.execute(
                 """
                 CREATE TABLE ui_log_entries (
@@ -44,6 +45,7 @@ class LedgerProjectionTests(unittest.TestCase):
                 "INSERT INTO ui_log_entries(sort_ts_ms, ts_text, line_text, created_at_ms) VALUES (?, ?, ?, ?)",
                 (1000, "2026-01-01 00:00:01", "[2026-01-01 00:00:01] Old trade event.", 1000),
             )
+            connection.commit()
 
         entries, _ = list_ledger_entries(scope="trades", path=self.db_path)
 

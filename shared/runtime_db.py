@@ -9,11 +9,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from shared.spot_swing import (
+    SWING_OBJECTIVES,
+    SWING_SIDES,
+    SWING_SOURCES,
+    SWING_STATUSES,
+    calculate_swing_economics,
+)
+
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 9
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Structured unified Ledger entries"
+RUNTIME_DB_SCHEMA_VERSION = 10
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Spot Swing domain foundation"
 
 
 class RuntimeDbError(OSError):
@@ -360,11 +368,41 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             quote_symbol TEXT NOT NULL DEFAULT 'USDT',
             target_quantity REAL NOT NULL,
             minimum_holding_pct REAL NOT NULL DEFAULT 100,
+            trading_objective TEXT CHECK (
+                trading_objective IS NULL OR trading_objective IN ('accumulate_cash', 'accumulate_asset')
+            ),
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
             PRIMARY KEY (account_key, asset_symbol, quote_symbol),
             FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
         );
+
+        CREATE TABLE IF NOT EXISTS spot_swings (
+            swing_id TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            origin_side TEXT NOT NULL CHECK (origin_side IN ('buy', 'sell')),
+            trading_objective TEXT CHECK (
+                trading_objective IS NULL OR trading_objective IN ('accumulate_cash', 'accumulate_asset')
+            ),
+            status TEXT NOT NULL DEFAULT 'open' CHECK (
+                status IN ('open', 'partially_closed', 'accepting_loss', 'closed')
+            ),
+            planned_quantity REAL,
+            reference_state_json TEXT NOT NULL DEFAULT '{}',
+            strategy_reason_json TEXT NOT NULL DEFAULT '{}',
+            source TEXT NOT NULL DEFAULT 'strategy' CHECK (source IN ('manual', 'strategy')),
+            close_reason TEXT,
+            opened_at_ms INTEGER NOT NULL,
+            closed_at_ms INTEGER,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_spot_swings_asset_status
+        ON spot_swings(account_key, asset_symbol, quote_symbol, status, opened_at_ms DESC);
 
         CREATE TABLE IF NOT EXISTS exchange_account_snapshots (
             venue TEXT NOT NULL,
@@ -418,6 +456,10 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             average_price REAL,
             fee_amount REAL,
             fee_asset TEXT,
+            source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'strategy')),
+            swing_id TEXT,
+            reason_text TEXT,
+            reason_json TEXT NOT NULL DEFAULT '{}',
             error TEXT,
             request_json TEXT NOT NULL,
             result_json TEXT,
@@ -428,6 +470,35 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_spot_order_intents_created
         ON spot_order_intents(created_at_ms DESC);
+
+        CREATE TABLE IF NOT EXISTS spot_swing_executions (
+            execution_id TEXT PRIMARY KEY,
+            swing_id TEXT NOT NULL,
+            spot_order_intent_id TEXT,
+            venue TEXT NOT NULL DEFAULT 'binance',
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+            quantity REAL NOT NULL CHECK (quantity > 0),
+            price REAL NOT NULL CHECK (price > 0),
+            quote_quantity REAL,
+            fee_amount REAL,
+            fee_asset TEXT,
+            exchange_order_id TEXT,
+            exchange_trade_id TEXT,
+            exchange_execution_key TEXT UNIQUE,
+            source TEXT NOT NULL DEFAULT 'strategy' CHECK (source IN ('manual', 'strategy')),
+            reason_text TEXT,
+            reason_json TEXT NOT NULL DEFAULT '{}',
+            executed_at_ms INTEGER NOT NULL,
+            executed_at_text TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(swing_id) REFERENCES spot_swings(swing_id),
+            FOREIGN KEY(spot_order_intent_id) REFERENCES spot_order_intents(intent_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_spot_swing_executions_swing_time
+        ON spot_swing_executions(swing_id, executed_at_ms ASC, execution_id ASC);
 
         CREATE TABLE IF NOT EXISTS portfolio_daily_snapshots (
             account_key TEXT NOT NULL,
@@ -458,6 +529,30 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
     ):
         if column_name not in transaction_columns:
             connection.execute(f"ALTER TABLE portfolio_transactions ADD COLUMN {column_name} {definition}")
+    policy_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(portfolio_asset_policies)").fetchall()
+    }
+    if "trading_objective" not in policy_columns:
+        connection.execute(
+            "ALTER TABLE portfolio_asset_policies ADD COLUMN trading_objective "
+            "TEXT CHECK (trading_objective IS NULL OR trading_objective IN ('accumulate_cash', 'accumulate_asset'))"
+        )
+    intent_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(spot_order_intents)").fetchall()
+    }
+    for column_name, definition in (
+        ("source", "TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'strategy'))"),
+        ("swing_id", "TEXT"),
+        ("reason_text", "TEXT"),
+        ("reason_json", "TEXT NOT NULL DEFAULT '{}'")
+    ):
+        if column_name not in intent_columns:
+            connection.execute(f"ALTER TABLE spot_order_intents ADD COLUMN {column_name} {definition}")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_spot_order_intents_swing ON spot_order_intents(swing_id, created_at_ms DESC)"
+    )
     ledger_columns = {
         str(row["name"])
         for row in connection.execute("PRAGMA table_info(ui_log_entries)").fetchall()
@@ -1356,6 +1451,7 @@ def list_portfolio_asset_policies(
                 quote_symbol,
                 target_quantity,
                 minimum_holding_pct,
+                trading_objective,
                 created_at_ms,
                 updated_at_ms
             FROM portfolio_asset_policies
@@ -1371,6 +1467,7 @@ def list_portfolio_asset_policies(
             "quote_symbol": str(row["quote_symbol"]),
             "target_quantity": float(row["target_quantity"]),
             "minimum_holding_pct": float(row["minimum_holding_pct"]),
+            "trading_objective": str(row["trading_objective"]) if row["trading_objective"] is not None else None,
             "created_at_ms": int(row["created_at_ms"]),
             "updated_at_ms": int(row["updated_at_ms"]),
         }
@@ -1391,6 +1488,7 @@ def ensure_portfolio_asset_policies(
         asset_symbol = str(policy.get("asset_symbol") or "").strip().upper()
         target_quantity = _as_float_or_none(policy.get("target_quantity"))
         minimum_holding_pct = _as_float_or_none(policy.get("minimum_holding_pct"))
+        trading_objective = str(policy.get("trading_objective") or "").strip().lower() or None
         if not asset_symbol or target_quantity is None:
             continue
         records.append(
@@ -1400,6 +1498,7 @@ def ensure_portfolio_asset_policies(
                 str(policy.get("quote_symbol") or "USDT").strip().upper() or "USDT",
                 target_quantity,
                 minimum_holding_pct if minimum_holding_pct is not None else 100.0,
+                trading_objective,
                 now_ms,
                 now_ms,
             )
@@ -1414,10 +1513,11 @@ def ensure_portfolio_asset_policies(
                     quote_symbol,
                     target_quantity,
                     minimum_holding_pct,
+                    trading_objective,
                     created_at_ms,
                     updated_at_ms
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 records,
             )
@@ -1435,6 +1535,18 @@ def upsert_portfolio_asset_policy(
     quote_symbol = str(policy.get("quote_symbol") or "USDT").strip().upper() or "USDT"
     target_quantity = _as_float_or_none(policy.get("target_quantity"))
     minimum_holding_pct = _as_float_or_none(policy.get("minimum_holding_pct"))
+    if "trading_objective" in policy:
+        trading_objective = str(policy.get("trading_objective") or "").strip().lower() or None
+    else:
+        existing = next(
+            (
+                item
+                for item in list_portfolio_asset_policies(account_key=normalized_account, path=path)
+                if item["asset_symbol"] == asset_symbol and item["quote_symbol"] == quote_symbol
+            ),
+            None,
+        )
+        trading_objective = existing.get("trading_objective") if existing is not None else None
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     with _connection(path) as connection:
         connection.execute(
@@ -1445,13 +1557,15 @@ def upsert_portfolio_asset_policy(
                 quote_symbol,
                 target_quantity,
                 minimum_holding_pct,
+                trading_objective,
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_key, asset_symbol, quote_symbol) DO UPDATE SET
                 target_quantity = excluded.target_quantity,
                 minimum_holding_pct = excluded.minimum_holding_pct,
+                trading_objective = excluded.trading_objective,
                 updated_at_ms = excluded.updated_at_ms
             """,
             (
@@ -1460,6 +1574,7 @@ def upsert_portfolio_asset_policy(
                 quote_symbol,
                 target_quantity,
                 minimum_holding_pct,
+                trading_objective,
                 now_ms,
                 now_ms,
             ),
@@ -1687,6 +1802,7 @@ def load_exchange_account_snapshot(
 def _spot_order_intent_from_row(row: sqlite3.Row) -> dict[str, Any]:
     request_payload = json.loads(row["request_json"])
     result_payload = json.loads(row["result_json"]) if row["result_json"] else None
+    reason_payload = json.loads(row["reason_json"]) if row["reason_json"] else {}
     return {
         "intent_id": str(row["intent_id"]),
         "account_key": str(row["account_key"]),
@@ -1744,6 +1860,10 @@ def _spot_order_intent_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "average_price": float(row["average_price"]) if row["average_price"] is not None else None,
         "fee_amount": float(row["fee_amount"]) if row["fee_amount"] is not None else None,
         "fee_asset": str(row["fee_asset"]) if row["fee_asset"] is not None else None,
+        "source": str(row["source"]),
+        "swing_id": str(row["swing_id"]) if row["swing_id"] is not None else None,
+        "reason_text": str(row["reason_text"]) if row["reason_text"] is not None else None,
+        "reason": reason_payload if isinstance(reason_payload, dict) else {},
         "error": str(row["error"]) if row["error"] is not None else None,
         "request": request_payload if isinstance(request_payload, dict) else {},
         "result": result_payload if isinstance(result_payload, dict) else None,
@@ -1768,9 +1888,10 @@ def create_spot_order_intent(intent: dict[str, Any], path: Path | None = None) -
                 available_quote_quantity, available_asset_quantity,
                 protected_floor_quantity, policy_sellable_quantity,
                 projected_holding_quantity, status, command_id, client_order_id,
+                source, swing_id, reason_text, reason_json,
                 request_json, created_at_ms, updated_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'previewed', NULL, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'previewed', NULL, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 intent_id,
@@ -1789,6 +1910,10 @@ def create_spot_order_intent(intent: dict[str, Any], path: Path | None = None) -
                 _as_float_or_none(intent.get("policy_sellable_quantity")),
                 _as_float_or_none(intent.get("projected_holding_quantity")),
                 client_order_id,
+                str(intent.get("source") or "manual").strip().lower() or "manual",
+                str(intent.get("swing_id") or "").strip() or None,
+                str(intent.get("reason_text") or "").strip() or None,
+                _json_text(intent.get("reason") if isinstance(intent.get("reason"), dict) else {}),
                 _json_text(intent),
                 now_ms,
                 now_ms,
@@ -1875,6 +2000,332 @@ def update_spot_order_intent(
     if cursor.rowcount != 1:
         return None
     return load_spot_order_intent(intent_id, path=path)
+
+
+def _spot_swing_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    reference_state = json.loads(row["reference_state_json"] or "{}")
+    strategy_reason = json.loads(row["strategy_reason_json"] or "{}")
+    return {
+        "swing_id": str(row["swing_id"]),
+        "account_key": str(row["account_key"]),
+        "asset_symbol": str(row["asset_symbol"]),
+        "quote_symbol": str(row["quote_symbol"]),
+        "origin_side": str(row["origin_side"]),
+        "trading_objective": (
+            str(row["trading_objective"]) if row["trading_objective"] is not None else None
+        ),
+        "status": str(row["status"]),
+        "planned_quantity": float(row["planned_quantity"]) if row["planned_quantity"] is not None else None,
+        "reference_state": reference_state if isinstance(reference_state, dict) else {},
+        "strategy_reason": strategy_reason if isinstance(strategy_reason, dict) else {},
+        "source": str(row["source"]),
+        "close_reason": str(row["close_reason"]) if row["close_reason"] is not None else None,
+        "opened_at_ms": int(row["opened_at_ms"]),
+        "closed_at_ms": int(row["closed_at_ms"]) if row["closed_at_ms"] is not None else None,
+        "created_at_ms": int(row["created_at_ms"]),
+        "updated_at_ms": int(row["updated_at_ms"]),
+    }
+
+
+def create_spot_swing(swing: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+    swing_id = str(swing.get("swing_id") or "").strip()
+    account_key = str(swing.get("account_key") or "manual_spot").strip() or "manual_spot"
+    asset_symbol = str(swing.get("asset_symbol") or "").strip().upper()
+    quote_symbol = str(swing.get("quote_symbol") or "USDT").strip().upper() or "USDT"
+    origin_side = str(swing.get("origin_side") or "").strip().lower()
+    objective = str(swing.get("trading_objective") or "").strip().lower() or None
+    status = str(swing.get("status") or "open").strip().lower() or "open"
+    source = str(swing.get("source") or "strategy").strip().lower() or "strategy"
+    planned_quantity = _as_float_or_none(swing.get("planned_quantity"))
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    opened_at_ms = int(swing.get("opened_at_ms") or _parse_timestamp_to_ms(swing.get("opened_at")) or now_ms)
+    closed_at_ms = swing.get("closed_at_ms") or _parse_timestamp_to_ms(swing.get("closed_at"))
+
+    if not swing_id:
+        raise ValueError("Spot Swing requires a stable swing ID.")
+    if not asset_symbol:
+        raise ValueError("Spot Swing requires an asset symbol.")
+    if origin_side not in SWING_SIDES:
+        raise ValueError("Spot Swing origin side must be buy or sell.")
+    if objective is not None and objective not in SWING_OBJECTIVES:
+        raise ValueError("Spot Swing objective must be accumulate_cash or accumulate_asset.")
+    if status not in SWING_STATUSES:
+        raise ValueError("Spot Swing status is invalid.")
+    if source not in SWING_SOURCES:
+        raise ValueError("Spot Swing source must be manual or strategy.")
+    if planned_quantity is not None and planned_quantity <= 0:
+        raise ValueError("Spot Swing planned quantity must be greater than zero.")
+
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO spot_swings (
+                swing_id, account_key, asset_symbol, quote_symbol, origin_side,
+                trading_objective, status, planned_quantity, reference_state_json,
+                strategy_reason_json, source, close_reason, opened_at_ms,
+                closed_at_ms, created_at_ms, updated_at_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                swing_id,
+                account_key,
+                asset_symbol,
+                quote_symbol,
+                origin_side,
+                objective,
+                status,
+                planned_quantity,
+                _json_text(swing.get("reference_state") if isinstance(swing.get("reference_state"), dict) else {}),
+                _json_text(swing.get("strategy_reason") if isinstance(swing.get("strategy_reason"), dict) else {}),
+                source,
+                str(swing.get("close_reason") or "").strip().lower() or None,
+                opened_at_ms,
+                int(closed_at_ms) if closed_at_ms is not None else None,
+                now_ms,
+                now_ms,
+            ),
+        )
+        row = connection.execute("SELECT * FROM spot_swings WHERE swing_id = ?", (swing_id,)).fetchone()
+    if row is None:
+        raise RuntimeDbError("Spot Swing was not persisted.")
+    return _spot_swing_from_row(row)
+
+
+def load_spot_swing(swing_id: str, path: Path | None = None) -> dict[str, Any] | None:
+    normalized_id = str(swing_id or "").strip()
+    if not normalized_id:
+        return None
+    with _connection(path) as connection:
+        row = connection.execute("SELECT * FROM spot_swings WHERE swing_id = ?", (normalized_id,)).fetchone()
+    return _spot_swing_from_row(row) if row is not None else None
+
+
+def list_spot_swings(
+    *,
+    account_key: str | None = None,
+    asset_symbol: str | None = None,
+    quote_symbol: str | None = None,
+    status: str | None = None,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    for column, value in (
+        ("account_key", account_key),
+        ("asset_symbol", str(asset_symbol).strip().upper() if asset_symbol is not None else None),
+        ("quote_symbol", str(quote_symbol).strip().upper() if quote_symbol is not None else None),
+        ("status", str(status).strip().lower() if status is not None else None),
+    ):
+        if value is not None:
+            conditions.append(f"{column} = ?")
+            params.append(value)
+    sql = "SELECT * FROM spot_swings"
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY opened_at_ms DESC, swing_id DESC"
+    with _connection(path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [_spot_swing_from_row(row) for row in rows]
+
+
+def _spot_swing_execution_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    reason = json.loads(row["reason_json"] or "{}")
+    payload = json.loads(row["payload_json"] or "{}")
+    return {
+        "execution_id": str(row["execution_id"]),
+        "swing_id": str(row["swing_id"]),
+        "spot_order_intent_id": (
+            str(row["spot_order_intent_id"]) if row["spot_order_intent_id"] is not None else None
+        ),
+        "venue": str(row["venue"]),
+        "symbol": str(row["symbol"]),
+        "side": str(row["side"]),
+        "quantity": float(row["quantity"]),
+        "price": float(row["price"]),
+        "quote_quantity": float(row["quote_quantity"]) if row["quote_quantity"] is not None else None,
+        "fee_amount": float(row["fee_amount"]) if row["fee_amount"] is not None else None,
+        "fee_asset": str(row["fee_asset"]) if row["fee_asset"] is not None else None,
+        "exchange_order_id": (
+            str(row["exchange_order_id"]) if row["exchange_order_id"] is not None else None
+        ),
+        "exchange_trade_id": (
+            str(row["exchange_trade_id"]) if row["exchange_trade_id"] is not None else None
+        ),
+        "exchange_execution_key": (
+            str(row["exchange_execution_key"]) if row["exchange_execution_key"] is not None else None
+        ),
+        "source": str(row["source"]),
+        "reason_text": str(row["reason_text"]) if row["reason_text"] is not None else None,
+        "reason": reason if isinstance(reason, dict) else {},
+        "executed_at_ms": int(row["executed_at_ms"]),
+        "executed_at": str(row["executed_at_text"]),
+        "payload": payload if isinstance(payload, dict) else {},
+        "created_at_ms": int(row["created_at_ms"]),
+    }
+
+
+def list_spot_swing_executions(
+    swing_id: str,
+    *,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    normalized_id = str(swing_id or "").strip()
+    if not normalized_id:
+        return []
+    with _connection(path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM spot_swing_executions
+            WHERE swing_id = ?
+            ORDER BY executed_at_ms ASC, execution_id ASC
+            """,
+            (normalized_id,),
+        ).fetchall()
+    return [_spot_swing_execution_from_row(row) for row in rows]
+
+
+def _refresh_spot_swing_lifecycle(connection: sqlite3.Connection, swing_id: str) -> None:
+    swing_row = connection.execute("SELECT * FROM spot_swings WHERE swing_id = ?", (swing_id,)).fetchone()
+    if swing_row is None:
+        raise ValueError("Spot Swing was not found.")
+    execution_rows = connection.execute(
+        """
+        SELECT * FROM spot_swing_executions
+        WHERE swing_id = ?
+        ORDER BY executed_at_ms ASC, execution_id ASC
+        """,
+        (swing_id,),
+    ).fetchall()
+    swing = _spot_swing_from_row(swing_row)
+    executions = [_spot_swing_execution_from_row(row) for row in execution_rows]
+    economics = calculate_swing_economics(swing, executions)
+    status = str(economics["status"])
+    closed_at_ms = max((item["executed_at_ms"] for item in executions), default=None) if status == "closed" else None
+    connection.execute(
+        """
+        UPDATE spot_swings
+        SET status = ?, closed_at_ms = ?, updated_at_ms = ?
+        WHERE swing_id = ?
+        """,
+        (status, closed_at_ms, int(datetime.now(timezone.utc).timestamp() * 1000), swing_id),
+    )
+
+
+def append_spot_swing_execution(
+    execution: dict[str, Any],
+    path: Path | None = None,
+) -> dict[str, Any]:
+    execution_id = str(execution.get("execution_id") or "").strip()
+    swing_id = str(execution.get("swing_id") or "").strip()
+    venue = str(execution.get("venue") or "binance").strip().lower() or "binance"
+    symbol = str(execution.get("symbol") or "").strip().upper()
+    side = str(execution.get("side") or "").strip().lower()
+    source = str(execution.get("source") or "strategy").strip().lower() or "strategy"
+    quantity = _as_float_or_none(execution.get("quantity"))
+    price = _as_float_or_none(execution.get("price"))
+    quote_quantity = _as_float_or_none(execution.get("quote_quantity"))
+    fee_amount = _as_float_or_none(execution.get("fee_amount"))
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    executed_at_ms = int(
+        execution.get("executed_at_ms")
+        or _parse_timestamp_to_ms(execution.get("executed_at"))
+        or now_ms
+    )
+    executed_at_text = str(execution.get("executed_at") or "").strip() or datetime.fromtimestamp(
+        executed_at_ms / 1000,
+        tz=timezone.utc,
+    ).strftime(TIMESTAMP_FORMAT)
+    exchange_execution_key = str(execution.get("exchange_execution_key") or "").strip() or None
+    fee_asset = str(execution.get("fee_asset") or "").strip().upper() or None
+
+    if not execution_id or not swing_id:
+        raise ValueError("Spot Swing execution requires stable execution and Swing IDs.")
+    if not symbol:
+        raise ValueError("Spot Swing execution requires a market symbol.")
+    if side not in SWING_SIDES:
+        raise ValueError("Spot Swing execution side must be buy or sell.")
+    if source not in SWING_SOURCES:
+        raise ValueError("Spot Swing execution source must be manual or strategy.")
+    if quantity is None or quantity <= 0 or price is None or price <= 0:
+        raise ValueError("Spot Swing execution quantity and price must be greater than zero.")
+    if quote_quantity is not None and quote_quantity <= 0:
+        raise ValueError("Spot Swing execution quote quantity must be greater than zero.")
+    if fee_amount is not None and fee_amount < 0:
+        raise ValueError("Spot Swing execution fee cannot be negative.")
+    if fee_amount and not fee_asset:
+        raise ValueError("Spot Swing execution fee asset is required when a fee is recorded.")
+
+    with _connection(path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO spot_swing_executions (
+                execution_id, swing_id, spot_order_intent_id, venue, symbol, side,
+                quantity, price, quote_quantity, fee_amount, fee_asset,
+                exchange_order_id, exchange_trade_id, exchange_execution_key,
+                source, reason_text, reason_json, executed_at_ms, executed_at_text,
+                payload_json, created_at_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                execution_id,
+                swing_id,
+                str(execution.get("spot_order_intent_id") or "").strip() or None,
+                venue,
+                symbol,
+                side,
+                quantity,
+                price,
+                quote_quantity,
+                fee_amount,
+                fee_asset,
+                str(execution.get("exchange_order_id") or "").strip() or None,
+                str(execution.get("exchange_trade_id") or "").strip() or None,
+                exchange_execution_key,
+                source,
+                str(execution.get("reason_text") or "").strip() or None,
+                _json_text(execution.get("reason") if isinstance(execution.get("reason"), dict) else {}),
+                executed_at_ms,
+                executed_at_text,
+                _json_text(execution),
+                now_ms,
+            ),
+        )
+        if cursor.rowcount == 1:
+            _refresh_spot_swing_lifecycle(connection, swing_id)
+            row = connection.execute(
+                "SELECT * FROM spot_swing_executions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            replay = False
+        else:
+            row = connection.execute(
+                """
+                SELECT * FROM spot_swing_executions
+                WHERE execution_id = ? OR (? IS NOT NULL AND exchange_execution_key = ?)
+                LIMIT 1
+                """,
+                (execution_id, exchange_execution_key, exchange_execution_key),
+            ).fetchone()
+            replay = True
+        if row is None:
+            raise RuntimeDbError("Spot Swing execution could not be persisted or recovered.")
+        persisted = _spot_swing_execution_from_row(row)
+        comparable = {
+            "swing_id": swing_id,
+            "venue": venue,
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "price": price,
+            "quote_quantity": quote_quantity,
+            "fee_amount": fee_amount,
+            "fee_asset": fee_asset,
+        }
+        if any(persisted[key] != value for key, value in comparable.items()):
+            raise ValueError("Duplicate Spot execution identity conflicts with the persisted execution.")
+    return {**persisted, "idempotent_replay": replay}
 
 
 def upsert_portfolio_daily_snapshot(
