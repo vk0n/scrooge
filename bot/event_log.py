@@ -291,6 +291,15 @@ def _render_ui_message(code: str, context: dict[str, Any]) -> str:
         reason = str(context.get("reason") or "unknown trouble").strip().rstrip(".")
         return f"I could not carry out {action}: {reason}."
 
+    if code == "manual_spot_order_executed":
+        action = str(context.get("side") or "trade").strip().lower()
+        quantity = _as_float(context.get("quantity"))
+        quantity_label = f"{quantity:.8f}".rstrip("0").rstrip(".") if quantity is not None else "confirmed quantity"
+        asset = str(context.get("symbol") or "asset").strip().upper()
+        price = _as_float(context.get("price"))
+        price_suffix = f" at ${price:.8f}".rstrip("0").rstrip(".") if price is not None else ""
+        return f"Binance Spot {action} filled for {quantity_label} {asset}{price_suffix}."
+
     fallback_message = str(context.get("message") or "").strip()
     if fallback_message:
         return fallback_message
@@ -323,14 +332,37 @@ def _should_emit_event_to_stdout(event: dict[str, Any]) -> bool:
     return _env_flag("SCROOGE_EVENT_STDOUT_ENABLED", True)
 
 
-def append_ui_log_line(ts: str, message: str, *, log_buffer: list[str] | None = None, ui_log_path: Path | None = None) -> None:
+def append_ui_log_line(
+    ts: str,
+    message: str,
+    *,
+    log_buffer: list[str] | None = None,
+    ui_log_path: Path | None = None,
+    entry_id: str | None = None,
+    scope: str = "trades",
+    code: str | None = None,
+    tone: str = "neutral",
+    source_ref: str | None = None,
+    context: dict[str, Any] | None = None,
+) -> None:
     line = f"[{ts}] {message}"
     if log_buffer is not None:
         log_buffer.append(line)
         return
 
     try:
-        append_ui_log_db_entry(ts, line)
+        append_ui_log_db_entry(
+            ts,
+            line,
+            ui_log_path,
+            entry_id=entry_id,
+            scope=scope,
+            code=code,
+            tone=tone,
+            message=message,
+            source_ref=source_ref,
+            context=context,
+        )
     except OSError:
         _ensure_technical_logger().exception("Failed to append UI log line to DB")
 
@@ -340,6 +372,20 @@ def _should_persist_ui_immediately(runtime_mode: str | None, persist_ui: bool) -
         return True
     normalized_runtime_mode = str(runtime_mode or "").strip().lower()
     return normalized_runtime_mode == "live"
+
+
+def _event_tone(code: str, context: dict[str, Any]) -> str:
+    if code == "manual_spot_order_executed":
+        return "positive" if str(context.get("side") or "").lower() == "buy" else "negative"
+    if code == "trade_opened":
+        return "open"
+    if code == "trade_liquidated" or code == "command_failed":
+        return "negative"
+    if code.startswith("trade_closed_"):
+        pnl = _as_float(context.get("net_pnl"))
+        if pnl is not None:
+            return "positive" if pnl >= 0 else "negative"
+    return "neutral"
 
 
 def emit_event(
@@ -355,6 +401,8 @@ def emit_event(
     ui_message: str | None = None,
     runtime_mode: str | None = None,
     strategy_mode: str | None = None,
+    ledger_scope: str = "trades",
+    ledger_source_ref: str | None = None,
     **context: Any,
 ) -> dict[str, Any]:
     event_context = dict(context)
@@ -380,6 +428,12 @@ def emit_event(
             rendered_ui_message,
             log_buffer=ui_log_buffer,
             ui_log_path=ui_log_path,
+            entry_id=str(event.get("event_id") or "") or None,
+            scope=ledger_scope,
+            code=code,
+            tone=_event_tone(code, event_context),
+            source_ref=ledger_source_ref,
+            context=event_context,
         )
 
     logger = _ensure_technical_logger()

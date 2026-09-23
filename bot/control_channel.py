@@ -595,11 +595,20 @@ def process_pending_commands(
                     category="command",
                     ts=event_ts,
                     persist_ui=True,
+                    ledger_scope="treasury",
+                    ledger_source_ref=(
+                        f"portfolio_transaction:{command_result.get('ledger_transaction_id')}"
+                        if command_result.get("ledger_transaction_id")
+                        else None
+                    ),
                     symbol=command_result.get("asset_symbol"),
                     side=command_result.get("side"),
                     quantity=quantity,
+                    price=command_result.get("average_price"),
+                    quote_symbol=command_result.get("quote_symbol"),
                     order_id=command_result.get("order_id"),
                     intent_id=intent_id,
+                    ledger_transaction_id=command_result.get("ledger_transaction_id"),
                 )
             else:
                 raise ValueError(f"Unsupported action: {action}")
@@ -613,6 +622,10 @@ def process_pending_commands(
                 ts=utc_now_text(TRADE_TIMESTAMP_FORMAT),
                 level="warning",
                 persist_ui=True,
+                ledger_scope="treasury" if action == "spot_order" else "trades",
+                ledger_source_ref=(
+                    f"spot_order:{command_payload.get('intent_id')}:failed" if action == "spot_order" else None
+                ),
                 action=action,
                 reason=str(exc),
                 symbol=symbol,

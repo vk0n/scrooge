@@ -36,7 +36,7 @@ On a clean instance:
 `schema_migrations` is the authoritative schema-version table.
 
 Current schema version:
-- `1`
+- `9`
 
 Current runtime tables:
 - `schema_migrations`
@@ -45,6 +45,17 @@ Current runtime tables:
 - `balance_history`
 - `event_history`
 - `ui_log_entries`
+- `portfolio_accounts`
+- `portfolio_transactions`
+- `portfolio_asset_policies`
+- `portfolio_daily_snapshots`
+- `exchange_account_snapshots`
+- `exchange_asset_balances`
+- `spot_order_intents`
+
+`portfolio_transactions` remains the accounting source of truth for Treasury. `ui_log_entries` is a structured,
+filterable Ledger projection spanning both Futures trade events and Treasury events; Treasury transaction entries are
+reconciled idempotently by their transaction IDs.
 
 Schema changes must be introduced through explicit migration steps in `shared/runtime_db.py`.
 

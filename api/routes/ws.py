@@ -10,6 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from services.auth_service import require_ws_auth
 from services.config_service import load_config
 from services.log_service import log_source_path, read_last_log_lines
+from services.ledger_service import load_ledger
 from services.state_service import (
     load_state,
     resolve_balance,
@@ -159,6 +160,42 @@ async def _stream_status(websocket: WebSocket) -> None:
         await asyncio.sleep(max(0.5, WS_PUSH_INTERVAL_SECONDS))
 
 
+async def _stream_ledger(websocket: WebSocket) -> None:
+    scope = str(websocket.query_params.get("scope") or "all").strip().lower()
+    if scope not in {"all", "trades", "treasury"}:
+        scope = "all"
+    lines = min(_resolve_lines(websocket.query_params.get("limit")), 100)
+    await websocket.send_json(
+        {
+            "type": "hello",
+            "mode": "ledger",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "push_interval_seconds": WS_PUSH_INTERVAL_SECONDS,
+        }
+    )
+    while True:
+        try:
+            ledger_data = load_ledger(scope=scope, limit=lines)
+        except Exception as exc:  # noqa: BLE001
+            ledger_data = {
+                "scope": scope,
+                "entries": [],
+                "returned_entries": 0,
+                "total_entries": 0,
+                "has_earlier": False,
+                "next_cursor": None,
+                "warnings": [str(exc)],
+            }
+        await websocket.send_json(
+            {
+                "type": "ledger",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "data": ledger_data,
+            }
+        )
+        await asyncio.sleep(max(0.5, WS_PUSH_INTERVAL_SECONDS))
+
+
 @router.websocket("")
 async def websocket_status(websocket: WebSocket) -> None:
     if not require_ws_auth(websocket):
@@ -184,6 +221,21 @@ async def websocket_status_path(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         await _stream_status(websocket)
+    except WebSocketDisconnect:
+        return
+    except RuntimeError:
+        return
+
+
+@router.websocket("/ledger")
+async def websocket_ledger(websocket: WebSocket) -> None:
+    if not require_ws_auth(websocket):
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+
+    await websocket.accept()
+    try:
+        await _stream_ledger(websocket)
     except WebSocketDisconnect:
         return
     except RuntimeError:

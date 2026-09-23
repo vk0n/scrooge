@@ -12,8 +12,8 @@ from typing import Any, Iterator
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 8
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Binance Spot order intents"
+RUNTIME_DB_SCHEMA_VERSION = 9
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Structured unified Ledger entries"
 
 
 class RuntimeDbError(OSError):
@@ -285,9 +285,16 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS ui_log_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id TEXT UNIQUE,
             sort_ts_ms INTEGER,
             ts_text TEXT,
             line_text TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'trades',
+            code TEXT,
+            tone TEXT NOT NULL DEFAULT 'neutral',
+            message_text TEXT,
+            source_ref TEXT,
+            context_json TEXT NOT NULL DEFAULT '{}',
             created_at_ms INTEGER NOT NULL
         );
 
@@ -451,6 +458,30 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
     ):
         if column_name not in transaction_columns:
             connection.execute(f"ALTER TABLE portfolio_transactions ADD COLUMN {column_name} {definition}")
+    ledger_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(ui_log_entries)").fetchall()
+    }
+    for column_name, definition in (
+        ("entry_id", "TEXT"),
+        ("scope", "TEXT NOT NULL DEFAULT 'trades'"),
+        ("code", "TEXT"),
+        ("tone", "TEXT NOT NULL DEFAULT 'neutral'"),
+        ("message_text", "TEXT"),
+        ("source_ref", "TEXT"),
+        ("context_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ):
+        if column_name not in ledger_columns:
+            connection.execute(f"ALTER TABLE ui_log_entries ADD COLUMN {column_name} {definition}")
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ui_log_entries_entry_id ON ui_log_entries(entry_id) WHERE entry_id IS NOT NULL"
+    )
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ui_log_entries_source_ref ON ui_log_entries(source_ref) WHERE source_ref IS NOT NULL"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ui_log_entries_scope_sort ON ui_log_entries(scope, sort_ts_ms DESC, id DESC)"
+    )
     connection.execute(
         """
         INSERT OR IGNORE INTO portfolio_accounts (
@@ -879,19 +910,59 @@ def ui_log_row_count(path: Path | None = None) -> int:
     return int(row["count"]) if row is not None else 0
 
 
-def append_ui_log_entry(ts: str, line: str, path: Path | None = None) -> None:
+def append_ui_log_entry(
+    ts: str,
+    line: str,
+    path: Path | None = None,
+    *,
+    entry_id: str | None = None,
+    scope: str = "trades",
+    code: str | None = None,
+    tone: str = "neutral",
+    message: str | None = None,
+    source_ref: str | None = None,
+    context: dict[str, Any] | None = None,
+) -> bool:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    normalized_scope = str(scope or "trades").strip().lower()
+    if normalized_scope not in {"trades", "treasury"}:
+        normalized_scope = "trades"
+    normalized_tone = str(tone or "neutral").strip().lower()
+    if normalized_tone not in {"neutral", "open", "positive", "negative"}:
+        normalized_tone = "neutral"
+    normalized_line = str(line or "").rstrip("\n")
     with _connection(path) as connection:
-        connection.execute(
+        cursor = connection.execute(
             """
-            INSERT INTO ui_log_entries (
+            INSERT OR IGNORE INTO ui_log_entries (
+                entry_id,
                 sort_ts_ms,
                 ts_text,
                 line_text,
+                scope,
+                code,
+                tone,
+                message_text,
+                source_ref,
+                context_json,
                 created_at_ms
-            ) VALUES (?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            _ui_log_record(ts, line),
+            (
+                str(entry_id or "").strip() or None,
+                _parse_timestamp_to_ms(ts) or now_ms,
+                str(ts or "").strip() or None,
+                normalized_line,
+                normalized_scope,
+                str(code or "").strip() or None,
+                normalized_tone,
+                str(message or "").strip() or None,
+                str(source_ref or "").strip() or None,
+                _json_text(context if isinstance(context, dict) else {}),
+                now_ms,
+            ),
         )
+    return cursor.rowcount > 0
 
 
 def list_ui_log_lines(*, limit: int, path: Path | None = None) -> list[str]:
@@ -906,6 +977,110 @@ def list_ui_log_lines(*, limit: int, path: Path | None = None) -> list[str]:
             (limit,),
         ).fetchall()
     return [str(row["line_text"]) for row in reversed(rows)]
+
+
+def list_ledger_entries(
+    *,
+    scope: str = "all",
+    limit: int = 30,
+    before: tuple[int, int] | None = None,
+    path: Path | None = None,
+) -> tuple[list[dict[str, Any]], tuple[int, int] | None]:
+    normalized_scope = str(scope or "all").strip().lower()
+    if normalized_scope not in {"all", "trades", "treasury"}:
+        raise ValueError("Ledger scope must be all, trades, or treasury.")
+    resolved_limit = max(1, min(int(limit), 100))
+    conditions = ["NOT (entry_id IS NULL AND lower(line_text) LIKE '%manual spot order executed.%')"]
+    params: list[Any] = []
+    if normalized_scope != "all":
+        conditions.append("scope = ?")
+        params.append(normalized_scope)
+    if before is not None:
+        conditions.append("(COALESCE(sort_ts_ms, created_at_ms) < ? OR (COALESCE(sort_ts_ms, created_at_ms) = ? AND id < ?))")
+        params.extend((before[0], before[0], before[1]))
+    where_clause = " AND ".join(conditions)
+    params.append(resolved_limit + 1)
+    with _connection(path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT
+                id,
+                entry_id,
+                COALESCE(sort_ts_ms, created_at_ms) AS effective_sort_ts_ms,
+                ts_text,
+                line_text,
+                scope,
+                code,
+                tone,
+                message_text,
+                source_ref,
+                context_json
+            FROM ui_log_entries
+            WHERE {where_clause}
+            ORDER BY effective_sort_ts_ms DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+    has_more = len(rows) > resolved_limit
+    page_rows = rows[:resolved_limit]
+    entries: list[dict[str, Any]] = []
+    for row in page_rows:
+        line_text = str(row["line_text"] or "")
+        message_text = str(row["message_text"] or "").strip()
+        if not message_text:
+            closing_bracket = line_text.find("]")
+            message_text = line_text[closing_bracket + 1 :].strip() if line_text.startswith("[") and closing_bracket >= 0 else line_text
+        try:
+            context = json.loads(row["context_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            context = {}
+        entries.append(
+            {
+                "entry_id": str(row["entry_id"] or f"legacy:{row['id']}"),
+                "scope": str(row["scope"] or "trades"),
+                "timestamp": str(row["ts_text"] or "") or None,
+                "sort_ts_ms": int(row["effective_sort_ts_ms"]),
+                "code": str(row["code"] or "legacy_log"),
+                "tone": str(row["tone"] or "neutral"),
+                "message": message_text,
+                "source_ref": str(row["source_ref"] or "") or None,
+                "context": context if isinstance(context, dict) else {},
+            }
+        )
+    next_cursor = None
+    if has_more and page_rows:
+        last = page_rows[-1]
+        next_cursor = (int(last["effective_sort_ts_ms"]), int(last["id"]))
+    return entries, next_cursor
+
+
+def list_ledger_source_refs(*, prefix: str, path: Path | None = None) -> set[str]:
+    normalized_prefix = str(prefix or "").strip()
+    with _connection(path) as connection:
+        rows = connection.execute(
+            "SELECT source_ref FROM ui_log_entries WHERE source_ref LIKE ?",
+            (f"{normalized_prefix}%",),
+        ).fetchall()
+    return {str(row["source_ref"]) for row in rows if row["source_ref"] is not None}
+
+
+def count_ledger_entries(*, scope: str = "all", path: Path | None = None) -> int:
+    normalized_scope = str(scope or "all").strip().lower()
+    if normalized_scope not in {"all", "trades", "treasury"}:
+        raise ValueError("Ledger scope must be all, trades, or treasury.")
+    conditions = ["NOT (entry_id IS NULL AND lower(line_text) LIKE '%manual spot order executed.%')"]
+    params: list[Any] = []
+    if normalized_scope != "all":
+        conditions.append("scope = ?")
+        params.append(normalized_scope)
+    with _connection(path) as connection:
+        row = connection.execute(
+            f"SELECT COUNT(*) AS count FROM ui_log_entries WHERE {' AND '.join(conditions)}",
+            params,
+        ).fetchone()
+    return int(row["count"]) if row is not None else 0
 
 
 def ensure_portfolio_account(

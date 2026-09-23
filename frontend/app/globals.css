@@ -3749,6 +3749,40 @@ body.logs-page-active .logs-page-panel .log-box {
   overflow-y: auto;
 }
 
+.ledger-scope-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(7rem, 1fr));
+  align-self: flex-start;
+  gap: 0.3rem;
+  padding: 0.28rem;
+  border: 1px solid rgba(104, 119, 143, 0.28);
+  border-radius: 12px;
+  background: rgba(8, 12, 18, 0.72);
+}
+
+.ledger-scope-button {
+  min-height: 2.25rem;
+  padding: 0.38rem 0.9rem;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #9ca9bb;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ledger-scope-button:hover {
+  color: #edf3fb;
+  border-color: rgba(104, 134, 174, 0.34);
+}
+
+.ledger-scope-button-active {
+  border-color: rgba(113, 151, 203, 0.72);
+  background: linear-gradient(180deg, rgba(34, 48, 68, 0.94), rgba(22, 30, 43, 0.96));
+  color: #f2f6fc;
+  box-shadow: inset 0 0 0 1px rgba(187, 214, 247, 0.06);
+}
+
 .log-line {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -3765,6 +3799,44 @@ body.logs-page-active .logs-page-panel .log-box {
   color: #9eb1c8;
   white-space: nowrap;
   opacity: 0.92;
+}
+
+.log-line-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  min-width: 0;
+}
+
+.ledger-source-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.38rem;
+  border: 1px solid rgba(124, 139, 161, 0.28);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ledger-source-badge-trades {
+  border-color: rgba(97, 139, 193, 0.36);
+  color: #a9c5e8;
+  background: rgba(23, 43, 67, 0.5);
+}
+
+.ledger-source-badge-treasury {
+  border-color: rgba(220, 173, 58, 0.42);
+  color: #efd27c;
+  background: rgba(65, 47, 12, 0.54);
+}
+
+.ledger-empty-state {
+  margin: auto;
+  padding: 2rem 1rem;
+  color: #8e9bad;
+  text-align: center;
 }
 
 .log-line-message {
@@ -3838,9 +3910,15 @@ body.logs-page-active .logs-page-panel .log-box {
 
 .logs-history-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.72rem;
+}
+
+.logs-history-indicator {
+  justify-self: center;
+  color: #9aa7b9;
+  font-size: 0.78rem;
 }
 
 .logs-history-center-spacer {
@@ -4412,6 +4490,7 @@ body.logs-page-active .logs-page-panel .log-box {
   .logs-history-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas:
+      "indicator indicator"
       "later earlier"
       "latest latest";
     align-items: stretch;
@@ -4434,6 +4513,10 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-area: latest;
     justify-self: center;
     width: min(100%, 12rem);
+  }
+
+  .logs-history-indicator {
+    grid-area: indicator;
   }
 
   .logs-history-center-spacer {
@@ -4462,6 +4545,20 @@ body.logs-page-active .logs-page-panel .log-box {
   .log-line {
     grid-template-columns: 1fr;
     gap: 0.28rem;
+  }
+
+  .ledger-scope-switch {
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .ledger-scope-button {
+    min-width: 0;
+    padding-inline: 0.35rem;
+  }
+
+  .log-line-meta {
+    flex-wrap: wrap;
   }
 
   .log-line-timestamp {

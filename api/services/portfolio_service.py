@@ -36,6 +36,7 @@ from shared.runtime_db import (  # noqa: E402
     upsert_portfolio_daily_snapshot,
     update_portfolio_transaction_status,
 )
+from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction  # noqa: E402
 
 DEFAULT_ACCOUNT_KEY = "manual_spot"
 DEFAULT_QUOTE = "USDT"
@@ -74,6 +75,13 @@ def _as_float(value: Any) -> float | None:
     if numeric != numeric:
         return None
     return numeric
+
+
+def _format_quantity(value: Any) -> str:
+    numeric = _as_float(value)
+    if numeric is None:
+        return "0"
+    return f"{numeric:,.8f}".rstrip("0").rstrip(".")
 
 
 def _now_text() -> str:
@@ -743,6 +751,7 @@ def create_portfolio_transaction(payload: dict[str, Any]) -> tuple[dict[str, Any
     transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     _validate_nonnegative_stacks([*transactions, transaction])
     appended = append_portfolio_transaction(transaction)
+    project_portfolio_transaction(appended)
     snapshot, warnings = load_portfolio_snapshot()
     return {"transaction": appended, "portfolio": snapshot}, warnings
 
@@ -781,6 +790,7 @@ def create_custody_transfer(payload: dict[str, Any]) -> tuple[dict[str, Any], li
     transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     _validate_nonnegative_stacks([*transactions, transaction])
     appended = append_portfolio_transaction(transaction)
+    project_portfolio_transaction(appended)
     snapshot, warnings = load_portfolio_snapshot()
     return {"transaction": appended, "portfolio": snapshot}, warnings
 
@@ -819,6 +829,15 @@ def update_portfolio_asset_policy(
         },
         account_key=DEFAULT_ACCOUNT_KEY,
     )
+    append_treasury_event(
+        code="treasury_policy_updated",
+        message=(
+            f"Updated {normalized_asset} policy: target {_format_quantity(target_quantity)} "
+            f"{normalized_asset}, minimum holding {_format_quantity(minimum_holding_pct)}%."
+        ),
+        source_ref=f"portfolio_policy_update:{uuid.uuid4()}",
+        context=dict(policy),
+    )
     snapshot, warnings = load_portfolio_snapshot()
     return {"policy": policy, "portfolio": snapshot}, warnings
 
@@ -845,5 +864,16 @@ def set_portfolio_transaction_status(
     transaction = update_portfolio_transaction_status(transaction_id, normalized_status)
     if transaction is None:
         raise LookupError("Treasury entry was not found.")
+    action = "Restored" if normalized_status == "settled" else "Voided"
+    append_treasury_event(
+        code="treasury_transaction_restored" if normalized_status == "settled" else "treasury_transaction_voided",
+        message=(
+            f"{action} the {str(transaction.get('tx_type') or 'entry').replace('_', ' ')} entry for "
+            f"{_format_quantity(transaction.get('quantity'))} {transaction.get('asset_symbol')}."
+        ),
+        tone="neutral" if normalized_status == "settled" else "negative",
+        source_ref=f"portfolio_transaction_status:{transaction_id}:{normalized_status}:{uuid.uuid4()}",
+        context={"transaction_id": transaction_id, "status": normalized_status},
+    )
     snapshot, warnings = load_portfolio_snapshot()
     return {"transaction": transaction, "portfolio": snapshot}, warnings
