@@ -2633,6 +2633,37 @@ pre {
   gap: 0.32rem;
 }
 
+.treasury-trading-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid rgba(126, 140, 162, 0.38);
+  border-radius: 999px;
+  padding: 0.14rem 0.48rem;
+  background: rgba(18, 24, 34, 0.66);
+  color: #9ba8bb;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.treasury-trading-state-unlocked {
+  border-color: rgba(48, 172, 121, 0.5);
+  background: rgba(22, 91, 64, 0.22);
+  color: #71ddb0;
+}
+
+.treasury-mode-banner-enabled {
+  border-color: rgba(48, 172, 121, 0.42);
+  background:
+    radial-gradient(circle at right, rgba(47, 177, 121, 0.12), transparent 42%),
+    rgba(24, 62, 47, 0.26);
+}
+
+.treasury-mode-banner-disabled {
+  border-color: rgba(133, 112, 74, 0.38);
+}
+
 .treasury-coin {
   color: #f1f5fb;
   font-weight: 700;

@@ -68,6 +68,27 @@ net quote cash flow and net asset change. A positive net asset gain from a close
 an upward-only Target Holding ratchet proposal; Phase 1 does not apply that proposal or mutate portfolio policy. Normal
 portfolio transactions, custody movements, and current balance changes never derive or rewrite Target Holding.
 
+## Spot Execution Boundaries
+
+- Swing logic works with economic quantities and does not apply Binance filters.
+- The authoritative Spot executor owns `stepSize`, `tickSize`, `minQty`, `minNotional`, and other venue constraints.
+- Swing accounting consumes actual Binance fill quantity and price, never requested or pre-quantized values.
+- Fees retain their original `fee_amount` and `fee_asset`. Fees paid in BNB or another third asset remain unpriced until
+  a future analytics layer can value them from historical market data.
+- A closed `accumulate_asset` Swing may produce a Target ratchet proposal only after its net asset gain is final. A
+  future authoritative settlement layer must apply that proposal atomically and idempotently exactly once. Partial
+  closes never ratchet Target, and a losing Swing never lowers it.
+
+## Treasury Policy Mode
+
+`SCROOGE_SPOT_EXECUTION_ENABLED` is the only Spot execution mode switch. Treasury does not introduce a second global
+switch or a per-asset auto-trading toggle.
+
+- With execution disabled, every holding is `locked`, immediate sellable inventory is zero, and trading policy/order
+  controls are omitted from the UI. Stored Target and Minimum Holding values remain unchanged.
+- With execution enabled, a managed asset is `locked` at 100% Minimum Holding and `unlocked` below 100%.
+- Dry Powder is not policy-managed and remains `locked`.
+
 Schema changes must be introduced through explicit migration steps in `shared/runtime_db.py`.
 
 ## Fresh Start Rule

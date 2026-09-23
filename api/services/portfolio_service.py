@@ -491,6 +491,7 @@ def _attach_exchange_state(holdings: list[dict[str, Any]], exchange: dict[str, A
     }
     balance_verified = bool(exchange.get("is_balance_verified"))
     can_trade = exchange.get("can_trade") is True
+    execution_enabled = bool(exchange.get("spot_execution_enabled"))
     for holding in holdings:
         asset_symbol = str(holding.get("asset_symbol") or "").upper()
         exchange_balance = balance_by_asset.get(asset_symbol, {})
@@ -499,6 +500,19 @@ def _attach_exchange_state(holdings: list[dict[str, Any]], exchange: dict[str, A
         exchange_total = exchange_free + exchange_locked
         recorded_binance = _as_float(holding.get("binance_quantity")) or 0.0
         policy_sellable = _as_float(holding.get("policy_sellable_quantity")) or 0.0
+        minimum_holding_pct = _as_float(holding.get("minimum_holding_pct"))
+        if not execution_enabled:
+            spot_trading_state = "locked"
+            spot_trading_state_reason = "execution_disabled"
+        elif bool(holding.get("is_dry_powder")) or minimum_holding_pct is None:
+            spot_trading_state = "locked"
+            spot_trading_state_reason = "not_policy_managed"
+        elif minimum_holding_pct >= 100.0:
+            spot_trading_state = "locked"
+            spot_trading_state_reason = "fully_protected"
+        else:
+            spot_trading_state = "unlocked"
+            spot_trading_state_reason = "policy_allows_trading"
         holding.update(
             {
                 "exchange_binance_free_quantity": exchange_free,
@@ -508,9 +522,11 @@ def _attach_exchange_state(holdings: list[dict[str, Any]], exchange: dict[str, A
                 "sellable_inventory_is_exchange_verified": balance_verified,
                 "immediately_sellable_quantity": (
                     min(policy_sellable, exchange_free)
-                    if balance_verified and can_trade
+                    if execution_enabled and balance_verified and can_trade
                     else 0.0
                 ),
+                "spot_trading_state": spot_trading_state,
+                "spot_trading_state_reason": spot_trading_state_reason,
             }
         )
 
@@ -614,6 +630,8 @@ def load_portfolio_asset_transactions(
 
 
 def create_spot_order_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    if not _spot_execution_enabled():
+        raise ValueError("Real Spot execution is disabled by the safety switch.")
     asset_symbol = _clean_symbol(payload.get("asset_symbol"))
     quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
     side = str(payload.get("side") or "").strip().lower()

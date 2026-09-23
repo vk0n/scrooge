@@ -18,7 +18,13 @@ class PortfolioPhaseOneTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.env = patch.dict(os.environ, {"SCROOGE_DB_PATH": str(Path(self.tmp.name) / "runtime.sqlite3")})
+        self.env = patch.dict(
+            os.environ,
+            {
+                "SCROOGE_DB_PATH": str(Path(self.tmp.name) / "runtime.sqlite3"),
+                "SCROOGE_SPOT_EXECUTION_ENABLED": "1",
+            },
+        )
         self.env.start()
         self.addCleanup(self.env.stop)
         self.prices = patch.object(
@@ -314,6 +320,52 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(initial["holdings"][0]["minimum_holding_pct"], 100)
         self.assertEqual(updated["holdings"][0]["quantity"], 1.25)
         self.assertEqual(updated["holdings"][0]["target_quantity"], 1)
+
+    def test_spot_mode_locks_assets_without_mutating_stored_policy(self):
+        self.add("BTC", 1, 90, "binance")
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1, "minimum_holding_pct": 75},
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [{"asset_symbol": "BTC", "free": 1, "locked": 0}],
+            }
+        )
+
+        with patch.dict(os.environ, {"SCROOGE_SPOT_EXECUTION_ENABLED": "0"}):
+            read_only, _ = portfolio_service.load_portfolio_snapshot()
+
+        locked = read_only["holdings"][0]
+        self.assertEqual(locked["spot_trading_state"], "locked")
+        self.assertEqual(locked["spot_trading_state_reason"], "execution_disabled")
+        self.assertEqual(locked["immediately_sellable_quantity"], 0)
+        self.assertEqual(locked["minimum_holding_pct"], 75)
+
+        enabled, _ = portfolio_service.load_portfolio_snapshot()
+        unlocked = enabled["holdings"][0]
+        self.assertEqual(unlocked["spot_trading_state"], "unlocked")
+        self.assertEqual(unlocked["spot_trading_state_reason"], "policy_allows_trading")
+        self.assertEqual(unlocked["minimum_holding_pct"], 75)
+
+    def test_spot_order_preview_is_unavailable_in_read_only_mode(self):
+        with patch.dict(os.environ, {"SCROOGE_SPOT_EXECUTION_ENABLED": "0"}):
+            with self.assertRaisesRegex(ValueError, "safety switch"):
+                portfolio_service.create_spot_order_preview(
+                    {"asset_symbol": "BTC", "side": "buy", "quantity": 0.25}
+                )
+
+    def test_enabled_spot_mode_keeps_fully_protected_asset_locked(self):
+        self.add("BTC", 1, 90)
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        holding = snapshot["holdings"][0]
+        self.assertEqual(holding["minimum_holding_pct"], 100)
+        self.assertEqual(holding["spot_trading_state"], "locked")
+        self.assertEqual(holding["spot_trading_state_reason"], "fully_protected")
 
     def test_asset_policy_can_be_updated_without_changing_holding(self):
         self.add("BTC", 1, 90)

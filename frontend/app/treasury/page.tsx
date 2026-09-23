@@ -113,6 +113,12 @@ type PortfolioHolding = {
   binance_custody_variance: number;
   target_delta_quantity: number | null;
   target_delta_pct: number | null;
+  spot_trading_state: "locked" | "unlocked";
+  spot_trading_state_reason:
+    | "execution_disabled"
+    | "not_policy_managed"
+    | "fully_protected"
+    | "policy_allows_trading";
 };
 
 type PortfolioTransaction = {
@@ -1101,6 +1107,19 @@ function HoldingCard({
   onReload: () => Promise<void>;
 }): JSX.Element {
   const [expanded, setExpanded] = useState<boolean>(false);
+  const executionEnabled = exchange?.spot_execution_enabled === true;
+  const tradingState = holding.spot_trading_state ?? (
+    executionEnabled && !holding.is_dry_powder && (holding.minimum_holding_pct ?? 100) < 100
+      ? "unlocked"
+      : "locked"
+  );
+  const tradingStateTitle = tradingState === "unlocked"
+    ? "Spot policy unlocked: Minimum Holding is below 100%."
+    : !executionEnabled
+      ? "Spot trading locked: real execution is disabled."
+      : holding.is_dry_powder
+        ? "Dry Powder is not managed by an asset trading policy."
+        : "Spot policy locked: Minimum Holding is 100%.";
   const refreshKey = [
     holding.quantity,
     holding.invested_capital,
@@ -1121,6 +1140,13 @@ function HoldingCard({
           <span className="treasury-holding-head">
             <span className="treasury-coin">{holding.asset_symbol}</span>
             <span className="treasury-share">{formatPercent(holding.allocation_pct)}</span>
+            <span
+              className={`treasury-trading-state treasury-trading-state-${tradingState}`}
+              title={tradingStateTitle}
+            >
+              <span aria-hidden="true">{tradingState === "unlocked" ? "\u{1F513}" : "\u{1F512}"}</span>
+              <span>{tradingState === "unlocked" ? "Unlocked" : "Locked"}</span>
+            </span>
           </span>
           <span className="treasury-holding-lines">
             <span>
@@ -1162,7 +1188,7 @@ function HoldingCard({
             onTransferred={onPortfolioUpdated}
             onExecuted={onReload}
           />
-          {!holding.is_dry_powder ? (
+          {executionEnabled && !holding.is_dry_powder ? (
             <AssetPolicyPanel holding={holding} exchange={exchange} onUpdated={onPortfolioUpdated} />
           ) : null}
           <AssetLedger holding={holding} refreshKey={refreshKey} onPortfolioUpdated={onPortfolioUpdated} />
@@ -1245,6 +1271,7 @@ export default function TreasuryPage(): JSX.Element {
 
   const summary = portfolio?.summary;
   const exchange = portfolio?.exchange ?? null;
+  const spotExecutionEnabled = exchange?.spot_execution_enabled === true;
   const holdings = [...(portfolio?.holdings ?? [])].sort((left, right) => {
     const allocationDifference = (right.allocation_pct ?? -1) - (left.allocation_pct ?? -1);
     return allocationDifference || left.asset_symbol.localeCompare(right.asset_symbol);
@@ -1286,7 +1313,13 @@ export default function TreasuryPage(): JSX.Element {
   return (
     <AuthGate>
       <section className="panel page-shell treasury-page-shell">
-        <p className="dialog-scrooge">Scrooge counts the vault before any coin gets a crown.</p>
+        <p className={`dialog-scrooge treasury-mode-banner treasury-mode-banner-${spotExecutionEnabled ? "enabled" : "disabled"}`}>
+          {portfolio === null
+            ? "Scrooge counts the vault before any coin gets a crown."
+            : spotExecutionEnabled
+              ? "The Spot desk is open. Scrooge sends real orders only after your command."
+              : "The vault is under lock. Scrooge can count every coin, but no real Spot order leaves the desk."}
+        </p>
 
         <section className="treasury-overview">
           <header className="treasury-section-head">
