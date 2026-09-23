@@ -2174,9 +2174,13 @@ pre {
   min-width: 10.5rem;
 }
 
+.treasury-refresh-label-short {
+  display: none;
+}
+
 .treasury-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0.62rem;
 }
 
@@ -4577,6 +4581,25 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-form-toggle,
   .treasury-submit-btn {
     width: 100%;
+  }
+
+  .treasury-overview > .treasury-section-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .treasury-overview .treasury-refresh-btn {
+    align-self: start;
+    min-width: 0;
+    width: auto;
+  }
+
+  .treasury-refresh-label-full {
+    display: none;
+  }
+
+  .treasury-refresh-label-short {
+    display: inline;
   }
 
   .treasury-summary-grid {

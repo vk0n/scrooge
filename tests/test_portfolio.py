@@ -66,6 +66,48 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(snapshot["summary"]["prices_updated_at"], "2026-09-22 13:45:00")
         self.assertTrue(all(holding["market_price_updated_at"] for holding in snapshot["holdings"]))
 
+    def test_summary_counts_only_open_spot_swings(self):
+        create_spot_swing(
+            {
+                "swing_id": "open-btc-swing",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "closed-eth-swing",
+                "asset_symbol": "ETH",
+                "quote_symbol": "USDT",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            }
+        )
+        for execution_id, side, price in (
+            ("closed-eth-buy", "buy", 10),
+            ("closed-eth-sell", "sell", 12),
+        ):
+            append_spot_swing_execution(
+                {
+                    "execution_id": execution_id,
+                    "swing_id": "closed-eth-swing",
+                    "symbol": "ETHUSDT",
+                    "side": side,
+                    "quantity": 1,
+                    "price": price,
+                    "source": "strategy",
+                }
+            )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        self.assertEqual(snapshot["summary"]["open_swing_count"], 1)
+        self.assertEqual(snapshot["summary"]["open_swing_asset_count"], 1)
+
     def test_void_and_restore_recalculate_holdings_without_deleting_ledger_entry(self):
         btc = self.add("BTC", 1, 90)
         self.add("ETH", 1, 10)

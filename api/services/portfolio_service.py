@@ -580,6 +580,15 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     exchange = _load_spot_exchange_state()
     _attach_exchange_state(holdings, exchange)
     summary = _summary_from_holdings(holdings)
+    open_swings = [
+        swing
+        for swing in list_spot_swings(account_key=DEFAULT_ACCOUNT_KEY)
+        if swing["status"] != "closed"
+    ]
+    summary["open_swing_count"] = len(open_swings)
+    summary["open_swing_asset_count"] = len(
+        {(swing["asset_symbol"], swing["quote_symbol"]) for swing in open_swings}
+    )
     summary["binance_spot_usdt_free"] = exchange["usdt_free"]
     summary["binance_spot_usdt_locked"] = exchange["usdt_locked"]
     timeline = _portfolio_timeline(summary, holdings, warnings)

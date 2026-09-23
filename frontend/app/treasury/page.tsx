@@ -15,6 +15,8 @@ type PortfolioSummary = {
   dry_powder_pct: number | null;
   largest_position: PortfolioHolding | null;
   holding_count: number;
+  open_swing_count: number;
+  open_swing_asset_count: number;
   prices_updated_at: string | null;
   binance_spot_usdt_free: number | null;
   binance_spot_usdt_locked: number | null;
@@ -397,7 +399,7 @@ function swingStatusLabel(status: SpotSwingEconomics["status"]): string {
 
 function swingIdentity(swingId: string): string {
   const compact = swingId.replaceAll("-", "");
-  return `Swing #${compact.slice(-6).toUpperCase()}`;
+  return `Bargain #${compact.slice(-6).toUpperCase()}`;
 }
 
 function formatSwingAge(seconds: number): string {
@@ -1241,7 +1243,7 @@ function SwingLedgerRow({ swing, occurredAt }: { swing: SpotSwing; occurredAt: s
         aria-expanded={expanded}
         onClick={() => setExpanded((current) => !current)}
       >
-        <span className="treasury-ledger-type treasury-swing-type">Swing</span>
+        <span className="treasury-ledger-type treasury-swing-type">Bargain</span>
         <span className="treasury-swing-summary">
           <strong>{swingIdentity(swing.swing_id)}</strong>
           <span>
@@ -1292,7 +1294,7 @@ function SwingLedgerRow({ swing, occurredAt }: { swing: SpotSwing; occurredAt: s
               ))}
             </div>
           ) : (
-            <p className="status-performance-note">No executions have reached this Swing yet.</p>
+            <p className="status-performance-note">No executions have reached this Bargain yet.</p>
           )}
           <footer className="treasury-swing-footer">
             <span>Full ID <strong>{swing.swing_id}</strong></span>
@@ -1419,7 +1421,7 @@ function AssetLedger({
         <p className="trade-history-empty-sheet">
           {filter === "all"
             ? `No entries for ${holding.asset_symbol} yet.`
-            : `No ${filter} Swings for ${holding.asset_symbol}.`}
+            : `No ${filter} Bargains for ${holding.asset_symbol}.`}
         </p>
       ) : null}
       {expanded && entries.length ? (
@@ -1524,7 +1526,7 @@ function HoldingCard({
     : !executionEnabled
       ? "Spot trading locked: real execution is disabled."
       : holding.is_dry_powder
-        ? "Dry Powder is not managed by an asset trading policy."
+        ? "Vault Reserve is not managed by an asset trading policy."
         : "Spot policy locked: Minimum Holding is 100%.";
   const refreshKey = [
     holding.quantity,
@@ -1715,7 +1717,8 @@ export default function TreasuryPage(): JSX.Element {
               onClick={() => void loadPortfolio()}
               disabled={loading}
             >
-              Refresh Treasury
+              <span className="treasury-refresh-label-full">Refresh Treasury</span>
+              <span className="treasury-refresh-label-short">Refresh</span>
             </button>
           </header>
 
@@ -1750,9 +1753,20 @@ export default function TreasuryPage(): JSX.Element {
               <span className="treasury-summary-note">{formatPercent(summary?.unrealized_pnl_pct)}</span>
             </div>
             <div className="treasury-summary-card">
-              <span className="treasury-summary-label">Dry Powder</span>
+              <span className="treasury-summary-label">Vault Reserve</span>
               <strong>{formatCurrency(summary?.dry_powder ?? 0)}</strong>
               <span className="treasury-summary-note">{formatPercent(summary?.dry_powder_pct)} of vault</span>
+            </div>
+            <div className="treasury-summary-card treasury-summary-card-swings">
+              <span className="treasury-summary-label">Active Bargains</span>
+              <strong>{formatNumber(summary?.open_swing_count ?? 0, 0)}</strong>
+              <span className="treasury-summary-note">
+                {(summary?.open_swing_count ?? 0) === 0
+                  ? "No active cycles"
+                  : `Across ${formatNumber(summary?.open_swing_asset_count ?? 0, 0)} ${
+                      (summary?.open_swing_asset_count ?? 0) === 1 ? "asset" : "assets"
+                    }`}
+              </span>
             </div>
           </div>
 
@@ -1795,7 +1809,7 @@ export default function TreasuryPage(): JSX.Element {
               </div>
               <footer className="treasury-allocation-foot">
                 <span>Top 3 concentration <strong>{formatPercent(topThreeAllocation)}</strong></span>
-                <span>Dry Powder <strong>{formatPercent(summary?.dry_powder_pct)}</strong></span>
+                <span>Vault Reserve <strong>{formatPercent(summary?.dry_powder_pct)}</strong></span>
               </footer>
             </article>
 
