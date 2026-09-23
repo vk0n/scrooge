@@ -162,6 +162,15 @@ type CreatePortfolioTransactionResponse = {
   warnings: string[];
 };
 
+type AssetTransactionPayload = {
+  asset_symbol: string;
+  quote_symbol: string;
+  transactions: PortfolioTransaction[];
+  transaction_count: number;
+  transaction_limit: number;
+  transaction_offset: number;
+};
+
 type UpdatePortfolioPolicyResponse = {
   policy: {
     asset_symbol: string;
@@ -407,10 +416,14 @@ function TimelineSeries({
 
 function CustodyPanel({
   holding,
+  exchange,
   onTransferred,
+  onExecuted,
 }: {
   holding: PortfolioHolding;
+  exchange: PortfolioExchange | null;
   onTransferred: (response: CreatePortfolioTransactionResponse) => void;
+  onExecuted: () => Promise<void>;
 }): JSX.Element {
   const initialSource = primaryCustody(holding);
   const [source, setSource] = useState<CustodyLocation>(initialSource);
@@ -421,7 +434,13 @@ function CustodyPanel({
   const [note, setNote] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [tradeExpanded, setTradeExpanded] = useState<boolean>(false);
   const available = custodyQuantity(holding, source);
+  const tradeAvailable = Boolean(
+    !holding.is_dry_powder &&
+    exchange?.spot_execution_enabled &&
+    holding.binance_quantity > 0.00000001
+  );
 
   function changeSource(nextSource: CustodyLocation): void {
     setSource(nextSource);
@@ -458,8 +477,8 @@ function CustodyPanel({
   }
 
   return (
-    <details className="treasury-custody-panel">
-      <summary>
+    <section className="treasury-custody-panel">
+      <header className="treasury-asset-panel-head">
         <span>Custody</span>
         <span className="treasury-custody-summary">
           {CUSTODY_LOCATIONS.map((location) => (
@@ -468,16 +487,43 @@ function CustodyPanel({
             </span>
           ))}
         </span>
-      </summary>
+      </header>
       <div className="treasury-custody-content">
         <div className="treasury-custody-breakdown">
           {CUSTODY_LOCATIONS.map((location) => (
-            <div key={location}>
-              <span>{CUSTODY_LABELS[location]}</span>
+            <div key={location} className={location === "binance" ? "treasury-custody-binance" : undefined}>
+              <span className="treasury-custody-location-head">
+                <span>{CUSTODY_LABELS[location]}</span>
+                {location === "binance" && tradeAvailable ? (
+                  <button
+                    type="button"
+                    className="treasury-custody-trade-btn"
+                    aria-expanded={tradeExpanded}
+                    onClick={() => setTradeExpanded((current) => !current)}
+                  >
+                    {tradeExpanded ? "Close" : "Trade"}
+                  </button>
+                ) : null}
+              </span>
               <strong>{formatNumber(custodyQuantity(holding, location), 8)} {holding.asset_symbol}</strong>
             </div>
           ))}
         </div>
+        {tradeExpanded && tradeAvailable ? (
+          <SpotOrderPanel
+            key={[
+              holding.target_quantity,
+              holding.minimum_holding_pct,
+              holding.protected_floor_quantity,
+              holding.immediately_sellable_quantity,
+              holding.exchange_binance_free_quantity,
+              exchange?.captured_at,
+            ].join(":")}
+            holding={holding}
+            exchange={exchange}
+            onExecuted={onExecuted}
+          />
+        ) : null}
         <form className="treasury-custody-form" onSubmit={(event) => void submitTransfer(event)}>
           <label className="dialog-user-field">
             From
@@ -529,7 +575,7 @@ function CustodyPanel({
         </p>
         {error ? <p className="form-error">{error}</p> : null}
       </div>
-    </details>
+    </section>
   );
 }
 
@@ -637,8 +683,7 @@ function SpotOrderPanel({
   }
 
   return (
-    <details className="treasury-spot-order-panel">
-      <summary>Trade on Binance</summary>
+    <section className="treasury-spot-order-panel" aria-label={`Trade ${holding.asset_symbol} on Binance`}>
       <div className="treasury-spot-order-content">
         {!exchange?.is_balance_verified ? (
           <p className="treasury-spot-order-lock">A fresh Binance Spot snapshot is required.</p>
@@ -700,7 +745,7 @@ function SpotOrderPanel({
         {stage ? <p className="treasury-spot-order-stage">{stage}</p> : null}
         {error ? <p className="form-error">{error}</p> : null}
       </div>
-    </details>
+    </section>
   );
 }
 
@@ -759,8 +804,8 @@ function AssetPolicyPanel({
   }
 
   return (
-    <details className="treasury-policy-panel">
-      <summary>
+    <section className="treasury-policy-panel">
+      <header className="treasury-asset-panel-head">
         <span>Policy</span>
         <span className="treasury-policy-summary">
           Target {formatNumber(holding.target_quantity, 8)} {holding.asset_symbol}
@@ -769,7 +814,7 @@ function AssetPolicyPanel({
             Sellable {formatNumber(holding.immediately_sellable_quantity, 8)}
           </strong>
         </span>
-      </summary>
+      </header>
       <div className="treasury-policy-content">
         <div className="treasury-policy-metrics">
           <div>
@@ -857,7 +902,243 @@ function AssetPolicyPanel({
         </p>
         {error ? <p className="form-error">{error}</p> : null}
       </div>
-    </details>
+    </section>
+  );
+}
+
+function AssetLedger({
+  holding,
+  refreshKey,
+  onPortfolioUpdated,
+}: {
+  holding: PortfolioHolding;
+  refreshKey: string;
+  onPortfolioUpdated: (response: CreatePortfolioTransactionResponse) => void;
+}): JSX.Element {
+  const [ledger, setLedger] = useState<AssetTransactionPayload | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [updatingTransactionId, setUpdatingTransactionId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadTransactions = useCallback(async (offset: number): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const payload = await fetchApi<AssetTransactionPayload>(
+        `/api/portfolio/assets/${encodeURIComponent(holding.asset_symbol)}/transactions` +
+        `?quote_symbol=${encodeURIComponent(holding.quote_symbol)}&transaction_offset=${offset}`
+      );
+      setLedger(payload);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Could not load the asset ledger.");
+    } finally {
+      setLoading(false);
+    }
+  }, [holding.asset_symbol, holding.quote_symbol]);
+
+  useEffect(() => {
+    void loadTransactions(0);
+  }, [loadTransactions, refreshKey]);
+
+  async function setTransactionStatus(transaction: PortfolioTransaction): Promise<void> {
+    const nextStatus = transaction.status === "voided" ? "settled" : "voided";
+    if (
+      nextStatus === "voided" &&
+      !window.confirm(`Void this ${transactionLabel(transaction.tx_type).toLowerCase()} entry for ${transaction.asset_symbol}?`)
+    ) {
+      return;
+    }
+    setUpdatingTransactionId(transaction.transaction_id);
+    setError(null);
+    try {
+      const response = await fetchApi<CreatePortfolioTransactionResponse>(
+        `/api/portfolio/transactions/${encodeURIComponent(transaction.transaction_id)}/status`,
+        { method: "POST", body: { status: nextStatus } }
+      );
+      await loadTransactions(ledger?.transaction_offset ?? 0);
+      onPortfolioUpdated(response);
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Could not update the Treasury entry.");
+    } finally {
+      setUpdatingTransactionId(null);
+    }
+  }
+
+  const transactions = ledger?.transactions ?? [];
+  const count = ledger?.transaction_count ?? 0;
+  const limit = ledger?.transaction_limit ?? 5;
+  const offset = ledger?.transaction_offset ?? 0;
+  const rangeStart = count > 0 ? offset + 1 : 0;
+  const rangeEnd = Math.min(offset + transactions.length, count);
+  const hasLater = offset > 0;
+  const hasEarlier = offset + transactions.length < count;
+
+  return (
+    <section className="treasury-asset-ledger">
+      <header className="treasury-asset-panel-head">
+        <span>Asset Ledger</span>
+        <span>{count} {count === 1 ? "entry" : "entries"}</span>
+      </header>
+      {loading && !ledger ? <p className="status-performance-note">Opening the ledger...</p> : null}
+      {error ? <p className="form-error">{error}</p> : null}
+      {!loading && transactions.length === 0 ? (
+        <p className="trade-history-empty-sheet">No entries for {holding.asset_symbol} yet.</p>
+      ) : null}
+      {transactions.length ? (
+        <>
+          <div className="treasury-ledger-stack">
+            {transactions.map((transaction) => (
+              <article
+                key={transaction.transaction_id}
+                className={`treasury-ledger-row${transaction.status === "voided" ? " treasury-ledger-row-voided" : ""}`}
+              >
+                <span className={transactionToneClass(transaction.tx_type)}>{transactionLabel(transaction.tx_type)}</span>
+                <span className="treasury-ledger-main">
+                  <span className="treasury-ledger-entry">
+                    {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
+                    {transaction.tx_type === "custody_transfer" && transaction.source_custody && transaction.destination_custody
+                      ? ` from ${CUSTODY_LABELS[transaction.source_custody]} to ${CUSTODY_LABELS[transaction.destination_custody]}`
+                      : transaction.price
+                        ? ` at ${formatCurrency(transaction.price, 6)}`
+                        : ` in ${CUSTODY_LABELS[transaction.custody_location]}`}
+                  </span>
+                  {transaction.status === "voided" ? <small>Voided</small> : null}
+                </span>
+                <span className="treasury-ledger-meta">{formatDateTimeEu(transaction.executed_at)}</span>
+                <button
+                  type="button"
+                  className="treasury-ledger-action"
+                  disabled={updatingTransactionId === transaction.transaction_id}
+                  onClick={() => void setTransactionStatus(transaction)}
+                >
+                  {updatingTransactionId === transaction.transaction_id
+                    ? "Saving..."
+                    : transaction.status === "voided"
+                      ? "Restore"
+                      : "Void"}
+                </button>
+              </article>
+            ))}
+          </div>
+          <div className="toolbar trade-history-toolbar treasury-ledger-toolbar">
+            <button
+              type="button"
+              className="dialog-user-btn trade-history-nav-button trade-history-nav-later"
+              disabled={loading || !hasLater}
+              onClick={() => void loadTransactions(Math.max(0, offset - limit))}
+            >
+              Later
+            </button>
+            {hasLater ? (
+              <button
+                type="button"
+                className="dialog-user-btn trade-history-latest-button"
+                disabled={loading}
+                onClick={() => void loadTransactions(0)}
+              >
+                Latest
+              </button>
+            ) : null}
+            <span className="trade-history-page-indicator">
+              Showing {rangeStart}-{rangeEnd} of {count}
+            </span>
+            <button
+              type="button"
+              className="dialog-user-btn trade-history-nav-button trade-history-nav-earlier"
+              disabled={loading || !hasEarlier}
+              onClick={() => void loadTransactions(offset + limit)}
+            >
+              Earlier
+            </button>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function HoldingCard({
+  holding,
+  exchange,
+  onPrepareTransaction,
+  onPortfolioUpdated,
+  onReload,
+}: {
+  holding: PortfolioHolding;
+  exchange: PortfolioExchange | null;
+  onPrepareTransaction: (holding: PortfolioHolding, txType: "buy" | "sell") => void;
+  onPortfolioUpdated: (response: CreatePortfolioTransactionResponse | UpdatePortfolioPolicyResponse) => void;
+  onReload: () => Promise<void>;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState<boolean>(false);
+  const refreshKey = [
+    holding.quantity,
+    holding.invested_capital,
+    holding.binance_quantity,
+    holding.cold_storage_quantity,
+    holding.unassigned_quantity,
+  ].join(":");
+
+  return (
+    <article className={`${holdingToneClass(holding.unrealized_pnl)}${expanded ? " treasury-holding-card-expanded" : ""}`}>
+      <div className="treasury-holding-row">
+        <button
+          type="button"
+          className="treasury-holding-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span className="treasury-holding-head">
+            <span className="treasury-coin">{holding.asset_symbol}</span>
+            <span className="treasury-share">{formatPercent(holding.allocation_pct)}</span>
+          </span>
+          <span className="treasury-holding-lines">
+            <span>
+              <span>Stack</span>
+              <strong>{formatNumber(holding.quantity, 8)} {holding.asset_symbol}</strong>
+            </span>
+            <span>
+              <span>Entry Cost</span>
+              <strong>{formatCurrency(holding.average_cost, 6)}</strong>
+            </span>
+            <span>
+              <span>Market Price</span>
+              <strong>{formatCurrency(holding.market_price, 6)}</strong>
+            </span>
+            <span>
+              <span>Treasure Value</span>
+              <strong>{formatCurrency(holding.market_value)}</strong>
+            </span>
+            <span>
+              <span>Floating Gain</span>
+              <strong className={signedToneClass(holding.unrealized_pnl, "treasury-inline-value")}>
+                {formatSignedCurrency(holding.unrealized_pnl)} · {formatPercent(holding.unrealized_pnl_pct)}
+              </strong>
+            </span>
+          </span>
+          <span className="treasury-holding-chevron" aria-hidden="true" />
+        </button>
+        <footer className="treasury-holding-actions">
+          <button type="button" onClick={() => onPrepareTransaction(holding, "buy")}>Add</button>
+          <button type="button" onClick={() => onPrepareTransaction(holding, "sell")}>Reduce</button>
+        </footer>
+      </div>
+      {expanded ? (
+        <div className="treasury-asset-controls">
+          <CustodyPanel
+            key={`${holding.binance_quantity}:${exchange?.spot_execution_enabled ? 1 : 0}`}
+            holding={holding}
+            exchange={exchange}
+            onTransferred={onPortfolioUpdated}
+            onExecuted={onReload}
+          />
+          {!holding.is_dry_powder ? (
+            <AssetPolicyPanel holding={holding} exchange={exchange} onUpdated={onPortfolioUpdated} />
+          ) : null}
+          <AssetLedger holding={holding} refreshKey={refreshKey} onPortfolioUpdated={onPortfolioUpdated} />
+        </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -865,17 +1146,16 @@ export default function TreasuryPage(): JSX.Element {
   const [portfolio, setPortfolio] = useState<PortfolioPayload | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
-  const [updatingTransactionId, setUpdatingTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<TransactionFormState>(EMPTY_FORM);
   const [formExpanded, setFormExpanded] = useState<boolean>(false);
   const formPanelRef = useRef<HTMLElement | null>(null);
 
-  const loadPortfolio = useCallback(async (transactionOffset: number): Promise<void> => {
+  const loadPortfolio = useCallback(async (): Promise<void> => {
     setError(null);
     setLoading(true);
     try {
-      const payload = await fetchApi<PortfolioPayload>(`/api/portfolio?transaction_offset=${transactionOffset}`);
+      const payload = await fetchApi<PortfolioPayload>("/api/portfolio");
       setPortfolio(payload);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Treasury is unavailable.");
@@ -885,7 +1165,7 @@ export default function TreasuryPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    void loadPortfolio(0);
+    void loadPortfolio();
   }, [loadPortfolio]);
 
   async function submitTransaction(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -915,29 +1195,6 @@ export default function TreasuryPage(): JSX.Element {
       setError(saveError instanceof Error ? saveError.message : "Could not add treasure.");
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function setTransactionStatus(transaction: PortfolioTransaction): Promise<void> {
-    const nextStatus = transaction.status === "voided" ? "settled" : "voided";
-    if (
-      nextStatus === "voided" &&
-      !window.confirm(`Void this ${transactionLabel(transaction.tx_type).toLowerCase()} entry for ${transaction.asset_symbol}?`)
-    ) {
-      return;
-    }
-    setUpdatingTransactionId(transaction.transaction_id);
-    setError(null);
-    try {
-      const response = await fetchApi<CreatePortfolioTransactionResponse>(
-        `/api/portfolio/transactions/${encodeURIComponent(transaction.transaction_id)}/status`,
-        { method: "POST", body: { status: nextStatus } }
-      );
-      setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));
-    } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "Could not update the Treasury entry.");
-    } finally {
-      setUpdatingTransactionId(null);
     }
   }
 
@@ -987,14 +1244,6 @@ export default function TreasuryPage(): JSX.Element {
       : latestTimelinePnl > 0
         ? "positive"
         : "negative";
-  const transactions = portfolio?.transactions ?? [];
-  const transactionCount = portfolio?.transaction_count ?? 0;
-  const transactionLimit = portfolio?.transaction_limit ?? 5;
-  const transactionOffset = portfolio?.transaction_offset ?? 0;
-  const transactionRangeStart = transactionCount > 0 ? transactionOffset + 1 : 0;
-  const transactionRangeEnd = Math.min(transactionOffset + transactions.length, transactionCount);
-  const hasLaterTransactions = transactionOffset > 0;
-  const hasEarlierTransactions = transactionOffset + transactions.length < transactionCount;
   const reducingHolding =
     form.tx_type === "sell" || form.tx_type === "withdraw"
       ? holdings.find(
@@ -1020,7 +1269,7 @@ export default function TreasuryPage(): JSX.Element {
             <button
               type="button"
               className="dialog-user-btn treasury-refresh-btn"
-              onClick={() => void loadPortfolio(portfolio?.transaction_offset ?? 0)}
+              onClick={() => void loadPortfolio()}
               disabled={loading}
             >
               Refresh Treasury
@@ -1272,155 +1521,18 @@ export default function TreasuryPage(): JSX.Element {
           ) : (
             <div className="treasury-holdings-grid">
               {holdings.map((holding) => (
-                <article key={`${holding.asset_symbol}-${holding.quote_symbol}`} className={holdingToneClass(holding.unrealized_pnl)}>
-                  <header className="treasury-holding-head">
-                    <span className="treasury-coin">{holding.asset_symbol}</span>
-                    <span className="treasury-share">{formatPercent(holding.allocation_pct)}</span>
-                  </header>
-                  <div className="treasury-holding-lines">
-                    <div>
-                      <span>Stack</span>
-                      <strong>
-                        {formatNumber(holding.quantity, 8)} {holding.asset_symbol}
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Entry Cost</span>
-                      <strong>{formatCurrency(holding.average_cost, 6)}</strong>
-                    </div>
-                    <div>
-                      <span>Market Price</span>
-                      <strong>{formatCurrency(holding.market_price, 6)}</strong>
-                    </div>
-                    <div>
-                      <span>Treasure Value</span>
-                      <strong>{formatCurrency(holding.market_value)}</strong>
-                    </div>
-                    <div>
-                      <span>Floating Gain</span>
-                      <strong className={signedToneClass(holding.unrealized_pnl, "treasury-inline-value")}>
-                        {formatSignedCurrency(holding.unrealized_pnl)} · {formatPercent(holding.unrealized_pnl_pct)}
-                      </strong>
-                    </div>
-                  </div>
-                  <footer className="treasury-holding-actions">
-                    <button type="button" onClick={() => prepareHoldingTransaction(holding, "buy")}>Add</button>
-                    <button type="button" onClick={() => prepareHoldingTransaction(holding, "sell")}>Reduce</button>
-                  </footer>
-                  <CustodyPanel
-                    holding={holding}
-                    onTransferred={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
-                  />
-                  {!holding.is_dry_powder ? (
-                    <>
-                      {exchange?.spot_execution_enabled ? (
-                        <SpotOrderPanel
-                          key={[
-                            holding.target_quantity,
-                            holding.minimum_holding_pct,
-                            holding.protected_floor_quantity,
-                            holding.immediately_sellable_quantity,
-                            holding.exchange_binance_free_quantity,
-                            exchange.captured_at,
-                          ].join(":")}
-                          holding={holding}
-                          exchange={exchange}
-                          onExecuted={() => loadPortfolio(0)}
-                        />
-                      ) : null}
-                      <AssetPolicyPanel
-                        holding={holding}
-                        exchange={exchange}
-                        onUpdated={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
-                      />
-                    </>
-                  ) : null}
-                </article>
+                <HoldingCard
+                  key={`${holding.asset_symbol}-${holding.quote_symbol}`}
+                  holding={holding}
+                  exchange={exchange}
+                  onPrepareTransaction={prepareHoldingTransaction}
+                  onPortfolioUpdated={(response) => {
+                    setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));
+                  }}
+                  onReload={loadPortfolio}
+                />
               ))}
             </div>
-          )}
-        </section>
-
-        <section className="section-block">
-          <header className="treasury-section-head">
-            <div>
-              <h2>Treasury Ledger</h2>
-              <p className="muted">Fresh manual entries arrive at the top.</p>
-            </div>
-          </header>
-
-          {transactions.length === 0 ? (
-            <p className="trade-history-empty-sheet">No Treasury entries yet.</p>
-          ) : (
-            <>
-              <div className="treasury-ledger-stack">
-                {transactions.map((transaction) => (
-                  <article
-                    key={transaction.transaction_id}
-                    className={`treasury-ledger-row${transaction.status === "voided" ? " treasury-ledger-row-voided" : ""}`}
-                  >
-                    <span className={transactionToneClass(transaction.tx_type)}>{transactionLabel(transaction.tx_type)}</span>
-                    <span className="treasury-ledger-main">
-                      <span className="treasury-ledger-entry">
-                        {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
-                        {transaction.tx_type === "custody_transfer" && transaction.source_custody && transaction.destination_custody
-                          ? ` from ${CUSTODY_LABELS[transaction.source_custody]} to ${CUSTODY_LABELS[transaction.destination_custody]}`
-                          : transaction.price
-                            ? ` at ${formatCurrency(transaction.price, 6)}`
-                            : ` in ${CUSTODY_LABELS[transaction.custody_location]}`}
-                      </span>
-                      {transaction.status === "voided" ? <small>Voided</small> : null}
-                    </span>
-                    <span className="treasury-ledger-meta">{formatDateTimeEu(transaction.executed_at)}</span>
-                    <button
-                      type="button"
-                      className="treasury-ledger-action"
-                      disabled={updatingTransactionId === transaction.transaction_id}
-                      onClick={() => void setTransactionStatus(transaction)}
-                    >
-                      {updatingTransactionId === transaction.transaction_id
-                        ? "Saving..."
-                        : transaction.status === "voided"
-                          ? "Restore"
-                          : "Void"}
-                    </button>
-                  </article>
-                ))}
-              </div>
-              {transactionCount > transactionLimit ? (
-                <div className="toolbar trade-history-toolbar treasury-ledger-toolbar">
-                  <button
-                    type="button"
-                    className="dialog-user-btn trade-history-nav-button trade-history-nav-later"
-                    disabled={loading || !hasLaterTransactions}
-                    onClick={() => void loadPortfolio(Math.max(0, transactionOffset - transactionLimit))}
-                  >
-                    Later
-                  </button>
-                  {hasLaterTransactions ? (
-                    <button
-                      type="button"
-                      className="dialog-user-btn trade-history-latest-button"
-                      disabled={loading}
-                      onClick={() => void loadPortfolio(0)}
-                    >
-                      Latest
-                    </button>
-                  ) : null}
-                  <span className="trade-history-page-indicator">
-                    Showing {transactionRangeStart}-{transactionRangeEnd} of {transactionCount}
-                  </span>
-                  <button
-                    type="button"
-                    className="dialog-user-btn trade-history-nav-button trade-history-nav-earlier"
-                    disabled={loading || !hasEarlierTransactions}
-                    onClick={() => void loadPortfolio(transactionOffset + transactionLimit)}
-                  >
-                    Earlier
-                  </button>
-                </div>
-              ) : null}
-            </>
           )}
         </section>
 

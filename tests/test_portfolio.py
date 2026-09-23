@@ -122,6 +122,25 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             list(reversed(transaction_ids))[5:],
         )
 
+    def test_asset_ledger_is_filtered_and_paginated(self):
+        btc_ids = [self.add("BTC", 1, 90)["transaction_id"] for _ in range(7)]
+        self.add("ETH", 1, 10)
+
+        first_page = portfolio_service.load_portfolio_asset_transactions("btc")
+        second_page = portfolio_service.load_portfolio_asset_transactions("BTC", transaction_offset=5)
+
+        self.assertEqual(first_page["asset_symbol"], "BTC")
+        self.assertEqual(first_page["transaction_count"], 7)
+        self.assertEqual(first_page["transaction_limit"], 5)
+        self.assertEqual(
+            [transaction["transaction_id"] for transaction in first_page["transactions"]],
+            list(reversed(btc_ids))[:5],
+        )
+        self.assertEqual(
+            [transaction["transaction_id"] for transaction in second_page["transactions"]],
+            list(reversed(btc_ids))[5:],
+        )
+
     def test_timeline_keeps_one_latest_valuation_per_day(self):
         self.add("BTC", 1, 90)
         self.add("ETH", 1, 10)

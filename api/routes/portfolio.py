@@ -10,6 +10,7 @@ from services.portfolio_service import (
     create_portfolio_transaction,
     create_spot_order_preview,
     get_spot_order_intent,
+    load_portfolio_asset_transactions,
     load_portfolio_snapshot,
     set_portfolio_transaction_status,
     update_portfolio_asset_policy,
@@ -106,6 +107,24 @@ def update_asset_policy(asset_symbol: str, data: PortfolioAssetPolicyRequest) ->
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {**payload, "warnings": warnings}
+
+
+@router.get("/assets/{asset_symbol}/transactions")
+def get_asset_transactions(
+    asset_symbol: str,
+    quote_symbol: str = Query(default="USDT", min_length=1, max_length=24),
+    transaction_offset: int = Query(default=0, ge=0),
+) -> dict[str, object]:
+    try:
+        return load_portfolio_asset_transactions(
+            asset_symbol,
+            quote_symbol=quote_symbol,
+            transaction_offset=transaction_offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/transactions/{transaction_id}/status")

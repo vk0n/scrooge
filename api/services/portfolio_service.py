@@ -572,6 +572,39 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     )
 
 
+def load_portfolio_asset_transactions(
+    asset_symbol: str,
+    *,
+    quote_symbol: str = DEFAULT_QUOTE,
+    transaction_offset: int = 0,
+) -> dict[str, Any]:
+    normalized_asset = _clean_symbol(asset_symbol)
+    normalized_quote = _clean_symbol(quote_symbol, default=DEFAULT_QUOTE) or DEFAULT_QUOTE
+    normalized_offset = max(0, int(transaction_offset))
+    if not normalized_asset:
+        raise ValueError("Asset symbol is required.")
+    transactions = list_portfolio_transactions(
+        limit=PORTFOLIO_TRANSACTION_PAGE_SIZE,
+        offset=normalized_offset,
+        newest_first=True,
+        account_key=DEFAULT_ACCOUNT_KEY,
+        asset_symbol=normalized_asset,
+        quote_symbol=normalized_quote,
+    )
+    return {
+        "asset_symbol": normalized_asset,
+        "quote_symbol": normalized_quote,
+        "transactions": transactions,
+        "transaction_count": count_portfolio_transactions(
+            account_key=DEFAULT_ACCOUNT_KEY,
+            asset_symbol=normalized_asset,
+            quote_symbol=normalized_quote,
+        ),
+        "transaction_limit": PORTFOLIO_TRANSACTION_PAGE_SIZE,
+        "transaction_offset": normalized_offset,
+    }
+
+
 def create_spot_order_preview(payload: dict[str, Any]) -> dict[str, Any]:
     asset_symbol = _clean_symbol(payload.get("asset_symbol"))
     quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE

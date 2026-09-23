@@ -1051,6 +1051,8 @@ def list_portfolio_transactions(
     offset: int = 0,
     newest_first: bool = True,
     account_key: str | None = None,
+    asset_symbol: str | None = None,
+    quote_symbol: str | None = None,
     path: Path | None = None,
 ) -> list[dict[str, Any]]:
     sql = f"""
@@ -1080,9 +1082,18 @@ def list_portfolio_transactions(
         FROM portfolio_transactions
     """
     params: list[Any] = []
+    conditions: list[str] = []
     if account_key is not None:
-        sql += " WHERE account_key = ?"
+        conditions.append("account_key = ?")
         params.append(account_key)
+    if asset_symbol is not None:
+        conditions.append("asset_symbol = ?")
+        params.append(str(asset_symbol).strip().upper())
+    if quote_symbol is not None:
+        conditions.append("quote_symbol = ?")
+        params.append(str(quote_symbol).strip().upper())
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     sql += f' ORDER BY executed_at_ms {"DESC" if newest_first else "ASC"}, id {"DESC" if newest_first else "ASC"}'
     if limit is not None:
         sql += " LIMIT ?"
@@ -1129,15 +1140,29 @@ def list_portfolio_transactions(
     return output
 
 
-def count_portfolio_transactions(*, account_key: str | None = None, path: Path | None = None) -> int:
+def count_portfolio_transactions(
+    *,
+    account_key: str | None = None,
+    asset_symbol: str | None = None,
+    quote_symbol: str | None = None,
+    path: Path | None = None,
+) -> int:
+    conditions: list[str] = []
+    params: list[Any] = []
+    if account_key is not None:
+        conditions.append("account_key = ?")
+        params.append(account_key)
+    if asset_symbol is not None:
+        conditions.append("asset_symbol = ?")
+        params.append(str(asset_symbol).strip().upper())
+    if quote_symbol is not None:
+        conditions.append("quote_symbol = ?")
+        params.append(str(quote_symbol).strip().upper())
+    sql = "SELECT COUNT(*) AS count FROM portfolio_transactions"
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     with _connection(path) as connection:
-        if account_key is None:
-            row = connection.execute("SELECT COUNT(*) AS count FROM portfolio_transactions").fetchone()
-        else:
-            row = connection.execute(
-                "SELECT COUNT(*) AS count FROM portfolio_transactions WHERE account_key = ?",
-                (account_key,),
-            ).fetchone()
+        row = connection.execute(sql, params).fetchone()
     return int(row["count"]) if row is not None else 0
 
 
