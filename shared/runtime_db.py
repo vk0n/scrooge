@@ -20,8 +20,8 @@ from shared.spot_swing import (
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 10
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Spot Swing domain foundation"
+RUNTIME_DB_SCHEMA_VERSION = 11
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Unified Spot execution audit and recovery"
 
 
 class RuntimeDbError(OSError):
@@ -470,6 +470,18 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_spot_order_intents_created
         ON spot_order_intents(created_at_ms DESC);
+
+        CREATE TABLE IF NOT EXISTS spot_order_status_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            intent_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            occurred_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(intent_id) REFERENCES spot_order_intents(intent_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_spot_order_status_events_intent
+        ON spot_order_status_events(intent_id, occurred_at_ms ASC, id ASC);
 
         CREATE TABLE IF NOT EXISTS spot_swing_executions (
             execution_id TEXT PRIMARY KEY,
@@ -1919,6 +1931,16 @@ def create_spot_order_intent(intent: dict[str, Any], path: Path | None = None) -
                 now_ms,
             ),
         )
+        _append_spot_order_status_event(
+            connection,
+            intent_id,
+            "previewed",
+            {
+                "source": str(intent.get("source") or "manual").strip().lower() or "manual",
+                "swing_id": str(intent.get("swing_id") or "").strip() or None,
+            },
+            occurred_at_ms=now_ms,
+        )
     created = load_spot_order_intent(intent_id, path=path)
     if created is None:
         raise RuntimeDbError("Spot order intent was not persisted.")
@@ -1935,6 +1957,73 @@ def load_spot_order_intent(intent_id: str, path: Path | None = None) -> dict[str
             (normalized_id,),
         ).fetchone()
     return _spot_order_intent_from_row(row) if row is not None else None
+
+
+def list_spot_order_intents(
+    *,
+    statuses: set[str] | None = None,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    params: list[Any] = []
+    sql = "SELECT * FROM spot_order_intents"
+    if statuses:
+        normalized_statuses = sorted({str(status).strip().lower() for status in statuses if str(status).strip()})
+        if normalized_statuses:
+            placeholders = ", ".join("?" for _ in normalized_statuses)
+            sql += f" WHERE status IN ({placeholders})"
+            params.extend(normalized_statuses)
+    sql += " ORDER BY created_at_ms ASC, intent_id ASC"
+    with _connection(path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [_spot_order_intent_from_row(row) for row in rows]
+
+
+def _append_spot_order_status_event(
+    connection: sqlite3.Connection,
+    intent_id: str,
+    status: str,
+    detail: dict[str, Any] | None = None,
+    *,
+    occurred_at_ms: int | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO spot_order_status_events (intent_id, status, detail_json, occurred_at_ms)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            str(intent_id or "").strip(),
+            str(status or "").strip().lower(),
+            _json_text(detail or {}),
+            int(occurred_at_ms or datetime.now(timezone.utc).timestamp() * 1000),
+        ),
+    )
+
+
+def list_spot_order_status_events(intent_id: str, path: Path | None = None) -> list[dict[str, Any]]:
+    normalized_id = str(intent_id or "").strip()
+    if not normalized_id:
+        return []
+    with _connection(path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id, status, detail_json, occurred_at_ms
+            FROM spot_order_status_events
+            WHERE intent_id = ?
+            ORDER BY occurred_at_ms ASC, id ASC
+            """,
+            (normalized_id,),
+        ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "intent_id": normalized_id,
+            "status": str(row["status"]),
+            "detail": json.loads(row["detail_json"] or "{}"),
+            "occurred_at_ms": int(row["occurred_at_ms"]),
+        }
+        for row in rows
+    ]
 
 
 def reserve_spot_order_intent(
@@ -1955,6 +2044,14 @@ def reserve_spot_order_intent(
             """,
             (normalized_command_id, now_ms, normalized_id),
         )
+        if cursor.rowcount == 1:
+            _append_spot_order_status_event(
+                connection,
+                normalized_id,
+                "queueing",
+                {"command_id": normalized_command_id},
+                occurred_at_ms=now_ms,
+            )
         row = connection.execute(
             "SELECT * FROM spot_order_intents WHERE intent_id = ? LIMIT 1",
             (normalized_id,),
@@ -1990,13 +2087,34 @@ def update_spot_order_intent(
     assignments = ", ".join(f"{field} = ?" for field in normalized_updates)
     params = list(normalized_updates.values())
     sql = f"UPDATE spot_order_intents SET {assignments} WHERE intent_id = ?"
-    params.append(str(intent_id or "").strip())
+    normalized_id = str(intent_id or "").strip()
+    params.append(normalized_id)
     if expected_statuses:
         placeholders = ", ".join("?" for _ in expected_statuses)
         sql += f" AND status IN ({placeholders})"
         params.extend(sorted(expected_statuses))
+    previous_status: str | None = None
     with _connection(path) as connection:
+        previous_row = connection.execute(
+            "SELECT status FROM spot_order_intents WHERE intent_id = ? LIMIT 1",
+            (normalized_id,),
+        ).fetchone()
+        if previous_row is not None:
+            previous_status = str(previous_row["status"])
         cursor = connection.execute(sql, params)
+        next_status = str(normalized_updates.get("status") or "").strip().lower()
+        if cursor.rowcount == 1 and next_status and next_status != previous_status:
+            _append_spot_order_status_event(
+                connection,
+                normalized_id,
+                next_status,
+                {
+                    key: value
+                    for key, value in updates.items()
+                    if key in {"command_id", "exchange_order_id", "executed_quantity", "error"}
+                },
+                occurred_at_ms=int(normalized_updates["updated_at_ms"]),
+            )
     if cursor.rowcount != 1:
         return None
     return load_spot_order_intent(intent_id, path=path)

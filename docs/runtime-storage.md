@@ -36,7 +36,7 @@ On a clean instance:
 `schema_migrations` is the authoritative schema-version table.
 
 Current schema version:
-- `10`
+- `11`
 
 Current runtime tables:
 - `schema_migrations`
@@ -52,6 +52,7 @@ Current runtime tables:
 - `exchange_account_snapshots`
 - `exchange_asset_balances`
 - `spot_order_intents`
+- `spot_order_status_events`
 - `spot_swings`
 - `spot_swing_executions`
 
@@ -78,8 +79,20 @@ portfolio transactions, custody movements, and current balance changes never der
 - Swing logic works with economic quantities and does not apply Binance filters.
 - The authoritative Spot executor owns `stepSize`, `tickSize`, `minQty`, `minNotional`, and other venue constraints.
 - Swing accounting consumes actual Binance fill quantity and price, never requested or pre-quantized values.
+- Manual and strategy intents converge on the same authoritative executor. Public Control Plane previews are always
+  manual; strategy intents must carry a valid `swing_id` and an explainable reason before they can be submitted.
+- Intent quantities remain economic requests. Immediately before submission the executor rounds quantity down to the
+  Binance `stepSize`, then validates `minQty`, `maxQty`, notional rules, current balances, and Protected Floor.
 - Fees retain their original `fee_amount` and `fee_asset`. Fees paid in BNB or another third asset remain unpriced until
   a future analytics layer can value them from historical market data.
+- Every execution transition is persisted in `spot_order_status_events`: previewed, queued/processing, validated,
+  submitted, accepted, fill confirmed, accounting updated, and final/failed states. Stable Binance client order IDs
+  prevent duplicate submission, while confirmed fills can retry local Treasury/Swing settlement without resubmission.
+- `portfolio_transactions` receives one idempotent transaction for every confirmed order and remains the holdings/cost
+  basis source of truth. A linked Swing separately receives the actual Binance fills, preserving exchange trade identity
+  and fees; replay cannot double-count either projection.
+- Runtime startup only resumes previously confirmed/in-flight intents. It does not create signals, Swings, or new
+  automatic orders.
 - A closed `accumulate_asset` Swing may produce a Target ratchet proposal only after its net asset gain is final. A
   future authoritative settlement layer must apply that proposal atomically and idempotently exactly once. Partial
   closes never ratchet Target, and a losing Swing never lowers it.

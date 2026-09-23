@@ -28,7 +28,20 @@ def queue_spot_order_intent(intent_id: str, *, requested_by: str) -> dict[str, A
         raise ValueError("This order preview has expired. Create a fresh preview before executing.")
 
     if intent["status"] != "previewed":
-        if intent["status"] in {"queueing", "queued", "processing", "submitted", "filled", "partially_filled"}:
+        if intent["status"] in {
+            "queueing",
+            "queued",
+            "processing",
+            "validated",
+            "submitted",
+            "accepted",
+            "fill_confirmed",
+            "accounting_updated",
+            "accounting_error",
+            "uncertain",
+            "filled",
+            "partially_filled",
+        }:
             return {
                 "intent": intent,
                 "command_id": intent["command_id"],

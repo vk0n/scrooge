@@ -8,9 +8,12 @@ from unittest.mock import patch
 
 from api.services import portfolio_service
 from bot import spot_execution
-from bot.spot_execution import SpotOrderAccountingError, SpotOrderExecutor
+from bot.spot_execution import SpotOrderAccountingError, SpotOrderExecutor, SpotOrderUncertainError
 from shared.runtime_db import (
+    create_spot_swing,
     list_portfolio_transactions,
+    list_spot_order_status_events,
+    list_spot_swing_executions,
     load_spot_order_intent,
     reserve_spot_order_intent,
     save_exchange_account_snapshot,
@@ -19,9 +22,20 @@ from shared.runtime_db import (
 
 
 class FakeSpotExecutionClient:
-    def __init__(self, *, btc_free: float = 1.0, usdt_free: float = 100.0):
+    def __init__(
+        self,
+        *,
+        btc_free: float = 1.0,
+        usdt_free: float = 100.0,
+        order_status: str = "FILLED",
+        commission_amount: float = 0.05,
+        commission_asset: str = "USDT",
+    ):
         self.btc_free = btc_free
         self.usdt_free = usdt_free
+        self.order_status = order_status
+        self.commission_amount = commission_amount
+        self.commission_asset = commission_asset
         self.create_calls = 0
 
     def get_account(self, **kwargs):
@@ -56,7 +70,7 @@ class FakeSpotExecutionClient:
             "orderId": 42,
             "clientOrderId": kwargs["newClientOrderId"],
             "transactTime": 1_790_120_000_000,
-            "status": "FILLED",
+            "status": self.order_status,
             "executedQty": kwargs["quantity"],
             "cummulativeQuoteQty": str(float(kwargs["quantity"]) * 100),
         }
@@ -67,7 +81,7 @@ class FakeSpotExecutionClient:
             "orderId": 42,
             "clientOrderId": self.order_params["newClientOrderId"],
             "updateTime": 1_790_120_000_000,
-            "status": "FILLED",
+            "status": self.order_status,
             "executedQty": self.order_params["quantity"],
             "cummulativeQuoteQty": str(float(self.order_params["quantity"]) * 100),
         }
@@ -76,12 +90,13 @@ class FakeSpotExecutionClient:
         quantity = float(self.order_params["quantity"])
         return [
             {
+                "id": 77,
                 "orderId": kwargs["orderId"],
                 "price": "100",
                 "qty": str(quantity),
                 "quoteQty": str(quantity * 100),
-                "commission": "0.05",
-                "commissionAsset": "USDT",
+                "commission": str(self.commission_amount),
+                "commissionAsset": self.commission_asset,
                 "time": 1_790_120_000_000,
             }
         ]
@@ -153,6 +168,21 @@ class SpotExecutionTests(unittest.TestCase):
         )
         return preview
 
+    def _queue_preview(self, preview: dict):
+        reserved, acquired = reserve_spot_order_intent(
+            preview["intent_id"],
+            command_id=preview["intent_id"],
+            path=self.db_path,
+        )
+        self.assertTrue(acquired)
+        self.assertIsNotNone(reserved)
+        update_spot_order_intent(
+            preview["intent_id"],
+            {"status": "queued"},
+            expected_statuses={"queueing"},
+            path=self.db_path,
+        )
+
     def test_filled_buy_is_recorded_once_in_treasury_ledger(self):
         preview = self._preview_and_queue("buy", 0.25)
         client = FakeSpotExecutionClient()
@@ -173,13 +203,146 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(exchange_entries[0]["tx_type"], "buy")
         self.assertEqual(exchange_entries[0]["external_order_id"], "42")
 
-        replay = executor.execute(preview["intent_id"])
-        self.assertEqual(replay["order_id"], "42")
+        recovered = executor.execute(preview["intent_id"])
+        self.assertEqual(recovered["order_id"], "42")
         self.assertEqual(client.create_calls, 1)
+        self.assertEqual(load_spot_order_intent(preview["intent_id"], path=self.db_path)["status"], "filled")
+
+    def test_executor_quantizes_economic_quantity_and_audits_each_stage(self):
+        preview = self._preview_and_queue("buy", 0.2504)
+        client = FakeSpotExecutionClient()
+        executor = SpotOrderExecutor(client, logger=logging.getLogger("test.spot-execution"), db_path=self.db_path)
+
+        result = executor.execute(preview["intent_id"])
+
+        self.assertEqual(client.order_params["quantity"], "0.25")
+        self.assertEqual(result["requested_quantity"], 0.2504)
+        self.assertEqual(result["submitted_quantity"], 0.25)
+        self.assertEqual(
+            [event["status"] for event in list_spot_order_status_events(preview["intent_id"], path=self.db_path)],
+            [
+                "previewed",
+                "queueing",
+                "queued",
+                "processing",
+                "validated",
+                "submitted",
+                "accepted",
+                "fill_confirmed",
+                "accounting_updated",
+                "filled",
+            ],
+        )
+
+    def test_strategy_fill_uses_same_executor_and_updates_linked_swing(self):
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "swing-btc-buy",
+                "account_key": "manual_spot",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_cash",
+                "planned_quantity": 0.25,
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        preview = portfolio_service.create_strategy_spot_order_intent(
+            {
+                "asset_symbol": "BTC",
+                "side": "buy",
+                "quantity": 0.25,
+                "swing_id": "swing-btc-buy",
+                "reason": {"signal": "buy", "level": 1},
+            }
+        )
+        self._queue_preview(preview)
+        client = FakeSpotExecutionClient(commission_amount=0.001, commission_asset="BNB")
+        executor = SpotOrderExecutor(client, logger=logging.getLogger("test.spot-execution"), db_path=self.db_path)
+
+        result = executor.execute(preview["intent_id"])
+
+        self.assertEqual(result["source"], "strategy")
+        self.assertEqual(result["swing_id"], "swing-btc-buy")
+        strategy_transactions = [
+            item for item in list_portfolio_transactions(path=self.db_path) if item.get("source") == "binance_strategy"
+        ]
+        self.assertEqual(len(strategy_transactions), 1)
+        executions = list_spot_swing_executions("swing-btc-buy", path=self.db_path)
+        self.assertEqual(len(executions), 1)
+        self.assertEqual(executions[0]["spot_order_intent_id"], preview["intent_id"])
+        self.assertEqual(executions[0]["exchange_trade_id"], "77")
+        self.assertEqual(executions[0]["quantity"], 0.25)
+        self.assertEqual(executions[0]["fee_amount"], 0.001)
+        self.assertEqual(executions[0]["fee_asset"], "BNB")
+        self.assertEqual(strategy_transactions[0]["fee_amount"], 0.001)
+        self.assertEqual(strategy_transactions[0]["fee_asset"], "BNB")
+
+        executor.execute(preview["intent_id"])
+        self.assertEqual(len(list_spot_swing_executions("swing-btc-buy", path=self.db_path)), 1)
+
+    def test_nonterminal_partial_fill_waits_for_reconciliation_without_resubmission(self):
+        preview = self._preview_and_queue("buy", 0.25)
+        client = FakeSpotExecutionClient(order_status="PARTIALLY_FILLED")
+        executor = SpotOrderExecutor(client, logger=logging.getLogger("test.spot-execution"), db_path=self.db_path)
+
+        with self.assertRaisesRegex(SpotOrderUncertainError, "partial fills"):
+            executor.execute(preview["intent_id"])
+
+        intent = load_spot_order_intent(preview["intent_id"], path=self.db_path)
+        self.assertEqual(intent["status"], "uncertain")
+        self.assertEqual(intent["executed_quantity"], 0.25)
+        self.assertEqual(client.create_calls, 1)
+        self.assertFalse(
+            any(item.get("source") == "binance_manual" for item in list_portfolio_transactions(path=self.db_path))
+        )
+
+        client.order_status = "FILLED"
+        recovered = executor.execute(preview["intent_id"])
+
+        self.assertEqual(recovered["status"], "FILLED")
+        self.assertEqual(client.create_calls, 1)
+        self.assertEqual(load_spot_order_intent(preview["intent_id"], path=self.db_path)["status"], "filled")
         self.assertEqual(
             len([item for item in list_portfolio_transactions(path=self.db_path) if item.get("source") == "binance_manual"]),
             1,
         )
+
+    def test_manual_preview_cannot_impersonate_strategy_source(self):
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+        preview = portfolio_service.create_spot_order_preview(
+            {
+                "asset_symbol": "BTC",
+                "side": "buy",
+                "quantity": 0.25,
+                "source": "strategy",
+                "swing_id": "forged-swing",
+                "reason": {"signal": "forged"},
+            }
+        )
+
+        self.assertEqual(preview["source"], "manual")
+        self.assertIsNone(preview["swing_id"])
 
     def test_sell_is_revalidated_against_changed_exchange_balance(self):
         preview = self._preview_and_queue("sell", 0.25)
@@ -207,6 +370,15 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(intent["executed_quantity"], 0.25)
         self.assertIn("accounting failed", intent["error"])
         self.assertEqual(client.create_calls, 1)
+
+        recovered = executor.execute(preview["intent_id"])
+        self.assertEqual(recovered["order_id"], "42")
+        self.assertEqual(client.create_calls, 1)
+        self.assertEqual(load_spot_order_intent(preview["intent_id"], path=self.db_path)["status"], "filled")
+        self.assertEqual(
+            len([item for item in list_portfolio_transactions(path=self.db_path) if item.get("source") == "binance_manual"]),
+            1,
+        )
 
 
 if __name__ == "__main__":

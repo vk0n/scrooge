@@ -28,6 +28,8 @@ from shared.runtime_db import (  # noqa: E402
     ensure_portfolio_asset_policies,
     load_exchange_account_snapshot,
     load_spot_order_intent,
+    load_spot_swing,
+    list_spot_order_status_events,
     list_spot_swing_executions,
     list_spot_swings,
     list_portfolio_daily_snapshots,
@@ -724,9 +726,19 @@ def load_portfolio_asset_ledger(
     }
 
 
-def create_spot_order_preview(payload: dict[str, Any]) -> dict[str, Any]:
+def _create_spot_order_intent_preview(
+    payload: dict[str, Any],
+    *,
+    source: str,
+    swing_id: str | None = None,
+    reason_text: str | None = None,
+    reason: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not _spot_execution_enabled():
         raise ValueError("Real Spot execution is disabled by the safety switch.")
+    normalized_source = str(source or "").strip().lower()
+    if normalized_source not in {"manual", "strategy"}:
+        raise ValueError("Spot order source must be manual or strategy.")
     asset_symbol = _clean_symbol(payload.get("asset_symbol"))
     quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
     side = str(payload.get("side") or "").strip().lower()
@@ -739,6 +751,24 @@ def create_spot_order_preview(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Spot order side must be buy or sell.")
     if requested_quantity is None or requested_quantity <= 0:
         raise ValueError("Spot order quantity must be greater than zero.")
+
+    normalized_swing_id = str(swing_id or "").strip() or None
+    normalized_reason_text = str(reason_text or "").strip() or None
+    normalized_reason = reason if isinstance(reason, dict) else {}
+    if normalized_source == "strategy":
+        if normalized_swing_id is None:
+            raise ValueError("Strategy Spot orders must belong to a Swing.")
+        if not normalized_reason_text and not normalized_reason:
+            raise ValueError("Strategy Spot orders require an explainable reason.")
+        swing = load_spot_swing(normalized_swing_id)
+        if swing is None:
+            raise LookupError("The linked Spot Swing was not found.")
+        if swing["status"] == "closed":
+            raise ValueError("A closed Spot Swing cannot accept another strategy order.")
+        if swing["account_key"] != DEFAULT_ACCOUNT_KEY:
+            raise ValueError("The linked Spot Swing belongs to another Treasury account.")
+        if swing["asset_symbol"] != asset_symbol or swing["quote_symbol"] != quote_symbol:
+            raise ValueError("The linked Spot Swing market does not match the order intent.")
 
     snapshot, _ = load_portfolio_snapshot()
     exchange = snapshot["exchange"]
@@ -802,8 +832,28 @@ def create_spot_order_preview(payload: dict[str, Any]) -> dict[str, Any]:
             "protected_floor_quantity": protected_floor,
             "policy_sellable_quantity": policy_sellable,
             "projected_holding_quantity": projected_holding,
+            "source": normalized_source,
+            "swing_id": normalized_swing_id,
+            "reason_text": normalized_reason_text,
+            "reason": normalized_reason,
             "preview_expires_at_ms": int((time.time() + SPOT_ORDER_PREVIEW_TTL_SECONDS) * 1000),
         }
+    )
+
+
+def create_spot_order_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    """Create a user-confirmed manual intent; public payloads cannot impersonate strategy orders."""
+    return _create_spot_order_intent_preview(payload, source="manual")
+
+
+def create_strategy_spot_order_intent(payload: dict[str, Any]) -> dict[str, Any]:
+    """Prepare a strategy intent without submitting it or bypassing the common executor."""
+    return _create_spot_order_intent_preview(
+        payload,
+        source="strategy",
+        swing_id=str(payload.get("swing_id") or "").strip() or None,
+        reason_text=str(payload.get("reason_text") or "").strip() or None,
+        reason=payload.get("reason") if isinstance(payload.get("reason"), dict) else None,
     )
 
 
@@ -816,6 +866,7 @@ def get_spot_order_intent(intent_id: str) -> dict[str, Any]:
         intent["status"] == "previewed"
         and time.time() * 1000 > intent["preview_expires_at_ms"]
     )
+    intent["status_history"] = list_spot_order_status_events(intent_id)
     return intent
 
 

@@ -291,14 +291,16 @@ def _render_ui_message(code: str, context: dict[str, Any]) -> str:
         reason = str(context.get("reason") or "unknown trouble").strip().rstrip(".")
         return f"I could not carry out {action}: {reason}."
 
-    if code == "manual_spot_order_executed":
+    if code in {"manual_spot_order_executed", "spot_order_executed"}:
         action = str(context.get("side") or "trade").strip().lower()
         quantity = _as_float(context.get("quantity"))
         quantity_label = f"{quantity:.8f}".rstrip("0").rstrip(".") if quantity is not None else "confirmed quantity"
         asset = str(context.get("symbol") or "asset").strip().upper()
         price = _as_float(context.get("price"))
         price_suffix = f" at ${price:.8f}".rstrip("0").rstrip(".") if price is not None else ""
-        return f"Binance Spot {action} filled for {quantity_label} {asset}{price_suffix}."
+        source = str(context.get("source") or "manual").strip().lower()
+        actor = "My strategy" if source == "strategy" else "I"
+        return f"{actor} completed a Binance Spot {action} for {quantity_label} {asset}{price_suffix}."
 
     fallback_message = str(context.get("message") or "").strip()
     if fallback_message:
@@ -375,7 +377,7 @@ def _should_persist_ui_immediately(runtime_mode: str | None, persist_ui: bool) -
 
 
 def _event_tone(code: str, context: dict[str, Any]) -> str:
-    if code == "manual_spot_order_executed":
+    if code in {"manual_spot_order_executed", "spot_order_executed"}:
         return "positive" if str(context.get("side") or "").lower() == "buy" else "negative"
     if code == "trade_opened":
         return "open"

@@ -575,6 +575,9 @@ if __name__ == "__main__":
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
         chart_recorder = StrategyChartRecorder(symbol)
         spot_order_executor = SpotOrderExecutor(spot_client, logger=technical_logger, db_path=db_path)
+        recovered_spot_orders = spot_order_executor.recover_pending()
+        if recovered_spot_orders:
+            technical_logger.info("spot_order_recovery_complete outcomes=%s", recovered_spot_orders)
         command_kwargs = _build_command_kwargs(
             symbol,
             leverage=lvrg,

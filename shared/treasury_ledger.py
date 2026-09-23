@@ -35,7 +35,7 @@ def treasury_transaction_presentation(transaction: dict[str, Any]) -> tuple[str,
     quantity = _number(transaction.get("quantity"))
     price = transaction.get("price")
     source = str(transaction.get("source") or "manual").strip().lower()
-    venue_prefix = "Binance Spot " if source == "binance_manual" else ""
+    venue_prefix = "Binance Spot " if source.startswith("binance_") else ""
 
     if tx_type == "custody_transfer":
         source_name = _custody_name(transaction.get("source_custody"))

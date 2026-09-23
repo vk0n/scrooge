@@ -591,7 +591,7 @@ def process_pending_commands(
                     f"{quantity if quantity is not None else 'confirmed quantity'} {asset}."
                 )
                 emit_event(
-                    code="manual_spot_order_executed",
+                    code="spot_order_executed",
                     category="command",
                     ts=event_ts,
                     persist_ui=True,
@@ -608,6 +608,8 @@ def process_pending_commands(
                     quote_symbol=command_result.get("quote_symbol"),
                     order_id=command_result.get("order_id"),
                     intent_id=intent_id,
+                    source=command_result.get("source"),
+                    swing_id=command_result.get("swing_id"),
                     ledger_transaction_id=command_result.get("ledger_transaction_id"),
                 )
             else:
