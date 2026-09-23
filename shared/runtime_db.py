@@ -12,8 +12,8 @@ from typing import Any, Iterator
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 6
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Portfolio asset policies"
+RUNTIME_DB_SCHEMA_VERSION = 7
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Exchange account balance snapshots"
 
 
 class RuntimeDbError(OSError):
@@ -357,6 +357,33 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             updated_at_ms INTEGER NOT NULL,
             PRIMARY KEY (account_key, asset_symbol, quote_symbol),
             FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS exchange_account_snapshots (
+            venue TEXT NOT NULL,
+            account_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            captured_at_ms INTEGER,
+            last_attempt_at_ms INTEGER NOT NULL,
+            can_trade INTEGER,
+            error TEXT,
+            payload_json TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (venue, account_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS exchange_asset_balances (
+            venue TEXT NOT NULL,
+            account_type TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            free REAL NOT NULL,
+            locked REAL NOT NULL,
+            total REAL NOT NULL,
+            captured_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (venue, account_type, asset_symbol),
+            FOREIGN KEY(venue, account_type)
+                REFERENCES exchange_account_snapshots(venue, account_type)
+                ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS portfolio_daily_snapshots (
@@ -1207,6 +1234,218 @@ def upsert_portfolio_asset_policy(
         for policy in policies
         if policy["asset_symbol"] == asset_symbol and policy["quote_symbol"] == quote_symbol
     )
+
+
+def save_exchange_account_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    venue = str(snapshot.get("venue") or "binance").strip().lower() or "binance"
+    account_type = str(snapshot.get("account_type") or "spot").strip().lower() or "spot"
+    captured_at_ms = int(snapshot.get("captured_at_ms") or datetime.now(timezone.utc).timestamp() * 1000)
+    balances = snapshot.get("balances") if isinstance(snapshot.get("balances"), list) else []
+    normalized_balances: list[dict[str, Any]] = []
+    for balance in balances:
+        if not isinstance(balance, dict):
+            continue
+        asset_symbol = str(balance.get("asset_symbol") or balance.get("asset") or "").strip().upper()
+        free = _as_float_or_none(balance.get("free"))
+        locked = _as_float_or_none(balance.get("locked"))
+        if not asset_symbol or free is None or locked is None:
+            continue
+        total = free + locked
+        if abs(total) < 0.000000000001:
+            continue
+        normalized_balances.append(
+            {
+                "asset_symbol": asset_symbol,
+                "free": free,
+                "locked": locked,
+                "total": total,
+            }
+        )
+    payload = {
+        "venue": venue,
+        "account_type": account_type,
+        "status": "ok",
+        "captured_at_ms": captured_at_ms,
+        "can_trade": bool(snapshot.get("can_trade")),
+        "balances": normalized_balances,
+    }
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO exchange_account_snapshots (
+                venue,
+                account_type,
+                status,
+                captured_at_ms,
+                last_attempt_at_ms,
+                can_trade,
+                error,
+                payload_json,
+                updated_at_ms
+            )
+            VALUES (?, ?, 'ok', ?, ?, ?, NULL, ?, ?)
+            ON CONFLICT(venue, account_type) DO UPDATE SET
+                status = 'ok',
+                captured_at_ms = excluded.captured_at_ms,
+                last_attempt_at_ms = excluded.last_attempt_at_ms,
+                can_trade = excluded.can_trade,
+                error = NULL,
+                payload_json = excluded.payload_json,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (
+                venue,
+                account_type,
+                captured_at_ms,
+                captured_at_ms,
+                1 if payload["can_trade"] else 0,
+                _json_text(payload),
+                now_ms,
+            ),
+        )
+        connection.execute(
+            "DELETE FROM exchange_asset_balances WHERE venue = ? AND account_type = ?",
+            (venue, account_type),
+        )
+        connection.executemany(
+            """
+            INSERT INTO exchange_asset_balances (
+                venue,
+                account_type,
+                asset_symbol,
+                free,
+                locked,
+                total,
+                captured_at_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    venue,
+                    account_type,
+                    balance["asset_symbol"],
+                    balance["free"],
+                    balance["locked"],
+                    balance["total"],
+                    captured_at_ms,
+                )
+                for balance in normalized_balances
+            ],
+        )
+    return payload
+
+
+def mark_exchange_account_snapshot_error(
+    error: str,
+    *,
+    venue: str = "binance",
+    account_type: str = "spot",
+    attempted_at_ms: int | None = None,
+    path: Path | None = None,
+) -> None:
+    normalized_venue = str(venue or "binance").strip().lower() or "binance"
+    normalized_account_type = str(account_type or "spot").strip().lower() or "spot"
+    attempt_ms = int(attempted_at_ms or datetime.now(timezone.utc).timestamp() * 1000)
+    normalized_error = str(error or "Exchange snapshot refresh failed.").strip()
+    with _connection(path) as connection:
+        existing = connection.execute(
+            """
+            SELECT captured_at_ms, can_trade, payload_json
+            FROM exchange_account_snapshots
+            WHERE venue = ? AND account_type = ?
+            LIMIT 1
+            """,
+            (normalized_venue, normalized_account_type),
+        ).fetchone()
+        captured_at_ms = int(existing["captured_at_ms"]) if existing and existing["captured_at_ms"] is not None else None
+        can_trade = int(existing["can_trade"]) if existing and existing["can_trade"] is not None else None
+        payload_json = str(existing["payload_json"]) if existing else "{}"
+        connection.execute(
+            """
+            INSERT INTO exchange_account_snapshots (
+                venue,
+                account_type,
+                status,
+                captured_at_ms,
+                last_attempt_at_ms,
+                can_trade,
+                error,
+                payload_json,
+                updated_at_ms
+            )
+            VALUES (?, ?, 'error', ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(venue, account_type) DO UPDATE SET
+                status = 'error',
+                last_attempt_at_ms = excluded.last_attempt_at_ms,
+                error = excluded.error,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (
+                normalized_venue,
+                normalized_account_type,
+                captured_at_ms,
+                attempt_ms,
+                can_trade,
+                normalized_error,
+                payload_json,
+                attempt_ms,
+            ),
+        )
+
+
+def load_exchange_account_snapshot(
+    *,
+    venue: str = "binance",
+    account_type: str = "spot",
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    normalized_venue = str(venue or "binance").strip().lower() or "binance"
+    normalized_account_type = str(account_type or "spot").strip().lower() or "spot"
+    with _connection(path) as connection:
+        account = connection.execute(
+            """
+            SELECT status, captured_at_ms, last_attempt_at_ms, can_trade, error
+            FROM exchange_account_snapshots
+            WHERE venue = ? AND account_type = ?
+            LIMIT 1
+            """,
+            (normalized_venue, normalized_account_type),
+        ).fetchone()
+        if account is None:
+            return None
+        balance_rows = connection.execute(
+            """
+            SELECT asset_symbol, free, locked, total
+            FROM exchange_asset_balances
+            WHERE venue = ? AND account_type = ?
+            ORDER BY asset_symbol ASC
+            """,
+            (normalized_venue, normalized_account_type),
+        ).fetchall()
+    return {
+        "venue": normalized_venue,
+        "account_type": normalized_account_type,
+        "status": str(account["status"]),
+        "captured_at_ms": int(account["captured_at_ms"]) if account["captured_at_ms"] is not None else None,
+        "last_attempt_at_ms": int(account["last_attempt_at_ms"]),
+        "can_trade": bool(account["can_trade"]) if account["can_trade"] is not None else None,
+        "error": str(account["error"]) if account["error"] is not None else None,
+        "balances": [
+            {
+                "asset_symbol": str(row["asset_symbol"]),
+                "free": float(row["free"]),
+                "locked": float(row["locked"]),
+                "total": float(row["total"]),
+            }
+            for row in balance_rows
+        ],
+    }
 
 
 def upsert_portfolio_daily_snapshot(

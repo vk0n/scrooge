@@ -25,6 +25,7 @@ from shared.runtime_db import (  # noqa: E402
     append_portfolio_transaction,
     count_portfolio_transactions,
     ensure_portfolio_asset_policies,
+    load_exchange_account_snapshot,
     list_portfolio_daily_snapshots,
     list_portfolio_transactions,
     load_runtime_state_snapshot,
@@ -41,6 +42,7 @@ TRANSACTION_TYPES = {"buy", "sell", "deposit", "withdraw", "adjustment"}
 CUSTODY_LOCATIONS = {"unassigned", "binance", "cold_storage"}
 PRICE_CACHE_SECONDS = float(os.getenv("SCROOGE_PORTFOLIO_PRICE_CACHE_SECONDS", "30") or "30")
 PRICE_TIMEOUT_SECONDS = float(os.getenv("SCROOGE_PORTFOLIO_PRICE_TIMEOUT_SECONDS", "4") or "4")
+SPOT_BALANCE_STALE_AFTER_SECONDS = float(os.getenv("SCROOGE_SPOT_BALANCE_STALE_AFTER_SECONDS", "180") or "180")
 PRICE_ENDPOINTS = [
     endpoint.strip()
     for endpoint in (
@@ -355,6 +357,7 @@ def _attach_asset_policies(holdings: list[dict[str, Any]]) -> None:
                     "protected_holding_quantity": 0.0,
                     "amount_above_protected_floor": 0.0,
                     "amount_below_protected_floor": 0.0,
+                    "policy_sellable_quantity": 0.0,
                     "immediately_sellable_quantity": 0.0,
                     "sellable_inventory_is_exchange_verified": False,
                     "target_delta_quantity": None,
@@ -376,6 +379,7 @@ def _attach_inventory_state(holding: dict[str, Any]) -> None:
     protected_floor = target_quantity * minimum_holding_pct / 100.0
     amount_above_floor = max(0.0, current_quantity - protected_floor)
     amount_below_floor = max(0.0, protected_floor - current_quantity)
+    policy_sellable = min(amount_above_floor, binance_quantity)
 
     holding.update(
         {
@@ -383,7 +387,8 @@ def _attach_inventory_state(holding: dict[str, Any]) -> None:
             "protected_holding_quantity": min(current_quantity, protected_floor),
             "amount_above_protected_floor": amount_above_floor,
             "amount_below_protected_floor": amount_below_floor,
-            "immediately_sellable_quantity": min(amount_above_floor, binance_quantity),
+            "policy_sellable_quantity": policy_sellable,
+            "immediately_sellable_quantity": 0.0,
             "sellable_inventory_is_exchange_verified": False,
             "target_delta_quantity": current_quantity - target_quantity,
             "target_delta_pct": (
@@ -393,6 +398,98 @@ def _attach_inventory_state(holding: dict[str, Any]) -> None:
             ),
         }
     )
+
+
+def _load_spot_exchange_state() -> dict[str, Any]:
+    snapshot = load_exchange_account_snapshot(venue="binance", account_type="spot")
+    if snapshot is None:
+        return {
+            "venue": "binance",
+            "account_type": "spot",
+            "status": "unavailable",
+            "captured_at": None,
+            "last_attempt_at": None,
+            "age_seconds": None,
+            "is_stale": True,
+            "is_balance_verified": False,
+            "can_trade": None,
+            "error": None,
+            "balances": [],
+            "usdt_free": None,
+            "usdt_locked": None,
+        }
+
+    captured_at_ms = _as_float(snapshot.get("captured_at_ms"))
+    age_seconds = (
+        max(0.0, time.time() - captured_at_ms / 1000.0)
+        if captured_at_ms is not None
+        else None
+    )
+    is_stale = age_seconds is None or age_seconds > SPOT_BALANCE_STALE_AFTER_SECONDS
+    status = str(snapshot.get("status") or "unavailable")
+    last_attempt_at_ms = _as_float(snapshot.get("last_attempt_at_ms"))
+    balances = snapshot.get("balances") if isinstance(snapshot.get("balances"), list) else []
+    balance_by_asset = {
+        str(balance.get("asset_symbol") or "").upper(): balance
+        for balance in balances
+        if isinstance(balance, dict)
+    }
+    usdt = balance_by_asset.get("USDT")
+    return {
+        "venue": "binance",
+        "account_type": "spot",
+        "status": status,
+        "captured_at": (
+            datetime.fromtimestamp(captured_at_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            if captured_at_ms is not None
+            else None
+        ),
+        "last_attempt_at": (
+            datetime.fromtimestamp(last_attempt_at_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            if last_attempt_at_ms is not None
+            else None
+        ),
+        "age_seconds": age_seconds,
+        "is_stale": is_stale,
+        "is_balance_verified": status == "ok" and not is_stale,
+        "can_trade": snapshot.get("can_trade"),
+        "error": snapshot.get("error"),
+        "balances": balances,
+        "usdt_free": _as_float(usdt.get("free")) if isinstance(usdt, dict) else 0.0,
+        "usdt_locked": _as_float(usdt.get("locked")) if isinstance(usdt, dict) else 0.0,
+    }
+
+
+def _attach_exchange_state(holdings: list[dict[str, Any]], exchange: dict[str, Any]) -> None:
+    balance_by_asset = {
+        str(balance.get("asset_symbol") or "").upper(): balance
+        for balance in exchange.get("balances", [])
+        if isinstance(balance, dict)
+    }
+    balance_verified = bool(exchange.get("is_balance_verified"))
+    can_trade = exchange.get("can_trade") is True
+    for holding in holdings:
+        asset_symbol = str(holding.get("asset_symbol") or "").upper()
+        exchange_balance = balance_by_asset.get(asset_symbol, {})
+        exchange_free = _as_float(exchange_balance.get("free")) or 0.0
+        exchange_locked = _as_float(exchange_balance.get("locked")) or 0.0
+        exchange_total = exchange_free + exchange_locked
+        recorded_binance = _as_float(holding.get("binance_quantity")) or 0.0
+        policy_sellable = _as_float(holding.get("policy_sellable_quantity")) or 0.0
+        holding.update(
+            {
+                "exchange_binance_free_quantity": exchange_free,
+                "exchange_binance_locked_quantity": exchange_locked,
+                "exchange_binance_total_quantity": exchange_total,
+                "binance_custody_variance": exchange_total - recorded_binance,
+                "sellable_inventory_is_exchange_verified": balance_verified,
+                "immediately_sellable_quantity": (
+                    min(policy_sellable, exchange_free)
+                    if balance_verified and can_trade
+                    else 0.0
+                ),
+            }
+        )
 
 
 PORTFOLIO_TRANSACTION_PAGE_SIZE = 5
@@ -432,7 +529,11 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     holdings, warnings = _derive_holdings(transactions)
     _attach_asset_policies(holdings)
+    exchange = _load_spot_exchange_state()
+    _attach_exchange_state(holdings, exchange)
     summary = _summary_from_holdings(holdings)
+    summary["binance_spot_usdt_free"] = exchange["usdt_free"]
+    summary["binance_spot_usdt_locked"] = exchange["usdt_locked"]
     timeline = _portfolio_timeline(summary, holdings, warnings)
     newest_transactions = list_portfolio_transactions(
         limit=PORTFOLIO_TRANSACTION_PAGE_SIZE,
@@ -444,6 +545,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
         {
             "path": str(runtime_db_path()),
             "summary": summary,
+            "exchange": exchange,
             "holdings": holdings,
             "timeline": timeline,
             "transactions": newest_transactions,

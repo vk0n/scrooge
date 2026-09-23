@@ -2,6 +2,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 from services import portfolio_service
+from shared.runtime_db import mark_exchange_account_snapshot_error, save_exchange_account_snapshot
 
 
 class PortfolioPhaseOneTests(unittest.TestCase):
@@ -347,7 +349,8 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(holding["quantity"], 1100)
         self.assertEqual(holding["protected_floor_quantity"], 800)
         self.assertEqual(holding["amount_above_protected_floor"], 300)
-        self.assertEqual(holding["immediately_sellable_quantity"], 300)
+        self.assertEqual(holding["policy_sellable_quantity"], 300)
+        self.assertEqual(holding["immediately_sellable_quantity"], 0)
         self.assertFalse(holding["sellable_inventory_is_exchange_verified"])
         self.assertEqual(holding["target_delta_quantity"], 100)
 
@@ -362,7 +365,8 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         holding = result["portfolio"]["holdings"][0]
         self.assertEqual(holding["amount_above_protected_floor"], 300)
-        self.assertEqual(holding["immediately_sellable_quantity"], 100)
+        self.assertEqual(holding["policy_sellable_quantity"], 100)
+        self.assertEqual(holding["immediately_sellable_quantity"], 0)
 
     def test_holding_below_protected_floor_has_no_sellable_inventory(self):
         self.add("BTC", 700, 90, "binance")
@@ -400,7 +404,92 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(before_holding["amount_above_protected_floor"], 200)
         self.assertEqual(before_holding["immediately_sellable_quantity"], 0)
         self.assertEqual(holding["amount_above_protected_floor"], 200)
-        self.assertEqual(holding["immediately_sellable_quantity"], 150)
+        self.assertEqual(holding["policy_sellable_quantity"], 150)
+        self.assertEqual(holding["immediately_sellable_quantity"], 0)
+
+    def test_fresh_exchange_snapshot_caps_immediate_inventory_by_free_balance(self):
+        self.add("BTC", 300, 90, "binance")
+        self.add("BTC", 800, 90, "cold_storage")
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1000, "minimum_holding_pct": 80},
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 220, "locked": 80},
+                    {"asset_symbol": "USDT", "free": 125, "locked": 5},
+                ],
+            }
+        )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        holding = snapshot["holdings"][0]
+        self.assertEqual(holding["policy_sellable_quantity"], 300)
+        self.assertEqual(holding["exchange_binance_free_quantity"], 220)
+        self.assertEqual(holding["exchange_binance_locked_quantity"], 80)
+        self.assertEqual(holding["immediately_sellable_quantity"], 220)
+        self.assertEqual(holding["binance_custody_variance"], 0)
+        self.assertTrue(holding["sellable_inventory_is_exchange_verified"])
+        self.assertEqual(snapshot["exchange"]["usdt_free"], 125)
+        self.assertEqual(snapshot["summary"]["binance_spot_usdt_free"], 125)
+
+    def test_exchange_balance_is_visibility_only_and_not_double_counted(self):
+        self.add("BTC", 1, 90, "binance")
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 500, "locked": 0},
+                ],
+            }
+        )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        self.assertEqual(snapshot["summary"]["total_value"], 100)
+        self.assertEqual(snapshot["summary"]["dry_powder"], 0)
+        self.assertEqual(snapshot["exchange"]["usdt_free"], 500)
+
+    def test_stale_or_failed_exchange_snapshot_is_not_immediately_sellable(self):
+        self.add("BTC", 2, 90, "binance")
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1, "minimum_holding_pct": 0},
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int((time.time() - portfolio_service.SPOT_BALANCE_STALE_AFTER_SECONDS - 1) * 1000),
+                "can_trade": True,
+                "balances": [{"asset_symbol": "BTC", "free": 2, "locked": 0}],
+            }
+        )
+
+        stale, _ = portfolio_service.load_portfolio_snapshot()
+        stale_holding = stale["holdings"][0]
+        self.assertTrue(stale["exchange"]["is_stale"])
+        self.assertEqual(stale_holding["immediately_sellable_quantity"], 0)
+        self.assertFalse(stale_holding["sellable_inventory_is_exchange_verified"])
+
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [{"asset_symbol": "BTC", "free": 2, "locked": 0}],
+            }
+        )
+        mark_exchange_account_snapshot_error("temporary failure")
+        failed, _ = portfolio_service.load_portfolio_snapshot()
+        failed_holding = failed["holdings"][0]
+        self.assertEqual(failed["exchange"]["status"], "error")
+        self.assertEqual(failed_holding["exchange_binance_free_quantity"], 2)
+        self.assertEqual(failed_holding["immediately_sellable_quantity"], 0)
+        self.assertFalse(failed_holding["sellable_inventory_is_exchange_verified"])
 
     def test_dry_powder_does_not_receive_asset_policy(self):
         self.add("USDT", 500, 1, "binance")

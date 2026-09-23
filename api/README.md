@@ -47,6 +47,7 @@ Relevant env vars:
 The API is DB-first:
 - `SCROOGE_CONFIG_PATH`
 - `SCROOGE_DB_PATH`
+- `SCROOGE_SPOT_BALANCE_STALE_AFTER_SECONDS` (freshness window for the bot-written Binance Spot snapshot)
 
 Chart-specific env:
 - `SCROOGE_CHART_SOURCE` (`auto`, `dataset`, `binance`)

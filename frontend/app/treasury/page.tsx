@@ -16,6 +16,29 @@ type PortfolioSummary = {
   largest_position: PortfolioHolding | null;
   holding_count: number;
   prices_updated_at: string | null;
+  binance_spot_usdt_free: number | null;
+  binance_spot_usdt_locked: number | null;
+};
+
+type PortfolioExchange = {
+  venue: string;
+  account_type: string;
+  status: "ok" | "error" | "unavailable";
+  captured_at: string | null;
+  last_attempt_at: string | null;
+  age_seconds: number | null;
+  is_stale: boolean;
+  is_balance_verified: boolean;
+  can_trade: boolean | null;
+  error: string | null;
+  balances: Array<{
+    asset_symbol: string;
+    free: number;
+    locked: number;
+    total: number;
+  }>;
+  usdt_free: number | null;
+  usdt_locked: number | null;
 };
 
 type PortfolioHolding = {
@@ -41,8 +64,13 @@ type PortfolioHolding = {
   protected_holding_quantity: number;
   amount_above_protected_floor: number;
   amount_below_protected_floor: number;
+  policy_sellable_quantity: number;
   immediately_sellable_quantity: number;
   sellable_inventory_is_exchange_verified: boolean;
+  exchange_binance_free_quantity: number;
+  exchange_binance_locked_quantity: number;
+  exchange_binance_total_quantity: number;
+  binance_custody_variance: number;
   target_delta_quantity: number | null;
   target_delta_pct: number | null;
 };
@@ -78,6 +106,7 @@ type PortfolioTimelinePoint = {
 type PortfolioPayload = {
   path: string;
   summary: PortfolioSummary;
+  exchange: PortfolioExchange;
   holdings: PortfolioHolding[];
   timeline: PortfolioTimelinePoint[];
   transactions: PortfolioTransaction[];
@@ -466,9 +495,11 @@ function CustodyPanel({
 
 function AssetPolicyPanel({
   holding,
+  exchange,
   onUpdated,
 }: {
   holding: PortfolioHolding;
+  exchange: PortfolioExchange | null;
   onUpdated: (response: UpdatePortfolioPolicyResponse) => void;
 }): JSX.Element {
   const [targetQuantity, setTargetQuantity] = useState<string>(String(holding.target_quantity ?? holding.quantity));
@@ -479,9 +510,13 @@ function AssetPolicyPanel({
     ? `Current Holding is ${formatNumber(holding.amount_below_protected_floor, 8)} ${holding.asset_symbol} below the Protected Floor.`
     : holding.amount_above_protected_floor <= 0
       ? "The full position is currently protected by policy."
-      : holding.immediately_sellable_quantity < holding.amount_above_protected_floor
-        ? `Binance custody limits immediate inventory to ${formatNumber(holding.immediately_sellable_quantity, 8)} ${holding.asset_symbol}.`
-        : "The full amount above the Protected Floor is available on Binance.";
+      : !holding.sellable_inventory_is_exchange_verified
+        ? "Live Binance Spot inventory is unavailable or stale, so immediate inventory is held at zero."
+        : exchange?.can_trade !== true
+          ? "Binance reports Spot trading unavailable, so immediate inventory is held at zero."
+          : holding.immediately_sellable_quantity < holding.policy_sellable_quantity
+            ? `Binance free balance limits immediate inventory to ${formatNumber(holding.immediately_sellable_quantity, 8)} ${holding.asset_symbol}.`
+            : "The full policy-approved amount is free on Binance.";
 
   useEffect(() => {
     setTargetQuantity(String(holding.target_quantity ?? holding.quantity));
@@ -539,8 +574,20 @@ function AssetPolicyPanel({
             <strong>{formatNumber(holding.amount_above_protected_floor, 8)} {holding.asset_symbol}</strong>
           </div>
           <div>
-            <span>On Binance</span>
+            <span>Recorded Binance</span>
             <strong>{formatNumber(holding.binance_quantity, 8)} {holding.asset_symbol}</strong>
+          </div>
+          <div>
+            <span>Binance Free</span>
+            <strong>{formatNumber(holding.exchange_binance_free_quantity, 8)} {holding.asset_symbol}</strong>
+          </div>
+          <div>
+            <span>Binance Locked</span>
+            <strong>{formatNumber(holding.exchange_binance_locked_quantity, 8)} {holding.asset_symbol}</strong>
+          </div>
+          <div>
+            <span>Policy Sellable</span>
+            <strong>{formatNumber(holding.policy_sellable_quantity, 8)} {holding.asset_symbol}</strong>
           </div>
           <div className={`treasury-policy-metric-sellable${
             holding.amount_below_protected_floor > 0
@@ -558,7 +605,12 @@ function AssetPolicyPanel({
         </p>
         {!holding.sellable_inventory_is_exchange_verified ? (
           <p className="treasury-inventory-basis">
-            Based on Treasury custody records. Live Binance balance is not verified yet.
+            Policy inventory remains visible, but execution inventory requires a fresh Binance Spot snapshot.
+          </p>
+        ) : null}
+        {holding.sellable_inventory_is_exchange_verified && Math.abs(holding.binance_custody_variance) > 0.00000001 ? (
+          <p className="treasury-inventory-basis treasury-inventory-basis-warning">
+            Reconciliation needed: exchange total differs from recorded Binance custody by {formatNumber(holding.binance_custody_variance, 8)} {holding.asset_symbol}.
           </p>
         ) : null}
         <form className="treasury-policy-form" onSubmit={(event) => void submitPolicy(event)}>
@@ -694,6 +746,7 @@ export default function TreasuryPage(): JSX.Element {
   }
 
   const summary = portfolio?.summary;
+  const exchange = portfolio?.exchange ?? null;
   const holdings = [...(portfolio?.holdings ?? [])].sort((left, right) => {
     const allocationDifference = (right.allocation_pct ?? -1) - (left.allocation_pct ?? -1);
     return allocationDifference || left.asset_symbol.localeCompare(right.asset_symbol);
@@ -741,6 +794,18 @@ export default function TreasuryPage(): JSX.Element {
   const reducingAvailable = reducingHolding
     ? custodyQuantity(reducingHolding, form.custody_location)
     : null;
+  const exchangeStatusLabel = exchange?.is_balance_verified
+    ? "Live"
+    : exchange?.status === "error"
+      ? "Refresh Failed"
+      : exchange?.is_stale && exchange.captured_at
+        ? "Stale"
+        : "Awaiting Snapshot";
+  const exchangeStatusTone = exchange?.is_balance_verified
+    ? " treasury-exchange-status-live"
+    : exchange?.status === "error"
+      ? " treasury-exchange-status-error"
+      : " treasury-exchange-status-stale";
 
   return (
     <AuthGate>
@@ -877,6 +942,37 @@ export default function TreasuryPage(): JSX.Element {
               </footer>
             </article>
           </div>
+
+          <article className="treasury-exchange-card">
+            <header className="treasury-insight-head">
+              <div>
+                <h2>Binance Spot</h2>
+                <p className="muted">Read-only exchange inventory for reconciliation and future execution.</p>
+              </div>
+              <span className={`treasury-exchange-status${exchangeStatusTone}`}>{exchangeStatusLabel}</span>
+            </header>
+            <div className="treasury-exchange-metrics">
+              <div>
+                <span>Available USDT</span>
+                <strong>{exchange?.usdt_free == null ? "--" : formatCurrency(exchange.usdt_free)}</strong>
+              </div>
+              <div>
+                <span>Locked USDT</span>
+                <strong>{exchange?.usdt_locked == null ? "--" : formatCurrency(exchange.usdt_locked)}</strong>
+              </div>
+              <div>
+                <span>Assets on Exchange</span>
+                <strong>{exchange?.balances.length ?? 0}</strong>
+              </div>
+              <div>
+                <span>Last Verified</span>
+                <strong>{exchange?.captured_at ? formatDateTimeEu(exchange.captured_at) : "Not available"}</strong>
+              </div>
+            </div>
+            <p className="treasury-exchange-note">
+              Exchange balances are visibility only and are not added to Total Treasure unless they are represented in the Treasury ledger.
+            </p>
+          </article>
         </section>
 
         <section ref={formPanelRef} className="section-block treasury-form-panel">
@@ -1067,6 +1163,7 @@ export default function TreasuryPage(): JSX.Element {
                   {!holding.is_dry_powder ? (
                     <AssetPolicyPanel
                       holding={holding}
+                      exchange={exchange}
                       onUpdated={(response) => setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings))}
                     />
                   ) : null}

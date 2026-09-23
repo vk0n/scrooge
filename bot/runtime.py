@@ -18,6 +18,7 @@ from bot.control_channel import get_control_client, process_pending_commands
 from backtest.dataset import fetch_historical
 from bot.event_log import get_technical_logger
 from bot.market_stream import LiveMarketStream
+from bot.spot_account import SpotBalanceMonitor
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.strategy_chart import StrategyChartRecorder
 from bot.trade import (
@@ -43,6 +44,7 @@ RLockType = type(threading.RLock())
 state: dict[str, Any] | None = None
 state_lock: RLockType | None = None
 live_market_stream: LiveMarketStream | None = None
+spot_balance_monitor: SpotBalanceMonitor | None = None
 technical_logger = get_technical_logger()
 
 
@@ -73,7 +75,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 def handle_exit(sig: int, frame: Any) -> None:  # noqa: ARG001
     """Handler for Ctrl+C (SIGINT) to gracefully save state and exit."""
-    global live_market_stream
+    global live_market_stream, spot_balance_monitor
     if state:
         if state_lock is not None:
             with state_lock:
@@ -87,6 +89,9 @@ def handle_exit(sig: int, frame: Any) -> None:  # noqa: ARG001
     if live_market_stream is not None:
         live_market_stream.stop()
         live_market_stream = None
+    if spot_balance_monitor is not None:
+        spot_balance_monitor.stop()
+        spot_balance_monitor = None
     sys.exit(0)
 
 
@@ -528,6 +533,7 @@ if __name__ == "__main__":
 
     live_poll_seconds = _env_int("SCROOGE_LIVE_POLL_SECONDS", 60)
     control_poll_slice_seconds = _env_int("SCROOGE_CONTROL_POLL_SLICE_SECONDS", 1)
+    spot_balance_refresh_seconds = _env_int("SCROOGE_SPOT_BALANCE_REFRESH_SECONDS", 60)
     user_stream_stale_after_seconds = _env_float("SCROOGE_USER_STREAM_STALE_AFTER_SECONDS", 120.0)
     debug_strategy_ticks = _env_flag("SCROOGE_DEBUG_STRATEGY_TICKS", False)
     chart_dataset_path = Path(os.getenv("SCROOGE_RUNTIME_CHART_DATASET_PATH", "runtime/chart_dataset.csv")).expanduser()
@@ -540,6 +546,7 @@ if __name__ == "__main__":
     trade_module.set_client(client)
 
     if live:
+        spot_client = create_binance_client(api_key, api_secret, logger=technical_logger, ping=False)
         # Load or create state
         state = load_state()
         db_path = runtime_db_path()
@@ -585,7 +592,6 @@ if __name__ == "__main__":
         )
         if not live_market_stream.start():
             raise RuntimeError("Live market stream failed to start.")
-
         def resolve_live_balance() -> float:
             cached_balance = get_cached_balance()
             cache_age = get_cached_balance_age_seconds()
@@ -727,6 +733,13 @@ if __name__ == "__main__":
         )
 
         try:
+            spot_balance_monitor = SpotBalanceMonitor(
+                spot_client,
+                interval_seconds=spot_balance_refresh_seconds,
+                logger=technical_logger,
+                db_path=db_path,
+            )
+            spot_balance_monitor.start()
             while True:
                 try:
                     if control_client is None:
@@ -944,6 +957,12 @@ if __name__ == "__main__":
                     technical_logger.exception("live_loop_error error=%s", e)
                     time.sleep(max(1, control_poll_slice_seconds))
         finally:
+            if spot_balance_monitor is not None:
+                spot_balance_monitor.stop()
+                spot_balance_monitor = None
+            close_spot_connection = getattr(spot_client, "close_connection", None)
+            if callable(close_spot_connection):
+                close_spot_connection()
             try:
                 chart_recorder.flush(force=True)
             except OSError as exc:

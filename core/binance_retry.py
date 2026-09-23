@@ -130,9 +130,10 @@ def create_binance_client(
     api_secret: str | None,
     *,
     logger: Any | None = None,
+    ping: bool = True,
 ) -> Client:
     return run_binance_with_retries(
-        lambda: Client(api_key, api_secret),
+        lambda: Client(api_key, api_secret, ping=ping),
         operation_name="binance_client_init",
         logger=logger,
     )
