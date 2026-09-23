@@ -100,6 +100,7 @@ type PortfolioHolding = {
   unassigned_quantity: number;
   target_quantity: number | null;
   minimum_holding_pct: number | null;
+  trading_objective: "accumulate_cash" | "accumulate_asset" | null;
   protected_floor_quantity: number;
   protected_holding_quantity: number;
   amount_above_protected_floor: number;
@@ -186,7 +187,9 @@ type SpotSwingEconomics = {
   origin_side: "buy" | "sell";
   closing_side: "buy" | "sell";
   opening_quantity: number;
+  opening_quote_quantity: number;
   closing_quantity: number;
+  closing_quote_quantity: number;
   remaining_quantity: number;
   weighted_opening_price: number | null;
   weighted_closing_price: number | null;
@@ -255,6 +258,7 @@ type UpdatePortfolioPolicyResponse = {
     quote_symbol: string;
     target_quantity: number;
     minimum_holding_pct: number;
+    trading_objective: "accumulate_cash" | "accumulate_asset" | null;
   };
   portfolio: Omit<PortfolioPayload, "warnings">;
   warnings: string[];
@@ -1052,6 +1056,7 @@ function AssetPolicyPanel({
 }): JSX.Element {
   const [targetQuantity, setTargetQuantity] = useState<string>(String(holding.target_quantity ?? holding.quantity));
   const [minimumHoldingPct, setMinimumHoldingPct] = useState<string>(String(holding.minimum_holding_pct ?? 100));
+  const [tradingObjective, setTradingObjective] = useState<string>(holding.trading_objective ?? "");
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
@@ -1070,7 +1075,8 @@ function AssetPolicyPanel({
   useEffect(() => {
     setTargetQuantity(String(holding.target_quantity ?? holding.quantity));
     setMinimumHoldingPct(String(holding.minimum_holding_pct ?? 100));
-  }, [holding.target_quantity, holding.minimum_holding_pct, holding.quantity]);
+    setTradingObjective(holding.trading_objective ?? "");
+  }, [holding.target_quantity, holding.minimum_holding_pct, holding.trading_objective, holding.quantity]);
 
   async function submitPolicy(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -1085,6 +1091,7 @@ function AssetPolicyPanel({
             quote_symbol: holding.quote_symbol,
             target_quantity: asNumber(targetQuantity),
             minimum_holding_pct: asNumber(minimumHoldingPct),
+            trading_objective: tradingObjective || null,
           },
         }
       );
@@ -1109,6 +1116,7 @@ function AssetPolicyPanel({
           <span className="treasury-policy-summary">
             Target {formatNumber(holding.target_quantity, 8)} {holding.asset_symbol}
             <span>Minimum {formatPercent(holding.minimum_holding_pct)}</span>
+            <span>{swingObjectiveLabel(holding.trading_objective)}</span>
             <strong className={holding.immediately_sellable_quantity > 0 ? "value-positive" : "value-neutral"}>
               Sellable {formatNumber(holding.immediately_sellable_quantity, 8)}
             </strong>
@@ -1193,6 +1201,14 @@ function AssetPolicyPanel({
               onChange={(event) => setMinimumHoldingPct(event.target.value)}
               required
             />
+          </label>
+          <label className="dialog-user-field">
+            Trading Objective
+            <select value={tradingObjective} onChange={(event) => setTradingObjective(event.target.value)}>
+              <option value="">Not set</option>
+              <option value="accumulate_cash">Accumulate Cash</option>
+              <option value="accumulate_asset">Accumulate Asset</option>
+            </select>
           </label>
           <button type="submit" className="dialog-user-btn" disabled={saving}>
             {saving ? "Saving..." : "Update Policy"}

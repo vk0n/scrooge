@@ -21,6 +21,7 @@ from bot.market_stream import LiveMarketStream
 from bot.spot_account import SpotBalanceMonitor
 from bot.spot_execution import SpotOrderExecutor
 from bot.spot_signal import RollingSpotSignalMonitor
+from bot.spot_strategy import ProgressiveSpotSwingExecutor
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.strategy_chart import StrategyChartRecorder
 from bot.trade import (
@@ -585,6 +586,11 @@ if __name__ == "__main__":
         recovered_spot_orders = spot_order_executor.recover_pending()
         if recovered_spot_orders:
             technical_logger.info("spot_order_recovery_complete outcomes=%s", recovered_spot_orders)
+        spot_swing_strategy = ProgressiveSpotSwingExecutor(
+            spot_order_executor,
+            logger=technical_logger,
+            db_path=db_path,
+        )
         command_kwargs = _build_command_kwargs(
             symbol,
             leverage=lvrg,
@@ -771,6 +777,7 @@ if __name__ == "__main__":
                     execution_enabled=True,
                     logger=technical_logger,
                     db_path=db_path,
+                    snapshot_handler=spot_swing_strategy.handle_signal,
                 )
                 spot_signal_monitor.start()
             else:

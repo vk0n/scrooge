@@ -36,7 +36,7 @@ On a clean instance:
 `schema_migrations` is the authoritative schema-version table.
 
 Current schema version:
-- `11`
+- `13`
 
 Current runtime tables:
 - `schema_migrations`
@@ -55,6 +55,10 @@ Current runtime tables:
 - `spot_order_status_events`
 - `spot_swings`
 - `spot_swing_executions`
+- `spot_signal_snapshots`
+- `spot_strategy_campaigns`
+- `spot_strategy_actions`
+- `spot_swing_target_ratchets`
 
 `portfolio_transactions` remains the accounting source of truth for Treasury. `ui_log_entries` is a structured,
 filterable Ledger projection spanning both Futures trade events and Treasury events; Treasury transaction entries are
@@ -71,8 +75,9 @@ this projection does not create Swings, submit orders, settle fills, or mutate p
 
 A Swing objective is explicitly `accumulate_cash`, `accumulate_asset`, or unset. Closed Swing economics expose both
 net quote cash flow and net asset change. A positive net asset gain from a closed `accumulate_asset` Swing can produce
-an upward-only Target Holding ratchet proposal; Phase 1 does not apply that proposal or mutate portfolio policy. Normal
-portfolio transactions, custody movements, and current balance changes never derive or rewrite Target Holding.
+an upward-only Target Holding ratchet proposal. The authoritative fill settlement applies that ratchet atomically and
+exactly once after full closure. Normal portfolio transactions, custody movements, and current balance changes never
+derive or rewrite Target Holding.
 
 ## Spot Execution Boundaries
 
@@ -93,9 +98,9 @@ portfolio transactions, custody movements, and current balance changes never der
   and fees; replay cannot double-count either projection.
 - Runtime startup only resumes previously confirmed/in-flight intents. Recovery does not create Swings or new
   automatic orders.
-- A closed `accumulate_asset` Swing may produce a Target ratchet proposal only after its net asset gain is final. A
-  future authoritative settlement layer must apply that proposal atomically and idempotently exactly once. Partial
-  closes never ratchet Target, and a losing Swing never lowers it.
+- A closed `accumulate_asset` Swing may produce a Target ratchet only after its net asset gain is final. Authoritative
+  settlement applies it atomically and idempotently exactly once. Partial closes never ratchet Target, and a losing
+  Swing never lowers it.
 
 ## Treasury Policy Mode
 
@@ -137,6 +142,22 @@ switch or a per-asset auto-trading toggle.
   confirmations, conflicts, tier, modifier, and final tranche percentage remain in the persisted signal snapshot.
 - Indicator sizing still does not create Swings, order intents, or orders. Portfolio and exchange limits remain a later
   progressive execution concern.
+
+## Progressive Spot Swing Execution
+
+- An eligible rolling opportunity opens at most one independent Swing for each newly reached level in the current
+  directional campaign. HOLD or a direction reversal starts a new campaign; completed levels survive restarts.
+- The final indicator-sized tranche is converted to an economic quantity first. The unified Spot executor remains
+  authoritative for Binance lot size, notional, current balances, and Protected Floor validation.
+- Existing Swings are evaluated independently from their own weighted opening execution price. The default profitable
+  close threshold is `5%` (`SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT`), and profitable closes take priority over new exposure.
+- At most one strategy action per asset is submitted in a signal cycle. Durable action keys and existing client order
+  recovery prevent restarts or retries from creating a second real order for the same decision.
+- `accumulate_cash` restores the Swing quantity and leaves profit in shared quote cash. V1 `accumulate_asset` opens from
+  SELL opportunities and reuses profitable sale proceeds to buy back more asset. Its finalized positive asset gain
+  ratchets Target exactly once after the Swing is fully CLOSED.
+- `SCROOGE_SPOT_ESTIMATED_FEE_RATE` is used only for conservative strategy sizing. Actual Swing and portfolio accounting
+  always use confirmed Binance fills and their native fee amount/asset.
 
 ## Treasury Custody Boundaries
 

@@ -15,13 +15,14 @@ from shared.spot_swing import (
     SWING_SOURCES,
     SWING_STATUSES,
     calculate_swing_economics,
+    calculate_target_ratchet,
 )
 
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 12
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Rolling 24H Spot signal snapshots"
+RUNTIME_DB_SCHEMA_VERSION = 13
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Progressive Spot Swing execution state"
 
 
 class RuntimeDbError(OSError):
@@ -546,6 +547,61 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_spot_signal_snapshots_opportunity
         ON spot_signal_snapshots(account_key, opportunity, level, evaluated_at_ms DESC);
+
+        CREATE TABLE IF NOT EXISTS spot_strategy_campaigns (
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            campaign_id TEXT,
+            active_side TEXT CHECK (active_side IS NULL OR active_side IN ('buy', 'sell')),
+            highest_completed_level INTEGER NOT NULL DEFAULT 0,
+            last_signal_level INTEGER NOT NULL DEFAULT 0,
+            last_signal_at_ms INTEGER,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (account_key, asset_symbol, quote_symbol),
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS spot_strategy_actions (
+            action_key TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            campaign_id TEXT,
+            action_type TEXT NOT NULL CHECK (action_type IN ('open', 'close')),
+            side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+            signal_level INTEGER,
+            swing_id TEXT NOT NULL,
+            intent_id TEXT,
+            status TEXT NOT NULL CHECK (
+                status IN ('planned', 'intent_created', 'executing', 'completed', 'retryable', 'blocked')
+            ),
+            requested_quantity REAL NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            reason_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            completed_at_ms INTEGER,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_spot_strategy_actions_asset_status
+        ON spot_strategy_actions(account_key, asset_symbol, quote_symbol, status, created_at_ms ASC);
+
+        CREATE TABLE IF NOT EXISTS spot_swing_target_ratchets (
+            swing_id TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            previous_target_quantity REAL NOT NULL,
+            applied_gain_quantity REAL NOT NULL,
+            next_target_quantity REAL NOT NULL,
+            applied_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key),
+            FOREIGN KEY(swing_id) REFERENCES spot_swings(swing_id)
+        );
 
         CREATE TABLE IF NOT EXISTS portfolio_daily_snapshots (
             account_key TEXT NOT NULL,
@@ -1836,6 +1892,249 @@ def list_spot_signal_snapshots(
     return [_spot_signal_snapshot_from_row(row) for row in rows]
 
 
+def _spot_strategy_campaign_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "account_key": str(row["account_key"]),
+        "asset_symbol": str(row["asset_symbol"]),
+        "quote_symbol": str(row["quote_symbol"]),
+        "campaign_id": str(row["campaign_id"]) if row["campaign_id"] is not None else None,
+        "active_side": str(row["active_side"]) if row["active_side"] is not None else None,
+        "highest_completed_level": int(row["highest_completed_level"]),
+        "last_signal_level": int(row["last_signal_level"]),
+        "last_signal_at_ms": int(row["last_signal_at_ms"]) if row["last_signal_at_ms"] is not None else None,
+        "created_at_ms": int(row["created_at_ms"]),
+        "updated_at_ms": int(row["updated_at_ms"]),
+    }
+
+
+def sync_spot_strategy_campaign(
+    *,
+    account_key: str,
+    asset_symbol: str,
+    quote_symbol: str,
+    opportunity: str,
+    signal_level: int,
+    signal_at_ms: int,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_asset = str(asset_symbol or "").strip().upper()
+    normalized_quote = str(quote_symbol or "USDT").strip().upper() or "USDT"
+    normalized_side = str(opportunity or "hold").strip().lower()
+    if normalized_side not in {"hold", "buy", "sell"}:
+        raise ValueError("Spot strategy opportunity must be hold, buy, or sell.")
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM spot_strategy_campaigns
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (normalized_account, normalized_asset, normalized_quote),
+        ).fetchone()
+        prior_side = str(row["active_side"]) if row is not None and row["active_side"] is not None else None
+        if normalized_side == "hold":
+            campaign_id = None
+            active_side = None
+            highest_level = 0
+        elif prior_side != normalized_side:
+            campaign_id = _row_key(
+                [normalized_account, normalized_asset, normalized_quote, normalized_side, int(signal_at_ms)]
+            )[:24]
+            active_side = normalized_side
+            highest_level = 0
+        else:
+            campaign_id = str(row["campaign_id"])
+            active_side = normalized_side
+            highest_level = int(row["highest_completed_level"])
+        connection.execute(
+            """
+            INSERT INTO spot_strategy_campaigns (
+                account_key, asset_symbol, quote_symbol, campaign_id, active_side,
+                highest_completed_level, last_signal_level, last_signal_at_ms,
+                created_at_ms, updated_at_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_key, asset_symbol, quote_symbol) DO UPDATE SET
+                campaign_id = excluded.campaign_id,
+                active_side = excluded.active_side,
+                highest_completed_level = excluded.highest_completed_level,
+                last_signal_level = excluded.last_signal_level,
+                last_signal_at_ms = excluded.last_signal_at_ms,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (
+                normalized_account,
+                normalized_asset,
+                normalized_quote,
+                campaign_id,
+                active_side,
+                highest_level,
+                max(0, int(signal_level)),
+                int(signal_at_ms),
+                now_ms,
+                now_ms,
+            ),
+        )
+        saved = connection.execute(
+            """
+            SELECT * FROM spot_strategy_campaigns
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (normalized_account, normalized_asset, normalized_quote),
+        ).fetchone()
+    if saved is None:
+        raise RuntimeDbError("Spot strategy campaign was not persisted.")
+    return _spot_strategy_campaign_from_row(saved)
+
+
+def complete_spot_strategy_campaign_level(
+    *,
+    account_key: str,
+    asset_symbol: str,
+    quote_symbol: str,
+    campaign_id: str,
+    signal_level: int,
+    path: Path | None = None,
+) -> None:
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            UPDATE spot_strategy_campaigns
+            SET highest_completed_level = MAX(highest_completed_level, ?), updated_at_ms = ?
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ? AND campaign_id = ?
+            """,
+            (
+                int(signal_level),
+                int(datetime.now(timezone.utc).timestamp() * 1000),
+                str(account_key),
+                str(asset_symbol).strip().upper(),
+                str(quote_symbol).strip().upper(),
+                str(campaign_id),
+            ),
+        )
+
+
+def _spot_strategy_action_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    reason = json.loads(row["reason_json"] or "{}")
+    return {
+        "action_key": str(row["action_key"]),
+        "account_key": str(row["account_key"]),
+        "asset_symbol": str(row["asset_symbol"]),
+        "quote_symbol": str(row["quote_symbol"]),
+        "campaign_id": str(row["campaign_id"]) if row["campaign_id"] is not None else None,
+        "action_type": str(row["action_type"]),
+        "side": str(row["side"]),
+        "signal_level": int(row["signal_level"]) if row["signal_level"] is not None else None,
+        "swing_id": str(row["swing_id"]),
+        "intent_id": str(row["intent_id"]) if row["intent_id"] is not None else None,
+        "status": str(row["status"]),
+        "requested_quantity": float(row["requested_quantity"]),
+        "attempt_count": int(row["attempt_count"]),
+        "reason": reason if isinstance(reason, dict) else {},
+        "error": str(row["error"]) if row["error"] is not None else None,
+        "created_at_ms": int(row["created_at_ms"]),
+        "updated_at_ms": int(row["updated_at_ms"]),
+        "completed_at_ms": int(row["completed_at_ms"]) if row["completed_at_ms"] is not None else None,
+    }
+
+
+def ensure_spot_strategy_action(action: dict[str, Any], *, path: Path | None = None) -> dict[str, Any]:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    action_key = str(action.get("action_key") or "").strip()
+    if not action_key:
+        raise ValueError("Spot strategy action requires a stable action key.")
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO spot_strategy_actions (
+                action_key, account_key, asset_symbol, quote_symbol, campaign_id,
+                action_type, side, signal_level, swing_id, intent_id, status,
+                requested_quantity, attempt_count, reason_json, error,
+                created_at_ms, updated_at_ms, completed_at_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'planned', ?, 0, ?, NULL, ?, ?, NULL)
+            """,
+            (
+                action_key,
+                str(action.get("account_key") or "manual_spot").strip() or "manual_spot",
+                str(action.get("asset_symbol") or "").strip().upper(),
+                str(action.get("quote_symbol") or "USDT").strip().upper() or "USDT",
+                str(action.get("campaign_id") or "").strip() or None,
+                str(action.get("action_type") or "").strip().lower(),
+                str(action.get("side") or "").strip().lower(),
+                int(action["signal_level"]) if action.get("signal_level") is not None else None,
+                str(action.get("swing_id") or "").strip(),
+                float(action["requested_quantity"]),
+                _json_text(action.get("reason") if isinstance(action.get("reason"), dict) else {}),
+                now_ms,
+                now_ms,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM spot_strategy_actions WHERE action_key = ?",
+            (action_key,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeDbError("Spot strategy action was not persisted.")
+    return _spot_strategy_action_from_row(row)
+
+
+def update_spot_strategy_action(
+    action_key: str,
+    updates: dict[str, Any],
+    *,
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    allowed = {"intent_id", "status", "requested_quantity", "attempt_count", "reason_json", "error", "completed_at_ms"}
+    normalized = {key: value for key, value in updates.items() if key in allowed}
+    if "reason_json" in normalized:
+        normalized["reason_json"] = _json_text(normalized["reason_json"])
+    normalized["updated_at_ms"] = int(datetime.now(timezone.utc).timestamp() * 1000)
+    assignments = ", ".join(f"{key} = ?" for key in normalized)
+    with _connection(path) as connection:
+        connection.execute(
+            f"UPDATE spot_strategy_actions SET {assignments} WHERE action_key = ?",
+            [*normalized.values(), str(action_key)],
+        )
+        row = connection.execute(
+            "SELECT * FROM spot_strategy_actions WHERE action_key = ?",
+            (str(action_key),),
+        ).fetchone()
+    return _spot_strategy_action_from_row(row) if row is not None else None
+
+
+def list_spot_strategy_actions(
+    *,
+    account_key: str | None = None,
+    asset_symbol: str | None = None,
+    quote_symbol: str | None = None,
+    statuses: set[str] | None = None,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    for column, value in (
+        ("account_key", account_key),
+        ("asset_symbol", str(asset_symbol).strip().upper() if asset_symbol is not None else None),
+        ("quote_symbol", str(quote_symbol).strip().upper() if quote_symbol is not None else None),
+    ):
+        if value is not None:
+            conditions.append(f"{column} = ?")
+            params.append(value)
+    if statuses:
+        normalized_statuses = sorted({str(value).strip().lower() for value in statuses})
+        conditions.append(f"status IN ({', '.join('?' for _ in normalized_statuses)})")
+        params.extend(normalized_statuses)
+    sql = "SELECT * FROM spot_strategy_actions"
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY created_at_ms ASC, action_key ASC"
+    with _connection(path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [_spot_strategy_action_from_row(row) for row in rows]
+
+
 def save_exchange_account_snapshot(
     snapshot: dict[str, Any],
     *,
@@ -2557,13 +2856,20 @@ def _refresh_spot_swing_lifecycle(connection: sqlite3.Connection, swing_id: str)
     economics = calculate_swing_economics(swing, executions)
     status = str(economics["status"])
     closed_at_ms = max((item["executed_at_ms"] for item in executions), default=None) if status == "closed" else None
+    close_reason = swing.get("close_reason")
+    if status == "closed" and not close_reason:
+        for execution in reversed(executions):
+            reason = execution.get("reason") if isinstance(execution.get("reason"), dict) else {}
+            if reason.get("action_type") == "close":
+                close_reason = str(reason.get("close_reason") or "strategy_profit").strip().lower()
+                break
     connection.execute(
         """
         UPDATE spot_swings
-        SET status = ?, closed_at_ms = ?, updated_at_ms = ?
+        SET status = ?, close_reason = ?, closed_at_ms = ?, updated_at_ms = ?
         WHERE swing_id = ?
         """,
-        (status, closed_at_ms, int(datetime.now(timezone.utc).timestamp() * 1000), swing_id),
+        (status, close_reason, closed_at_ms, int(datetime.now(timezone.utc).timestamp() * 1000), swing_id),
     )
 
 
@@ -2681,6 +2987,117 @@ def append_spot_swing_execution(
         if any(persisted[key] != value for key, value in comparable.items()):
             raise ValueError("Duplicate Spot execution identity conflicts with the persisted execution.")
     return {**persisted, "idempotent_replay": replay}
+
+
+def apply_spot_swing_target_ratchet(
+    swing_id: str,
+    *,
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Apply one finalized ACCUMULATE_ASSET gain to Target exactly once."""
+    normalized_id = str(swing_id or "").strip()
+    if not normalized_id:
+        raise ValueError("Spot Swing ID is required for Target settlement.")
+    with _connection(path) as connection:
+        existing = connection.execute(
+            "SELECT * FROM spot_swing_target_ratchets WHERE swing_id = ?",
+            (normalized_id,),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "swing_id": str(existing["swing_id"]),
+                "account_key": str(existing["account_key"]),
+                "asset_symbol": str(existing["asset_symbol"]),
+                "quote_symbol": str(existing["quote_symbol"]),
+                "previous_target_quantity": float(existing["previous_target_quantity"]),
+                "applied_gain_quantity": float(existing["applied_gain_quantity"]),
+                "next_target_quantity": float(existing["next_target_quantity"]),
+                "applied_at_ms": int(existing["applied_at_ms"]),
+                "idempotent_replay": True,
+            }
+        swing_row = connection.execute(
+            "SELECT * FROM spot_swings WHERE swing_id = ?",
+            (normalized_id,),
+        ).fetchone()
+        if swing_row is None:
+            raise ValueError("Spot Swing was not found for Target settlement.")
+        execution_rows = connection.execute(
+            """
+            SELECT * FROM spot_swing_executions
+            WHERE swing_id = ? ORDER BY executed_at_ms ASC, execution_id ASC
+            """,
+            (normalized_id,),
+        ).fetchall()
+        swing = _spot_swing_from_row(swing_row)
+        economics = calculate_swing_economics(
+            swing,
+            [_spot_swing_execution_from_row(row) for row in execution_rows],
+        )
+        if swing.get("trading_objective") != "accumulate_asset" or economics.get("status") != "closed":
+            return None
+        policy_row = connection.execute(
+            """
+            SELECT * FROM portfolio_asset_policies
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (swing["account_key"], swing["asset_symbol"], swing["quote_symbol"]),
+        ).fetchone()
+        if policy_row is None:
+            raise ValueError("Spot Swing Target policy was not found for settlement.")
+        proposal = calculate_target_ratchet(
+            swing,
+            economics,
+            target_quantity=float(policy_row["target_quantity"]),
+            minimum_holding_pct=float(policy_row["minimum_holding_pct"]),
+        )
+        applied_gain = float(proposal["applied_gain_quantity"])
+        if applied_gain <= 0:
+            return None
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        connection.execute(
+            """
+            UPDATE portfolio_asset_policies
+            SET target_quantity = ?, updated_at_ms = ?
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (
+                proposal["next_target_quantity"],
+                now_ms,
+                swing["account_key"],
+                swing["asset_symbol"],
+                swing["quote_symbol"],
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO spot_swing_target_ratchets (
+                swing_id, account_key, asset_symbol, quote_symbol,
+                previous_target_quantity, applied_gain_quantity,
+                next_target_quantity, applied_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_id,
+                swing["account_key"],
+                swing["asset_symbol"],
+                swing["quote_symbol"],
+                proposal["previous_target_quantity"],
+                applied_gain,
+                proposal["next_target_quantity"],
+                now_ms,
+            ),
+        )
+    return {
+        "swing_id": normalized_id,
+        "account_key": swing["account_key"],
+        "asset_symbol": swing["asset_symbol"],
+        "quote_symbol": swing["quote_symbol"],
+        "previous_target_quantity": proposal["previous_target_quantity"],
+        "applied_gain_quantity": applied_gain,
+        "next_target_quantity": proposal["next_target_quantity"],
+        "applied_at_ms": now_ms,
+        "idempotent_replay": False,
+    }
 
 
 def upsert_portfolio_daily_snapshot(

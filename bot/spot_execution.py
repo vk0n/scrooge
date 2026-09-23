@@ -10,6 +10,7 @@ from typing import Any
 
 from bot.spot_account import normalize_spot_account_snapshot
 from shared.runtime_db import (
+    apply_spot_swing_target_ratchet,
     append_portfolio_transaction,
     append_spot_swing_execution,
     list_portfolio_transactions,
@@ -19,7 +20,7 @@ from shared.runtime_db import (
     save_exchange_account_snapshot,
     update_spot_order_intent,
 )
-from shared.treasury_ledger import project_portfolio_transaction
+from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction
 
 
 class SpotOrderUncertainError(RuntimeError):
@@ -546,6 +547,19 @@ class SpotOrderExecutor:
                             "executed_at_ms": fill.get("executed_at_ms") or summary["executed_at_ms"],
                             "order_summary": summary,
                         },
+                        path=self.db_path,
+                    )
+                ratchet = apply_spot_swing_target_ratchet(intent["swing_id"], path=self.db_path)
+                if ratchet is not None:
+                    append_treasury_event(
+                        code="treasury_target_ratchet_applied",
+                        tone="positive",
+                        message=(
+                            f"I secured {ratchet['applied_gain_quantity']:,.8f} {intent['asset_symbol']} "
+                            "of Swing profit inside the protected hoard."
+                        ),
+                        source_ref=f"spot_swing_target_ratchet:{intent['swing_id']}",
+                        context=ratchet,
                         path=self.db_path,
                     )
         except Exception as accounting_error:  # noqa: BLE001

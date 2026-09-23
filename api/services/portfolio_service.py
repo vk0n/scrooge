@@ -381,6 +381,7 @@ def _attach_asset_policies(holdings: list[dict[str, Any]]) -> None:
                 {
                     "target_quantity": None,
                     "minimum_holding_pct": None,
+                    "trading_objective": None,
                     "protected_floor_quantity": 0.0,
                     "protected_holding_quantity": 0.0,
                     "amount_above_protected_floor": 0.0,
@@ -396,6 +397,7 @@ def _attach_asset_policies(holdings: list[dict[str, Any]]) -> None:
         policy = policy_by_asset.get((holding["asset_symbol"], holding["quote_symbol"]))
         holding["target_quantity"] = _as_float(policy.get("target_quantity")) if policy else holding["quantity"]
         holding["minimum_holding_pct"] = _as_float(policy.get("minimum_holding_pct")) if policy else 100.0
+        holding["trading_objective"] = policy.get("trading_objective") if policy else None
         _attach_inventory_state(holding)
 
 
@@ -974,6 +976,8 @@ def update_portfolio_asset_policy(
     quote_symbol = _clean_symbol(payload.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
     target_quantity = _as_float(payload.get("target_quantity"))
     minimum_holding_pct = _as_float(payload.get("minimum_holding_pct"))
+    objective_was_provided = "trading_objective" in payload
+    trading_objective = str(payload.get("trading_objective") or "").strip().lower() or None
     if not normalized_asset:
         raise ValueError("Asset symbol is required.")
     if normalized_asset in STABLE_ASSETS:
@@ -982,6 +986,8 @@ def update_portfolio_asset_policy(
         raise ValueError("Target Holding must be greater than zero.")
     if minimum_holding_pct is None or not 0 <= minimum_holding_pct <= 100:
         raise ValueError("Minimum Holding must be between 0% and 100%.")
+    if objective_was_provided and trading_objective not in {None, "accumulate_cash", "accumulate_asset"}:
+        raise ValueError("Trading Objective must be Accumulate Cash, Accumulate Asset, or unset.")
 
     transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     holdings, _ = _derive_holdings(transactions)
@@ -991,20 +997,24 @@ def update_portfolio_asset_policy(
     ):
         raise LookupError("Treasury asset was not found.")
 
+    policy_payload = {
+        "asset_symbol": normalized_asset,
+        "quote_symbol": quote_symbol,
+        "target_quantity": target_quantity,
+        "minimum_holding_pct": minimum_holding_pct,
+    }
+    if objective_was_provided:
+        policy_payload["trading_objective"] = trading_objective
     policy = upsert_portfolio_asset_policy(
-        {
-            "asset_symbol": normalized_asset,
-            "quote_symbol": quote_symbol,
-            "target_quantity": target_quantity,
-            "minimum_holding_pct": minimum_holding_pct,
-        },
+        policy_payload,
         account_key=DEFAULT_ACCOUNT_KEY,
     )
     append_treasury_event(
         code="treasury_policy_updated",
         message=(
             f"Updated {normalized_asset} policy: target {_format_quantity(target_quantity)} "
-            f"{normalized_asset}, minimum holding {_format_quantity(minimum_holding_pct)}%."
+            f"{normalized_asset}, minimum holding {_format_quantity(minimum_holding_pct)}%, "
+            f"objective {(policy.get('trading_objective') or 'unset').replace('_', ' ')}."
         ),
         source_ref=f"portfolio_policy_update:{uuid.uuid4()}",
         context=dict(policy),

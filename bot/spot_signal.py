@@ -4,7 +4,7 @@ import math
 import os
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -204,6 +204,7 @@ class RollingSpotSignalMonitor:
         sizing_config: IndicatorSizingConfig | None = None,
         indicator_interval: str | None = None,
         account_key: str = DEFAULT_ACCOUNT_KEY,
+        snapshot_handler: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         self.client = client
         self.interval_seconds = max(30.0, float(interval_seconds))
@@ -216,6 +217,7 @@ class RollingSpotSignalMonitor:
         if self.indicator_interval not in BINANCE_KLINE_INTERVALS:
             raise ValueError(f"Unsupported Spot indicator interval: {self.indicator_interval}")
         self.account_key = str(account_key or DEFAULT_ACCOUNT_KEY).strip() or DEFAULT_ACCOUNT_KEY
+        self.snapshot_handler = snapshot_handler
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_states: dict[tuple[str, str], tuple[object, ...]] = {}
@@ -362,6 +364,15 @@ class RollingSpotSignalMonitor:
                 saved["eligibility_reason"],
             )
         self._last_states[key] = state
+        if self.snapshot_handler is not None:
+            try:
+                self.snapshot_handler(saved)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.exception(
+                    "spot_strategy_snapshot_handler_failed symbol=%s error=%s",
+                    market_symbol,
+                    exc,
+                )
         return saved
 
     def _run(self) -> None:

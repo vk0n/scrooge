@@ -53,6 +53,7 @@ class PortfolioAssetPolicyRequest(BaseModel):
     quote_symbol: str = Field(default="USDT", min_length=1, max_length=24)
     target_quantity: float = Field(..., gt=0)
     minimum_holding_pct: float = Field(..., ge=0, le=100)
+    trading_objective: Literal["accumulate_cash", "accumulate_asset"] | None = None
 
 
 class SpotOrderPreviewRequest(BaseModel):
@@ -100,7 +101,7 @@ def add_custody_transfer(data: CustodyTransferRequest) -> dict[str, object]:
 @router.post("/assets/{asset_symbol}/policy")
 def update_asset_policy(asset_symbol: str, data: PortfolioAssetPolicyRequest) -> dict[str, object]:
     try:
-        payload, warnings = update_portfolio_asset_policy(asset_symbol, data.model_dump())
+        payload, warnings = update_portfolio_asset_policy(asset_symbol, data.model_dump(exclude_unset=True))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LookupError as exc:
