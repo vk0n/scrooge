@@ -2218,6 +2218,8 @@ pre {
 .treasury-summary-card strong.treasury-total-value {
   gap: 0;
   color: #e1b84f;
+  font-size: clamp(1.3rem, 1.8vw, 1.65rem);
+  letter-spacing: -0.025em;
   text-shadow: 0 0 10px rgba(225, 184, 79, 0.14);
 }
 
