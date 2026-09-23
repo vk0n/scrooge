@@ -434,6 +434,7 @@ function CustodyPanel({
   const [note, setNote] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<boolean>(false);
   const [tradeExpanded, setTradeExpanded] = useState<boolean>(false);
   const available = custodyQuantity(holding, source);
   const tradeAvailable = Boolean(
@@ -479,16 +480,27 @@ function CustodyPanel({
   return (
     <section className="treasury-custody-panel">
       <header className="treasury-asset-panel-head">
-        <span>Custody</span>
-        <span className="treasury-custody-summary">
-          {CUSTODY_LOCATIONS.map((location) => (
-            <span key={location}>
-              {CUSTODY_LABELS[location]} {formatNumber(custodyQuantity(holding, location), 8)}
-            </span>
-          ))}
-        </span>
+        <button
+          type="button"
+          className="treasury-asset-panel-toggle"
+          aria-expanded={expanded}
+          onClick={() => {
+            setExpanded((current) => !current);
+            if (expanded) setTradeExpanded(false);
+          }}
+        >
+          <span>Custody</span>
+          <span className="treasury-custody-summary">
+            {CUSTODY_LOCATIONS.map((location) => (
+              <span key={location}>
+                {CUSTODY_LABELS[location]} {formatNumber(custodyQuantity(holding, location), 8)}
+              </span>
+            ))}
+          </span>
+          <span className="treasury-asset-panel-chevron" aria-hidden="true" />
+        </button>
       </header>
-      <div className="treasury-custody-content">
+      {expanded ? <div className="treasury-custody-content">
         <div className="treasury-custody-breakdown">
           {CUSTODY_LOCATIONS.map((location) => (
             <div key={location} className={location === "binance" ? "treasury-custody-binance" : undefined}>
@@ -574,7 +586,7 @@ function CustodyPanel({
           Accounting only. No exchange or blockchain transfer is initiated.
         </p>
         {error ? <p className="form-error">{error}</p> : null}
-      </div>
+      </div> : null}
     </section>
   );
 }
@@ -762,6 +774,7 @@ function AssetPolicyPanel({
   const [minimumHoldingPct, setMinimumHoldingPct] = useState<string>(String(holding.minimum_holding_pct ?? 100));
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<boolean>(false);
   const inventoryMessage = holding.amount_below_protected_floor > 0
     ? `Current Holding is ${formatNumber(holding.amount_below_protected_floor, 8)} ${holding.asset_symbol} below the Protected Floor.`
     : holding.amount_above_protected_floor <= 0
@@ -806,16 +819,24 @@ function AssetPolicyPanel({
   return (
     <section className="treasury-policy-panel">
       <header className="treasury-asset-panel-head">
-        <span>Policy</span>
-        <span className="treasury-policy-summary">
-          Target {formatNumber(holding.target_quantity, 8)} {holding.asset_symbol}
-          <span>Minimum {formatPercent(holding.minimum_holding_pct)}</span>
-          <strong className={holding.immediately_sellable_quantity > 0 ? "value-positive" : "value-neutral"}>
-            Sellable {formatNumber(holding.immediately_sellable_quantity, 8)}
-          </strong>
-        </span>
+        <button
+          type="button"
+          className="treasury-asset-panel-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span>Policy</span>
+          <span className="treasury-policy-summary">
+            Target {formatNumber(holding.target_quantity, 8)} {holding.asset_symbol}
+            <span>Minimum {formatPercent(holding.minimum_holding_pct)}</span>
+            <strong className={holding.immediately_sellable_quantity > 0 ? "value-positive" : "value-neutral"}>
+              Sellable {formatNumber(holding.immediately_sellable_quantity, 8)}
+            </strong>
+          </span>
+          <span className="treasury-asset-panel-chevron" aria-hidden="true" />
+        </button>
       </header>
-      <div className="treasury-policy-content">
+      {expanded ? <div className="treasury-policy-content">
         <div className="treasury-policy-metrics">
           <div>
             <span>Current Total</span>
@@ -901,7 +922,7 @@ function AssetPolicyPanel({
           Target stays fixed when the Stack changes. Minimum Holding is always measured against Target.
         </p>
         {error ? <p className="form-error">{error}</p> : null}
-      </div>
+      </div> : null}
     </section>
   );
 }
@@ -919,6 +940,7 @@ function AssetLedger({
   const [loading, setLoading] = useState<boolean>(true);
   const [updatingTransactionId, setUpdatingTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<boolean>(false);
 
   const loadTransactions = useCallback(async (offset: number): Promise<void> => {
     setLoading(true);
@@ -937,8 +959,8 @@ function AssetLedger({
   }, [holding.asset_symbol, holding.quote_symbol]);
 
   useEffect(() => {
-    void loadTransactions(0);
-  }, [loadTransactions, refreshKey]);
+    if (expanded) void loadTransactions(0);
+  }, [expanded, loadTransactions, refreshKey]);
 
   async function setTransactionStatus(transaction: PortfolioTransaction): Promise<void> {
     const nextStatus = transaction.status === "voided" ? "settled" : "voided";
@@ -976,15 +998,23 @@ function AssetLedger({
   return (
     <section className="treasury-asset-ledger">
       <header className="treasury-asset-panel-head">
-        <span>Asset Ledger</span>
-        <span>{count} {count === 1 ? "entry" : "entries"}</span>
+        <button
+          type="button"
+          className="treasury-asset-panel-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span>Asset Ledger</span>
+          <span>{ledger ? `${count} ${count === 1 ? "entry" : "entries"}` : "History"}</span>
+          <span className="treasury-asset-panel-chevron" aria-hidden="true" />
+        </button>
       </header>
-      {loading && !ledger ? <p className="status-performance-note">Opening the ledger...</p> : null}
-      {error ? <p className="form-error">{error}</p> : null}
-      {!loading && transactions.length === 0 ? (
+      {expanded && loading && !ledger ? <p className="status-performance-note">Opening the ledger...</p> : null}
+      {expanded && error ? <p className="form-error">{error}</p> : null}
+      {expanded && !loading && transactions.length === 0 ? (
         <p className="trade-history-empty-sheet">No entries for {holding.asset_symbol} yet.</p>
       ) : null}
-      {transactions.length ? (
+      {expanded && transactions.length ? (
         <>
           <div className="treasury-ledger-stack">
             {transactions.map((transaction) => (
