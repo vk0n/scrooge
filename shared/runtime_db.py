@@ -20,8 +20,8 @@ from shared.spot_swing import (
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 11
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Unified Spot execution audit and recovery"
+RUNTIME_DB_SCHEMA_VERSION = 12
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Rolling 24H Spot signal snapshots"
 
 
 class RuntimeDbError(OSError):
@@ -511,6 +511,41 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_spot_swing_executions_swing_time
         ON spot_swing_executions(swing_id, executed_at_ms ASC, execution_id ASC);
+
+        CREATE TABLE IF NOT EXISTS spot_signal_snapshots (
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            market_symbol TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('ok', 'error')),
+            opportunity TEXT CHECK (opportunity IS NULL OR opportunity IN ('hold', 'buy', 'sell')),
+            level INTEGER CHECK (level IS NULL OR level >= 0),
+            base_tranche_pct REAL,
+            rolling_change_pct REAL,
+            current_price REAL,
+            reference_price REAL,
+            current_at_ms INTEGER,
+            reference_at_ms INTEGER,
+            window_ms INTEGER,
+            strategy_eligible INTEGER NOT NULL DEFAULT 0,
+            eligibility_reason TEXT,
+            trading_objective TEXT CHECK (
+                trading_objective IS NULL OR trading_objective IN ('accumulate_cash', 'accumulate_asset')
+            ),
+            levels_json TEXT NOT NULL DEFAULT '[]',
+            base_tranches_json TEXT NOT NULL DEFAULT '[]',
+            reason_code TEXT,
+            error TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            evaluated_at_ms INTEGER,
+            last_attempt_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (account_key, asset_symbol, quote_symbol),
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_spot_signal_snapshots_opportunity
+        ON spot_signal_snapshots(account_key, opportunity, level, evaluated_at_ms DESC);
 
         CREATE TABLE IF NOT EXISTS portfolio_daily_snapshots (
             account_key TEXT NOT NULL,
@@ -1597,6 +1632,208 @@ def upsert_portfolio_asset_policy(
         for policy in policies
         if policy["asset_symbol"] == asset_symbol and policy["quote_symbol"] == quote_symbol
     )
+
+
+def _spot_signal_snapshot_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    payload = json.loads(row["payload_json"] or "{}")
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update(
+        {
+            "account_key": str(row["account_key"]),
+            "asset_symbol": str(row["asset_symbol"]),
+            "quote_symbol": str(row["quote_symbol"]),
+            "market_symbol": str(row["market_symbol"]),
+            "status": str(row["status"]),
+            "opportunity": str(row["opportunity"]) if row["opportunity"] is not None else None,
+            "level": int(row["level"]) if row["level"] is not None else None,
+            "base_tranche_pct": _as_float_or_none(row["base_tranche_pct"]),
+            "rolling_change_pct": _as_float_or_none(row["rolling_change_pct"]),
+            "current_price": _as_float_or_none(row["current_price"]),
+            "reference_price": _as_float_or_none(row["reference_price"]),
+            "current_at_ms": int(row["current_at_ms"]) if row["current_at_ms"] is not None else None,
+            "reference_at_ms": int(row["reference_at_ms"]) if row["reference_at_ms"] is not None else None,
+            "window_ms": int(row["window_ms"]) if row["window_ms"] is not None else None,
+            "strategy_eligible": bool(row["strategy_eligible"]),
+            "eligibility_reason": str(row["eligibility_reason"]) if row["eligibility_reason"] else None,
+            "trading_objective": str(row["trading_objective"]) if row["trading_objective"] else None,
+            "levels_pct": json.loads(row["levels_json"] or "[]"),
+            "base_tranches_pct": json.loads(row["base_tranches_json"] or "[]"),
+            "reason_code": str(row["reason_code"]) if row["reason_code"] else None,
+            "error": str(row["error"]) if row["error"] else None,
+            "evaluated_at_ms": int(row["evaluated_at_ms"]) if row["evaluated_at_ms"] is not None else None,
+            "last_attempt_at_ms": int(row["last_attempt_at_ms"]),
+            "updated_at_ms": int(row["updated_at_ms"]),
+        }
+    )
+    return payload
+
+
+def save_spot_signal_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    account_key: str = "manual_spot",
+    path: Path | None = None,
+) -> dict[str, Any]:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    asset_symbol = str(snapshot.get("asset_symbol") or "").strip().upper()
+    quote_symbol = str(snapshot.get("quote_symbol") or "USDT").strip().upper() or "USDT"
+    market_symbol = str(snapshot.get("market_symbol") or f"{asset_symbol}{quote_symbol}").strip().upper()
+    evaluated_at_ms = int(snapshot.get("evaluated_at_ms") or datetime.now(timezone.utc).timestamp() * 1000)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO spot_signal_snapshots (
+                account_key, asset_symbol, quote_symbol, market_symbol, status,
+                opportunity, level, base_tranche_pct, rolling_change_pct,
+                current_price, reference_price, current_at_ms, reference_at_ms,
+                window_ms, strategy_eligible, eligibility_reason, trading_objective,
+                levels_json, base_tranches_json, reason_code, error, payload_json,
+                evaluated_at_ms, last_attempt_at_ms, updated_at_ms
+            )
+            VALUES (?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            ON CONFLICT(account_key, asset_symbol, quote_symbol) DO UPDATE SET
+                market_symbol = excluded.market_symbol,
+                status = 'ok',
+                opportunity = excluded.opportunity,
+                level = excluded.level,
+                base_tranche_pct = excluded.base_tranche_pct,
+                rolling_change_pct = excluded.rolling_change_pct,
+                current_price = excluded.current_price,
+                reference_price = excluded.reference_price,
+                current_at_ms = excluded.current_at_ms,
+                reference_at_ms = excluded.reference_at_ms,
+                window_ms = excluded.window_ms,
+                strategy_eligible = excluded.strategy_eligible,
+                eligibility_reason = excluded.eligibility_reason,
+                trading_objective = excluded.trading_objective,
+                levels_json = excluded.levels_json,
+                base_tranches_json = excluded.base_tranches_json,
+                reason_code = excluded.reason_code,
+                error = NULL,
+                payload_json = excluded.payload_json,
+                evaluated_at_ms = excluded.evaluated_at_ms,
+                last_attempt_at_ms = excluded.last_attempt_at_ms,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (
+                normalized_account,
+                asset_symbol,
+                quote_symbol,
+                market_symbol,
+                snapshot.get("opportunity"),
+                int(snapshot.get("level") or 0),
+                _as_float_or_none(snapshot.get("base_tranche_pct")),
+                _as_float_or_none(snapshot.get("rolling_change_pct")),
+                _as_float_or_none(snapshot.get("current_price")),
+                _as_float_or_none(snapshot.get("reference_price")),
+                int(snapshot["current_at_ms"]),
+                int(snapshot["reference_at_ms"]),
+                int(snapshot["window_ms"]),
+                1 if bool(snapshot.get("strategy_eligible")) else 0,
+                str(snapshot.get("eligibility_reason") or "").strip() or None,
+                str(snapshot.get("trading_objective") or "").strip().lower() or None,
+                _json_text(snapshot.get("levels_pct") or []),
+                _json_text(snapshot.get("base_tranches_pct") or []),
+                str(snapshot.get("reason_code") or "").strip() or None,
+                _json_text(snapshot),
+                evaluated_at_ms,
+                evaluated_at_ms,
+                now_ms,
+            ),
+        )
+    saved = load_spot_signal_snapshot(
+        asset_symbol,
+        quote_symbol=quote_symbol,
+        account_key=normalized_account,
+        path=path,
+    )
+    if saved is None:
+        raise RuntimeDbError(f"Failed to load saved Spot signal snapshot for {market_symbol}.")
+    return saved
+
+
+def mark_spot_signal_snapshot_error(
+    asset_symbol: str,
+    error: str,
+    *,
+    quote_symbol: str = "USDT",
+    account_key: str = "manual_spot",
+    attempted_at_ms: int | None = None,
+    path: Path | None = None,
+) -> None:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_asset = str(asset_symbol or "").strip().upper()
+    normalized_quote = str(quote_symbol or "USDT").strip().upper() or "USDT"
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    attempted_ms = int(attempted_at_ms or now_ms)
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO spot_signal_snapshots (
+                account_key, asset_symbol, quote_symbol, market_symbol, status,
+                strategy_eligible, eligibility_reason, error, payload_json, last_attempt_at_ms, updated_at_ms
+            )
+            VALUES (?, ?, ?, ?, 'error', 0, 'signal_unavailable', ?, '{}', ?, ?)
+            ON CONFLICT(account_key, asset_symbol, quote_symbol) DO UPDATE SET
+                status = 'error',
+                strategy_eligible = 0,
+                eligibility_reason = 'signal_unavailable',
+                error = excluded.error,
+                last_attempt_at_ms = excluded.last_attempt_at_ms,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (
+                normalized_account,
+                normalized_asset,
+                normalized_quote,
+                f"{normalized_asset}{normalized_quote}",
+                str(error)[:500],
+                attempted_ms,
+                now_ms,
+            ),
+        )
+
+
+def load_spot_signal_snapshot(
+    asset_symbol: str,
+    *,
+    quote_symbol: str = "USDT",
+    account_key: str = "manual_spot",
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    with _connection(path) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM spot_signal_snapshots
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            LIMIT 1
+            """,
+            (
+                str(account_key or "manual_spot").strip() or "manual_spot",
+                str(asset_symbol or "").strip().upper(),
+                str(quote_symbol or "USDT").strip().upper() or "USDT",
+            ),
+        ).fetchone()
+    return _spot_signal_snapshot_from_row(row) if row is not None else None
+
+
+def list_spot_signal_snapshots(
+    *,
+    account_key: str = "manual_spot",
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    with _connection(path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM spot_signal_snapshots
+            WHERE account_key = ?
+            ORDER BY asset_symbol ASC, quote_symbol ASC
+            """,
+            (str(account_key or "manual_spot").strip() or "manual_spot",),
+        ).fetchall()
+    return [_spot_signal_snapshot_from_row(row) for row in rows]
 
 
 def save_exchange_account_snapshot(

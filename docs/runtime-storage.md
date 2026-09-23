@@ -91,7 +91,7 @@ portfolio transactions, custody movements, and current balance changes never der
 - `portfolio_transactions` receives one idempotent transaction for every confirmed order and remains the holdings/cost
   basis source of truth. A linked Swing separately receives the actual Binance fills, preserving exchange trade identity
   and fees; replay cannot double-count either projection.
-- Runtime startup only resumes previously confirmed/in-flight intents. It does not create signals, Swings, or new
+- Runtime startup only resumes previously confirmed/in-flight intents. Recovery does not create Swings or new
   automatic orders.
 - A closed `accumulate_asset` Swing may produce a Target ratchet proposal only after its net asset gain is final. A
   future authoritative settlement layer must apply that proposal atomically and idempotently exactly once. Partial
@@ -106,6 +106,20 @@ switch or a per-asset auto-trading toggle.
   controls are omitted from the UI. Stored Target and Minimum Holding values remain unchanged.
 - With execution enabled, a managed asset is `locked` at 100% Minimum Holding and `unlocked` below 100%.
 - Dry Powder is not policy-managed and remains `locked`.
+
+## Rolling Spot Signal Boundaries
+
+- When Spot execution is enabled, the bot samples Binance rolling 24-hour tickers on a configurable interval and
+  persists the latest explainable signal per managed asset in `spot_signal_snapshots`.
+- The primary signal is `current price / approximately-24h reference price - 1`. It is independent of UTC midnight.
+- Default absolute movement levels are `5,8,12,18%`, with base tranches `10,20,30,40%`. They can be overridden through
+  `SCROOGE_SPOT_SIGNAL_LEVELS_PCT` and `SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT`; both lists must remain aligned.
+- A move below Level 1 is `HOLD`; positive qualifying moves are `SELL` opportunities and negative qualifying moves are
+  `BUY` opportunities.
+- Market opportunity and strategy eligibility are stored separately. Missing Trading Objective, a fully protected
+  policy, disabled execution, or unavailable market data cannot become an eligible strategy action.
+- The signal monitor does not create a Swing, create an order intent, submit an order, size by indicators, or mutate
+  Treasury accounting. Those remain later strategy/execution phases.
 
 ## Treasury Custody Boundaries
 

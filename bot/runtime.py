@@ -20,6 +20,7 @@ from bot.event_log import get_technical_logger
 from bot.market_stream import LiveMarketStream
 from bot.spot_account import SpotBalanceMonitor
 from bot.spot_execution import SpotOrderExecutor
+from bot.spot_signal import RollingSpotSignalMonitor
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.strategy_chart import StrategyChartRecorder
 from bot.trade import (
@@ -46,6 +47,7 @@ state: dict[str, Any] | None = None
 state_lock: RLockType | None = None
 live_market_stream: LiveMarketStream | None = None
 spot_balance_monitor: SpotBalanceMonitor | None = None
+spot_signal_monitor: RollingSpotSignalMonitor | None = None
 technical_logger = get_technical_logger()
 
 
@@ -76,7 +78,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 def handle_exit(sig: int, frame: Any) -> None:  # noqa: ARG001
     """Handler for Ctrl+C (SIGINT) to gracefully save state and exit."""
-    global live_market_stream, spot_balance_monitor
+    global live_market_stream, spot_balance_monitor, spot_signal_monitor
     if state:
         if state_lock is not None:
             with state_lock:
@@ -93,6 +95,9 @@ def handle_exit(sig: int, frame: Any) -> None:  # noqa: ARG001
     if spot_balance_monitor is not None:
         spot_balance_monitor.stop()
         spot_balance_monitor = None
+    if spot_signal_monitor is not None:
+        spot_signal_monitor.stop()
+        spot_signal_monitor = None
     sys.exit(0)
 
 
@@ -549,6 +554,8 @@ if __name__ == "__main__":
     load_dotenv()
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
+    spot_signal_refresh_seconds = _env_int("SCROOGE_SPOT_SIGNAL_REFRESH_SECONDS", 300)
+    spot_execution_enabled = _env_flag("SCROOGE_SPOT_EXECUTION_ENABLED", False)
     client = create_binance_client(api_key, api_secret, logger=technical_logger)
     data_module.set_client(client)
     trade_module.set_client(client)
@@ -757,6 +764,17 @@ if __name__ == "__main__":
                 db_path=db_path,
             )
             spot_balance_monitor.start()
+            if spot_execution_enabled:
+                spot_signal_monitor = RollingSpotSignalMonitor(
+                    spot_client,
+                    interval_seconds=spot_signal_refresh_seconds,
+                    execution_enabled=True,
+                    logger=technical_logger,
+                    db_path=db_path,
+                )
+                spot_signal_monitor.start()
+            else:
+                technical_logger.info("spot_signal_monitor_disabled reason=execution_disabled")
             while True:
                 try:
                     if control_client is None:
@@ -979,6 +997,9 @@ if __name__ == "__main__":
                     technical_logger.exception("live_loop_error error=%s", e)
                     time.sleep(max(1, control_poll_slice_seconds))
         finally:
+            if spot_signal_monitor is not None:
+                spot_signal_monitor.stop()
+                spot_signal_monitor = None
             if spot_balance_monitor is not None:
                 spot_balance_monitor.stop()
                 spot_balance_monitor = None
