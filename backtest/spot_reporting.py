@@ -210,6 +210,68 @@ def _bad_case_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _asset_capital_performance(
+    asset_config: Any,
+    swings: list[dict[str, Any]],
+    *,
+    final_price: float,
+) -> dict[str, float | None]:
+    accumulated_asset = 0.0
+    accumulated_cash = 0.0
+    open_bargain_pnl = 0.0
+    for swing in swings:
+        economics = swing["economics"]
+        if economics.get("status") == "closed":
+            accumulated_asset += float(economics.get("realized_net_asset_change") or 0.0)
+            accumulated_cash += float(economics.get("realized_cash_gain_quote") or 0.0)
+            continue
+        open_bargain_pnl += (
+            float(economics.get("realized_pnl_quote") or 0.0)
+            + float(economics.get("unrealized_pnl_quote") or 0.0)
+        )
+
+    initial_quantity = float(asset_config.quantity)
+    settled_quantity = max(0.0, initial_quantity + accumulated_asset)
+    initial_capital = (
+        initial_quantity * float(asset_config.entry_cost)
+        if asset_config.entry_cost is not None
+        else None
+    )
+    effective_cost_basis = (
+        initial_capital - accumulated_cash if initial_capital is not None else None
+    )
+    effective_entry_cost = (
+        effective_cost_basis / settled_quantity
+        if effective_cost_basis is not None and settled_quantity > 1e-12
+        else None
+    )
+    market_gain = (
+        settled_quantity * final_price - initial_capital
+        if initial_capital is not None
+        else None
+    )
+    floating_gain = market_gain + accumulated_cash if market_gain is not None else None
+    total_gain = floating_gain + open_bargain_pnl if floating_gain is not None else None
+    return {
+        "initial_quantity": initial_quantity,
+        "initial_capital": initial_capital,
+        "accumulated_asset_quantity": accumulated_asset,
+        "accumulated_cash_gain": accumulated_cash,
+        "open_bargain_pnl": open_bargain_pnl,
+        "settled_quantity": settled_quantity,
+        "effective_cost_basis": effective_cost_basis,
+        "effective_entry_cost": effective_entry_cost,
+        "market_gain": market_gain,
+        "floating_gain": floating_gain,
+        "total_gain": total_gain,
+        "total_gain_pct": (
+            total_gain / initial_capital * 100.0
+            if total_gain is not None and initial_capital is not None and initial_capital > 0
+            else None
+        ),
+    }
+
+
 def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
     final_point = result.equity[-1]
     final_value = float(final_point["treasury_value"])
@@ -226,6 +288,11 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
         symbol = asset_config.symbol
         state = result.assets[symbol]
         swings = [item for item in result.swings if item["asset_symbol"] == symbol]
+        capital_performance = _asset_capital_performance(
+            asset_config,
+            swings,
+            final_price=result.final_prices[symbol],
+        )
         ratchets = [item for item in result.target_history if item["asset_symbol"] == symbol]
         initial_floor = asset_config.target_holding * asset_config.minimum_holding_pct / 100.0
         final_market_value = state.quantity * result.final_prices[symbol]
@@ -282,9 +349,11 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             "inventory": _inventory_metrics(result, symbol),
             "bad_cases": _bad_case_metrics(swings),
             "objective_metrics": objective_metrics,
+            "capital_performance": capital_performance,
             "final": {
                 "quantity": state.quantity,
                 "average_cost": state.average_cost,
+                "effective_entry_cost": capital_performance["effective_entry_cost"],
                 "target_holding": state.target_quantity,
                 "protected_floor": state.protected_floor,
                 "binance_quantity": state.binance_quantity,
@@ -301,6 +370,24 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 "scrooge_asset_value": final_market_value,
             },
         }
+    capital_basis_complete = all(
+        asset.entry_cost is not None or asset.quantity <= 1e-12
+        for asset in result.scenario.assets
+    )
+    known_initial_asset_capital = sum(
+        float(item["capital_performance"]["initial_capital"] or 0.0)
+        for item in per_asset.values()
+    )
+    initial_invested_capital = (
+        result.scenario.starting_usdt + known_initial_asset_capital
+        if capital_basis_complete
+        else None
+    )
+    total_gain_on_initial_capital = (
+        final_value - initial_invested_capital
+        if initial_invested_capital is not None
+        else None
+    )
     final_allocations = {
         symbol: (
             result.assets[symbol].quantity * result.final_prices[symbol] / final_value * 100
@@ -326,6 +413,15 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             "difference_vs_hodl": final_value - hodl_final,
             "total_return_pct": ((final_value / initial_value) - 1.0) * 100 if initial_value > 0 else 0.0,
             "hodl_return_pct": ((hodl_final / initial_value) - 1.0) * 100 if initial_value > 0 else 0.0,
+            "initial_invested_capital": initial_invested_capital,
+            "total_gain_on_initial_capital": total_gain_on_initial_capital,
+            "total_gain_on_initial_capital_pct": (
+                total_gain_on_initial_capital / initial_invested_capital * 100.0
+                if total_gain_on_initial_capital is not None
+                and initial_invested_capital is not None
+                and initial_invested_capital > 0
+                else None
+            ),
             "maximum_treasury_drawdown_pct": _maximum_drawdown(
                 [float(item["treasury_value"]) for item in result.equity]
             ),
@@ -496,6 +592,13 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
                 "cold_storage_quantity": state.cold_storage_quantity,
                 "unassigned_quantity": state.unassigned_quantity,
                 "average_cost": state.average_cost,
+                "effective_entry_cost": report["per_asset"][symbol]["capital_performance"][
+                    "effective_entry_cost"
+                ],
+                "initial_capital": report["per_asset"][symbol]["capital_performance"][
+                    "initial_capital"
+                ],
+                "total_gain": report["per_asset"][symbol]["capital_performance"]["total_gain"],
                 "target_holding": state.target_quantity,
                 "protected_floor": state.protected_floor,
             }

@@ -123,6 +123,18 @@ type PortfolioHolding = {
   binance_custody_variance: number;
   target_delta_quantity: number | null;
   target_delta_pct: number | null;
+  initial_quantity: number;
+  initial_capital: number;
+  accumulated_asset_quantity: number;
+  accumulated_cash_gain: number;
+  open_bargain_pnl: number;
+  settled_quantity: number;
+  effective_cost_basis: number;
+  effective_entry_cost: number | null;
+  market_gain: number | null;
+  floating_gain: number | null;
+  total_gain: number | null;
+  total_gain_pct: number | null;
   spot_trading_state: "locked" | "unlocked";
   spot_trading_state_reason:
     | "execution_disabled"
@@ -1601,7 +1613,7 @@ function HoldingCard({
   ].join(":");
 
   return (
-    <article className={`${holdingToneClass(holding.unrealized_pnl)}${expanded ? " treasury-holding-card-expanded" : ""}`}>
+    <article className={`${holdingToneClass(holding.total_gain)}${expanded ? " treasury-holding-card-expanded" : ""}`}>
       <div className="treasury-holding-row">
         <button
           type="button"
@@ -1638,7 +1650,10 @@ function HoldingCard({
             </span>
             <span>
               <span>Entry Cost</span>
-              <strong>{formatCurrency(holding.average_cost, 6)}</strong>
+              <strong>{formatCurrency(
+                holding.is_dry_powder ? holding.average_cost : holding.effective_entry_cost,
+                6,
+              )}</strong>
             </span>
             <span>
               <span>Market Price</span>
@@ -1649,15 +1664,20 @@ function HoldingCard({
               <strong>{formatCurrency(holding.market_value)}</strong>
             </span>
             <span>
-              <span>{holding.is_dry_powder ? "Accumulated Cash" : "Floating Gain"}</span>
+              <span>{holding.is_dry_powder ? "Accumulated Cash" : "Total Gain"}</span>
               {holding.is_dry_powder ? (
                 <strong className={signedToneClass(realizedAccumulatedCash, "treasury-inline-value")}>
                   {formatSignedCurrency(realizedAccumulatedCash)}
                 </strong>
               ) : (
-                <strong className={signedToneClass(holding.unrealized_pnl, "treasury-inline-value")}>
-                  {formatSignedCurrency(holding.unrealized_pnl)} · {formatPercent(holding.unrealized_pnl_pct)}
-                </strong>
+                <>
+                  <strong className={signedToneClass(holding.total_gain, "treasury-inline-value")}>
+                    {formatSignedCurrency(holding.total_gain)} · {formatPercent(holding.total_gain_pct)}
+                  </strong>
+                  <small className="treasury-gain-breakdown">
+                    Market {formatSignedCurrency(holding.market_gain)} · Cash {formatSignedCurrency(holding.accumulated_cash_gain)} · Open {formatSignedCurrency(holding.open_bargain_pnl)}
+                  </small>
+                </>
               )}
             </span>
           </span>

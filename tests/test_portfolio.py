@@ -162,6 +162,13 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(snapshot["summary"]["dry_powder"], 25)
         self.assertEqual(snapshot["summary"]["vault_reserve_committed"], 25)
         self.assertEqual(snapshot["summary"]["vault_reserve_available"], 0)
+        btc = next(item for item in snapshot["holdings"] if item["asset_symbol"] == "BTC")
+        self.assertEqual(btc["initial_capital"], 90)
+        self.assertEqual(btc["effective_entry_cost"], 90)
+        self.assertEqual(btc["market_gain"], 10)
+        self.assertEqual(btc["accumulated_cash_gain"], 0)
+        self.assertEqual(btc["open_bargain_pnl"], 0)
+        self.assertEqual(btc["total_gain"], 10)
         ledger = portfolio_service.load_portfolio_asset_ledger("BTC")
         self.assertEqual([entry["entry_type"] for entry in ledger["entries"]], ["swing", "transaction"])
 
@@ -205,11 +212,133 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(closed["summary"]["dry_powder"], 2.5)
         self.assertEqual(closed["summary"]["vault_reserve_committed"], 0)
         self.assertEqual(closed["summary"]["vault_reserve_available"], 2.5)
+        closed_btc = next(item for item in closed["holdings"] if item["asset_symbol"] == "BTC")
+        self.assertEqual(closed_btc["initial_capital"], 90)
+        self.assertEqual(closed_btc["settled_quantity"], 1)
+        self.assertEqual(closed_btc["accumulated_cash_gain"], 2.5)
+        self.assertEqual(closed_btc["effective_entry_cost"], 87.5)
+        self.assertEqual(closed_btc["market_gain"], 10)
+        self.assertEqual(closed_btc["floating_gain"], 12.5)
+        self.assertEqual(closed_btc["open_bargain_pnl"], 0)
+        self.assertEqual(closed_btc["total_gain"], 12.5)
         self.assertEqual(replayed["summary"], closed["summary"])
         self.assertEqual(
             len([item for item in list_portfolio_transactions() if item.get("spot_quote_leg")]),
             2,
         )
+
+    def test_open_bargain_pnl_is_added_once_to_asset_total_gain(self):
+        self.add("BTC", 1, 90, "binance")
+        create_spot_swing(
+            {
+                "swing_id": "open-btc-above-market",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            }
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "open-btc-above-market-sell",
+                "swing_id": "open-btc-above-market",
+                "symbol": "BTCUSDT",
+                "side": "sell",
+                "quantity": 0.25,
+                "price": 120,
+                "quote_quantity": 30,
+                "source": "strategy",
+            }
+        )
+        append_portfolio_transaction(
+            {
+                "transaction_id": "spot-order:open-btc-above-market",
+                "account_key": "manual_spot",
+                "executed_at": "2026-09-24 17:00:00",
+                "tx_type": "sell",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "quantity": 0.25,
+                "price": 120,
+                "source": "binance_strategy",
+                "status": "settled",
+                "custody_location": "binance",
+                "swing_id": "open-btc-above-market",
+                "executed_quote_quantity": 30,
+                "commissions": {},
+            }
+        )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+        btc = next(item for item in snapshot["holdings"] if item["asset_symbol"] == "BTC")
+
+        self.assertEqual(btc["market_gain"], 10)
+        self.assertEqual(btc["accumulated_cash_gain"], 0)
+        self.assertEqual(btc["open_bargain_pnl"], 5)
+        self.assertEqual(btc["total_gain"], 15)
+        self.assertEqual(snapshot["summary"]["total_gain"], 15)
+
+    def test_accumulated_asset_and_cash_reduce_effective_entry_cost(self):
+        self.add("ETH", 1, 10, "binance")
+        create_spot_swing(
+            {
+                "swing_id": "closed-eth-asset",
+                "asset_symbol": "ETH",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_asset",
+                "source": "strategy",
+            }
+        )
+        for execution_id, side, quantity, price in (
+            ("eth-asset-sell", "sell", 0.5, 20),
+            ("eth-asset-buy", "buy", 0.55, 18),
+        ):
+            append_spot_swing_execution(
+                {
+                    "execution_id": execution_id,
+                    "swing_id": "closed-eth-asset",
+                    "symbol": "ETHUSDT",
+                    "side": side,
+                    "quantity": quantity,
+                    "price": price,
+                    "quote_quantity": quantity * price,
+                    "source": "strategy",
+                }
+            )
+            append_portfolio_transaction(
+                {
+                    "transaction_id": f"spot-order:{execution_id}",
+                    "account_key": "manual_spot",
+                    "executed_at": "2026-09-24 18:00:00",
+                    "tx_type": side,
+                    "asset_symbol": "ETH",
+                    "quote_symbol": "USDT",
+                    "quantity": quantity,
+                    "price": price,
+                    "source": "binance_strategy",
+                    "status": "settled",
+                    "custody_location": "binance",
+                    "swing_id": "closed-eth-asset",
+                    "executed_quote_quantity": quantity * price,
+                    "commissions": {},
+                }
+            )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+        eth = next(item for item in snapshot["holdings"] if item["asset_symbol"] == "ETH")
+
+        self.assertAlmostEqual(eth["initial_quantity"], 1)
+        self.assertAlmostEqual(eth["initial_capital"], 10)
+        self.assertAlmostEqual(eth["accumulated_asset_quantity"], 0.05)
+        self.assertAlmostEqual(eth["accumulated_cash_gain"], 0.1)
+        self.assertAlmostEqual(eth["settled_quantity"], 1.05)
+        self.assertAlmostEqual(eth["effective_entry_cost"], 9.9 / 1.05)
+        self.assertAlmostEqual(eth["market_gain"], 11)
+        self.assertAlmostEqual(eth["floating_gain"], 11.1)
+        self.assertAlmostEqual(eth["total_gain"], 11.1)
+        self.assertAlmostEqual(snapshot["summary"]["total_gain"], 11.1)
 
     def test_void_and_restore_recalculate_holdings_without_deleting_ledger_entry(self):
         btc = self.add("BTC", 1, 90)

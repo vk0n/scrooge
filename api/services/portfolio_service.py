@@ -331,9 +331,11 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
     return holdings, warnings
 
 
-def _derive_invested_capital(transactions: list[dict[str, Any]]) -> float:
-    """Return owner capital crossing into Treasury, independent of internal trading."""
-    contributions: dict[tuple[str, str], dict[str, float]] = {}
+def _derive_owner_positions(
+    transactions: list[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, float]]:
+    """Project owner-funded quantity and capital independently of strategy trading."""
+    positions: dict[tuple[str, str], dict[str, float]] = {}
     for transaction in transactions:
         if str(transaction.get("status") or "settled").lower() != "settled":
             continue
@@ -351,7 +353,7 @@ def _derive_invested_capital(transactions: list[dict[str, Any]]) -> float:
         if price is None and asset in STABLE_ASSETS and quote in STABLE_ASSETS:
             price = 1.0
         key = (asset, quote)
-        bucket = contributions.setdefault(key, {"quantity": 0.0, "basis": 0.0})
+        bucket = positions.setdefault(key, {"quantity": 0.0, "basis": 0.0})
         is_contribution = capital_effect == "contribution" or (
             not capital_effect and tx_type in {"buy", "deposit", "adjustment"}
         )
@@ -366,16 +368,38 @@ def _derive_invested_capital(transactions: list[dict[str, Any]]) -> float:
             removed_quantity = min(quantity, bucket["quantity"])
             bucket["quantity"] = max(0.0, bucket["quantity"] - removed_quantity)
             bucket["basis"] = max(0.0, bucket["basis"] - removed_quantity * average_basis)
-    return sum(bucket["basis"] for bucket in contributions.values())
+    return positions
 
 
-def _reserved_quote_for_open_swings(swings: list[dict[str, Any]]) -> float:
+def _swing_economics_by_id(
+    swings: list[dict[str, Any]],
+    holdings: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    market_price_by_asset = {
+        (str(holding["asset_symbol"]), str(holding["quote_symbol"])): _as_float(holding.get("market_price"))
+        for holding in holdings
+    }
+    return {
+        str(swing["swing_id"]): calculate_swing_economics(
+            swing,
+            list_spot_swing_executions(str(swing["swing_id"])),
+            current_price=market_price_by_asset.get(
+                (str(swing["asset_symbol"]), str(swing["quote_symbol"]))
+            ),
+        )
+        for swing in swings
+    }
+
+
+def _reserved_quote_for_open_swings(
+    swings: list[dict[str, Any]],
+    economics_by_swing: dict[str, dict[str, Any]],
+) -> float:
     committed = 0.0
     for swing in swings:
         if swing.get("status") == "closed" or swing.get("origin_side") != "sell":
             continue
-        executions = list_spot_swing_executions(str(swing["swing_id"]))
-        economics = calculate_swing_economics(swing, executions)
+        economics = economics_by_swing[str(swing["swing_id"])]
         quote_fees = (
             _as_float((economics.get("fees_by_asset") or {}).get(swing.get("quote_symbol"))) or 0.0
         )
@@ -388,19 +412,85 @@ def _reserved_quote_for_open_swings(swings: list[dict[str, Any]]) -> float:
     return committed
 
 
-def _realized_accumulated_cash(swings: list[dict[str, Any]]) -> float:
-    accumulated_cash = 0.0
+def _attach_asset_performance(
+    holdings: list[dict[str, Any]],
+    *,
+    owner_positions: dict[tuple[str, str], dict[str, float]],
+    swings: list[dict[str, Any]],
+    economics_by_swing: dict[str, dict[str, Any]],
+) -> float:
+    performance_by_asset: dict[tuple[str, str], dict[str, float]] = {}
+    portfolio_accumulated_cash = 0.0
     for swing in swings:
-        if (
-            swing.get("status") != "closed"
-            or swing.get("trading_objective") != "accumulate_cash"
-            or swing.get("quote_symbol") != DEFAULT_QUOTE
-        ):
+        key = (str(swing["asset_symbol"]), str(swing["quote_symbol"]))
+        performance = performance_by_asset.setdefault(
+            key,
+            {"accumulated_asset_quantity": 0.0, "accumulated_cash_gain": 0.0, "open_bargain_pnl": 0.0},
+        )
+        economics = economics_by_swing[str(swing["swing_id"])]
+        if economics.get("status") == "closed":
+            cash_gain = _as_float(economics.get("realized_cash_gain_quote")) or 0.0
+            performance["accumulated_cash_gain"] += cash_gain
+            performance["accumulated_asset_quantity"] += (
+                _as_float(economics.get("realized_net_asset_change")) or 0.0
+            )
+            if (
+                swing.get("trading_objective") == "accumulate_cash"
+                and swing.get("quote_symbol") == DEFAULT_QUOTE
+            ):
+                portfolio_accumulated_cash += cash_gain
             continue
-        executions = list_spot_swing_executions(str(swing["swing_id"]))
-        economics = calculate_swing_economics(swing, executions)
-        accumulated_cash += _as_float(economics.get("realized_cash_gain_quote")) or 0.0
-    return accumulated_cash
+        performance["open_bargain_pnl"] += (
+            (_as_float(economics.get("realized_pnl_quote")) or 0.0)
+            + (_as_float(economics.get("unrealized_pnl_quote")) or 0.0)
+        )
+
+    for holding in holdings:
+        if bool(holding.get("is_dry_powder")):
+            continue
+        key = (str(holding["asset_symbol"]), str(holding["quote_symbol"]))
+        owner = owner_positions.get(key, {"quantity": 0.0, "basis": 0.0})
+        performance = performance_by_asset.get(
+            key,
+            {"accumulated_asset_quantity": 0.0, "accumulated_cash_gain": 0.0, "open_bargain_pnl": 0.0},
+        )
+        initial_quantity = float(owner["quantity"])
+        initial_capital = float(owner["basis"])
+        accumulated_asset = float(performance["accumulated_asset_quantity"])
+        accumulated_cash = float(performance["accumulated_cash_gain"])
+        open_bargain_pnl = float(performance["open_bargain_pnl"])
+        settled_quantity = max(0.0, initial_quantity + accumulated_asset)
+        effective_cost_basis = initial_capital - accumulated_cash
+        effective_entry_cost = (
+            effective_cost_basis / settled_quantity if settled_quantity > 0.00000001 else None
+        )
+        market_price = _as_float(holding.get("market_price"))
+        market_gain = (
+            settled_quantity * market_price - initial_capital if market_price is not None else None
+        )
+        floating_gain = market_gain + accumulated_cash if market_gain is not None else None
+        total_gain = floating_gain + open_bargain_pnl if floating_gain is not None else None
+        holding.update(
+            {
+                "initial_quantity": initial_quantity,
+                "initial_capital": initial_capital,
+                "accumulated_asset_quantity": accumulated_asset,
+                "accumulated_cash_gain": accumulated_cash,
+                "open_bargain_pnl": open_bargain_pnl,
+                "settled_quantity": settled_quantity,
+                "effective_cost_basis": effective_cost_basis,
+                "effective_entry_cost": effective_entry_cost,
+                "market_gain": market_gain,
+                "floating_gain": floating_gain,
+                "total_gain": total_gain,
+                "total_gain_pct": (
+                    total_gain / initial_capital * 100.0
+                    if total_gain is not None and initial_capital > 0
+                    else None
+                ),
+            }
+        )
+    return portfolio_accumulated_cash
 
 
 def _summary_from_holdings(
@@ -408,6 +498,7 @@ def _summary_from_holdings(
     *,
     invested_capital: float,
     open_swings: list[dict[str, Any]],
+    economics_by_swing: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     total_value = sum(_as_float(holding.get("market_value")) or 0.0 for holding in holdings)
     total_gain = total_value - invested_capital
@@ -416,7 +507,10 @@ def _summary_from_holdings(
         for holding in holdings
         if bool(holding.get("is_dry_powder"))
     )
-    committed_reserve = min(dry_powder, _reserved_quote_for_open_swings(open_swings))
+    committed_reserve = min(
+        dry_powder,
+        _reserved_quote_for_open_swings(open_swings, economics_by_swing),
+    )
     available_reserve = max(0.0, dry_powder - committed_reserve)
     largest = max(holdings, key=lambda item: _as_float(item.get("market_value")) or 0.0, default=None)
     price_timestamps = [
@@ -676,17 +770,26 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     exchange = _load_spot_exchange_state()
     _attach_exchange_state(holdings, exchange)
     swings = list_spot_swings(account_key=DEFAULT_ACCOUNT_KEY)
+    economics_by_swing = _swing_economics_by_id(swings, holdings)
+    owner_positions = _derive_owner_positions(transactions)
+    realized_accumulated_cash = _attach_asset_performance(
+        holdings,
+        owner_positions=owner_positions,
+        swings=swings,
+        economics_by_swing=economics_by_swing,
+    )
     open_swings = [swing for swing in swings if swing["status"] != "closed"]
     summary = _summary_from_holdings(
         holdings,
-        invested_capital=_derive_invested_capital(transactions),
+        invested_capital=sum(position["basis"] for position in owner_positions.values()),
         open_swings=open_swings,
+        economics_by_swing=economics_by_swing,
     )
     summary["open_swing_count"] = len(open_swings)
     summary["open_swing_asset_count"] = len(
         {(swing["asset_symbol"], swing["quote_symbol"]) for swing in open_swings}
     )
-    summary["realized_accumulated_cash"] = _realized_accumulated_cash(swings)
+    summary["realized_accumulated_cash"] = realized_accumulated_cash
     summary["binance_spot_usdt_free"] = exchange["usdt_free"]
     summary["binance_spot_usdt_locked"] = exchange["usdt_locked"]
     timeline = _portfolio_timeline(summary, holdings, warnings)

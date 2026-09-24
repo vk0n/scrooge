@@ -420,6 +420,15 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             cash_report["per_asset"]["CASH"]["objective_metrics"]["realized_quote_cash_generated"],
             0,
         )
+        cash_performance = cash_report["per_asset"]["CASH"]["capital_performance"]
+        self.assertGreater(cash_performance["accumulated_cash_gain"], 0)
+        self.assertLess(cash_performance["effective_entry_cost"], 100)
+        self.assertAlmostEqual(
+            cash_performance["total_gain"],
+            cash_performance["market_gain"]
+            + cash_performance["accumulated_cash_gain"]
+            + cash_performance["open_bargain_pnl"],
+        )
         self.assertEqual(cash_result.assets["CASH"].target_quantity, 100)
 
         asset_config = scenario(
@@ -427,8 +436,13 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             hours=8,
         )
         asset_result = self.run_scenario(asset_config, prices)
+        asset_report = build_spot_backtest_report(asset_result)
+        asset_performance = asset_report["per_asset"]["COIN"]["capital_performance"]
 
         self.assertGreater(asset_result.assets["COIN"].target_quantity, 100)
+        self.assertGreater(asset_performance["accumulated_asset_quantity"], 0)
+        self.assertGreater(asset_performance["settled_quantity"], 100)
+        self.assertLess(asset_performance["effective_entry_cost"], 100)
         self.assertEqual(len(asset_result.target_history), 1)
         self.assertEqual(len({item["swing_id"] for item in asset_result.target_history}), 1)
 
@@ -452,6 +466,15 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             report["portfolio"]["hodl_final_treasury_value"],
         )
         self.assertEqual(report["portfolio"]["difference_vs_hodl"], 0)
+        performance = report["per_asset"]["AAA"]["capital_performance"]
+        self.assertEqual(performance["initial_capital"], 10000)
+        self.assertEqual(performance["effective_entry_cost"], 100)
+        self.assertEqual(performance["market_gain"], 2000)
+        self.assertEqual(performance["accumulated_cash_gain"], 0)
+        self.assertEqual(performance["open_bargain_pnl"], 0)
+        self.assertEqual(performance["total_gain"], 2000)
+        self.assertEqual(report["portfolio"]["initial_invested_capital"], 10500)
+        self.assertEqual(report["portfolio"]["total_gain_on_initial_capital"], 2000)
 
     def test_fee_slippage_and_artifacts_are_explicit(self):
         config = scenario(
@@ -478,6 +501,8 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertIn("Final Allocation", report_html)
             self.assertIn("Bargain History", report_html)
             self.assertIn("Bargain Analytics", report_html)
+            self.assertIn("Entry Cost", report_html)
+            self.assertIn("Total Gain", report_html)
             self.assertIn("<span>Closed</span><span>Open</span>", report_html)
             self.assertIn('"swingHistory"', report_html)
             self.assertIn('"bargainAnalysis"', report_html)

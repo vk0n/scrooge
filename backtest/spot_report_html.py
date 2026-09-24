@@ -77,6 +77,7 @@ def _report_payload(
         benchmark = item["benchmark"]
         final = item["final"]
         starting = item["starting"]
+        performance = item["capital_performance"]
         assets.append(
             {
                 "symbol": symbol,
@@ -96,6 +97,13 @@ def _report_payload(
                 "open": int(trading.get("still_open") or 0),
                 "realizedPnl": _number(trading.get("realized_pnl_quote")),
                 "unrealizedPnl": _number(trading.get("unrealized_open_pnl_quote")),
+                "initialCapitalKnown": performance.get("initial_capital") is not None,
+                "effectiveEntryCost": performance.get("effective_entry_cost"),
+                "marketGain": performance.get("market_gain"),
+                "accumulatedCashGain": _number(performance.get("accumulated_cash_gain")),
+                "openBargainPnl": _number(performance.get("open_bargain_pnl")),
+                "totalGain": performance.get("total_gain"),
+                "totalGainPct": performance.get("total_gain_pct"),
                 "nearFloorPct": _number(item["inventory"].get("time_near_floor_pct")),
                 "unrestoredQuantity": _number(
                     item["bad_cases"].get("quantity_sold_not_restored")
@@ -463,6 +471,7 @@ _HTML = r'''<!doctype html>
     .asset-chevron, .swing-chevron { width: 7px; height: 7px; border-right: 1px solid var(--muted); border-bottom: 1px solid var(--muted); transform: rotate(45deg); transition: transform 140ms ease; }
     .asset-summary[aria-expanded="true"] .asset-chevron { transform: rotate(225deg) translate(-2px,-2px); }
     .objective { color: var(--gold); text-transform: capitalize; }
+    .gain-breakdown { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; white-space: nowrap; }
     .asset-detail > td { padding: 0; border-top: 0; text-align: left; background: #080c12; }
     .asset-ledger { padding: 15px; border-top: 1px solid #344158; border-bottom: 1px solid var(--line); }
     .ledger-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 12px; }
@@ -634,7 +643,7 @@ _HTML = r'''<!doctype html>
 
       <article class="card full">
         <div class="card-head"><div><h2>Portfolio Ledger</h2><div class="subtitle">Market path, Bargains, inventory, and final policy state by asset.</div></div><span class="tag" id="assetCount"></span></div>
-        <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Objective</th><th>Market</th><th>vs HODL</th><th>Closed PnL</th><th>Open PnL</th><th>Bargains</th><th>Final / Start</th><th>Target</th><th>Near Floor</th></tr></thead><tbody id="assetTable"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Objective</th><th>Market</th><th>vs HODL</th><th>Entry Cost</th><th>Total Gain</th><th>Bargains</th><th>Final / Start</th><th>Target</th><th>Near Floor</th></tr></thead><tbody id="assetTable"></tbody></table></div>
       </article>
     </section>
 
@@ -648,6 +657,7 @@ _HTML = r'''<!doctype html>
     const pct = value => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
     const qty = value => value.toLocaleString("en-US", {maximumFractionDigits: 4});
     const tone = value => value > 0 ? "positive" : value < 0 ? "negative" : "";
+    const optionalMoney = (value, digits = 2) => value === null || value === undefined ? "N/A" : money(value, digits);
     const shortDate = value => new Date(value).toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"2-digit"});
 
     document.getElementById("period").textContent = `${shortDate(data.scenario.start)} to ${shortDate(data.scenario.end)} / ${data.scenario.interval} candles / ${data.scenario.data_source}`;
@@ -817,7 +827,7 @@ _HTML = r'''<!doctype html>
     assetTable.innerHTML=data.assets.map(item=>`
       <tr class="asset-summary" id="asset-${item.symbol}" data-asset="${item.symbol}" tabindex="0" role="button" aria-expanded="false" aria-controls="ledger-${item.symbol}">
         <td class="asset"><span class="asset-toggle">${item.symbol}<i class="asset-chevron" aria-hidden="true"></i></span></td>
-        <td class="objective">${objective(item.objective)}</td><td class="${tone(item.marketReturn)}">${pct(item.marketReturn)}</td><td class="${tone(item.deltaVsHodl)}">${money(item.deltaVsHodl)}</td><td class="positive">${money(item.realizedPnl)}</td><td class="${tone(item.unrealizedPnl)}">${money(item.unrealizedPnl)}</td><td>${item.closed} / ${item.opened}<br><span class="muted">${item.open} open</span></td><td>${qty(item.finalQuantity)} / ${qty(item.startingQuantity)}</td><td>${qty(item.targetQuantity)}</td><td>${item.nearFloorPct.toFixed(1)}%</td>
+        <td class="objective">${objective(item.objective)}</td><td class="${tone(item.marketReturn)}">${pct(item.marketReturn)}</td><td class="${tone(item.deltaVsHodl)}">${money(item.deltaVsHodl)}</td><td>${optionalMoney(item.effectiveEntryCost,6)}</td><td class="${tone(item.totalGain)}"><strong>${optionalMoney(item.totalGain)}</strong>${item.initialCapitalKnown?`<span class="gain-breakdown">Market ${optionalMoney(item.marketGain)} / Cash ${money(item.accumulatedCashGain)} / Open ${money(item.openBargainPnl)}</span>`:""}</td><td>${item.closed} / ${item.opened}<br><span class="muted">${item.open} open</span></td><td>${qty(item.finalQuantity)} / ${qty(item.startingQuantity)}</td><td>${qty(item.targetQuantity)}</td><td>${item.nearFloorPct.toFixed(1)}%</td>
       </tr>
       <tr class="asset-detail" id="ledger-${item.symbol}" hidden><td colspan="10"><div class="asset-ledger" data-ledger="${item.symbol}"></div></td></tr>`).join("");
 

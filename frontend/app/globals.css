@@ -2740,7 +2740,7 @@ pre {
 
 .treasury-holding-lines {
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr 0.82fr 0.82fr 0.92fr 1.32fr;
+  grid-template-columns: 1.05fr 0.95fr 0.82fr 0.82fr 0.92fr 1.7fr;
   gap: 0;
   min-width: 0;
 }
@@ -2766,6 +2766,13 @@ pre {
   font-weight: 500;
   text-align: left;
   white-space: nowrap;
+}
+
+.treasury-holding-lines .treasury-gain-breakdown {
+  color: #8290a5;
+  font-size: 0.66rem;
+  line-height: 1.35;
+  white-space: normal;
 }
 
 .treasury-holding-chevron {
