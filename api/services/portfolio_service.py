@@ -778,7 +778,16 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
         swings=swings,
         economics_by_swing=economics_by_swing,
     )
-    open_swings = [swing for swing in swings if swing["status"] != "closed"]
+    open_swings = [
+        swing
+        for swing in swings
+        if economics_by_swing[str(swing["swing_id"])]["status"] != "closed"
+    ]
+    closed_swings = [
+        swing
+        for swing in swings
+        if economics_by_swing[str(swing["swing_id"])]["status"] == "closed"
+    ]
     summary = _summary_from_holdings(
         holdings,
         invested_capital=sum(position["basis"] for position in owner_positions.values()),
@@ -786,6 +795,8 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
         economics_by_swing=economics_by_swing,
     )
     summary["open_swing_count"] = len(open_swings)
+    summary["closed_swing_count"] = len(closed_swings)
+    summary["total_swing_count"] = len(swings)
     summary["open_swing_asset_count"] = len(
         {(swing["asset_symbol"], swing["quote_symbol"]) for swing in open_swings}
     )
@@ -936,6 +947,81 @@ def load_portfolio_asset_ledger(
         "entry_count": len(entries),
         "entry_limit": ASSET_LEDGER_PAGE_SIZE,
         "entry_offset": normalized_offset,
+    }
+
+
+def load_portfolio_bargain_ledger(
+    *,
+    entry_filter: str = "all",
+    entry_offset: int = 0,
+) -> dict[str, Any]:
+    normalized_filter = str(entry_filter or "all").strip().lower()
+    normalized_offset = max(0, int(entry_offset))
+    if normalized_filter not in ASSET_LEDGER_FILTERS:
+        raise ValueError("Bargain Ledger filter must be all, open, or closed.")
+
+    entries: list[dict[str, Any]] = []
+    open_count = 0
+    closed_count = 0
+    prices: dict[tuple[str, str], tuple[float | None, str | None]] = {}
+    for swing in list_spot_swings(account_key=DEFAULT_ACCOUNT_KEY):
+        asset_symbol = str(swing["asset_symbol"])
+        quote_symbol = str(swing["quote_symbol"])
+        pair = (asset_symbol, quote_symbol)
+        if pair not in prices:
+            market_price, _, market_price_updated_at = _fetch_market_price(*pair)
+            prices[pair] = (market_price, market_price_updated_at)
+        market_price, market_price_updated_at = prices[pair]
+        executions = list_spot_swing_executions(swing["swing_id"])
+        economics = calculate_swing_economics(swing, executions, current_price=market_price)
+        derived_status = str(economics["status"])
+        if derived_status == "closed":
+            closed_count += 1
+        else:
+            open_count += 1
+        if normalized_filter == "open" and derived_status == "closed":
+            continue
+        if normalized_filter == "closed" and derived_status != "closed":
+            continue
+        opened_at_ms = int(swing["opened_at_ms"])
+        entries.append(
+            {
+                "entry_type": "swing",
+                "entry_id": f"swing:{swing['swing_id']}",
+                "occurred_at_ms": opened_at_ms,
+                "occurred_at": datetime.fromtimestamp(
+                    opened_at_ms / 1000,
+                    tz=timezone.utc,
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "swing": {
+                    **swing,
+                    "status": derived_status,
+                    "current_market_price": market_price,
+                    "market_price_updated_at": market_price_updated_at,
+                    "age_seconds": max(
+                        0,
+                        int(((swing.get("closed_at_ms") or time.time() * 1000) - opened_at_ms) / 1000),
+                    ),
+                    "economics": economics,
+                    "executions": executions,
+                },
+            }
+        )
+
+    entries.sort(
+        key=lambda item: (int(item["occurred_at_ms"]), str(item["entry_id"])),
+        reverse=True,
+    )
+    paged_entries = entries[normalized_offset:normalized_offset + ASSET_LEDGER_PAGE_SIZE]
+    return {
+        "filter": normalized_filter,
+        "entries": paged_entries,
+        "entry_count": len(entries),
+        "entry_limit": ASSET_LEDGER_PAGE_SIZE,
+        "entry_offset": normalized_offset,
+        "open_count": open_count,
+        "closed_count": closed_count,
+        "total_count": open_count + closed_count,
     }
 
 

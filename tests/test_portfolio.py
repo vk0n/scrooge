@@ -108,8 +108,24 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         snapshot, _ = portfolio_service.load_portfolio_snapshot()
 
         self.assertEqual(snapshot["summary"]["open_swing_count"], 1)
+        self.assertEqual(snapshot["summary"]["closed_swing_count"], 1)
+        self.assertEqual(snapshot["summary"]["total_swing_count"], 2)
         self.assertEqual(snapshot["summary"]["open_swing_asset_count"], 1)
         self.assertEqual(snapshot["summary"]["realized_accumulated_cash"], 2)
+
+        ledger = portfolio_service.load_portfolio_bargain_ledger()
+        self.assertEqual(ledger["open_count"], 1)
+        self.assertEqual(ledger["closed_count"], 1)
+        self.assertEqual(ledger["total_count"], 2)
+        self.assertEqual(ledger["entry_count"], 2)
+        self.assertEqual(
+            {entry["swing"]["asset_symbol"] for entry in ledger["entries"]},
+            {"BTC", "ETH"},
+        )
+        open_ledger = portfolio_service.load_portfolio_bargain_ledger(entry_filter="open")
+        closed_ledger = portfolio_service.load_portfolio_bargain_ledger(entry_filter="closed")
+        self.assertEqual([entry["swing"]["swing_id"] for entry in open_ledger["entries"]], ["open-btc-swing"])
+        self.assertEqual([entry["swing"]["swing_id"] for entry in closed_ledger["entries"]], ["closed-eth-swing"])
 
     def test_strategy_fill_preserves_owner_capital_and_tracks_committed_reserve(self):
         self.add("BTC", 1, 90, "binance")

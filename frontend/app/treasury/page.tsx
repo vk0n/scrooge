@@ -22,6 +22,8 @@ type PortfolioSummary = {
   largest_position: PortfolioHolding | null;
   holding_count: number;
   open_swing_count: number;
+  closed_swing_count: number;
+  total_swing_count: number;
   open_swing_asset_count: number;
   realized_accumulated_cash: number;
   prices_updated_at: string | null;
@@ -273,6 +275,17 @@ type AssetLedgerPayload = {
   entry_count: number;
   entry_limit: number;
   entry_offset: number;
+};
+
+type BargainLedgerPayload = {
+  filter: AssetLedgerFilter;
+  entries: Array<Extract<AssetLedgerEntry, { entry_type: "swing" }>>;
+  entry_count: number;
+  entry_limit: number;
+  entry_offset: number;
+  open_count: number;
+  closed_count: number;
+  total_count: number;
 };
 
 type UpdatePortfolioPolicyResponse = {
@@ -1368,6 +1381,124 @@ function SwingLedgerRow({ swing, occurredAt }: { swing: SpotSwing; occurredAt: s
   );
 }
 
+function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Element {
+  const [ledger, setLedger] = useState<BargainLedgerPayload | null>(null);
+  const [filter, setFilter] = useState<AssetLedgerFilter>("all");
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadEntries = useCallback(async (offset: number): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const payload = await fetchApi<BargainLedgerPayload>(
+        `/api/portfolio/bargains?filter=${encodeURIComponent(filter)}&entry_offset=${offset}`
+      );
+      setLedger(payload);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Could not load the Bargain ledger.");
+    } finally {
+      setLoading(false);
+    }
+  }, [filter]);
+
+  useEffect(() => {
+    void loadEntries(0);
+  }, [loadEntries, refreshKey]);
+
+  function changeFilter(nextFilter: AssetLedgerFilter): void {
+    if (nextFilter === filter) return;
+    setLoading(true);
+    setFilter(nextFilter);
+    setLedger(null);
+  }
+
+  const entries = ledger?.entries ?? [];
+  const count = ledger?.entry_count ?? 0;
+  const limit = ledger?.entry_limit ?? 5;
+  const offset = ledger?.entry_offset ?? 0;
+  const rangeStart = count > 0 ? offset + 1 : 0;
+  const rangeEnd = Math.min(offset + entries.length, count);
+  const hasLater = offset > 0;
+  const hasEarlier = offset + entries.length < count;
+
+  return (
+    <section id="treasury-bargain-ledger" className="treasury-bargain-ledger" aria-label="Bargain Ledger">
+      <header className="treasury-bargain-ledger-head">
+        <div>
+          <h2>Bargain Ledger</h2>
+          <p>Every active and settled Bargain across the vault.</p>
+        </div>
+        <span>{ledger ? `${count} ${count === 1 ? "entry" : "entries"}` : "Loading"}</span>
+      </header>
+      <div className="treasury-ledger-filter" aria-label="Bargain Ledger filter">
+        {(["all", "open", "closed"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={filter === value ? "treasury-ledger-filter-active" : undefined}
+            aria-pressed={filter === value}
+            onClick={() => changeFilter(value)}
+          >
+            {value[0].toUpperCase() + value.slice(1)}
+          </button>
+        ))}
+      </div>
+      {loading && !ledger ? <p className="status-performance-note">Opening the Bargain ledger...</p> : null}
+      {error ? <p className="form-error">{error}</p> : null}
+      {!loading && entries.length === 0 ? (
+        <p className="trade-history-empty-sheet">
+          {filter === "all" ? "No Bargains have been recorded yet." : `No ${filter} Bargains.`}
+        </p>
+      ) : null}
+      {entries.length ? (
+        <>
+          <div className="treasury-ledger-stack">
+            {entries.map((entry) => (
+              <SwingLedgerRow
+                key={entry.entry_id}
+                swing={entry.swing}
+                occurredAt={entry.occurred_at}
+              />
+            ))}
+          </div>
+          <div className="toolbar trade-history-toolbar treasury-ledger-toolbar">
+            <button
+              type="button"
+              className="dialog-user-btn trade-history-nav-button trade-history-nav-later"
+              disabled={loading || !hasLater}
+              onClick={() => void loadEntries(Math.max(0, offset - limit))}
+            >
+              Later
+            </button>
+            {hasLater ? (
+              <button
+                type="button"
+                className="dialog-user-btn trade-history-latest-button"
+                disabled={loading}
+                onClick={() => void loadEntries(0)}
+              >
+                Latest
+              </button>
+            ) : null}
+            <span className="trade-history-page-indicator">
+              Showing {rangeStart}-{rangeEnd} of {count}
+            </span>
+            <button
+              type="button"
+              className="dialog-user-btn trade-history-nav-button trade-history-nav-earlier"
+              disabled={loading || !hasEarlier}
+              onClick={() => void loadEntries(offset + limit)}
+            >
+              Earlier
+            </button>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function AssetLedger({
   holding,
   refreshKey,
@@ -1675,7 +1806,12 @@ function HoldingCard({
                     {formatSignedCurrency(holding.total_gain)} · {formatPercent(holding.total_gain_pct)}
                   </strong>
                   <small className="treasury-gain-breakdown">
-                    Market {formatSignedCurrency(holding.market_gain)} · Cash {formatSignedCurrency(holding.accumulated_cash_gain)} · Open {formatSignedCurrency(holding.open_bargain_pnl)}
+                    <span>
+                      Market {formatSignedCurrency(holding.market_gain)} · Cash {formatSignedCurrency(holding.accumulated_cash_gain)}
+                    </span>
+                    <span className={signedToneClass(holding.open_bargain_pnl, "treasury-open-pnl")}>
+                      Open {formatSignedCurrency(holding.open_bargain_pnl)}
+                    </span>
                   </small>
                 </>
               )}
@@ -1712,6 +1848,7 @@ export default function TreasuryPage(): JSX.Element {
   const [formExpanded, setFormExpanded] = useState<boolean>(false);
   const [intakeMode, setIntakeMode] = useState<TreasureIntakeMode>("bring_in");
   const [buyAssetSymbol, setBuyAssetSymbol] = useState<string>("");
+  const [bargainsExpanded, setBargainsExpanded] = useState<boolean>(false);
   const refreshInFlight = useRef<boolean>(false);
 
   const loadPortfolio = useCallback(async (background = false): Promise<void> => {
@@ -1819,10 +1956,6 @@ export default function TreasuryPage(): JSX.Element {
         </p>
 
         <section className="treasury-overview">
-          <header className="treasury-section-head">
-            <h1>Treasury Overview</h1>
-          </header>
-
           {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
           {loading ? <p className="status-performance-note">Scrooge counts the vault...</p> : null}
 
@@ -1863,18 +1996,41 @@ export default function TreasuryPage(): JSX.Element {
                   : ""}
               </span>
             </div>
-            <div className="treasury-summary-card treasury-summary-card-swings">
-              <span className="treasury-summary-label">Active Bargains</span>
-              <strong>{formatNumber(summary?.open_swing_count ?? 0, 0)}</strong>
-              <span className="treasury-summary-note">
-                {(summary?.open_swing_count ?? 0) === 0
-                  ? "No active cycles"
-                  : `Across ${formatNumber(summary?.open_swing_asset_count ?? 0, 0)} ${
-                      (summary?.open_swing_asset_count ?? 0) === 1 ? "asset" : "assets"
-                    }`}
+            <button
+              type="button"
+              className={`treasury-summary-card treasury-summary-card-swings${bargainsExpanded ? " treasury-summary-card-swings-expanded" : ""}`}
+              aria-expanded={bargainsExpanded}
+              aria-controls="treasury-bargain-ledger"
+              onClick={() => setBargainsExpanded((current) => !current)}
+            >
+              <span className="treasury-summary-label">Bargains</span>
+              <span className="treasury-bargain-counts">
+                <span>
+                  <small>Open</small>
+                  <strong>{formatNumber(summary?.open_swing_count ?? 0, 0)}</strong>
+                </span>
+                <span>
+                  <small>Closed</small>
+                  <strong>{formatNumber(summary?.closed_swing_count ?? 0, 0)}</strong>
+                </span>
+                <span>
+                  <small>Total</small>
+                  <strong>{formatNumber(summary?.total_swing_count ?? 0, 0)}</strong>
+                </span>
               </span>
-            </div>
+              <span className="treasury-summary-card-chevron" aria-hidden="true" />
+            </button>
           </div>
+
+          {bargainsExpanded ? (
+            <PortfolioBargainLedger
+              refreshKey={[
+                summary?.open_swing_count ?? 0,
+                summary?.closed_swing_count ?? 0,
+                summary?.prices_updated_at ?? "",
+              ].join(":")}
+            />
+          ) : null}
 
           <div className="treasury-visibility-grid">
             <article className="treasury-insight-card treasury-allocation-card">
