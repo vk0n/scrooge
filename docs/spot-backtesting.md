@@ -84,7 +84,7 @@ Each run writes:
 - `inventory.csv` and `target_history.csv`
 - `final_state.json` and `rejections.csv`
 
-The report separates realized and unrealized Bargain economics, includes open-age buckets and bad-case exposure, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. Each Portfolio Ledger asset row expands into filterable Bargain history, and each Bargain expands into its execution fills. The V1 simulator itself charges its configured fee in USDT.
+The report separates realized and unrealized Bargain economics, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. Bargain Analytics adds lifecycle PnL, closure and expectancy metrics, duration percentiles, fee drag, outcome and risk categories, an interactive cohort breakdown, and a duration-versus-return view. Each Portfolio Ledger asset row expands into filterable Bargain history, and each Bargain expands into its execution fills. The V1 simulator itself charges its configured fee in USDT.
 
 To add or rebuild the visual report for an existing artifact directory without rerunning the replay:
 
@@ -93,7 +93,7 @@ To add or rebuild the visual report for an existing artifact directory without r
   runtime/spot_backtests/runs/20260924T064219Z
 ```
 
-The generated page embeds its sampled chart data and has no CDN, API, or frontend runtime dependency.
+The generated page embeds its sampled chart data and has no CDN, API, or frontend runtime dependency. Rebuilding also backfills `bargain_analysis` into an older run's `summary.json`.
 
 ## Known V1 Limits
 

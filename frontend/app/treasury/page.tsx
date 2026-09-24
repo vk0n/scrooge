@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
 import { fetchApi } from "../../lib/api";
@@ -23,6 +23,7 @@ type PortfolioSummary = {
   holding_count: number;
   open_swing_count: number;
   open_swing_asset_count: number;
+  realized_accumulated_cash: number;
   prices_updated_at: string | null;
   binance_spot_usdt_free: number | null;
   binance_spot_usdt_locked: number | null;
@@ -341,6 +342,19 @@ function formatNumber(value: number | null | undefined, maximumFractionDigits = 
   return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 0,
     maximumFractionDigits,
+  }).format(value);
+}
+
+function formatAssetQuantity(value: number | null | undefined, assetSymbol: string): string {
+  if (assetSymbol !== "USDT") {
+    return formatNumber(value, 8);
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "Awaiting Price";
+  }
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(value);
 }
 
@@ -1538,11 +1552,13 @@ function AssetLedger({
 function HoldingCard({
   holding,
   exchange,
+  realizedAccumulatedCash,
   onPortfolioUpdated,
   onReload,
 }: {
   holding: PortfolioHolding;
   exchange: PortfolioExchange | null;
+  realizedAccumulatedCash: number;
   onPortfolioUpdated: (response: CreatePortfolioTransactionResponse | UpdatePortfolioPolicyResponse) => void;
   onReload: () => Promise<void>;
 }): JSX.Element {
@@ -1610,7 +1626,15 @@ function HoldingCard({
           <span className="treasury-holding-lines">
             <span>
               <span>Stack</span>
-              <strong>{formatNumber(holding.quantity, 8)} {holding.asset_symbol}</strong>
+              <strong>{formatAssetQuantity(holding.quantity, holding.asset_symbol)} {holding.asset_symbol}</strong>
+            </span>
+            <span>
+              <span>Target</span>
+              <strong>
+                {holding.target_quantity === null
+                  ? "—"
+                  : `${formatNumber(holding.target_quantity, 8)} ${holding.asset_symbol}`}
+              </strong>
             </span>
             <span>
               <span>Entry Cost</span>
@@ -1625,10 +1649,16 @@ function HoldingCard({
               <strong>{formatCurrency(holding.market_value)}</strong>
             </span>
             <span>
-              <span>Floating Gain</span>
-              <strong className={signedToneClass(holding.unrealized_pnl, "treasury-inline-value")}>
-                {formatSignedCurrency(holding.unrealized_pnl)} · {formatPercent(holding.unrealized_pnl_pct)}
-              </strong>
+              <span>{holding.is_dry_powder ? "Accumulated Cash" : "Floating Gain"}</span>
+              {holding.is_dry_powder ? (
+                <strong className={signedToneClass(realizedAccumulatedCash, "treasury-inline-value")}>
+                  {formatSignedCurrency(realizedAccumulatedCash)}
+                </strong>
+              ) : (
+                <strong className={signedToneClass(holding.unrealized_pnl, "treasury-inline-value")}>
+                  {formatSignedCurrency(holding.unrealized_pnl)} · {formatPercent(holding.unrealized_pnl_pct)}
+                </strong>
+              )}
             </span>
           </span>
           <span className="treasury-holding-chevron" aria-hidden="true" />
@@ -1662,22 +1692,36 @@ export default function TreasuryPage(): JSX.Element {
   const [formExpanded, setFormExpanded] = useState<boolean>(false);
   const [intakeMode, setIntakeMode] = useState<TreasureIntakeMode>("bring_in");
   const [buyAssetSymbol, setBuyAssetSymbol] = useState<string>("");
+  const refreshInFlight = useRef<boolean>(false);
 
-  const loadPortfolio = useCallback(async (): Promise<void> => {
-    setError(null);
-    setLoading(true);
+  const loadPortfolio = useCallback(async (background = false): Promise<void> => {
+    if (refreshInFlight.current) {
+      return;
+    }
+    refreshInFlight.current = true;
+    if (!background) {
+      setLoading(true);
+    }
     try {
       const payload = await fetchApi<PortfolioPayload>("/api/portfolio");
       setPortfolio(payload);
+      setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Treasury is unavailable.");
     } finally {
-      setLoading(false);
+      refreshInFlight.current = false;
+      if (!background) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     void loadPortfolio();
+    const refreshTimer = window.setInterval(() => {
+      void loadPortfolio(true);
+    }, 60_000);
+    return () => window.clearInterval(refreshTimer);
   }, [loadPortfolio]);
 
   async function submitTransaction(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -1756,21 +1800,7 @@ export default function TreasuryPage(): JSX.Element {
 
         <section className="treasury-overview">
           <header className="treasury-section-head">
-            <div>
-              <h1>Treasury Overview</h1>
-              {summary?.prices_updated_at ? (
-                <p className="treasury-price-freshness">Prices checked {formatDateTimeEu(summary.prices_updated_at)}</p>
-              ) : null}
-            </div>
-            <button
-              type="button"
-              className="dialog-user-btn treasury-refresh-btn"
-              onClick={() => void loadPortfolio()}
-              disabled={loading}
-            >
-              <span className="treasury-refresh-label-full">Refresh Treasury</span>
-              <span className="treasury-refresh-label-short">Refresh</span>
-            </button>
+            <h1>Treasury Overview</h1>
           </header>
 
           {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
@@ -1891,7 +1921,7 @@ export default function TreasuryPage(): JSX.Element {
                     <span>{formatTimelineDate(timeline[timeline.length - 1].snapshot_date)}</span>
                   </>
                 ) : (
-                  <span>Refresh Treasury to place the first mark.</span>
+                  <span>The first daily mark will appear automatically.</span>
                 )}
               </footer>
             </article>
@@ -2086,6 +2116,7 @@ export default function TreasuryPage(): JSX.Element {
                   key={`${holding.asset_symbol}-${holding.quote_symbol}`}
                   holding={holding}
                   exchange={exchange}
+                  realizedAccumulatedCash={summary?.realized_accumulated_cash ?? 0}
                   onPortfolioUpdated={(response) => {
                     setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));
                   }}

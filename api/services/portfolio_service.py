@@ -388,6 +388,21 @@ def _reserved_quote_for_open_swings(swings: list[dict[str, Any]]) -> float:
     return committed
 
 
+def _realized_accumulated_cash(swings: list[dict[str, Any]]) -> float:
+    accumulated_cash = 0.0
+    for swing in swings:
+        if (
+            swing.get("status") != "closed"
+            or swing.get("trading_objective") != "accumulate_cash"
+            or swing.get("quote_symbol") != DEFAULT_QUOTE
+        ):
+            continue
+        executions = list_spot_swing_executions(str(swing["swing_id"]))
+        economics = calculate_swing_economics(swing, executions)
+        accumulated_cash += _as_float(economics.get("realized_cash_gain_quote")) or 0.0
+    return accumulated_cash
+
+
 def _summary_from_holdings(
     holdings: list[dict[str, Any]],
     *,
@@ -660,11 +675,8 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     _attach_asset_policies(holdings)
     exchange = _load_spot_exchange_state()
     _attach_exchange_state(holdings, exchange)
-    open_swings = [
-        swing
-        for swing in list_spot_swings(account_key=DEFAULT_ACCOUNT_KEY)
-        if swing["status"] != "closed"
-    ]
+    swings = list_spot_swings(account_key=DEFAULT_ACCOUNT_KEY)
+    open_swings = [swing for swing in swings if swing["status"] != "closed"]
     summary = _summary_from_holdings(
         holdings,
         invested_capital=_derive_invested_capital(transactions),
@@ -674,6 +686,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     summary["open_swing_asset_count"] = len(
         {(swing["asset_symbol"], swing["quote_symbol"]) for swing in open_swings}
     )
+    summary["realized_accumulated_cash"] = _realized_accumulated_cash(swings)
     summary["binance_spot_usdt_free"] = exchange["usdt_free"]
     summary["binance_spot_usdt_locked"] = exchange["usdt_locked"]
     timeline = _portfolio_timeline(summary, holdings, warnings)

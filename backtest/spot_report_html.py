@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import datetime
 from html import escape
 import json
 from pathlib import Path
 from typing import Any
+
+from backtest.spot_bargain_analysis import build_bargain_analysis
 
 
 MAX_CHART_POINTS = 720
@@ -38,7 +41,24 @@ def _maximum_drawdown(values: list[float]) -> float:
     return worst
 
 
-def _display_title(name: str) -> str:
+def display_spot_report_title(name: str, start: str | None = None, end: str | None = None) -> str:
+    normalized = name.strip().lower().replace("_", "-")
+    if normalized == "scrooge-treasury-portfolio-replay" or normalized.startswith(
+        "treasury-10-assets-real-quantities"
+    ):
+        try:
+            duration_days = (datetime.fromisoformat(str(end)) - datetime.fromisoformat(str(start))).days
+        except (TypeError, ValueError):
+            duration_days = 0
+        if duration_days >= 330:
+            period = "One-Year"
+        elif duration_days >= 150:
+            period = "Six-Month"
+        elif duration_days > 0:
+            period = f"{duration_days}-Day"
+        else:
+            return "Scrooge Treasury: Portfolio Replay"
+        return f"Scrooge Treasury: {period} Portfolio Replay"
     acronyms = {"6m": "6M", "1y": "1Y", "ton": "TON", "gram": "GRAM", "usdt": "USDT"}
     words = name.replace("_", " ").replace("-", " ").split()
     return " ".join(acronyms.get(word.lower(), word.capitalize()) for word in words)
@@ -117,6 +137,21 @@ def _report_payload(
             "signalLevel": strategy_reason.get("signal_level"),
             "rollingChangePct": strategy_reason.get("rolling_change_pct"),
             "sizingModifier": strategy_reason.get("sizing_modifier"),
+            "signalTier": (strategy_reason.get("indicator_assessment") or {}).get("tier"),
+            "returnPct": (
+                (
+                    _number(economics.get("realized_pnl_quote"))
+                    + (
+                        0.0
+                        if swing.get("status") == "closed"
+                        else _number(economics.get("unrealized_pnl_quote"))
+                    )
+                )
+                / _number(economics.get("opening_quote_quantity"))
+                * 100.0
+                if _number(economics.get("opening_quote_quantity")) > 0
+                else None
+            ),
             "executions": [
                 {
                     "id": execution.get("execution_id"),
@@ -141,6 +176,7 @@ def _report_payload(
         "portfolio": portfolio,
         "reserve": report["shared_usdt"],
         "swings": report["swings"],
+        "bargainAnalysis": report.get("bargain_analysis") or build_bargain_analysis(swings),
         "badCases": report["bad_cases"],
         "rejectedOrders": report["rejected_orders"],
         "fees": fees,
@@ -181,7 +217,14 @@ def render_spot_backtest_html(
         separators=(",", ":"),
         sort_keys=True,
     ).replace("</", "<\\/")
-    title = escape(_display_title(str(report["scenario"].get("name") or "Spot Research")))
+    scenario = report["scenario"]
+    title = escape(
+        display_spot_report_title(
+            str(scenario.get("name") or "Spot Research"),
+            scenario.get("start"),
+            scenario.get("end"),
+        )
+    )
     return _HTML.replace("__REPORT_TITLE__", title).replace("__REPORT_DATA__", payload)
 
 
@@ -202,12 +245,21 @@ def write_spot_backtest_html(
 
 def write_report_from_artifacts(artifact_dir: str | Path) -> Path:
     root = Path(artifact_dir).expanduser().resolve()
-    report = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+    summary_path = root / "summary.json"
+    report = json.loads(summary_path.read_text(encoding="utf-8"))
     with (root / "equity.csv").open("r", encoding="utf-8", newline="") as file_obj:
         equity = list(csv.DictReader(file_obj))
     with (root / "monthly.csv").open("r", encoding="utf-8", newline="") as file_obj:
         monthly = list(csv.DictReader(file_obj))
     swings = json.loads((root / "swings.json").read_text(encoding="utf-8"))
+    scenario_name = str(report.get("scenario", {}).get("name") or "")
+    if scenario_name.lower().replace("_", "-").startswith("treasury-10-assets-real-quantities"):
+        report["scenario"]["name"] = "scrooge-treasury-portfolio-replay"
+    report["bargain_analysis"] = build_bargain_analysis(swings)
+    summary_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return write_spot_backtest_html(root / "report.html", report, equity, monthly, swings)
 
 
@@ -349,6 +401,43 @@ _HTML = r'''<!doctype html>
     .score span { color: var(--muted); font-size: 10px; }
     .callout { margin-top: 16px; border-left: 2px solid var(--red); padding: 10px 13px; color: #d7bac3; background: rgba(67,17,33,.27); font-size: 11px; line-height: 1.55; }
 
+    #bargainAnalytics { padding: 22px; }
+    #bargainAnalytics h2 { font-size: 22px; }
+    #bargainAnalytics > .card-head .subtitle { font-size: 12px; }
+    .analysis-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 17px; }
+    .analysis-kpi { min-width: 0; min-height: 104px; padding: 15px; border: 1px solid var(--line-soft); border-radius: 13px; background: linear-gradient(145deg, rgba(17,25,37,.92), rgba(8,12,18,.92)); }
+    .analysis-kpi span { display: block; color: var(--muted); font-size: 11px; }
+    .analysis-kpi strong { display: block; margin-top: 10px; overflow: hidden; font-size: 22px; text-overflow: ellipsis; }
+    .analysis-kpi small { display: block; margin-top: 7px; color: var(--dim); font-size: 10px; line-height: 1.4; }
+    .analysis-grid { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(380px, .82fr); gap: 16px; }
+    .analysis-panel { min-width: 0; padding: 17px; border: 1px solid var(--line-soft); border-radius: 15px; background: rgba(7,11,17,.62); }
+    .analysis-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+    .analysis-panel-head strong { font-size: 15px; }
+    .analysis-panel-head span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .analysis-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 13px; }
+    .analysis-tab { border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; color: var(--muted); background: #0b1119; cursor: pointer; font-size: 11px; }
+    .analysis-tab:hover, .analysis-tab.active { color: var(--ink); border-color: #5e7da8; background: #17253a; }
+    .breakdown-table { display: grid; }
+    .breakdown-row { display: grid; grid-template-columns: minmax(120px,1.25fr) 50px 56px 50px 104px 82px 72px; gap: 10px; align-items: center; padding: 11px 5px; border-top: 1px solid var(--line-soft); font-size: 12px; }
+    .breakdown-row.header { border-top: 0; color: var(--dim); font-size: 10px; text-transform: uppercase; }
+    .breakdown-row > :not(:first-child) { text-align: right; }
+    .breakdown-label { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .breakdown-label::before { content: ""; width: 7px; height: 26px; flex: 0 0 auto; border-radius: 4px; background: var(--row-color); }
+    .breakdown-label strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .outcome-stack { display: flex; height: 22px; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 999px; background: #080c12; }
+    .outcome-slice { width: var(--width); min-width: 2px; background: var(--slice-color); }
+    .outcome-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 15px; margin-top: 15px; }
+    .outcome-item { display: grid; grid-template-columns: 10px 1fr auto; gap: 9px; align-items: center; font-size: 11px; }
+    .outcome-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--slice-color); }
+    .outcome-item span { color: var(--muted); }
+    .scatter-wrap { height: 300px; }
+    .risk-list { display: grid; gap: 8px; }
+    .risk-row { display: grid; grid-template-columns: 58px minmax(0,1fr) 68px 90px; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid var(--line-soft); border-radius: 9px; color: inherit; background: #0a0f16; text-decoration: none; font-size: 11px; }
+    .risk-row:hover { border-color: #5e718e; background: #101925; }
+    .risk-row strong:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .risk-row span { color: var(--muted); text-align: right; }
+    .analysis-note { margin-top: 13px; color: var(--dim); font-size: 11px; line-height: 1.55; }
+
     .monthly { display: grid; grid-template-columns: repeat(7, minmax(72px, 1fr)); gap: 10px; align-items: end; min-height: 230px; overflow-x: auto; padding-top: 15px; }
     .month { display: grid; grid-template-rows: 180px auto; gap: 8px; min-width: 72px; }
     .month-bars { position: relative; border-bottom: 1px solid var(--line); }
@@ -439,6 +528,8 @@ _HTML = r'''<!doctype html>
       .allocation { grid-template-columns: 1fr; }
       .donut { width: min(230px, 75vw); margin: 0 auto; }
       .bargain-score { grid-template-columns: 1fr 1fr; }
+      .analysis-kpis { grid-template-columns: repeat(3, 1fr); }
+      .analysis-grid { grid-template-columns: 1fr; }
       .bar-row { grid-template-columns: 45px 1fr 68px; }
       .metric:last-child { grid-column: 1 / -1; }
       .ledger-head { align-items: flex-start; flex-direction: column; }
@@ -451,6 +542,13 @@ _HTML = r'''<!doctype html>
       .execution { grid-template-columns: 42px 1fr; }
       .execution-fee, .execution time { grid-column: 2; }
       .swing-footer { flex-direction: column; }
+    }
+    @media (max-width: 520px) {
+      #bargainAnalytics { padding: 16px; }
+      .analysis-kpis { grid-template-columns: repeat(2, 1fr); }
+      .breakdown-table { overflow-x: auto; }
+      .breakdown-row { min-width: 740px; }
+      .outcome-list { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -503,6 +601,32 @@ _HTML = r'''<!doctype html>
         <div class="callout" id="bargainCallout"></div>
       </article>
 
+      <article class="card full" id="bargainAnalytics">
+        <div class="card-head"><div><h2>Bargain Analytics</h2><div class="subtitle">Lifecycle returns, duration, signal quality, and capital still waiting for an exit.</div></div><span class="tag" id="analysisCount"></span></div>
+        <div class="analysis-kpis" id="analysisKpis"></div>
+        <div class="analysis-grid">
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Performance Breakdown</strong><br><span>Compare cohorts on the same lifecycle basis.</span></div></div>
+            <div class="analysis-tabs" id="analysisTabs"></div>
+            <div class="breakdown-table" id="breakdownTable"></div>
+          </section>
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Duration vs Return</strong><br><span>Each point is one Bargain. Open exposure is marked in red.</span></div></div>
+            <div class="chart-wrap scatter-wrap"><canvas id="bargainScatter"></canvas><div class="tooltip"></div></div>
+          </section>
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Outcome Mix</strong><br><span>Lifecycle state at the end of the replay.</span></div></div>
+            <div class="outcome-stack" id="outcomeStack"></div>
+            <div class="outcome-list" id="outcomeList"></div>
+            <div class="analysis-note" id="outcomeNote"></div>
+          </section>
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Open Risk Watchlist</strong><br><span>Largest unfinished losses, linked to asset history.</span></div><span id="riskSummary"></span></div>
+            <div class="risk-list" id="riskList"></div>
+          </section>
+        </div>
+      </article>
+
       <article class="card full">
         <div class="card-head"><div><h2>Asset Contribution</h2><div class="subtitle">Final marked asset value versus holding the starting quantity. Shared USDT is shown separately above.</div></div></div>
         <div class="bar-list" id="assetBars"></div>
@@ -510,7 +634,7 @@ _HTML = r'''<!doctype html>
 
       <article class="card full">
         <div class="card-head"><div><h2>Portfolio Ledger</h2><div class="subtitle">Market path, Bargains, inventory, and final policy state by asset.</div></div><span class="tag" id="assetCount"></span></div>
-        <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Objective</th><th>Market</th><th>vs HODL</th><th>Realized</th><th>Open PnL</th><th>Bargains</th><th>Final / Start</th><th>Target</th><th>Near Floor</th></tr></thead><tbody id="assetTable"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Objective</th><th>Market</th><th>vs HODL</th><th>Closed PnL</th><th>Open PnL</th><th>Bargains</th><th>Final / Start</th><th>Target</th><th>Near Floor</th></tr></thead><tbody id="assetTable"></tbody></table></div>
       </article>
     </section>
 
@@ -575,6 +699,35 @@ _HTML = r'''<!doctype html>
       new ResizeObserver(draw).observe(wrap); draw();
     }
 
+    function drawBargainScatter(canvas, points) {
+      const wrap=canvas.parentElement;
+      const tooltip=wrap.querySelector(".tooltip");
+      let positions=[];
+      function draw() {
+        const rect=wrap.getBoundingClientRect();
+        const dpr=window.devicePixelRatio||1;
+        canvas.width=Math.round(rect.width*dpr); canvas.height=Math.round(rect.height*dpr);
+        const ctx=canvas.getContext("2d"); ctx.scale(dpr,dpr);
+        const width=rect.width,height=rect.height,pad={l:58,r:15,t:13,b:32};
+        const valid=points.filter(point=>Number.isFinite(point.returnPct));
+        if (!valid.length) { ctx.fillStyle="#70798a";ctx.font="10px Courier New";ctx.fillText("No Bargains to chart",14,24);return; }
+        const maxDays=Math.max(...valid.map(point=>point.ageDays),1);
+        let minReturn=Math.min(...valid.map(point=>point.returnPct),0);
+        let maxReturn=Math.max(...valid.map(point=>point.returnPct),0);
+        const gap=Math.max((maxReturn-minReturn)*.08,1); minReturn-=gap;maxReturn+=gap;
+        const x=value=>pad.l+(Math.log1p(value)/Math.log1p(maxDays))*(width-pad.l-pad.r);
+        const y=value=>pad.t+(maxReturn-value)/Math.max(maxReturn-minReturn,.0001)*(height-pad.t-pad.b);
+        ctx.font="11px Courier New";ctx.lineWidth=1;
+        for(let index=0;index<5;index++){const value=minReturn+(maxReturn-minReturn)*index/4,yy=y(value);ctx.strokeStyle="rgba(135,149,171,.13)";ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(width-pad.r,yy);ctx.stroke();ctx.fillStyle="#70798a";ctx.fillText(`${value.toFixed(0)}%`,3,yy+3);}
+        const zeroY=y(0);ctx.strokeStyle="rgba(233,185,73,.45)";ctx.beginPath();ctx.moveTo(pad.l,zeroY);ctx.lineTo(width-pad.r,zeroY);ctx.stroke();
+        [0,7,30,90,maxDays].filter((value,index,items)=>items.indexOf(value)===index&&value<=maxDays).forEach(value=>{const xx=x(value);ctx.fillStyle="#70798a";ctx.fillText(`${Math.round(value)}d`,Math.max(2,xx-8),height-7);});
+        positions=valid.map(point=>{const xx=x(point.ageDays),yy=y(point.returnPct);ctx.beginPath();ctx.arc(xx,yy,point.status==="closed"?3.2:4.1,0,Math.PI*2);ctx.fillStyle=point.status==="closed"?"rgba(67,214,160,.66)":"rgba(255,102,125,.78)";ctx.fill();return{x:xx,y:yy,point};});
+      }
+      canvas.addEventListener("mousemove",event=>{if(!positions.length)return;const rect=canvas.getBoundingClientRect(),mx=event.clientX-rect.left,my=event.clientY-rect.top;const nearest=positions.reduce((best,item)=>Math.hypot(item.x-mx,item.y-my)<Math.hypot(best.x-mx,best.y-my)?item:best,positions[0]);if(Math.hypot(nearest.x-mx,nearest.y-my)>24){tooltip.style.opacity=0;return;}tooltip.innerHTML=`<strong>${nearest.point.symbol} / ${bargainId(nearest.point.id)}</strong><br>${nearest.point.status==="closed"?"Closed":"Open"}: ${pct(nearest.point.returnPct)}<br>Age: ${nearest.point.ageDays.toFixed(1)}d`;tooltip.style.left=`${Math.max(90,Math.min(rect.width-90,nearest.x))}px`;tooltip.style.top=`${Math.max(55,nearest.y)}px`;tooltip.style.opacity=1;});
+      canvas.addEventListener("mouseleave",()=>tooltip.style.opacity=0);
+      new ResizeObserver(draw).observe(wrap);draw();
+    }
+
     const drawdowns = (() => { let treasuryPeak=0, hodlPeak=0; return data.equity.map(point => { treasuryPeak=Math.max(treasuryPeak,point.treasury); hodlPeak=Math.max(hodlPeak,point.hodl); return {...point, treasuryDd:(point.treasury/treasuryPeak-1)*100, hodlDd:(point.hodl/hodlPeak-1)*100}; }); })();
     drawLineChart(document.getElementById("equityChart"), data.equity, [
       {name:"Scrooge",color:"#e9b949",value:p=>p.treasury,format:v=>money(v)},
@@ -601,7 +754,7 @@ _HTML = r'''<!doctype html>
     const swing=data.swings;
     document.getElementById("bargainScore").innerHTML=[
       ["Opened",swing.total_opened,""], ["Closed",swing.total_closed,"positive"], ["Still Open",swing.still_open,"negative"],
-      ["Realized",money(swing.realized_pnl_quote),"positive"], ["Open PnL",money(swing.unrealized_open_pnl_quote),tone(swing.unrealized_open_pnl_quote)], ["Oldest",`${swing.oldest_open_days.toFixed(0)}d`,"negative"],
+      ["Closed PnL",money(swing.realized_pnl_quote),"positive"], ["Open PnL",money(swing.unrealized_open_pnl_quote),tone(swing.unrealized_open_pnl_quote)], ["Oldest",`${swing.oldest_open_days.toFixed(0)}d`,"negative"],
     ].map(([label,value,cls])=>`<div class="score"><span>${label}</span><strong class="${cls}">${value}</strong></div>`).join("");
     const ageLabels={"under_7_days":"< 7d","7_to_30_days":"7-30d","30_to_90_days":"30-90d","90_to_180_days":"90-180d","180_plus_days":"180d+"};
     const maxAge=Math.max(...Object.values(swing.open_age_buckets),1);
@@ -617,6 +770,47 @@ _HTML = r'''<!doctype html>
     const bargainId=value=>`Bargain #${value.replaceAll("-","").slice(-6).toUpperCase()}`;
     const age=value=>{ const total=Math.max(0,Math.floor(value)); const days=Math.floor(total/86400); const hours=Math.floor((total%86400)/3600); return days?`${days}d ${hours}h`:hours?`${hours}h ${Math.floor((total%3600)/60)}m`:`${Math.floor(total/60)}m`; };
     const statusLabel=value=>value.replaceAll("_"," ").toUpperCase();
+
+    const analysis=data.bargainAnalysis;
+    const analysisOverview=analysis.overview;
+    const optionalPct=value=>value===null||value===undefined?"N/A":pct(value);
+    const hoursLabel=value=>value===null||value===undefined?"N/A":value>=24?`${(value/24).toFixed(1)}d`:`${value.toFixed(1)}h`;
+    document.getElementById("analysisCount").textContent=`${analysisOverview.count} BARGAINS`;
+    document.getElementById("analysisKpis").innerHTML=[
+      ["Lifecycle PnL",money(analysisOverview.net_pnl_quote),`${money(analysisOverview.realized_pnl_quote)} realized`,tone(analysisOverview.net_pnl_quote)],
+      ["Closure Rate",optionalPct(analysisOverview.closure_rate_pct),`${analysisOverview.open} still open`,""],
+      ["Closed Expectancy",money(analysisOverview.closed_expectancy_quote),`${optionalPct(analysisOverview.average_closed_return_pct)} average return`,tone(analysisOverview.closed_expectancy_quote)],
+      ["Median Duration",hoursLabel(analysisOverview.median_duration_hours),`P90 ${hoursLabel(analysisOverview.duration_p90_hours)}`,""],
+      ["Fee Drag",optionalPct(analysisOverview.fee_drag_pct),`${money(analysisOverview.quote_fees)} quote fees`,""],
+      ["Open Risk",money(analysis.risk.underwater_open_pnl_quote),`${analysis.risk.underwater_open_count} underwater`,"negative"],
+    ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
+
+    const dimensions={asset:"Asset",objective:"Objective",origin:"Origin",signal_level:"Signal Level",conviction:"Conviction",duration:"Duration"};
+    const analysisTabs=document.getElementById("analysisTabs");
+    let activeDimension="asset";
+    analysisTabs.innerHTML=Object.entries(dimensions).map(([key,label])=>`<button type="button" class="analysis-tab ${key===activeDimension?"active":""}" data-dimension="${key}">${label}</button>`).join("");
+    function renderBreakdown() {
+      const rows=analysis.breakdowns[activeDimension]||[];
+      document.getElementById("breakdownTable").innerHTML=`<div class="breakdown-row header"><span>Category</span><span>Count</span><span>Closed</span><span>Open</span><span>Lifecycle PnL</span><span>Return</span><span>Median</span></div>${rows.map((row,index)=>`<div class="breakdown-row"><span class="breakdown-label" style="--row-color:${COLORS[index%COLORS.length]}"><strong>${row.label}</strong></span><span>${row.count}</span><span>${row.closed}</span><span>${row.open}</span><strong class="${tone(row.net_pnl_quote)}">${money(row.net_pnl_quote)}</strong><span class="${tone(row.return_on_notional_pct||0)}">${optionalPct(row.return_on_notional_pct)}</span><span>${hoursLabel(row.median_duration_hours)}</span></div>`).join("")}`;
+    }
+    analysisTabs.querySelectorAll(".analysis-tab").forEach(button=>button.addEventListener("click",()=>{activeDimension=button.dataset.dimension;analysisTabs.querySelectorAll(".analysis-tab").forEach(item=>item.classList.toggle("active",item===button));renderBreakdown();}));
+    renderBreakdown();
+
+    const outcomeColors={closed_profit:"#43d6a0",closed_flat:"#738096",closed_loss:"#ff667d",open_profit:"#83a8e8",open_flat:"#9b7bd4",open_underwater:"#b83352"};
+    const outcomes=analysis.breakdowns.outcome||[];
+    const outcomeTotal=Math.max(outcomes.reduce((total,row)=>total+row.count,0),1);
+    document.getElementById("outcomeStack").innerHTML=outcomes.map(row=>`<span class="outcome-slice" title="${row.label}: ${row.count}" style="--width:${row.count/outcomeTotal*100}%;--slice-color:${outcomeColors[row.key]||"#738096"}"></span>`).join("");
+    document.getElementById("outcomeList").innerHTML=outcomes.map(row=>`<div class="outcome-item"><i class="outcome-dot" style="--slice-color:${outcomeColors[row.key]||"#738096"}"></i><span>${row.label}</span><strong class="${tone(row.net_pnl_quote)}">${row.count} / ${money(row.net_pnl_quote)}</strong></div>`).join("");
+    const feeAssets=Object.entries(analysisOverview.fees_by_asset).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"none";
+    document.getElementById("outcomeNote").textContent=`${analysisOverview.partially_closed} partially closed. Fees remain denominated in their actual assets: ${feeAssets}.`;
+
+    const risks=analysis.notable.worst_open||[];
+    document.getElementById("riskSummary").textContent=`${analysis.risk.open_90_plus_days} open 90d+`;
+    document.getElementById("riskList").innerHTML=risks.length?risks.map(item=>`<a class="risk-row" href="#asset-${item.asset_symbol}" data-risk-asset="${item.asset_symbol}"><strong>${item.asset_symbol}</strong><strong>${bargainId(item.swing_id)}</strong><span>${item.age_days.toFixed(1)}d</span><strong class="${tone(item.pnl_quote)}">${money(item.pnl_quote)}</strong></a>`).join(""):`<div class="ledger-empty">No open Bargains are underwater.</div>`;
+
+    const bargainPoints=Object.entries(data.swingHistory).flatMap(([symbol,items])=>items.map(item=>({symbol,id:item.id,status:item.status,ageDays:item.ageSeconds/86400,returnPct:item.returnPct})));
+    drawBargainScatter(document.getElementById("bargainScatter"),bargainPoints);
+
     const assetTable=document.getElementById("assetTable");
     const ledgerState={};
     document.getElementById("assetCount").textContent=`${data.assets.length} ASSETS`;
@@ -681,6 +875,14 @@ _HTML = r'''<!doctype html>
       row.addEventListener("click",()=>toggleAssetRow(row));
       row.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();toggleAssetRow(row);}});
     });
+    document.querySelectorAll("[data-risk-asset]").forEach(link=>link.addEventListener("click",event=>{
+      event.preventDefault();
+      const row=document.getElementById(`asset-${link.dataset.riskAsset}`);
+      if(!row)return;
+      if(row.getAttribute("aria-expanded")!=="true")toggleAssetRow(row);
+      history.replaceState(null,"",link.getAttribute("href"));
+      setTimeout(()=>window.scrollTo({top:row.getBoundingClientRect().top+window.scrollY-24,behavior:"smooth"}),30);
+    }));
     const linkedAsset=location.hash.startsWith("#asset-")?document.getElementById(location.hash.slice(1)):null;
     if (linkedAsset) { toggleAssetRow(linkedAsset); setTimeout(()=>window.scrollTo({top:linkedAsset.getBoundingClientRect().top+window.scrollY-24}),150); }
   </script>

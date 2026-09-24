@@ -109,6 +109,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         self.assertEqual(snapshot["summary"]["open_swing_count"], 1)
         self.assertEqual(snapshot["summary"]["open_swing_asset_count"], 1)
+        self.assertEqual(snapshot["summary"]["realized_accumulated_cash"], 2)
 
     def test_strategy_fill_preserves_owner_capital_and_tracks_committed_reserve(self):
         self.add("BTC", 1, 90, "binance")

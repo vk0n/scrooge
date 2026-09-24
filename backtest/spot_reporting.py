@@ -8,8 +8,9 @@ from statistics import mean, median
 import subprocess
 from typing import Any
 
+from backtest.spot_bargain_analysis import build_bargain_analysis
 from backtest.spot_engine import SpotBacktestResult
-from backtest.spot_report_html import write_spot_backtest_html
+from backtest.spot_report_html import display_spot_report_title, write_spot_backtest_html
 from backtest.spot_scenario import scenario_as_dict, write_scenario_snapshot
 
 
@@ -353,6 +354,7 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             ),
         },
         "swings": _swing_metrics(result.swings),
+        "bargain_analysis": build_bargain_analysis(result.swings),
         "bad_cases": {
             **_bad_case_metrics(result.swings),
             "maximum_simultaneously_underwater_sell_origin_swings": int(
@@ -511,8 +513,18 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
 
     portfolio = report["portfolio"]
     swing_metrics = report["swings"]
+    bargain_analysis = report["bargain_analysis"]
+    bargain_overview = bargain_analysis["overview"]
+    closure_rate = bargain_overview["closure_rate_pct"]
+    median_duration = bargain_overview["median_duration_hours"]
+    p90_duration = bargain_overview["duration_p90_hours"]
+    report_title = display_spot_report_title(
+        result.scenario.name,
+        result.scenario.start.isoformat(),
+        result.scenario.end.isoformat(),
+    )
     markdown = [
-        f"# Spot Research: {result.scenario.name}",
+        f"# {report_title}",
         "",
         "## Portfolio",
         "",
@@ -530,8 +542,22 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         f"- Opened: {swing_metrics['total_opened']}",
         f"- Closed: {swing_metrics['total_closed']}",
         f"- Still open: {swing_metrics['still_open']}",
-        f"- Realized quote PnL: ${swing_metrics['realized_pnl_quote']:,.2f}",
+        f"- Closed Bargain PnL: ${swing_metrics['realized_pnl_quote']:,.2f}",
         f"- Unrealized open PnL: ${swing_metrics['unrealized_open_pnl_quote']:,.2f}",
+        f"- Lifecycle PnL: ${bargain_overview['net_pnl_quote']:,.2f}",
+        f"- Closure rate: {closure_rate:.2f}%" if closure_rate is not None else "- Closure rate: N/A",
+        (
+            f"- Median closed duration: {median_duration:.2f} hours"
+            if median_duration is not None
+            else "- Median closed duration: N/A"
+        ),
+        (
+            f"- P90 closed duration: {p90_duration:.2f} hours"
+            if p90_duration is not None
+            else "- P90 closed duration: N/A"
+        ),
+        f"- Underwater open Bargains: {bargain_analysis['risk']['underwater_open_count']}",
+        f"- Underwater open lifecycle PnL: ${bargain_analysis['risk']['underwater_open_pnl_quote']:,.2f}",
         "",
         "This is a strategy backtest, not an order-book or microstructure simulation.",
     ]

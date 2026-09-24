@@ -2164,20 +2164,6 @@ pre {
   gap: 0.78rem;
 }
 
-.treasury-price-freshness {
-  margin: 0.18rem 0 0;
-  color: #8491a5;
-  font-size: 0.72rem;
-}
-
-.treasury-refresh-btn {
-  min-width: 10.5rem;
-}
-
-.treasury-refresh-label-short {
-  display: none;
-}
-
 .treasury-summary-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -2754,7 +2740,7 @@ pre {
 
 .treasury-holding-lines {
   display: grid;
-  grid-template-columns: 1.12fr 0.82fr 0.82fr 0.92fr 1.32fr;
+  grid-template-columns: 1.05fr 0.95fr 0.82fr 0.82fr 0.92fr 1.32fr;
   gap: 0;
   min-width: 0;
 }
@@ -4645,29 +4631,9 @@ body.logs-page-active .logs-page-panel .log-box {
     gap: 0.55rem;
   }
 
-  .treasury-refresh-btn,
   .treasury-form-toggle,
   .treasury-submit-btn {
     width: 100%;
-  }
-
-  .treasury-overview > .treasury-section-head {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: start;
-  }
-
-  .treasury-overview .treasury-refresh-btn {
-    align-self: start;
-    min-width: 0;
-    width: auto;
-  }
-
-  .treasury-refresh-label-full {
-    display: none;
-  }
-
-  .treasury-refresh-label-short {
-    display: inline;
   }
 
   .treasury-summary-grid {
@@ -4735,10 +4701,6 @@ body.logs-page-active .logs-page-panel .log-box {
     border-top: 1px solid rgba(106, 124, 150, 0.16);
     border-left: 0;
     padding: 0.36rem 0 0;
-  }
-
-  .treasury-holding-lines > span:nth-child(5) {
-    grid-column: 1 / -1;
   }
 
   .treasury-holding-chevron {

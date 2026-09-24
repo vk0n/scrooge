@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from backtest.spot_bargain_analysis import build_bargain_analysis
 from backtest.spot_engine import SpotPortfolioBacktester
 from backtest.spot_market_data import (
     BinanceSpotHistoricalAdapter,
@@ -13,6 +14,7 @@ from backtest.spot_market_data import (
     SpotHistoricalDataset,
 )
 from backtest.spot_reporting import build_spot_backtest_report, write_spot_backtest_artifacts
+from backtest.spot_report_html import display_spot_report_title
 from backtest.spot_scenario import (
     SpotBacktestAsset,
     SpotBacktestExecutionConfig,
@@ -152,6 +154,26 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             plan_spot_strategy_action,
         )
 
+    def test_report_title_uses_replay_period_instead_of_market_migration_details(self):
+        legacy_name = "treasury-10-assets-real-quantities-6m-ton-to-gram"
+
+        self.assertEqual(
+            display_spot_report_title(
+                legacy_name,
+                "2026-03-25T00:00:00+00:00",
+                "2026-09-24T00:00:00+00:00",
+            ),
+            "Scrooge Treasury: Six-Month Portfolio Replay",
+        )
+        self.assertEqual(
+            display_spot_report_title(
+                legacy_name,
+                "2025-09-24T00:00:00+00:00",
+                "2026-09-24T00:00:00+00:00",
+            ),
+            "Scrooge Treasury: One-Year Portfolio Replay",
+        )
+
     def test_repeated_run_is_deterministic(self):
         config = scenario((asset("AAA"),))
         prices = lambda _symbol, index: 111 if 0 <= index < 3 else 100
@@ -162,6 +184,62 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(first.equity, second.equity)
         self.assertEqual(first.actions, second.actions)
         self.assertEqual(first.swings, second.swings)
+
+    def test_bargain_analysis_preserves_partial_pnl_and_external_fees(self):
+        swings = [
+            {
+                "swing_id": "closed",
+                "asset_symbol": "AAA",
+                "status": "closed",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "quote_symbol": "USDT",
+                "age_seconds": 48 * 3600,
+                "strategy_reason": {
+                    "signal_level": 2,
+                    "indicator_assessment": {"tier": "strong"},
+                },
+                "executions": [{}, {}],
+                "economics": {
+                    "opening_quote_quantity": 100,
+                    "realized_pnl_quote": 10,
+                    "unrealized_pnl_quote": 0,
+                    "fees_by_asset": {"USDT": 1},
+                },
+            },
+            {
+                "swing_id": "partial",
+                "asset_symbol": "AAA",
+                "status": "partially_closed",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_asset",
+                "quote_symbol": "USDT",
+                "age_seconds": 10 * 86400,
+                "strategy_reason": {
+                    "signal_level": 1,
+                    "indicator_assessment": {"tier": "neutral"},
+                },
+                "executions": [{}],
+                "economics": {
+                    "opening_quote_quantity": 50,
+                    "realized_pnl_quote": 2,
+                    "unrealized_pnl_quote": -3,
+                    "fees_by_asset": {"BNB": 0.01},
+                },
+            },
+        ]
+
+        analysis = build_bargain_analysis(swings)
+
+        self.assertEqual(analysis["overview"]["closed"], 1)
+        self.assertEqual(analysis["overview"]["partially_closed"], 1)
+        self.assertEqual(analysis["overview"]["realized_pnl_quote"], 12)
+        self.assertEqual(analysis["overview"]["unrealized_pnl_quote"], -3)
+        self.assertEqual(analysis["overview"]["net_pnl_quote"], 9)
+        self.assertEqual(analysis["overview"]["quote_fees"], 1)
+        self.assertEqual(analysis["overview"]["fees_by_asset"]["BNB"], 0.01)
+        self.assertEqual(analysis["risk"]["underwater_open_count"], 1)
+        self.assertEqual(len(analysis["breakdowns"]["signal_level"]), 2)
 
     def test_warmup_signals_cannot_trade(self):
         config = scenario((asset("AAA"),), hours=8)
@@ -399,7 +477,10 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertIn("Vault Value", report_html)
             self.assertIn("Final Allocation", report_html)
             self.assertIn("Bargain History", report_html)
+            self.assertIn("Bargain Analytics", report_html)
+            self.assertIn("<span>Closed</span><span>Open</span>", report_html)
             self.assertIn('"swingHistory"', report_html)
+            self.assertIn('"bargainAnalysis"', report_html)
             self.assertIn(result.swings[0]["swing_id"], report_html)
             self.assertEqual(artifacts["report"]["scenario"]["asset_order"], ["AAA"])
             self.assertIn("shared_usdt_reserved", result.equity[-1])
@@ -407,6 +488,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
                 "maximum_simultaneously_underwater_sell_origin_swings",
                 artifacts["report"]["bad_cases"],
             )
+            self.assertIn("breakdowns", artifacts["report"]["bargain_analysis"])
 
     def test_template_and_exported_current_treasury_are_reviewable_scenarios(self):
         template = load_spot_backtest_scenario("config/spot_backtest.template.yaml")
