@@ -7,7 +7,11 @@ import unittest
 from unittest.mock import patch
 
 from backtest.spot_engine import SpotPortfolioBacktester
-from backtest.spot_market_data import SpotCandle, SpotHistoricalDataset
+from backtest.spot_market_data import (
+    BinanceSpotHistoricalAdapter,
+    SpotCandle,
+    SpotHistoricalDataset,
+)
 from backtest.spot_reporting import build_spot_backtest_report, write_spot_backtest_artifacts
 from backtest.spot_scenario import (
     SpotBacktestAsset,
@@ -97,8 +101,10 @@ def dataset(
     price_by_symbol,
     *,
     future_extremes: bool = False,
+    unavailable_symbols: frozenset[str] = frozenset(),
 ) -> SpotHistoricalDataset:
     candle_map = {}
+    unavailable_open_times: dict[str, frozenset[int]] = {}
     for item in config.assets:
         rows = []
         first_open = config.start - timedelta(hours=config.warmup_candles)
@@ -122,12 +128,17 @@ def dataset(
                 )
             )
         candle_map[item.symbol] = tuple(rows)
+        if item.symbol in unavailable_symbols:
+            unavailable_open_times[item.symbol] = frozenset(
+                row.open_time_ms for row in rows if row.open_time_ms >= int(config.start.timestamp() * 1000)
+            )
     return SpotHistoricalDataset(
         candles=candle_map,
         symbol_info={item.symbol: SYMBOL_INFO for item in config.assets},
         interval="1h",
         interval_ms=HOUR_MS,
         source="synthetic",
+        unavailable_open_times=unavailable_open_times,
     )
 
 
@@ -160,6 +171,61 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
 
         self.assertEqual(result.actions, [])
         self.assertEqual(result.swings, [])
+
+    def test_declared_market_migration_gap_cannot_signal_or_trade(self):
+        config = scenario((asset("AAA"),), hours=8)
+        historical = dataset(
+            config,
+            lambda _symbol, index: 110 if index >= 0 else 100,
+            unavailable_symbols=frozenset({"AAA"}),
+        )
+
+        result = SpotPortfolioBacktester(config, historical).run()
+
+        self.assertEqual(result.signals, [])
+        self.assertEqual(result.actions, [])
+        self.assertEqual(result.swings, [])
+
+    def test_partial_candle_cache_downloads_and_persists_missing_tail(self):
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        end = start + timedelta(hours=3)
+        start_ms = int(start.timestamp() * 1000)
+
+        def candle(index: int) -> SpotCandle:
+            open_ms = start_ms + index * HOUR_MS
+            return SpotCandle(
+                open_time_ms=open_ms,
+                close_time_ms=open_ms + HOUR_MS - 1,
+                open=100 + index,
+                high=101 + index,
+                low=99 + index,
+                close=100 + index,
+                volume=10,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = BinanceSpotHistoricalAdapter(tmp)
+            cache_path = Path(tmp) / "klines" / f"AAAUSDT-1h-{start_ms}-{int(end.timestamp() * 1000)}.csv"
+            cache_path.parent.mkdir(parents=True)
+            adapter._write_candles(cache_path, [candle(0), candle(1)])
+
+            with patch.object(adapter, "_download_candles", return_value=[candle(2)]) as download:
+                rows, source = adapter.load_candles(
+                    "AAAUSDT",
+                    interval="1h",
+                    start=start,
+                    end=end,
+                )
+
+            self.assertEqual([row.open_time_ms for row in rows], [candle(i).open_time_ms for i in range(3)])
+            self.assertEqual(source, "binance_spot_rest")
+            self.assertEqual(len(adapter._read_candles(cache_path)), 3)
+            download.assert_called_once_with(
+                "AAAUSDT",
+                interval="1h",
+                start_ms=candle(2).open_time_ms,
+                end_ms=int(end.timestamp() * 1000),
+            )
 
     def test_future_candle_extremes_do_not_change_decisions(self):
         config = scenario((asset("AAA"),))
@@ -328,6 +394,13 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "equity.csv").exists())
             self.assertTrue((Path(tmp) / "swings.json").exists())
             self.assertTrue((Path(tmp) / "scenario.resolved.yaml").exists())
+            report_html = (Path(tmp) / "report.html").read_text(encoding="utf-8")
+            self.assertIn("Scrooge Research", report_html)
+            self.assertIn("Vault Value", report_html)
+            self.assertIn("Final Allocation", report_html)
+            self.assertIn("Bargain History", report_html)
+            self.assertIn('"swingHistory"', report_html)
+            self.assertIn(result.swings[0]["swing_id"], report_html)
             self.assertEqual(artifacts["report"]["scenario"]["asset_order"], ["AAA"])
             self.assertIn("shared_usdt_reserved", result.equity[-1])
             self.assertIn(
@@ -404,6 +477,32 @@ spot_backtest:
             )
             with self.assertRaisesRegex(ValueError, "custody totals"):
                 load_spot_backtest_scenario(path)
+
+    def test_scenario_preserves_explicit_history_segments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "scenario.yaml"
+            path.write_text(
+                """
+spot_backtest:
+  start: 2026-03-25
+  end: 2026-09-24
+  assets:
+    GRAM:
+      quantity: 1000
+      custody: {binance: 1000}
+      history_segments:
+        - market_symbol: TONUSDT
+          end: 2026-06-30T03:00:00Z
+        - market_symbol: GRAMUSDT
+          start: 2026-07-02T08:00:00Z
+""",
+                encoding="utf-8",
+            )
+
+            loaded = load_spot_backtest_scenario(path)
+
+        self.assertEqual([item.market_symbol for item in loaded.assets[0].history_segments], ["TONUSDT", "GRAMUSDT"])
+        self.assertEqual(loaded.assets[0].history_segments[0].end, datetime(2026, 6, 30, 3, tzinfo=UTC))
 
 
 if __name__ == "__main__":

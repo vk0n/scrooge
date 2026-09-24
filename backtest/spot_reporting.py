@@ -9,6 +9,7 @@ import subprocess
 from typing import Any
 
 from backtest.spot_engine import SpotBacktestResult
+from backtest.spot_report_html import write_spot_backtest_html
 from backtest.spot_scenario import scenario_as_dict, write_scenario_snapshot
 
 
@@ -535,4 +536,11 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         "This is a strategy backtest, not an order-book or microstructure simulation.",
     ]
     (target / "report.md").write_text("\n".join(markdown) + "\n", encoding="utf-8")
+    write_spot_backtest_html(
+        target / "report.html",
+        report,
+        result.equity,
+        monthly,
+        result.swings,
+    )
     return {"output_dir": str(target), "report": report, "monthly": monthly}

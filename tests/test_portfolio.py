@@ -12,8 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 from services import portfolio_service
 from shared.runtime_db import (
+    append_portfolio_transaction,
     append_spot_swing_execution,
     create_spot_swing,
+    list_portfolio_transactions,
     mark_exchange_account_snapshot_error,
     save_exchange_account_snapshot,
 )
@@ -36,7 +38,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             portfolio_service,
             "_fetch_market_price",
             side_effect=lambda asset, quote: (
-                {"BTC": 100.0, "ETH": 20.0}.get(asset),
+                {"BTC": 100.0, "ETH": 20.0, "USDT": 1.0}.get(asset),
                 None,
                 "2026-09-22 13:45:00",
             ),
@@ -107,6 +109,106 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         self.assertEqual(snapshot["summary"]["open_swing_count"], 1)
         self.assertEqual(snapshot["summary"]["open_swing_asset_count"], 1)
+
+    def test_strategy_fill_preserves_owner_capital_and_tracks_committed_reserve(self):
+        self.add("BTC", 1, 90, "binance")
+        create_spot_swing(
+            {
+                "swing_id": "open-btc-sell",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            }
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "open-btc-sell-fill",
+                "swing_id": "open-btc-sell",
+                "symbol": "BTCUSDT",
+                "side": "sell",
+                "quantity": 0.25,
+                "price": 100,
+                "quote_quantity": 25,
+                "source": "strategy",
+            }
+        )
+        append_portfolio_transaction(
+            {
+                "transaction_id": "spot-order:open-btc-sell",
+                "account_key": "manual_spot",
+                "executed_at": "2026-09-24 17:00:00",
+                "tx_type": "sell",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "quantity": 0.25,
+                "price": 100,
+                "source": "binance_strategy",
+                "status": "settled",
+                "custody_location": "binance",
+                "swing_id": "open-btc-sell",
+                "executed_quote_quantity": 25,
+                "commissions": {},
+            }
+        )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        self.assertEqual(snapshot["summary"]["invested_capital"], 90)
+        self.assertEqual(snapshot["summary"]["total_value"], 100)
+        self.assertEqual(snapshot["summary"]["unrealized_pnl"], 10)
+        self.assertEqual(snapshot["summary"]["dry_powder"], 25)
+        self.assertEqual(snapshot["summary"]["vault_reserve_committed"], 25)
+        self.assertEqual(snapshot["summary"]["vault_reserve_available"], 0)
+        ledger = portfolio_service.load_portfolio_asset_ledger("BTC")
+        self.assertEqual([entry["entry_type"] for entry in ledger["entries"]], ["swing", "transaction"])
+
+        append_spot_swing_execution(
+            {
+                "execution_id": "close-btc-buy-fill",
+                "swing_id": "open-btc-sell",
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "quantity": 0.25,
+                "price": 90,
+                "quote_quantity": 22.5,
+                "source": "strategy",
+            }
+        )
+        append_portfolio_transaction(
+            {
+                "transaction_id": "spot-order:close-btc-buy",
+                "account_key": "manual_spot",
+                "executed_at": "2026-09-24 17:30:00",
+                "tx_type": "buy",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "quantity": 0.25,
+                "price": 90,
+                "source": "binance_strategy",
+                "status": "settled",
+                "custody_location": "binance",
+                "swing_id": "open-btc-sell",
+                "executed_quote_quantity": 22.5,
+                "commissions": {},
+            }
+        )
+
+        closed, _ = portfolio_service.load_portfolio_snapshot()
+        replayed, _ = portfolio_service.load_portfolio_snapshot()
+
+        self.assertEqual(closed["summary"]["invested_capital"], 90)
+        self.assertEqual(closed["summary"]["total_value"], 102.5)
+        self.assertEqual(closed["summary"]["unrealized_pnl"], 12.5)
+        self.assertEqual(closed["summary"]["dry_powder"], 2.5)
+        self.assertEqual(closed["summary"]["vault_reserve_committed"], 0)
+        self.assertEqual(closed["summary"]["vault_reserve_available"], 2.5)
+        self.assertEqual(replayed["summary"], closed["summary"])
+        self.assertEqual(
+            len([item for item in list_portfolio_transactions() if item.get("spot_quote_leg")]),
+            2,
+        )
 
     def test_void_and_restore_recalculate_holdings_without_deleting_ledger_entry(self):
         btc = self.add("BTC", 1, 90)

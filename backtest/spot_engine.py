@@ -264,11 +264,26 @@ class SpotPortfolioBacktester:
         for symbol in self.scenario.asset_order:
             action = pending.get(symbol)
             if action is not None:
+                if not self._is_market_available(symbol, candles[symbol].open_time_ms):
+                    self.rejections.append(
+                        {
+                            "timestamp_ms": candles[symbol].open_time_ms,
+                            "timestamp": self._timestamp(candles[symbol].open_time_ms),
+                            "asset_symbol": symbol,
+                            "side": action["side"],
+                            "action_type": action["action_type"],
+                            "requested_quantity": action["requested_quantity"],
+                            "reason": "Historical market unavailable during the declared symbol migration.",
+                        }
+                    )
+                    continue
                 self._execute_action(symbol, action, candles[symbol].open, candles[symbol].open_time_ms)
 
     def _evaluate_cycle(self, candles: dict[str, SpotCandle], *, reserved_quote: float) -> None:
         for symbol in self.scenario.asset_order:
             candle = candles[symbol]
+            if not self._is_market_available(symbol, candle.open_time_ms):
+                continue
             signal = self._signal_for(symbol, candle)
             if signal is None:
                 continue
@@ -326,6 +341,9 @@ class SpotPortfolioBacktester:
                     * candle.close
                     * (1.0 + self.scenario.execution.fee_rate)
                 )
+
+    def _is_market_available(self, symbol: str, open_time_ms: int) -> bool:
+        return open_time_ms not in self.dataset.unavailable_open_times.get(symbol, frozenset())
 
     def _signal_for(self, symbol: str, candle: SpotCandle) -> dict[str, Any] | None:
         rows = self.dataset.candles[symbol]

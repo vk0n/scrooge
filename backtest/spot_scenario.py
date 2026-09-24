@@ -36,6 +36,13 @@ def _number(value: Any, *, field_name: str, minimum: float | None = None) -> flo
 
 
 @dataclass(frozen=True)
+class SpotHistorySegment:
+    market_symbol: str
+    start: datetime | None = None
+    end: datetime | None = None
+
+
+@dataclass(frozen=True)
 class SpotBacktestAsset:
     symbol: str
     quantity: float
@@ -47,6 +54,7 @@ class SpotBacktestAsset:
     minimum_holding_pct: float
     trading_objective: str | None
     symbol_info: dict[str, Any] | None = None
+    history_segments: tuple[SpotHistorySegment, ...] = ()
 
     @property
     def market_symbol(self) -> str:
@@ -137,6 +145,32 @@ def _asset_from_mapping(symbol: str, payload: dict[str, Any]) -> SpotBacktestAss
             f"{normalized_symbol}.trading_objective must be ACCUMULATE_CASH, ACCUMULATE_ASSET, or null."
         )
     symbol_info = payload.get("symbol_info") if isinstance(payload.get("symbol_info"), dict) else None
+    raw_segments = payload.get("history_segments")
+    history_segments: tuple[SpotHistorySegment, ...] = ()
+    if raw_segments is not None:
+        if not isinstance(raw_segments, list) or not raw_segments:
+            raise ValueError(f"{normalized_symbol}.history_segments must be a non-empty list.")
+        parsed_segments: list[SpotHistorySegment] = []
+        for index, item in enumerate(raw_segments):
+            if not isinstance(item, dict):
+                raise ValueError(f"{normalized_symbol}.history_segments[{index}] must be an object.")
+            market_symbol = str(item.get("market_symbol") or "").strip().upper()
+            if not market_symbol:
+                raise ValueError(f"{normalized_symbol}.history_segments[{index}].market_symbol is required.")
+            start = (
+                _utc_datetime(item.get("start"), field_name=f"{normalized_symbol}.history_segments[{index}].start")
+                if item.get("start") is not None
+                else None
+            )
+            end = (
+                _utc_datetime(item.get("end"), field_name=f"{normalized_symbol}.history_segments[{index}].end")
+                if item.get("end") is not None
+                else None
+            )
+            if start is not None and end is not None and end <= start:
+                raise ValueError(f"{normalized_symbol}.history_segments[{index}] end must be after start.")
+            parsed_segments.append(SpotHistorySegment(market_symbol=market_symbol, start=start, end=end))
+        history_segments = tuple(parsed_segments)
     return SpotBacktestAsset(
         symbol=normalized_symbol,
         quantity=quantity,
@@ -148,6 +182,7 @@ def _asset_from_mapping(symbol: str, payload: dict[str, Any]) -> SpotBacktestAss
         minimum_holding_pct=minimum_pct,
         trading_objective=objective,
         symbol_info=symbol_info,
+        history_segments=history_segments,
     )
 
 
@@ -274,6 +309,14 @@ def scenario_as_dict(scenario: SpotBacktestScenario) -> dict[str, Any]:
             "minimum_holding_pct": asset.minimum_holding_pct,
             "trading_objective": asset.trading_objective,
             "symbol_info": asset.symbol_info,
+            "history_segments": [
+                {
+                    "market_symbol": segment.market_symbol,
+                    "start": segment.start.isoformat() if segment.start is not None else None,
+                    "end": segment.end.isoformat() if segment.end is not None else None,
+                }
+                for segment in asset.history_segments
+            ] or None,
         }
         for asset in scenario.assets
     }

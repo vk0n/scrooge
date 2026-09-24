@@ -64,6 +64,8 @@ def treasury_transaction_presentation(transaction: dict[str, Any]) -> tuple[str,
 
 
 def project_portfolio_transaction(transaction: dict[str, Any], *, path: Path | None = None) -> bool:
+    if transaction.get("spot_quote_leg") or transaction.get("spot_reserve_funding"):
+        return False
     transaction_id = str(transaction.get("transaction_id") or "").strip()
     if not transaction_id:
         return False

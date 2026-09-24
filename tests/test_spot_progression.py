@@ -18,6 +18,7 @@ from shared.runtime_db import (
     update_spot_strategy_action,
 )
 from shared.spot_progression import ProgressiveSwingConfig, plan_opening_quantity, plan_profitable_close
+from shared.spot_strategy import plan_spot_strategy_action
 from shared.spot_swing import calculate_swing_economics
 
 
@@ -62,6 +63,26 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
 
         self.assertFalse(plan["eligible"])
         self.assertEqual(plan["reason"], "accumulate_asset_sell_origin_only_v1")
+
+    def test_accumulate_cash_buy_origin_is_capped_by_available_vault_reserve(self):
+        decision = plan_spot_strategy_action(
+            {
+                "opportunity": "buy",
+                "level": 1,
+                "strategy_eligible": True,
+                "trading_objective": "accumulate_cash",
+                "final_tranche_pct": 25,
+                "current_price": 5,
+            },
+            {"target_quantity": 1000, "minimum_holding_pct": 80, "market_price": 5},
+            {"active_side": "buy", "highest_completed_level": 0, "campaign_id": "buy-campaign"},
+            [],
+            available_quote=1000,
+            available_opening_quote=40,
+        )
+
+        self.assertEqual(decision["side"], "buy")
+        self.assertEqual(decision["requested_quantity"], 2)
 
     def test_close_uses_swing_basis_and_can_reacquire_more_asset(self):
         swing = {

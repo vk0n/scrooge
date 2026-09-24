@@ -111,7 +111,15 @@ class ProgressiveSpotSwingExecutor:
         if not math.isfinite(current_price) or current_price <= 0:
             return None
         exchange = portfolio.get("exchange") if isinstance(portfolio.get("exchange"), dict) else {}
-        available_quote = float(exchange.get("usdt_free") or 0.0)
+        summary = portfolio.get("summary") if isinstance(portfolio.get("summary"), dict) else {}
+        exchange_quote = max(0.0, float(exchange.get("usdt_free") or 0.0))
+        managed_quote = max(
+            0.0,
+            float(summary.get("vault_reserve") or summary.get("dry_powder") or 0.0),
+        )
+        opening_quote = max(0.0, float(summary.get("vault_reserve_available") or 0.0))
+        available_quote = min(exchange_quote, managed_quote)
+        available_opening_quote = min(exchange_quote, opening_quote)
 
         decision = plan_spot_strategy_action(
             signal,
@@ -119,6 +127,7 @@ class ProgressiveSpotSwingExecutor:
             campaign,
             self._swing_states(asset, quote),
             available_quote=available_quote,
+            available_opening_quote=available_opening_quote,
             config=self.config,
         )
         if decision is None:

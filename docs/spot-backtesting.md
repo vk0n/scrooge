@@ -76,7 +76,7 @@ Each run writes:
 
 - `scenario.resolved.json`
 - `scenario.resolved.yaml`
-- `summary.json` and `report.md`
+- `summary.json`, `report.md`, and the self-contained visual `report.html`
 - `equity.csv` and `monthly.csv`
 - `per_asset_summary.json`
 - `swings.json` and `executions.csv`
@@ -84,7 +84,16 @@ Each run writes:
 - `inventory.csv` and `target_history.csv`
 - `final_state.json` and `rejections.csv`
 
-The report separates realized and unrealized Bargain economics, includes open-age buckets and bad-case exposure, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. The V1 simulator itself charges its configured fee in USDT.
+The report separates realized and unrealized Bargain economics, includes open-age buckets and bad-case exposure, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. Each Portfolio Ledger asset row expands into filterable Bargain history, and each Bargain expands into its execution fills. The V1 simulator itself charges its configured fee in USDT.
+
+To add or rebuild the visual report for an existing artifact directory without rerunning the replay:
+
+```bash
+./scrooge-env/bin/python -m backtest.spot_report_html \
+  runtime/spot_backtests/runs/20260924T064219Z
+```
+
+The generated page embeds its sampled chart data and has no CDN, API, or frontend runtime dependency.
 
 ## Known V1 Limits
 

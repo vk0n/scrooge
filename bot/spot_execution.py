@@ -21,6 +21,7 @@ from shared.runtime_db import (
     save_exchange_account_snapshot,
     update_spot_order_intent,
 )
+from shared.spot_accounting import ensure_spot_quote_leg
 from shared.spot_execution_rules import (
     format_decimal as _format_decimal,
     normalize_market_quantity as _market_quantity,
@@ -454,6 +455,7 @@ class SpotOrderExecutor:
             )
             if persisted_transaction is None:
                 persisted_transaction = append_portfolio_transaction(transaction, path=self.db_path)
+            ensure_spot_quote_leg(persisted_transaction, path=self.db_path)
             project_portfolio_transaction(persisted_transaction, path=self.db_path)
 
             request = intent.get("request") if isinstance(intent.get("request"), dict) else {}

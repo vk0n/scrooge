@@ -40,6 +40,7 @@ from shared.runtime_db import (  # noqa: E402
     upsert_portfolio_daily_snapshot,
     update_portfolio_transaction_status,
 )
+from shared.spot_accounting import backfill_spot_quote_legs  # noqa: E402
 from shared.spot_policy import calculate_spot_inventory_policy  # noqa: E402
 from shared.spot_swing import calculate_swing_economics  # noqa: E402
 from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction  # noqa: E402
@@ -330,15 +331,78 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
     return holdings, warnings
 
 
-def _summary_from_holdings(holdings: list[dict[str, Any]]) -> dict[str, Any]:
+def _derive_invested_capital(transactions: list[dict[str, Any]]) -> float:
+    """Return owner capital crossing into Treasury, independent of internal trading."""
+    contributions: dict[tuple[str, str], dict[str, float]] = {}
+    for transaction in transactions:
+        if str(transaction.get("status") or "settled").lower() != "settled":
+            continue
+        tx_type = str(transaction.get("tx_type") or "").strip().lower()
+        if tx_type == "custody_transfer":
+            continue
+        capital_effect = str(transaction.get("capital_effect") or "").strip().lower()
+        source = str(transaction.get("source") or "manual").strip().lower()
+        if capital_effect == "none" or source == "binance_strategy" or transaction.get("swing_id"):
+            continue
+        asset = _clean_symbol(transaction.get("asset_symbol"))
+        quote = _clean_symbol(transaction.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
+        quantity = _as_float(transaction.get("quantity")) or 0.0
+        price = _as_float(transaction.get("price"))
+        if price is None and asset in STABLE_ASSETS and quote in STABLE_ASSETS:
+            price = 1.0
+        key = (asset, quote)
+        bucket = contributions.setdefault(key, {"quantity": 0.0, "basis": 0.0})
+        is_contribution = capital_effect == "contribution" or (
+            not capital_effect and tx_type in {"buy", "deposit", "adjustment"}
+        )
+        if is_contribution and price is not None:
+            basis = quantity * price
+            if _clean_symbol(transaction.get("fee_asset")) == quote:
+                basis += _as_float(transaction.get("fee_amount")) or 0.0
+            bucket["quantity"] += quantity
+            bucket["basis"] += basis
+        elif tx_type == "withdraw" or capital_effect == "withdrawal":
+            average_basis = bucket["basis"] / bucket["quantity"] if bucket["quantity"] > 0 else 0.0
+            removed_quantity = min(quantity, bucket["quantity"])
+            bucket["quantity"] = max(0.0, bucket["quantity"] - removed_quantity)
+            bucket["basis"] = max(0.0, bucket["basis"] - removed_quantity * average_basis)
+    return sum(bucket["basis"] for bucket in contributions.values())
+
+
+def _reserved_quote_for_open_swings(swings: list[dict[str, Any]]) -> float:
+    committed = 0.0
+    for swing in swings:
+        if swing.get("status") == "closed" or swing.get("origin_side") != "sell":
+            continue
+        executions = list_spot_swing_executions(str(swing["swing_id"]))
+        economics = calculate_swing_economics(swing, executions)
+        quote_fees = (
+            _as_float((economics.get("fees_by_asset") or {}).get(swing.get("quote_symbol"))) or 0.0
+        )
+        net_quote = (
+            (_as_float(economics.get("opening_quote_quantity")) or 0.0)
+            - (_as_float(economics.get("closing_quote_quantity")) or 0.0)
+            - quote_fees
+        )
+        committed += max(0.0, net_quote)
+    return committed
+
+
+def _summary_from_holdings(
+    holdings: list[dict[str, Any]],
+    *,
+    invested_capital: float,
+    open_swings: list[dict[str, Any]],
+) -> dict[str, Any]:
     total_value = sum(_as_float(holding.get("market_value")) or 0.0 for holding in holdings)
-    invested_capital = sum(_as_float(holding.get("invested_capital")) or 0.0 for holding in holdings)
-    floating_pnl = total_value - invested_capital if holdings else 0.0
+    total_gain = total_value - invested_capital
     dry_powder = sum(
         _as_float(holding.get("market_value")) or 0.0
         for holding in holdings
         if bool(holding.get("is_dry_powder"))
     )
+    committed_reserve = min(dry_powder, _reserved_quote_for_open_swings(open_swings))
+    available_reserve = max(0.0, dry_powder - committed_reserve)
     largest = max(holdings, key=lambda item: _as_float(item.get("market_value")) or 0.0, default=None)
     price_timestamps = [
         str(holding["market_price_updated_at"])
@@ -348,10 +412,16 @@ def _summary_from_holdings(holdings: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "total_value": total_value,
         "invested_capital": invested_capital,
-        "unrealized_pnl": floating_pnl,
-        "unrealized_pnl_pct": (floating_pnl / invested_capital) * 100 if invested_capital > 0 else None,
+        "total_gain": total_gain,
+        "total_gain_pct": (total_gain / invested_capital) * 100 if invested_capital > 0 else None,
+        "unrealized_pnl": total_gain,
+        "unrealized_pnl_pct": (total_gain / invested_capital) * 100 if invested_capital > 0 else None,
+        "vault_reserve": dry_powder,
+        "vault_reserve_pct": (dry_powder / total_value) * 100 if total_value > 0 else None,
         "dry_powder": dry_powder,
         "dry_powder_pct": (dry_powder / total_value) * 100 if total_value > 0 else None,
+        "vault_reserve_available": available_reserve,
+        "vault_reserve_committed": committed_reserve,
         "largest_position": largest,
         "holding_count": len(holdings),
         "prices_updated_at": min(price_timestamps) if price_timestamps else None,
@@ -570,22 +640,36 @@ def _portfolio_timeline(summary: dict[str, Any], holdings: list[dict[str, Any]],
         )
     elif holdings:
         warnings.append("Treasury Timeline was not updated because one or more assets are awaiting a market price.")
-    return list_portfolio_daily_snapshots(account_key=DEFAULT_ACCOUNT_KEY, limit=PORTFOLIO_TIMELINE_DAYS)
+    timeline = list_portfolio_daily_snapshots(account_key=DEFAULT_ACCOUNT_KEY, limit=PORTFOLIO_TIMELINE_DAYS)
+    return [
+        {
+            **point,
+            "total_gain": point["unrealized_pnl"],
+            "vault_reserve": point["dry_powder"],
+        }
+        for point in timeline
+    ]
 
 
 def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, Any], list[str]]:
     normalized_offset = max(0, int(transaction_offset))
     transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
+    if backfill_spot_quote_legs(transactions):
+        transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     holdings, warnings = _derive_holdings(transactions)
     _attach_asset_policies(holdings)
     exchange = _load_spot_exchange_state()
     _attach_exchange_state(holdings, exchange)
-    summary = _summary_from_holdings(holdings)
     open_swings = [
         swing
         for swing in list_spot_swings(account_key=DEFAULT_ACCOUNT_KEY)
         if swing["status"] != "closed"
     ]
+    summary = _summary_from_holdings(
+        holdings,
+        invested_capital=_derive_invested_capital(transactions),
+        open_swings=open_swings,
+    )
     summary["open_swing_count"] = len(open_swings)
     summary["open_swing_asset_count"] = len(
         {(swing["asset_symbol"], swing["quote_symbol"]) for swing in open_swings}
@@ -681,6 +765,7 @@ def load_portfolio_asset_ledger(
                 "transaction": transaction,
             }
             for transaction in transactions
+            if not transaction.get("swing_id") and not transaction.get("spot_quote_leg")
         )
 
     market_price, _, market_price_updated_at = _fetch_market_price(normalized_asset, normalized_quote)
@@ -813,6 +898,11 @@ def _create_spot_order_intent_preview(
 
     estimated_quote_value = requested_quantity * estimated_price
     available_quote = _as_float(exchange.get("usdt_free")) or 0.0
+    if normalized_source == "strategy" and side == "buy" and normalized_swing_id is not None:
+        swing_executions = list_spot_swing_executions(normalized_swing_id)
+        reserve_key = "vault_reserve_available" if not swing_executions else "dry_powder"
+        managed_quote = _as_float(snapshot["summary"].get(reserve_key)) or 0.0
+        available_quote = min(available_quote, managed_quote)
     if holding is None:
         available_asset = protected_floor = policy_sellable = immediate_sellable = current_quantity = 0.0
     else:
@@ -825,7 +915,7 @@ def _create_spot_order_intent_preview(
 
     if side == "buy" and estimated_quote_value > available_quote + 0.00000001:
         raise ValueError(
-            f"Estimated order value is ${estimated_quote_value:,.2f}, but Binance has only ${available_quote:,.2f} USDT free."
+            f"Estimated order value is ${estimated_quote_value:,.2f}, but only ${available_quote:,.2f} USDT is available."
         )
     if side == "sell":
         if requested_quantity > immediate_sellable + 0.00000001:

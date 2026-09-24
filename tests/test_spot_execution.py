@@ -268,6 +268,15 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(holding["trading_objective"], "accumulate_cash")
 
     def test_strategy_fill_uses_same_executor_and_updates_linked_swing(self):
+        portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "deposit",
+                "asset_symbol": "USDT",
+                "quantity": 100,
+                "quote_symbol": "USDT",
+                "custody_location": "binance",
+            }
+        )
         save_exchange_account_snapshot(
             {
                 "captured_at_ms": int(time.time() * 1000),
@@ -309,9 +318,18 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(result["source"], "strategy")
         self.assertEqual(result["swing_id"], "swing-btc-buy")
         strategy_transactions = [
-            item for item in list_portfolio_transactions(path=self.db_path) if item.get("source") == "binance_strategy"
+            item
+            for item in list_portfolio_transactions(path=self.db_path)
+            if item.get("source") == "binance_strategy" and not item.get("spot_quote_leg")
         ]
         self.assertEqual(len(strategy_transactions), 1)
+        quote_legs = [
+            item for item in list_portfolio_transactions(path=self.db_path) if item.get("spot_quote_leg")
+        ]
+        self.assertEqual(len(quote_legs), 1)
+        self.assertEqual(quote_legs[0]["asset_symbol"], "USDT")
+        self.assertEqual(quote_legs[0]["tx_type"], "sell")
+        self.assertEqual(quote_legs[0]["quantity"], 25)
         executions = list_spot_swing_executions("swing-btc-buy", path=self.db_path)
         self.assertEqual(len(executions), 1)
         self.assertEqual(executions[0]["spot_order_intent_id"], preview["intent_id"])
@@ -324,6 +342,10 @@ class SpotExecutionTests(unittest.TestCase):
 
         executor.execute(preview["intent_id"])
         self.assertEqual(len(list_spot_swing_executions("swing-btc-buy", path=self.db_path)), 1)
+        self.assertEqual(
+            len([item for item in list_portfolio_transactions(path=self.db_path) if item.get("spot_quote_leg")]),
+            1,
+        )
 
     def test_nonterminal_partial_fill_waits_for_reconciliation_without_resubmission(self):
         preview = self._preview_and_queue("buy", 0.25)

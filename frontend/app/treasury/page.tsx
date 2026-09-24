@@ -9,10 +9,16 @@ import { formatDateTimeEu } from "../../lib/datetime";
 type PortfolioSummary = {
   total_value: number;
   invested_capital: number;
+  total_gain: number;
+  total_gain_pct: number | null;
   unrealized_pnl: number;
   unrealized_pnl_pct: number | null;
+  vault_reserve: number;
+  vault_reserve_pct: number | null;
   dry_powder: number;
   dry_powder_pct: number | null;
+  vault_reserve_available: number;
+  vault_reserve_committed: number;
   largest_position: PortfolioHolding | null;
   holding_count: number;
   open_swing_count: number;
@@ -148,7 +154,9 @@ type PortfolioTimelinePoint = {
   captured_at_ms: number;
   total_value: number;
   invested_capital: number;
+  total_gain: number;
   unrealized_pnl: number;
+  vault_reserve: number;
   dry_powder: number;
 };
 
@@ -457,7 +465,7 @@ function formatTimelineDate(value: string): string {
 
 function buildTimelineCoordinates(
   timeline: PortfolioTimelinePoint[],
-  valueKey: "total_value" | "unrealized_pnl"
+  valueKey: "total_value" | "total_gain"
 ): Array<{ x: number; y: number; point: PortfolioTimelinePoint }> {
   const width = 600;
   const height = 150;
@@ -484,7 +492,7 @@ function TimelineSeries({
 }: {
   title: string;
   timeline: PortfolioTimelinePoint[];
-  valueKey: "total_value" | "unrealized_pnl";
+  valueKey: "total_value" | "total_gain";
   tone: "gold" | "positive" | "negative" | "neutral";
 }): JSX.Element {
   const coordinates = timeline.length ? buildTimelineCoordinates(timeline, valueKey) : [];
@@ -495,7 +503,7 @@ function TimelineSeries({
   const latest = timeline.at(-1)?.[valueKey];
   const values = timeline.map((point) => point[valueKey]);
   const formatValue = (value: number | null | undefined): string =>
-    valueKey === "unrealized_pnl" ? formatSignedCurrency(value) : formatCurrency(value);
+    valueKey === "total_gain" ? formatSignedCurrency(value) : formatCurrency(value);
 
   return (
     <div className={`treasury-timeline-series treasury-timeline-series-${tone}`}>
@@ -1728,7 +1736,7 @@ export default function TreasuryPage(): JSX.Element {
   const topThreeAllocation = allocationHoldings
     .slice(0, 3)
     .reduce((total, holding) => total + (holding.allocation_pct ?? 0), 0);
-  const latestTimelinePnl = timeline.at(-1)?.unrealized_pnl;
+  const latestTimelinePnl = timeline.at(-1)?.total_gain;
   const timelinePnlTone =
     typeof latestTimelinePnl !== "number" || latestTimelinePnl === 0
       ? "neutral"
@@ -1773,7 +1781,7 @@ export default function TreasuryPage(): JSX.Element {
               <span className="treasury-summary-label">Total Treasure</span>
               <strong className="vault-value treasury-total-value">
                 <span
-                  className={signedToneClass(summary?.unrealized_pnl, "treasury-total-dollar")}
+                  className={signedToneClass(summary?.total_gain, "treasury-total-dollar")}
                   aria-hidden="true"
                 >
                   $
@@ -1789,16 +1797,21 @@ export default function TreasuryPage(): JSX.Element {
               </strong>
             </div>
             <div className="treasury-summary-card">
-              <span className="treasury-summary-label">Floating Gain</span>
-              <strong className={signedToneClass(summary?.unrealized_pnl, "treasury-summary-value")}>
-                {formatSignedCurrency(summary?.unrealized_pnl ?? 0)}
+              <span className="treasury-summary-label">Total Gain</span>
+              <strong className={signedToneClass(summary?.total_gain, "treasury-summary-value")}>
+                {formatSignedCurrency(summary?.total_gain ?? 0)}
               </strong>
-              <span className="treasury-summary-note">{formatPercent(summary?.unrealized_pnl_pct)}</span>
+              <span className="treasury-summary-note">{formatPercent(summary?.total_gain_pct)}</span>
             </div>
             <div className="treasury-summary-card">
               <span className="treasury-summary-label">Vault Reserve</span>
-              <strong>{formatCurrency(summary?.dry_powder ?? 0)}</strong>
-              <span className="treasury-summary-note">{formatPercent(summary?.dry_powder_pct)} of vault</span>
+              <strong>{formatCurrency(summary?.vault_reserve ?? 0)}</strong>
+              <span className="treasury-summary-note">
+                {formatCurrency(summary?.vault_reserve_available ?? 0)} available
+                {(summary?.vault_reserve_committed ?? 0) > 0
+                  ? ` · ${formatCurrency(summary?.vault_reserve_committed ?? 0)} committed`
+                  : ""}
+              </span>
             </div>
             <div className="treasury-summary-card treasury-summary-card-swings">
               <span className="treasury-summary-label">Active Bargains</span>
@@ -1852,7 +1865,7 @@ export default function TreasuryPage(): JSX.Element {
               </div>
               <footer className="treasury-allocation-foot">
                 <span>Top 3 concentration <strong>{formatPercent(topThreeAllocation)}</strong></span>
-                <span>Vault Reserve <strong>{formatPercent(summary?.dry_powder_pct)}</strong></span>
+                <span>Vault Reserve <strong>{formatPercent(summary?.vault_reserve_pct)}</strong></span>
               </footer>
             </article>
 
@@ -1868,7 +1881,7 @@ export default function TreasuryPage(): JSX.Element {
               </header>
               <div className="treasury-timeline-grid">
                 <TimelineSeries title="Treasure Value" timeline={timeline} valueKey="total_value" tone="gold" />
-                <TimelineSeries title="Floating PnL" timeline={timeline} valueKey="unrealized_pnl" tone={timelinePnlTone} />
+                <TimelineSeries title="Total Gain" timeline={timeline} valueKey="total_gain" tone={timelinePnlTone} />
               </div>
               <footer className="treasury-timeline-range">
                 {timeline.length ? (

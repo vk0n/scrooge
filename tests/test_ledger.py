@@ -119,6 +119,30 @@ class LedgerProjectionTests(unittest.TestCase):
         self.assertEqual(entries[0]["source_ref"], "portfolio_transaction:spot-order:intent-1")
         self.assertEqual(entries[0]["message"], "Binance Spot bought 12.5 NEAR at $4.2.")
 
+    def test_internal_spot_cash_legs_are_not_projected_to_the_ledger(self) -> None:
+        quote_leg = append_portfolio_transaction(
+            {
+                "transaction_id": "spot-order:intent-2:quote",
+                "account_key": "manual_spot",
+                "executed_at": "2026-01-01 12:00:00",
+                "tx_type": "buy",
+                "asset_symbol": "USDT",
+                "quote_symbol": "USDT",
+                "quantity": 50,
+                "price": 1,
+                "source": "binance_strategy",
+                "status": "settled",
+                "custody_location": "binance",
+                "spot_quote_leg": True,
+            },
+            path=self.db_path,
+        )
+
+        self.assertFalse(project_portfolio_transaction(quote_leg, path=self.db_path))
+        self.assertEqual(project_portfolio_transactions(path=self.db_path), 0)
+        entries, _ = list_ledger_entries(scope="treasury", path=self.db_path)
+        self.assertEqual(entries, [])
+
 
 if __name__ == "__main__":
     unittest.main()

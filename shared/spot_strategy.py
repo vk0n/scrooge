@@ -96,6 +96,7 @@ def plan_spot_strategy_action(
     swings: list[dict[str, Any]],
     *,
     available_quote: float,
+    available_opening_quote: float | None = None,
     config: ProgressiveSwingConfig | None = None,
 ) -> dict[str, Any] | None:
     """Choose at most one action, prioritizing the best profitable close."""
@@ -159,8 +160,9 @@ def plan_spot_strategy_action(
     if opportunity == "sell":
         quantity = min(quantity, float(holding.get("immediately_sellable_quantity") or 0.0))
     else:
+        opening_quote = available_quote if available_opening_quote is None else available_opening_quote
         cash_fraction = min(100.0, float(signal.get("final_tranche_pct") or 0.0)) / 100.0
-        quantity = min(quantity, max(0.0, float(available_quote)) * cash_fraction / current_price)
+        quantity = min(quantity, max(0.0, float(opening_quote)) * cash_fraction / current_price)
     if not math.isfinite(quantity) or quantity <= 0:
         return None
     return {
