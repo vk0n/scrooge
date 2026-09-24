@@ -123,6 +123,8 @@ def _report_payload(
         compact_swing = {
             "id": swing.get("swing_id"),
             "status": swing.get("status"),
+            "closeReason": swing.get("close_reason"),
+            "closeContext": swing.get("close_context") or {},
             "originSide": swing.get("origin_side"),
             "objective": swing.get("trading_objective"),
             "openedAtMs": int(swing.get("opened_at_ms") or 0),
@@ -170,6 +172,7 @@ def _report_payload(
                     "feeAmount": _number(execution.get("fee_amount")),
                     "feeAsset": execution.get("fee_asset"),
                     "executedAt": execution.get("executed_at"),
+                    "reason": execution.get("reason") or {},
                 }
                 for execution in swing.get("executions") or []
             ],
@@ -184,6 +187,7 @@ def _report_payload(
         "portfolio": portfolio,
         "reserve": report["shared_usdt"],
         "swings": report["swings"],
+        "waiterCleanup": report.get("waiter_cleanup") or {},
         "bargainAnalysis": report.get("bargain_analysis") or build_bargain_analysis(swings),
         "badCases": report["bad_cases"],
         "rejectedOrders": report["rejected_orders"],
@@ -472,6 +476,9 @@ _HTML = r'''<!doctype html>
     .asset-summary[aria-expanded="true"] .asset-chevron { transform: rotate(225deg) translate(-2px,-2px); }
     .objective { color: var(--gold); text-transform: capitalize; }
     .gain-breakdown { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; white-space: nowrap; }
+    .cleanup-reasons { display: grid; gap: 8px; }
+    .cleanup-reason { display: grid; grid-template-columns: minmax(150px,1fr) 70px 120px; gap: 12px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 9px; background: #0a0f16; font-size: 11px; }
+    .cleanup-reason > :not(:first-child) { text-align: right; }
     .asset-detail > td { padding: 0; border-top: 0; text-align: left; background: #080c12; }
     .asset-ledger { padding: 15px; border-top: 1px solid #344158; border-bottom: 1px solid var(--line); }
     .ledger-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 12px; }
@@ -632,6 +639,21 @@ _HTML = r'''<!doctype html>
           <section class="analysis-panel">
             <div class="analysis-panel-head"><div><strong>Open Risk Watchlist</strong><br><span>Largest unfinished losses, linked to asset history.</span></div><span id="riskSummary"></span></div>
             <div class="risk-list" id="riskList"></div>
+          </section>
+        </div>
+      </article>
+
+      <article class="card full" id="waiterCleanup">
+        <div class="card-head"><div><h2>Waiter Cleanup</h2><div class="subtitle">Loss realization, capacity relief, and capital still tied in unfinished Bargains.</div></div><span class="tag" id="cleanupMode"></span></div>
+        <div class="analysis-kpis" id="cleanupKpis"></div>
+        <div class="analysis-grid">
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Cleanup Reasons</strong><br><span>Completed Bargains grouped by their deterministic primary close reason.</span></div></div>
+            <div class="cleanup-reasons" id="cleanupReasons"></div>
+          </section>
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Remaining Capital Lock</strong><br><span>What still waits for a lifecycle exit at the end of the replay.</span></div></div>
+            <div class="bargain-score" id="cleanupCapital"></div>
           </section>
         </div>
       </article>
@@ -821,6 +843,33 @@ _HTML = r'''<!doctype html>
     const bargainPoints=Object.entries(data.swingHistory).flatMap(([symbol,items])=>items.map(item=>({symbol,id:item.id,status:item.status,ageDays:item.ageSeconds/86400,returnPct:item.returnPct})));
     drawBargainScatter(document.getElementById("bargainScatter"),bargainPoints);
 
+    const cleanup=data.waiterCleanup;
+    const cleanupOpen=cleanup.open_bargains||{};
+    const cleanupCapacity=cleanup.capacity||{};
+    const cleanupLock=cleanup.capital_lock||{};
+    document.getElementById("cleanupMode").textContent=cleanup.enabled?"AUTOMATIC":"BASELINE / DISABLED";
+    const cleanupKpis=[
+      ["Cleanup Closes",cleanup.cleanup_closes_total||0,`${cleanup.cleanup_attempts_total||0} closing executions`,""],
+      ["Realized Cleanup Loss",money(cleanup.realized_cleanup_loss_quote||0),`Profit ${money(cleanup.realized_cleanup_profit_quote||0)}`,tone(cleanup.realized_cleanup_loss_quote||0)],
+      ["Cap Prevented",cleanupCapacity.open_bargains_prevented_by_cap||0,`${cleanupCapacity.capacity_forced_hold_cycles||0} forced HOLD cycles`,""],
+      ["Open at End",cleanupOpen.at_end||0,`${cleanupOpen.underwater_at_end||0} underwater`,cleanupOpen.underwater_at_end?"negative":"positive"],
+      ["90+ Days",cleanupOpen.age_90_plus||0,`${cleanupOpen.age_180_plus||0} at 180d+`,cleanupOpen.age_90_plus?"negative":"positive"],
+      ["Oldest Remaining",cleanupOpen.oldest_age_days===null||cleanupOpen.oldest_age_days===undefined?"N/A":`${cleanupOpen.oldest_age_days.toFixed(1)}d`,`Median ${cleanupOpen.median_age_days===null||cleanupOpen.median_age_days===undefined?"N/A":`${cleanupOpen.median_age_days.toFixed(1)}d`}`,cleanupOpen.oldest_age_days>=90?"negative":""],
+    ];
+    document.getElementById("cleanupKpis").innerHTML=cleanupKpis.map(item=>`<div class="analysis-kpi"><span>${item[0]}</span><strong class="${item[3]}">${item[1]}</strong><small>${item[2]}</small></div>`).join("");
+    const cleanupReasonLabel=value=>value.replace("_cleanup","").replaceAll("_"," ").replace(/\b\w/g,letter=>letter.toUpperCase());
+    document.getElementById("cleanupReasons").innerHTML=Object.entries(cleanup.by_reason||{}).map(([reason,item])=>`<div class="cleanup-reason"><strong>${cleanupReasonLabel(reason)}</strong><span>${item.closes} closes</span><strong class="${tone(item.realized_pnl_quote)}">${money(item.realized_pnl_quote)}</strong></div>`).join("");
+    const cleanupFees=Object.entries(cleanup.cleanup_fees_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"None";
+    const cleanupCapital=[
+      ["BUY Capital Tied",money(cleanupLock.open_buy_origin_quote||0)],
+      ["SELL Inventory Tied",Object.entries(cleanupLock.open_sell_origin_asset_quantity_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" · ")||"None"],
+      ["Restore Cost",money(cleanupLock.value_required_to_restore_sell_inventory||0)],
+      ["Final Reserve",money(cleanupLock.final_shared_usdt||0)],
+      ["Minimum Reserve",money(cleanupLock.minimum_shared_usdt||0)],
+      ["Cleanup Fees",cleanupFees],
+    ];
+    document.getElementById("cleanupCapital").innerHTML=cleanupCapital.map(item=>`<div class="score"><span>${item[0]}</span><strong>${item[1]}</strong></div>`).join("");
+
     const assetTable=document.getElementById("assetTable");
     const ledgerState={};
     document.getElementById("assetCount").textContent=`${data.assets.length} ASSETS`;
@@ -854,6 +903,8 @@ _HTML = r'''<!doctype html>
             <span class="swing-metric"><small>Age</small><strong>${age(swing.ageSeconds)}</strong></span>
             <span class="swing-metric"><small>Realized PnL</small><strong class="${tone(swing.realizedPnl)}">${money(swing.realizedPnl)}</strong></span>
             <span class="swing-metric"><small>Open PnL</small><strong class="${tone(swing.unrealizedPnl)}">${money(swing.unrealizedPnl)}</strong></span>
+            <span class="swing-metric"><small>Close Reason</small><strong>${swing.closeReason?cleanupReasonLabel(swing.closeReason):"N/A"}</strong></span>
+            ${swing.closeContext.required_cleanup_level?`<span class="swing-metric"><small>Cleanup Signal</small><strong>L${swing.closeContext.actual_reverse_signal_level} / Required L${swing.closeContext.required_cleanup_level}</strong></span><span class="swing-metric"><small>PnL Before Cleanup</small><strong class="${tone(swing.closeContext.unrealized_pnl_before_cleanup||0)}">${money(swing.closeContext.unrealized_pnl_before_cleanup||0)} / ${optionalPct(swing.closeContext.unrealized_pnl_pct_before_cleanup)}</strong></span><span class="swing-metric"><small>Capacity Pressure</small><strong>${swing.closeContext.capacity_pressure?"Yes":"No"}</strong></span>`:""}
           </div>
           ${note?`<p class="swing-note">Scrooge's note: ${note}</p>`:""}
           <div class="execution-head"><strong>Executions</strong><span>${swing.executions.length} ${swing.executions.length===1?"fill":"fills"}</span></div>

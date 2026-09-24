@@ -34,6 +34,10 @@ This is a strategy backtest, not a Binance order-book or market-impact simulatio
 
 All assets draw from one USDT pool. BUY decisions reserve estimated quote value during a cycle, and actual fills are constrained again by the remaining pool. Assets are processed alphabetically by symbol, matching the live policy query order; the resolved order is recorded in every result. Cold Storage contributes to value and Protected Floor economics but is never sellable.
 
+Waiter cleanup is enabled by default. Profitable closes retain priority, then the oldest eligible Bargain may close on a reverse signal. Deep loss at 15 days and -20% requires L1+; the 30/60/90-day thresholds require L3+/L2+/L1+. A hard cap of 10 open Bargains per asset may use an eligible 30-day reverse signal for capacity cleanup, otherwise the cycle holds instead of opening an eleventh Bargain. Cleanup uses each Bargain's remaining open economics and the same executor, fees, quantization, and accounting path as every other close.
+
+Set `strategy.waiter_cleanup.enabled: false` only for a research baseline. There is no separate production or UI toggle.
+
 ## Scenario Workflow
 
 Export current Treasury into a static, reviewable scenario:
@@ -79,12 +83,23 @@ Each run writes:
 - `summary.json`, `report.md`, and the self-contained visual `report.html`
 - `equity.csv` and `monthly.csv`
 - `per_asset_summary.json`
+- `waiter_cleanup.json` and `waiter_cleanup_reasons.csv`
 - `swings.json` and `executions.csv`
 - `signals.csv` and `actions.csv`
 - `inventory.csv` and `target_history.csv`
 - `final_state.json` and `rejections.csv`
 
 The report separates realized and unrealized Bargain economics, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. Bargain Analytics adds lifecycle PnL, closure and expectancy metrics, duration percentiles, fee drag, outcome and risk categories, an interactive cohort breakdown, and a duration-versus-return view. Each Portfolio Ledger asset row expands into filterable Bargain history, and each Bargain expands into its execution fills. The V1 simulator itself charges its configured fee in USDT.
+
+To produce controlled six-month and one-year baseline comparisons from one scenario:
+
+```bash
+./scrooge-env/bin/python -m backtest.spot_waiter_comparison \
+  --config runtime/current-treasury-spot.yaml \
+  --output runtime/spot_backtests/comparisons/waiter-cleanup-defaults
+```
+
+The comparison directory contains both individual modes and `comparison.json`, `comparison.csv`, and a self-contained `comparison.html`.
 
 To add or rebuild the visual report for an existing artifact directory without rerunning the replay:
 

@@ -132,6 +132,7 @@ def calculate_swing_economics(
             realized_quote_fees += fee_amount * (matched_total / quantity)
 
     remaining_quantity = max(0.0, opening_inventory_quantity - closing_inventory_quantity)
+    remaining_opening_quote = sum(lot["remaining"] * lot["unit_price"] for lot in opening_lots)
     remaining_open_quote_fees = sum(lot["remaining"] * lot["quote_fee_per_unit"] for lot in opening_lots)
     unrealized_gross: float | None = None
     unrealized_pnl: float | None = None
@@ -170,6 +171,7 @@ def calculate_swing_economics(
         "closing_quantity": closing_quantity,
         "closing_quote_quantity": closing_quote,
         "remaining_quantity": remaining_quantity,
+        "remaining_opening_quote_quantity": remaining_opening_quote,
         "weighted_opening_price": opening_quote / opening_quantity if opening_quantity > epsilon else None,
         "weighted_closing_price": closing_quote / closing_quantity if closing_quantity > epsilon else None,
         "realized_gross_pnl_quote": realized_gross,

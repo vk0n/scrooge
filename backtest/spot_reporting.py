@@ -12,6 +12,8 @@ from backtest.spot_bargain_analysis import build_bargain_analysis
 from backtest.spot_engine import SpotBacktestResult
 from backtest.spot_report_html import display_spot_report_title, write_spot_backtest_html
 from backtest.spot_scenario import scenario_as_dict, write_scenario_snapshot
+from shared.spot_swing import calculate_swing_economics
+from shared.spot_waiter_cleanup import CLEANUP_REASONS, is_cleanup_reason
 
 
 AGE_BUCKETS = (
@@ -45,6 +47,19 @@ def _maximum_concurrent(swings: list[dict[str, Any]]) -> int:
         current += change
         maximum = max(maximum, current)
     return maximum
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
 def _swing_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
@@ -272,6 +287,217 @@ def _asset_capital_performance(
     }
 
 
+def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
+    cleanup_swings = [
+        swing for swing in result.swings if is_cleanup_reason(swing.get("close_reason"))
+    ]
+    cleanup_outcomes: list[dict[str, Any]] = []
+    for swing in result.swings:
+        executions: list[dict[str, Any]] = []
+        prior_realized = 0.0
+        for execution in swing.get("executions") or []:
+            executions.append(execution)
+            economics = calculate_swing_economics(
+                swing,
+                executions,
+                current_price=swing.get("current_market_price"),
+            )
+            current_realized = float(economics.get("realized_pnl_quote") or 0.0)
+            reason = (execution.get("reason") or {}).get("close_reason")
+            if is_cleanup_reason(reason):
+                cleanup_outcomes.append(
+                    {
+                        "asset_symbol": swing["asset_symbol"],
+                        "reason": reason,
+                        "realized_pnl_quote": current_realized - prior_realized,
+                        "fee_amount": float(execution.get("fee_amount") or 0.0),
+                        "fee_asset": str(execution.get("fee_asset") or "UNKNOWN"),
+                    }
+                )
+            prior_realized = current_realized
+    cleanup_results = [float(item["realized_pnl_quote"]) for item in cleanup_outcomes]
+    cleanup_executions = [
+        execution
+        for execution in result.executions
+        if is_cleanup_reason((execution.get("reason") or {}).get("close_reason"))
+    ]
+    cleanup_fees: dict[str, float] = {}
+    for execution in cleanup_executions:
+        fee_asset = str(execution.get("fee_asset") or "UNKNOWN")
+        cleanup_fees[fee_asset] = cleanup_fees.get(fee_asset, 0.0) + float(
+            execution.get("fee_amount") or 0.0
+        )
+
+    reason_breakdown: dict[str, dict[str, Any]] = {}
+    for reason in sorted(CLEANUP_REASONS):
+        reason_swings = [swing for swing in cleanup_swings if swing.get("close_reason") == reason]
+        reason_outcomes = [item for item in cleanup_outcomes if item["reason"] == reason]
+        reason_breakdown[reason] = {
+            "closes": len(reason_swings),
+            "cleanup_executions": len(reason_outcomes),
+            "realized_pnl_quote": sum(
+                float(item["realized_pnl_quote"]) for item in reason_outcomes
+            ),
+            "closing_fees_by_asset": {
+                asset: sum(
+                    float(item["fee_amount"])
+                    for item in reason_outcomes
+                    if item["fee_asset"] == asset
+                )
+                for asset in sorted({str(item["fee_asset"]) for item in reason_outcomes})
+            },
+        }
+
+    capacity_holds = [
+        action
+        for action in result.actions
+        if action.get("action_type") == "hold"
+        and (action.get("reason") or {}).get("hold_reason") == "max_open_bargains_per_asset"
+    ]
+    pressure_cleanup_actions = [
+        action
+        for action in result.actions
+        if action.get("action_type") == "close"
+        and bool((action.get("reason") or {}).get("capacity_pressure"))
+        and is_cleanup_reason((action.get("reason") or {}).get("close_reason"))
+    ]
+    capacity_cleanup_actions = [
+        action
+        for action in pressure_cleanup_actions
+        if (action.get("reason") or {}).get("close_reason") == "capacity_cleanup"
+    ]
+    open_swings = [swing for swing in result.swings if swing.get("status") != "closed"]
+    open_ages = [float(swing.get("age_seconds") or 0.0) / 86400.0 for swing in open_swings]
+    underwater_open = [
+        swing
+        for swing in open_swings
+        if (
+            float(swing["economics"].get("realized_pnl_quote") or 0.0)
+            + float(swing["economics"].get("unrealized_pnl_quote") or 0.0)
+        ) < 0
+    ]
+    open_buy_swings = [swing for swing in open_swings if swing.get("origin_side") == "buy"]
+    open_sell_swings = [swing for swing in open_swings if swing.get("origin_side") == "sell"]
+    open_sell_quantity_by_asset = {
+        symbol: sum(
+            float(swing["economics"].get("remaining_quantity") or 0.0)
+            for swing in open_sell_swings
+            if swing["asset_symbol"] == symbol
+        )
+        for symbol in result.scenario.asset_order
+        if any(swing["asset_symbol"] == symbol for swing in open_sell_swings)
+    }
+    inventory_by_asset: dict[str, list[int]] = {}
+    for row in result.inventory_history:
+        inventory_by_asset.setdefault(str(row["asset_symbol"]), []).append(
+            int(row.get("open_bargain_count") or 0)
+        )
+
+    per_asset: dict[str, Any] = {}
+    for symbol in result.scenario.asset_order:
+        asset_cleanup = [swing for swing in cleanup_swings if swing["asset_symbol"] == symbol]
+        asset_open = [swing for swing in open_swings if swing["asset_symbol"] == symbol]
+        counts = inventory_by_asset.get(symbol, [])
+        per_asset[symbol] = {
+            "cleanup_closes": len(asset_cleanup),
+            "realized_cleanup_pnl_quote": sum(
+                float(item["realized_pnl_quote"])
+                for item in cleanup_outcomes
+                if item["asset_symbol"] == symbol
+            ),
+            "open_bargains_prevented_by_cap": sum(
+                1
+                for action in capacity_holds + pressure_cleanup_actions
+                if action.get("asset_symbol") == symbol
+            ),
+            "capacity_forced_hold_cycles": sum(
+                1 for action in capacity_holds if action.get("asset_symbol") == symbol
+            ),
+            "average_open_bargain_count": mean(counts) if counts else 0.0,
+            "maximum_open_bargain_count": max(counts, default=0),
+            "open_bargains_at_end": len(asset_open),
+            "underwater_open_bargains_at_end": sum(
+                1
+                for swing in asset_open
+                if (
+                    float(swing["economics"].get("realized_pnl_quote") or 0.0)
+                    + float(swing["economics"].get("unrealized_pnl_quote") or 0.0)
+                ) < 0
+            ),
+        }
+
+    return {
+        "enabled": result.scenario.waiter_cleanup.enabled,
+        "policy": {
+            "max_open_bargains_per_asset": (
+                result.scenario.waiter_cleanup.max_open_bargains_per_asset
+            ),
+            "deep_loss": {
+                "min_age_days": result.scenario.waiter_cleanup.deep_loss_min_age_days,
+                "unrealized_pnl_pct": (
+                    result.scenario.waiter_cleanup.deep_loss_unrealized_pnl_pct
+                ),
+                "required_reverse_level": (
+                    result.scenario.waiter_cleanup.deep_loss_required_reverse_level
+                ),
+            },
+            "aging": [
+                {
+                    "min_age_days": rule.min_age_days,
+                    "required_reverse_level": rule.required_reverse_level,
+                }
+                for rule in result.scenario.waiter_cleanup.aging_rules
+            ],
+            "capacity_cleanup": {
+                "enabled": result.scenario.waiter_cleanup.capacity_cleanup_enabled,
+                "min_age_days": result.scenario.waiter_cleanup.capacity_cleanup_min_age_days,
+            },
+        },
+        "cleanup_closes_total": len(cleanup_swings),
+        "cleanup_attempts_total": len(cleanup_executions),
+        "realized_cleanup_loss_quote": sum(value for value in cleanup_results if value < 0),
+        "realized_cleanup_profit_quote": sum(value for value in cleanup_results if value > 0),
+        "average_cleanup_pnl_quote": mean(cleanup_results) if cleanup_results else None,
+        "median_cleanup_pnl_quote": median(cleanup_results) if cleanup_results else None,
+        "max_cleanup_loss_quote": min(cleanup_results, default=0.0),
+        "cleanup_fees_by_asset": cleanup_fees,
+        "by_reason": reason_breakdown,
+        "capacity": {
+            "open_bargains_prevented_by_cap": len(capacity_holds) + len(pressure_cleanup_actions),
+            "capacity_forced_hold_cycles": len(capacity_holds),
+            "capacity_cleanup_actions": len(capacity_cleanup_actions),
+            "cleanup_actions_under_capacity_pressure": len(pressure_cleanup_actions),
+        },
+        "open_bargains": {
+            "at_end": len(open_swings),
+            "underwater_at_end": len(underwater_open),
+            "age_30_plus": sum(age >= 30 for age in open_ages),
+            "age_60_plus": sum(age >= 60 for age in open_ages),
+            "age_90_plus": sum(age >= 90 for age in open_ages),
+            "age_180_plus": sum(age >= 180 for age in open_ages),
+            "average_age_days": mean(open_ages) if open_ages else None,
+            "median_age_days": median(open_ages) if open_ages else None,
+            "p90_age_days": _percentile(open_ages, 0.9),
+            "oldest_age_days": max(open_ages, default=None),
+        },
+        "capital_lock": {
+            "open_buy_origin_quote": sum(
+                float(swing["economics"].get("remaining_opening_quote_quantity") or 0.0)
+                for swing in open_buy_swings
+            ),
+            "open_sell_origin_asset_quantity_by_asset": open_sell_quantity_by_asset,
+            "value_required_to_restore_sell_inventory": sum(
+                float(swing["economics"].get("remaining_quantity") or 0.0)
+                * float(swing.get("current_market_price") or 0.0)
+                for swing in open_sell_swings
+            ),
+            "final_shared_usdt": result.final_usdt,
+            "minimum_shared_usdt": result.minimum_usdt,
+        },
+        "per_asset": per_asset,
+    }
+
+
 def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
     final_point = result.equity[-1]
     final_value = float(final_point["treasury_value"])
@@ -450,6 +676,7 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             ),
         },
         "swings": _swing_metrics(result.swings),
+        "waiter_cleanup": _waiter_cleanup_metrics(result),
         "bargain_analysis": build_bargain_analysis(result.swings),
         "bad_cases": {
             **_bad_case_metrics(result.swings),
@@ -582,6 +809,7 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
     _write_json(target / "scenario.resolved.json", reproducibility)
     write_scenario_snapshot(result.scenario, target / "scenario.resolved.yaml")
     _write_json(target / "per_asset_summary.json", report["per_asset"])
+    _write_json(target / "waiter_cleanup.json", report["waiter_cleanup"])
     _write_json(target / "swings.json", result.swings)
     _write_json(target / "final_state.json", {
         "shared_usdt": result.final_usdt,
@@ -613,11 +841,19 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
     _write_csv(target / "target_history.csv", result.target_history)
     _write_csv(target / "inventory.csv", result.inventory_history)
     _write_csv(target / "rejections.csv", result.rejections)
+    _write_csv(
+        target / "waiter_cleanup_reasons.csv",
+        [
+            {"reason": reason, **metrics}
+            for reason, metrics in report["waiter_cleanup"]["by_reason"].items()
+        ],
+    )
 
     portfolio = report["portfolio"]
     swing_metrics = report["swings"]
     bargain_analysis = report["bargain_analysis"]
     bargain_overview = bargain_analysis["overview"]
+    cleanup_metrics = report["waiter_cleanup"]
     closure_rate = bargain_overview["closure_rate_pct"]
     median_duration = bargain_overview["median_duration_hours"]
     p90_duration = bargain_overview["duration_p90_hours"]
@@ -661,6 +897,20 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         ),
         f"- Underwater open Bargains: {bargain_analysis['risk']['underwater_open_count']}",
         f"- Underwater open lifecycle PnL: ${bargain_analysis['risk']['underwater_open_pnl_quote']:,.2f}",
+        "",
+        "## Waiter Cleanup",
+        "",
+        f"- Enabled: {'yes' if cleanup_metrics['enabled'] else 'no'}",
+        f"- Cleanup closes: {cleanup_metrics['cleanup_closes_total']}",
+        f"- Realized cleanup loss: ${cleanup_metrics['realized_cleanup_loss_quote']:,.2f}",
+        f"- Realized cleanup profit: ${cleanup_metrics['realized_cleanup_profit_quote']:,.2f}",
+        (
+            "- Open Bargains prevented by cap: "
+            f"{cleanup_metrics['capacity']['open_bargains_prevented_by_cap']}"
+        ),
+        f"- Open Bargains at end: {cleanup_metrics['open_bargains']['at_end']}",
+        f"- Underwater open Bargains: {cleanup_metrics['open_bargains']['underwater_at_end']}",
+        f"- 90+ day open Bargains: {cleanup_metrics['open_bargains']['age_90_plus']}",
         "",
         "This is a strategy backtest, not an order-book or microstructure simulation.",
     ]

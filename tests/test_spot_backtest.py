@@ -494,6 +494,8 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "summary.json").exists())
             self.assertTrue((Path(tmp) / "equity.csv").exists())
             self.assertTrue((Path(tmp) / "swings.json").exists())
+            self.assertTrue((Path(tmp) / "waiter_cleanup.json").exists())
+            self.assertTrue((Path(tmp) / "waiter_cleanup_reasons.csv").exists())
             self.assertTrue((Path(tmp) / "scenario.resolved.yaml").exists())
             report_html = (Path(tmp) / "report.html").read_text(encoding="utf-8")
             self.assertIn("Scrooge Research", report_html)
@@ -501,6 +503,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertIn("Final Allocation", report_html)
             self.assertIn("Bargain History", report_html)
             self.assertIn("Bargain Analytics", report_html)
+            self.assertIn("Waiter Cleanup", report_html)
             self.assertIn("Entry Cost", report_html)
             self.assertIn("Total Gain", report_html)
             self.assertIn("<span>Closed</span><span>Open</span>", report_html)
@@ -515,10 +518,72 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             )
             self.assertIn("breakdowns", artifacts["report"]["bargain_analysis"])
 
+    def test_cleanup_close_uses_simulated_executor_and_persists_reason_and_fee(self):
+        config = scenario(
+            (asset("AAA", minimum=0),),
+            hours=6,
+            starting_usdt=5000,
+            fee_rate=0.001,
+        )
+        engine = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 80))
+        engine.swings["waiter"] = {
+            "swing_id": "waiter",
+            "account_key": "spot_backtest",
+            "asset_symbol": "AAA",
+            "quote_symbol": "USDT",
+            "origin_side": "buy",
+            "trading_objective": "accumulate_cash",
+            "status": "open",
+            "source": "strategy",
+            "opened_at_ms": engine.start_ms - 30 * 24 * HOUR_MS,
+            "closed_at_ms": None,
+            "executions": [
+                {
+                    "execution_id": "waiter-open",
+                    "side": "buy",
+                    "quantity": 10,
+                    "price": 100,
+                    "quote_quantity": 1000,
+                    "fee_amount": 0,
+                    "fee_asset": "USDT",
+                }
+            ],
+        }
+        reason = {
+            "action_type": "close",
+            "close_reason": "age_l3_cleanup",
+            "required_cleanup_level": 3,
+            "actual_reverse_signal_level": 4,
+            "unrealized_pnl_before_cleanup": -200,
+            "unrealized_pnl_pct_before_cleanup": -20,
+            "capacity_pressure": False,
+        }
+
+        engine._execute_action(
+            "AAA",
+            {
+                "action_type": "close",
+                "side": "sell",
+                "swing_id": "waiter",
+                "requested_quantity": 10,
+                "reason": reason,
+            },
+            observed_price=80,
+            timestamp_ms=engine.start_ms,
+        )
+
+        closed = engine.swings["waiter"]
+        self.assertEqual(closed["status"], "closed")
+        self.assertEqual(closed["close_reason"], "age_l3_cleanup")
+        self.assertEqual(closed["close_context"], reason)
+        self.assertAlmostEqual(closed["executions"][-1]["fee_amount"], 0.8)
+        self.assertEqual(closed["executions"][-1]["reason"]["close_reason"], "age_l3_cleanup")
+
     def test_template_and_exported_current_treasury_are_reviewable_scenarios(self):
         template = load_spot_backtest_scenario("config/spot_backtest.template.yaml")
         self.assertEqual(len(template.assets), 10)
         self.assertTrue(all(item.quantity == 0 for item in template.assets))
+        self.assertTrue(template.waiter_cleanup.enabled)
 
         snapshot = {
             "holdings": [

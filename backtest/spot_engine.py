@@ -322,8 +322,31 @@ class SpotPortfolioBacktester:
                 self._active_swing_states(symbol),
                 available_quote=max(0.0, self.usdt - reserved_quote),
                 config=self.scenario.progression,
+                cleanup_config=self.scenario.waiter_cleanup,
             )
             if decision is None:
+                continue
+            if decision["action_type"] == "hold":
+                self.actions.append(
+                    {
+                        "timestamp_ms": candle.close_time_ms,
+                        "timestamp": self._timestamp(candle.close_time_ms),
+                        "asset_symbol": symbol,
+                        "action_type": "hold",
+                        "side": None,
+                        "swing_id": None,
+                        "signal_level": signal.get("level"),
+                        "base_tranche_pct": signal.get("base_tranche_pct"),
+                        "sizing_modifier": signal.get("sizing_modifier"),
+                        "final_tranche_pct": signal.get("final_tranche_pct"),
+                        "requested_quantity": 0.0,
+                        "executed_quantity": 0.0,
+                        "requested_value": 0.0,
+                        "executed_value": 0.0,
+                        "fee": 0.0,
+                        "reason": decision["reason"],
+                    }
+                )
                 continue
             pending = {
                 **decision,
@@ -493,6 +516,8 @@ class SpotPortfolioBacktester:
         swing["status"] = economics["status"]
         if economics["status"] == "closed":
             swing["closed_at_ms"] = timestamp_ms
+            swing["close_reason"] = (action.get("reason") or {}).get("close_reason")
+            swing["close_context"] = dict(action.get("reason") or {})
             self._apply_target_ratchet(state, swing, economics, timestamp_ms)
         if action["action_type"] == "open":
             campaign = self.campaigns[symbol]
@@ -517,6 +542,7 @@ class SpotPortfolioBacktester:
                 "requested_value": requested * observed_price,
                 "executed_value": quote_quantity,
                 "fee": fee,
+                "reason": dict(action.get("reason") or {}),
             }
         )
 
@@ -623,12 +649,13 @@ class SpotPortfolioBacktester:
     def _record_inventory(self, timestamp_ms: int, prices: dict[str, float]) -> None:
         for symbol in self.scenario.asset_order:
             state = self.assets[symbol]
+            active_swing_states = self._active_swing_states(symbol)
             committed = 0.0
             underwater_sell_count = 0
             open_buy_count = 0
             open_buy_capital_tied = 0.0
             open_buy_mtm_pnl = 0.0
-            for item in self._active_swing_states(symbol):
+            for item in active_swing_states:
                 swing = item["swing"]
                 economics = calculate_swing_economics(
                     swing,
@@ -659,6 +686,7 @@ class SpotPortfolioBacktester:
                     "cold_storage_quantity": state.cold_storage_quantity,
                     "policy_sellable_quantity": state.policy_sellable,
                     "quantity_committed_to_open_swings": committed,
+                    "open_bargain_count": len(active_swing_states),
                     "underwater_sell_origin_swings": underwater_sell_count,
                     "open_buy_origin_swings": open_buy_count,
                     "open_buy_capital_tied_quote": open_buy_capital_tied,

@@ -2862,7 +2862,7 @@ def _refresh_spot_swing_lifecycle(connection: sqlite3.Connection, swing_id: str)
         for execution in reversed(executions):
             reason = execution.get("reason") if isinstance(execution.get("reason"), dict) else {}
             if reason.get("action_type") == "close":
-                close_reason = str(reason.get("close_reason") or "strategy_profit").strip().lower()
+                close_reason = str(reason.get("close_reason") or "profit_target").strip().lower()
                 break
     connection.execute(
         """

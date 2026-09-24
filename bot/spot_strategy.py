@@ -27,6 +27,7 @@ from shared.spot_progression import (
     ProgressiveSwingConfig,
 )
 from shared.spot_strategy import plan_spot_strategy_action
+from shared.spot_waiter_cleanup import WaiterCleanupConfig, is_cleanup_reason
 
 ACTIVE_INTENT_STATUSES = {
     "queueing",
@@ -66,12 +67,14 @@ class ProgressiveSpotSwingExecutor:
         logger: Any,
         db_path: Path | None = None,
         config: ProgressiveSwingConfig | None = None,
+        cleanup_config: WaiterCleanupConfig | None = None,
         account_key: str = "manual_spot",
     ) -> None:
         self.order_executor = order_executor
         self.logger = logger
         self.db_path = db_path
         self.config = config or progressive_swing_config_from_env()
+        self.cleanup_config = cleanup_config or WaiterCleanupConfig()
         self.account_key = str(account_key or "manual_spot").strip() or "manual_spot"
 
     def handle_signal(self, signal: dict[str, Any]) -> dict[str, Any] | None:
@@ -129,8 +132,11 @@ class ProgressiveSpotSwingExecutor:
             available_quote=available_quote,
             available_opening_quote=available_opening_quote,
             config=self.config,
+            cleanup_config=self.cleanup_config,
         )
         if decision is None:
+            return None
+        if decision["action_type"] == "hold":
             return None
         if decision["action_type"] == "close":
             return self._execute_action(self._persist_close_action(asset, quote, decision))
@@ -202,6 +208,7 @@ class ProgressiveSpotSwingExecutor:
             self._swing_states(asset, quote),
             available_quote=available_quote,
             config=self.config,
+            cleanup_config=self.cleanup_config,
         )
         if decision is None or decision["action_type"] != "close":
             return None
@@ -295,7 +302,11 @@ class ProgressiveSpotSwingExecutor:
                         "reason_text": (
                             "Progressive Swing opening tranche."
                             if action["action_type"] == "open"
-                            else "Independent Swing profit close."
+                            else (
+                                "Automated stale Bargain cleanup."
+                                if is_cleanup_reason((action.get("reason") or {}).get("close_reason"))
+                                else "Independent Bargain profit close."
+                            )
                         ),
                         "reason": action["reason"],
                     }

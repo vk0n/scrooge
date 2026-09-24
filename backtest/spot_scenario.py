@@ -10,6 +10,7 @@ import yaml
 from shared.spot_progression import ProgressiveSwingConfig
 from shared.spot_signal import SpotSignalConfig
 from shared.spot_sizing import IndicatorSizingConfig
+from shared.spot_waiter_cleanup import WaiterCleanupConfig, waiter_cleanup_config_from_mapping
 
 
 VALID_OBJECTIVES = {None, "accumulate_cash", "accumulate_asset"}
@@ -83,6 +84,7 @@ class SpotBacktestScenario:
     progression: ProgressiveSwingConfig
     data_cache_dir: Path
     output_dir: Path
+    waiter_cleanup: WaiterCleanupConfig = field(default_factory=WaiterCleanupConfig)
     near_floor_pct: float = 1.0
     strong_cash_utilization_pct: float = 80.0
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -230,9 +232,28 @@ def load_spot_backtest_scenario(
         raise ValueError("Spot backtest asset symbols must be unique.")
 
     strategy = payload.get("strategy") if isinstance(payload.get("strategy"), dict) else {}
-    signal_payload = strategy.get("signal") if isinstance(strategy.get("signal"), dict) else {}
-    sizing_payload = strategy.get("indicator_sizing") if isinstance(strategy.get("indicator_sizing"), dict) else {}
-    progression_payload = strategy.get("progression") if isinstance(strategy.get("progression"), dict) else {}
+    signal_payload = (
+        strategy.get("signal")
+        if isinstance(strategy.get("signal"), dict)
+        else payload.get("signal") if isinstance(payload.get("signal"), dict) else {}
+    )
+    sizing_payload = (
+        strategy.get("indicator_sizing")
+        if isinstance(strategy.get("indicator_sizing"), dict)
+        else payload.get("sizing") if isinstance(payload.get("sizing"), dict) else {}
+    )
+    progression_payload = (
+        strategy.get("progression")
+        if isinstance(strategy.get("progression"), dict)
+        else payload.get("progression") if isinstance(payload.get("progression"), dict) else {}
+    )
+    waiter_cleanup_payload = (
+        strategy.get("waiter_cleanup")
+        if isinstance(strategy.get("waiter_cleanup"), dict)
+        else payload.get("waiter_cleanup")
+        if isinstance(payload.get("waiter_cleanup"), dict)
+        else None
+    )
     execution_payload = payload.get("execution") if isinstance(payload.get("execution"), dict) else {}
     fee_rate = _number(execution_payload.get("fee_rate", 0.001), field_name="execution.fee_rate", minimum=0)
     if fee_rate >= 1:
@@ -280,6 +301,7 @@ def load_spot_backtest_scenario(
         ),
         data_cache_dir=cache_path,
         output_dir=output_path,
+        waiter_cleanup=waiter_cleanup_config_from_mapping(waiter_cleanup_payload),
         near_floor_pct=_number(payload.get("near_floor_pct", 1), field_name="near_floor_pct", minimum=0),
         strong_cash_utilization_pct=_number(
             payload.get("strong_cash_utilization_pct", 80),
@@ -296,6 +318,12 @@ def scenario_as_dict(scenario: SpotBacktestScenario) -> dict[str, Any]:
     payload["end"] = scenario.end.isoformat()
     payload["data_cache_dir"] = str(scenario.data_cache_dir)
     payload["output_dir"] = str(scenario.output_dir)
+    payload["strategy"] = {
+        "signal": payload.pop("signal"),
+        "indicator_sizing": payload.pop("sizing"),
+        "progression": payload.pop("progression"),
+        "waiter_cleanup": payload.pop("waiter_cleanup"),
+    }
     payload["assets"] = {
         asset.symbol: {
             "quantity": asset.quantity,
@@ -395,6 +423,21 @@ def export_current_treasury_scenario(
                     "very_strong_modifier": 1.5,
                 },
                 "progression": {"close_profit_pct": 5, "estimated_fee_rate": 0.001},
+                "waiter_cleanup": {
+                    "enabled": True,
+                    "max_open_bargains_per_asset": 10,
+                    "deep_loss": {
+                        "min_age_days": 15,
+                        "unrealized_pnl_pct": -20,
+                        "required_reverse_level": 1,
+                    },
+                    "aging": [
+                        {"min_age_days": 30, "required_reverse_level": 3},
+                        {"min_age_days": 60, "required_reverse_level": 2},
+                        {"min_age_days": 90, "required_reverse_level": 1},
+                    ],
+                    "capacity_cleanup": {"enabled": True, "min_age_days": 30},
+                },
             },
             "data_cache_dir": "../data/spot_backtest",
             "output_dir": "../runtime/spot_backtests/latest",
