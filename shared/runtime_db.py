@@ -22,8 +22,8 @@ from shared.spot_strategy import transition_spot_strategy_campaign
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 13
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Progressive Spot Swing execution state"
+RUNTIME_DB_SCHEMA_VERSION = 14
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Persistent Spot strategy campaigns across HOLD signals"
 
 
 class RuntimeDbError(OSError):
@@ -556,6 +556,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             campaign_id TEXT,
             active_side TEXT CHECK (active_side IS NULL OR active_side IN ('buy', 'sell')),
             highest_completed_level INTEGER NOT NULL DEFAULT 0,
+            last_signal_side TEXT CHECK (last_signal_side IS NULL OR last_signal_side IN ('hold', 'buy', 'sell')),
             last_signal_level INTEGER NOT NULL DEFAULT 0,
             last_signal_at_ms INTEGER,
             created_at_ms INTEGER NOT NULL,
@@ -647,6 +648,15 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         "UPDATE portfolio_asset_policies SET trading_objective = 'accumulate_cash' "
         "WHERE trading_objective IS NULL"
     )
+    campaign_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(spot_strategy_campaigns)").fetchall()
+    }
+    if "last_signal_side" not in campaign_columns:
+        connection.execute(
+            "ALTER TABLE spot_strategy_campaigns ADD COLUMN last_signal_side "
+            "TEXT CHECK (last_signal_side IS NULL OR last_signal_side IN ('hold', 'buy', 'sell'))"
+        )
     intent_columns = {
         str(row["name"])
         for row in connection.execute("PRAGMA table_info(spot_order_intents)").fetchall()
@@ -1907,11 +1917,35 @@ def _spot_strategy_campaign_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "campaign_id": str(row["campaign_id"]) if row["campaign_id"] is not None else None,
         "active_side": str(row["active_side"]) if row["active_side"] is not None else None,
         "highest_completed_level": int(row["highest_completed_level"]),
+        "last_signal_side": (
+            str(row["last_signal_side"]) if row["last_signal_side"] is not None else None
+        ),
         "last_signal_level": int(row["last_signal_level"]),
         "last_signal_at_ms": int(row["last_signal_at_ms"]) if row["last_signal_at_ms"] is not None else None,
         "created_at_ms": int(row["created_at_ms"]),
         "updated_at_ms": int(row["updated_at_ms"]),
     }
+
+
+def load_spot_strategy_campaign(
+    asset_symbol: str,
+    *,
+    account_key: str = "manual_spot",
+    quote_symbol: str = "USDT",
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_asset = str(asset_symbol or "").strip().upper()
+    normalized_quote = str(quote_symbol or "USDT").strip().upper() or "USDT"
+    with _connection(path) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM spot_strategy_campaigns
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (normalized_account, normalized_asset, normalized_quote),
+        ).fetchone()
+    return _spot_strategy_campaign_from_row(row) if row is not None else None
 
 
 def sync_spot_strategy_campaign(
@@ -1952,14 +1986,15 @@ def sync_spot_strategy_campaign(
             """
             INSERT INTO spot_strategy_campaigns (
                 account_key, asset_symbol, quote_symbol, campaign_id, active_side,
-                highest_completed_level, last_signal_level, last_signal_at_ms,
+                highest_completed_level, last_signal_side, last_signal_level, last_signal_at_ms,
                 created_at_ms, updated_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_key, asset_symbol, quote_symbol) DO UPDATE SET
                 campaign_id = excluded.campaign_id,
                 active_side = excluded.active_side,
                 highest_completed_level = excluded.highest_completed_level,
+                last_signal_side = excluded.last_signal_side,
                 last_signal_level = excluded.last_signal_level,
                 last_signal_at_ms = excluded.last_signal_at_ms,
                 updated_at_ms = excluded.updated_at_ms
@@ -1971,6 +2006,7 @@ def sync_spot_strategy_campaign(
                 transition["campaign_id"],
                 transition["active_side"],
                 transition["highest_completed_level"],
+                transition["last_signal_side"],
                 transition["last_signal_level"],
                 transition["last_signal_at_ms"],
                 now_ms,

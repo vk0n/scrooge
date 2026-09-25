@@ -1,6 +1,8 @@
 import logging
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,12 +16,15 @@ from shared.runtime_db import (
     list_portfolio_asset_policies,
     list_spot_strategy_actions,
     list_spot_swings,
+    load_spot_strategy_campaign,
+    sync_spot_strategy_campaign,
     upsert_portfolio_asset_policy,
     update_spot_strategy_action,
 )
 from shared.spot_progression import ProgressiveSwingConfig, plan_opening_quantity, plan_profitable_close
-from shared.spot_strategy import plan_spot_strategy_action
+from shared.spot_strategy import plan_spot_strategy_action, transition_spot_strategy_campaign
 from shared.spot_swing import calculate_swing_economics
+from shared.spot_waiter_cleanup import WaiterCleanupConfig
 
 
 class ProgressiveSwingDomainTests(unittest.TestCase):
@@ -131,6 +136,235 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(plan["quantity"], (500 - 225) / 4.5)
+
+
+class SpotStrategyCampaignTests(unittest.TestCase):
+    def transition(
+        self,
+        previous: dict | None,
+        side: str,
+        level: int,
+        tick: int,
+    ) -> dict:
+        return transition_spot_strategy_campaign(
+            previous,
+            opportunity=side,
+            signal_level=level,
+            signal_at_ms=tick,
+            new_campaign_id=f"campaign-{tick}",
+        )
+
+    @staticmethod
+    def complete(campaign: dict, level: int) -> dict:
+        return {
+            **campaign,
+            "highest_completed_level": max(
+                int(campaign.get("highest_completed_level") or 0),
+                level,
+            ),
+        }
+
+    @staticmethod
+    def opening(campaign: dict, side: str, level: int) -> dict | None:
+        return plan_spot_strategy_action(
+            {
+                "opportunity": side,
+                "level": level,
+                "strategy_eligible": True,
+                "trading_objective": "accumulate_cash",
+                "final_tranche_pct": level * 10,
+                "current_price": 10,
+            },
+            {
+                "target_quantity": 100,
+                "minimum_holding_pct": 0,
+                "immediately_sellable_quantity": 100,
+                "market_price": 10,
+            },
+            campaign,
+            [],
+            available_quote=10_000,
+            cleanup_config=WaiterCleanupConfig(enabled=False),
+        )
+
+    def test_sell_l1_hold_sell_l1_does_not_reopen_l1(self):
+        campaign = self.complete(self.transition(None, "sell", 1, 1), 1)
+        campaign_id = campaign["campaign_id"]
+        campaign = self.transition(campaign, "hold", 0, 2)
+        campaign = self.transition(campaign, "sell", 1, 3)
+
+        self.assertEqual(campaign["campaign_id"], campaign_id)
+        self.assertEqual(campaign["highest_completed_level"], 1)
+        self.assertIsNone(self.opening(campaign, "sell", 1))
+
+    def test_sell_l1_hold_sell_l2_allows_l2(self):
+        campaign = self.complete(self.transition(None, "sell", 1, 1), 1)
+        campaign = self.transition(campaign, "hold", 0, 2)
+        campaign = self.transition(campaign, "sell", 2, 3)
+
+        decision = self.opening(campaign, "sell", 2)
+
+        self.assertEqual(decision["action_type"], "open")
+        self.assertEqual(decision["signal_level"], 2)
+
+    def test_sell_l2_hold_sell_l1_does_not_open(self):
+        campaign = self.complete(self.transition(None, "sell", 2, 1), 2)
+        campaign = self.transition(campaign, "hold", 0, 2)
+        campaign = self.transition(campaign, "sell", 1, 3)
+
+        self.assertIsNone(self.opening(campaign, "sell", 1))
+
+    def test_sell_l2_hold_sell_l3_allows_l3(self):
+        campaign = self.complete(self.transition(None, "sell", 2, 1), 2)
+        campaign = self.transition(campaign, "hold", 0, 2)
+        campaign = self.transition(campaign, "sell", 3, 3)
+
+        decision = self.opening(campaign, "sell", 3)
+
+        self.assertEqual(decision["action_type"], "open")
+        self.assertEqual(decision["signal_level"], 3)
+
+    def test_opposite_actionable_signal_starts_new_campaign(self):
+        sell = self.complete(self.transition(None, "sell", 1, 1), 1)
+        held = self.transition(sell, "hold", 0, 2)
+        buy = self.transition(held, "buy", 1, 3)
+
+        self.assertNotEqual(buy["campaign_id"], sell["campaign_id"])
+        self.assertEqual(buy["active_side"], "buy")
+        self.assertEqual(buy["highest_completed_level"], 0)
+        self.assertEqual(self.opening(buy, "buy", 1)["action_type"], "open")
+
+    def test_sell_l1_is_available_after_buy_campaign_resets_sell(self):
+        sell = self.complete(self.transition(None, "sell", 3, 1), 3)
+        buy = self.complete(self.transition(sell, "buy", 1, 2), 1)
+        next_sell = self.transition(buy, "sell", 1, 3)
+
+        self.assertNotEqual(next_sell["campaign_id"], sell["campaign_id"])
+        self.assertEqual(next_sell["active_side"], "sell")
+        self.assertEqual(next_sell["highest_completed_level"], 0)
+        self.assertEqual(self.opening(next_sell, "sell", 1)["action_type"], "open")
+
+    def test_hold_before_any_actionable_signal_has_no_campaign(self):
+        campaign = self.transition(None, "hold", 0, 1)
+
+        self.assertIsNone(campaign["campaign_id"])
+        self.assertIsNone(campaign["active_side"])
+        self.assertEqual(campaign["highest_completed_level"], 0)
+        self.assertEqual(campaign["last_signal_side"], "hold")
+
+    def test_multiple_holds_preserve_campaign_progress(self):
+        campaign = self.complete(self.transition(None, "sell", 2, 1), 2)
+        identity = campaign["campaign_id"]
+        campaign = self.transition(campaign, "hold", 0, 2)
+        campaign = self.transition(campaign, "hold", 0, 3)
+
+        self.assertEqual(campaign["campaign_id"], identity)
+        self.assertEqual(campaign["active_side"], "sell")
+        self.assertEqual(campaign["highest_completed_level"], 2)
+        self.assertEqual(campaign["last_signal_side"], "hold")
+        self.assertEqual(campaign["last_signal_at_ms"], 3)
+
+    def test_campaigns_are_independent_per_asset(self):
+        near = self.complete(self.transition(None, "sell", 2, 1), 2)
+        xrp = self.complete(self.transition(None, "buy", 1, 2), 1)
+        near = self.transition(near, "hold", 0, 3)
+
+        self.assertEqual(near["active_side"], "sell")
+        self.assertEqual(near["highest_completed_level"], 2)
+        self.assertEqual(xrp["active_side"], "buy")
+        self.assertEqual(xrp["highest_completed_level"], 1)
+
+    def test_persisted_campaign_survives_restart_and_blocks_duplicate_l1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "runtime.sqlite3"
+            bootstrap_runtime_db(db_path)
+            opened = sync_spot_strategy_campaign(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                opportunity="sell",
+                signal_level=1,
+                signal_at_ms=1,
+                path=db_path,
+            )
+            complete_spot_strategy_campaign_level(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                campaign_id=opened["campaign_id"],
+                signal_level=1,
+                path=db_path,
+            )
+
+            bootstrap_runtime_db(db_path)
+            held = sync_spot_strategy_campaign(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                opportunity="hold",
+                signal_level=0,
+                signal_at_ms=2,
+                path=db_path,
+            )
+            resumed = sync_spot_strategy_campaign(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                opportunity="sell",
+                signal_level=1,
+                signal_at_ms=3,
+                path=db_path,
+            )
+            persisted = load_spot_strategy_campaign("NEAR", path=db_path)
+
+            self.assertEqual(held["campaign_id"], opened["campaign_id"])
+            self.assertEqual(resumed["campaign_id"], opened["campaign_id"])
+            self.assertEqual(resumed["highest_completed_level"], 1)
+            self.assertEqual(persisted, resumed)
+            self.assertIsNone(self.opening(resumed, "sell", 1))
+
+    def test_campaign_migration_preserves_existing_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "runtime.sqlite3"
+            with closing(sqlite3.connect(db_path)) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE spot_strategy_campaigns (
+                        account_key TEXT NOT NULL,
+                        asset_symbol TEXT NOT NULL,
+                        quote_symbol TEXT NOT NULL,
+                        campaign_id TEXT,
+                        active_side TEXT,
+                        highest_completed_level INTEGER NOT NULL DEFAULT 0,
+                        last_signal_level INTEGER NOT NULL DEFAULT 0,
+                        last_signal_at_ms INTEGER,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        PRIMARY KEY (account_key, asset_symbol, quote_symbol)
+                    );
+                    INSERT INTO spot_strategy_campaigns VALUES (
+                        'manual_spot', 'NEAR', 'USDT', 'legacy-sell', 'sell', 2, 2, 1, 1, 1
+                    );
+                    """
+                )
+
+            bootstrap_runtime_db(db_path)
+            migrated = load_spot_strategy_campaign("NEAR", path=db_path)
+            held = sync_spot_strategy_campaign(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                opportunity="hold",
+                signal_level=0,
+                signal_at_ms=2,
+                path=db_path,
+            )
+
+            self.assertIsNone(migrated["last_signal_side"])
+            self.assertEqual(held["campaign_id"], "legacy-sell")
+            self.assertEqual(held["active_side"], "sell")
+            self.assertEqual(held["highest_completed_level"], 2)
+            self.assertEqual(held["last_signal_side"], "hold")
 
 
 class RecordingProgressiveExecutor(ProgressiveSpotSwingExecutor):

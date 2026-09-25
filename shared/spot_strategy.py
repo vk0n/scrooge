@@ -46,9 +46,9 @@ def transition_spot_strategy_campaign(
     prior = previous or {}
     prior_side = str(prior.get("active_side") or "").strip().lower() or None
     if normalized_side == "hold":
-        campaign_id = None
-        active_side = None
-        highest_level = 0
+        campaign_id = prior.get("campaign_id")
+        active_side = prior_side
+        highest_level = int(prior.get("highest_completed_level") or 0)
     elif prior_side != normalized_side:
         campaign_id = str(new_campaign_id or "").strip()
         if not campaign_id:
@@ -63,6 +63,7 @@ def transition_spot_strategy_campaign(
         "campaign_id": campaign_id,
         "active_side": active_side,
         "highest_completed_level": highest_level,
+        "last_signal_side": normalized_side,
         "last_signal_level": max(0, int(signal_level)),
         "last_signal_at_ms": int(signal_at_ms),
     }
