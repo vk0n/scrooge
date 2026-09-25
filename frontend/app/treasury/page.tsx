@@ -266,6 +266,8 @@ type AssetLedgerEntry =
     };
 
 type AssetLedgerFilter = "all" | "open" | "closed";
+type BargainLedgerSort = "date" | "pnl";
+type BargainLedgerDirection = "asc" | "desc";
 
 type AssetLedgerPayload = {
   asset_symbol: string;
@@ -279,6 +281,8 @@ type AssetLedgerPayload = {
 
 type BargainLedgerPayload = {
   filter: AssetLedgerFilter;
+  sort: BargainLedgerSort;
+  direction: BargainLedgerDirection;
   entries: Array<Extract<AssetLedgerEntry, { entry_type: "swing" }>>;
   entry_count: number;
   entry_limit: number;
@@ -1384,6 +1388,8 @@ function SwingLedgerRow({ swing, occurredAt }: { swing: SpotSwing; occurredAt: s
 function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Element {
   const [ledger, setLedger] = useState<BargainLedgerPayload | null>(null);
   const [filter, setFilter] = useState<AssetLedgerFilter>("all");
+  const [sortBy, setSortBy] = useState<BargainLedgerSort>("date");
+  const [sortDirection, setSortDirection] = useState<BargainLedgerDirection>("desc");
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1392,15 +1398,15 @@ function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Ele
     setError(null);
     try {
       const payload = await fetchApi<BargainLedgerPayload>(
-        `/api/portfolio/bargains?filter=${encodeURIComponent(filter)}&entry_offset=${offset}`
+        `/api/portfolio/bargains?filter=${encodeURIComponent(filter)}&sort=${encodeURIComponent(sortBy)}&direction=${encodeURIComponent(sortDirection)}&entry_offset=${offset}`
       );
       setLedger(payload);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Could not load the Bargain ledger.");
+      setError(loadError instanceof Error ? loadError.message : "Could not load the Bargains Ledger.");
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, sortBy, sortDirection]);
 
   useEffect(() => {
     void loadEntries(0);
@@ -1410,6 +1416,19 @@ function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Ele
     if (nextFilter === filter) return;
     setLoading(true);
     setFilter(nextFilter);
+    setLedger(null);
+  }
+
+  function changeSort(nextSort: BargainLedgerSort): void {
+    if (nextSort === sortBy) return;
+    setLoading(true);
+    setSortBy(nextSort);
+    setLedger(null);
+  }
+
+  function toggleSortDirection(): void {
+    setLoading(true);
+    setSortDirection((current) => current === "desc" ? "asc" : "desc");
     setLedger(null);
   }
 
@@ -1423,28 +1442,55 @@ function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Ele
   const hasEarlier = offset + entries.length < count;
 
   return (
-    <section id="treasury-bargain-ledger" className="treasury-bargain-ledger" aria-label="Bargain Ledger">
+    <section id="treasury-bargain-ledger" className="treasury-bargain-ledger" aria-label="Bargains Ledger">
       <header className="treasury-bargain-ledger-head">
         <div>
-          <h2>Bargain Ledger</h2>
+          <h2>Bargains Ledger</h2>
           <p>Every active and settled Bargain across the vault.</p>
         </div>
         <span>{ledger ? `${count} ${count === 1 ? "entry" : "entries"}` : "Loading"}</span>
       </header>
-      <div className="treasury-ledger-filter" aria-label="Bargain Ledger filter">
-        {(["all", "open", "closed"] as const).map((value) => (
+      <div className="treasury-bargain-ledger-controls">
+        <div className="treasury-ledger-filter" aria-label="Bargains Ledger filter">
+          {(["all", "open", "closed"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={filter === value ? "treasury-ledger-filter-active" : undefined}
+              aria-pressed={filter === value}
+              onClick={() => changeFilter(value)}
+            >
+              {value[0].toUpperCase() + value.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div className="treasury-bargain-sort">
+          <span>Sort by</span>
+          <div className="treasury-bargain-sort-options" aria-label="Bargains Ledger sort field">
+            {(["date", "pnl"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={sortBy === value ? "treasury-bargain-sort-active" : undefined}
+                aria-pressed={sortBy === value}
+                onClick={() => changeSort(value)}
+              >
+                {value === "pnl" ? "PnL" : "Date"}
+              </button>
+            ))}
+          </div>
           <button
-            key={value}
             type="button"
-            className={filter === value ? "treasury-ledger-filter-active" : undefined}
-            aria-pressed={filter === value}
-            onClick={() => changeFilter(value)}
+            className="treasury-bargain-sort-direction"
+            aria-label={`Sort ${sortDirection === "desc" ? "ascending" : "descending"}`}
+            onClick={toggleSortDirection}
           >
-            {value[0].toUpperCase() + value.slice(1)}
+            {sortDirection === "desc" ? "Desc" : "Asc"}
+            <span className={`treasury-bargain-sort-arrow treasury-bargain-sort-arrow-${sortDirection}`} aria-hidden="true" />
           </button>
-        ))}
+        </div>
       </div>
-      {loading && !ledger ? <p className="status-performance-note">Opening the Bargain ledger...</p> : null}
+      {loading && !ledger ? <p className="status-performance-note">Opening the Bargains Ledger...</p> : null}
       {error ? <p className="form-error">{error}</p> : null}
       {!loading && entries.length === 0 ? (
         <p className="trade-history-empty-sheet">
@@ -1469,7 +1515,7 @@ function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Ele
               disabled={loading || !hasLater}
               onClick={() => void loadEntries(Math.max(0, offset - limit))}
             >
-              Later
+              Previous
             </button>
             {hasLater ? (
               <button
@@ -1478,7 +1524,7 @@ function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Ele
                 disabled={loading}
                 onClick={() => void loadEntries(0)}
               >
-                Latest
+                First page
               </button>
             ) : null}
             <span className="trade-history-page-indicator">
@@ -1490,7 +1536,7 @@ function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Ele
               disabled={loading || !hasEarlier}
               onClick={() => void loadEntries(offset + limit)}
             >
-              Earlier
+              Next
             </button>
           </div>
         </>
@@ -2006,16 +2052,16 @@ export default function TreasuryPage(): JSX.Element {
               <span className="treasury-summary-label">Bargains</span>
               <span className="treasury-bargain-counts">
                 <span>
-                  <small>Open</small>
-                  <strong>{formatNumber(summary?.open_swing_count ?? 0, 0)}</strong>
+                  <strong className="treasury-bargain-count-open">{formatNumber(summary?.open_swing_count ?? 0, 0)}</strong>
+                  <small>open</small>
                 </span>
                 <span>
-                  <small>Closed</small>
                   <strong>{formatNumber(summary?.closed_swing_count ?? 0, 0)}</strong>
+                  <small>closed</small>
                 </span>
                 <span>
-                  <small>Total</small>
                   <strong>{formatNumber(summary?.total_swing_count ?? 0, 0)}</strong>
+                  <small>total</small>
                 </span>
               </span>
               <span className="treasury-summary-card-chevron" aria-hidden="true" />

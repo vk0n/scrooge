@@ -77,6 +77,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
                 "origin_side": "buy",
                 "trading_objective": "accumulate_cash",
                 "source": "strategy",
+                "opened_at_ms": 1_700_000_000_000,
             }
         )
         create_spot_swing(
@@ -87,6 +88,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
                 "origin_side": "buy",
                 "trading_objective": "accumulate_cash",
                 "source": "strategy",
+                "opened_at_ms": 1_700_000_100_000,
             }
         )
         for execution_id, side, price in (
@@ -126,6 +128,20 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         closed_ledger = portfolio_service.load_portfolio_bargain_ledger(entry_filter="closed")
         self.assertEqual([entry["swing"]["swing_id"] for entry in open_ledger["entries"]], ["open-btc-swing"])
         self.assertEqual([entry["swing"]["swing_id"] for entry in closed_ledger["entries"]], ["closed-eth-swing"])
+        self.assertEqual(
+            [entry["swing"]["swing_id"] for entry in ledger["entries"]],
+            ["closed-eth-swing", "open-btc-swing"],
+        )
+        pnl_ascending = portfolio_service.load_portfolio_bargain_ledger(
+            sort_by="pnl",
+            sort_direction="asc",
+        )
+        self.assertEqual(pnl_ascending["sort"], "pnl")
+        self.assertEqual(pnl_ascending["direction"], "asc")
+        self.assertEqual(
+            [entry["swing"]["swing_id"] for entry in pnl_ascending["entries"]],
+            ["open-btc-swing", "closed-eth-swing"],
+        )
 
     def test_strategy_fill_preserves_owner_capital_and_tracks_committed_reserve(self):
         self.add("BTC", 1, 90, "binance")

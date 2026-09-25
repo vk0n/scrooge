@@ -8,7 +8,12 @@ from unittest.mock import patch
 
 from api.services import portfolio_service
 from bot import spot_execution
-from bot.spot_execution import SpotOrderAccountingError, SpotOrderExecutor, SpotOrderUncertainError
+from bot.spot_execution import (
+    SpotOrderAccountingError,
+    SpotOrderExecutor,
+    SpotOrderUncertainError,
+    SpotOrderValidationError,
+)
 from shared.runtime_db import (
     create_spot_swing,
     list_portfolio_transactions,
@@ -234,6 +239,18 @@ class SpotExecutionTests(unittest.TestCase):
                 "filled",
             ],
         )
+
+    def test_pre_submission_binance_filter_rejection_is_deterministic(self):
+        preview = self._preview_and_queue("sell", 0.0004)
+        client = FakeSpotExecutionClient()
+        executor = SpotOrderExecutor(client, logger=logging.getLogger("test.spot-execution"), db_path=self.db_path)
+
+        with self.assertRaisesRegex(SpotOrderValidationError, "rounds to zero"):
+            executor.execute(preview["intent_id"])
+
+        intent = load_spot_order_intent(preview["intent_id"], path=self.db_path)
+        self.assertEqual(intent["status"], "failed")
+        self.assertEqual(client.create_calls, 0)
 
     def test_treasury_intake_creates_holding_and_locked_policy_only_after_fill(self):
         save_exchange_account_snapshot(

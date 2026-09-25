@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from api.services.portfolio_service import create_strategy_spot_order_intent, load_portfolio_snapshot
-from bot.spot_execution import SpotOrderExecutor
+from bot.spot_execution import SpotOrderExecutor, SpotOrderValidationError
 from shared.runtime_db import (
     complete_spot_strategy_campaign_level,
     create_spot_swing,
@@ -45,6 +45,15 @@ COMPLETED_INTENT_STATUSES = {"filled", "partially_filled"}
 RETRYABLE_INTENT_STATUSES = {"failed", "rejected"}
 
 
+def _is_permanent_close_block(error: object, action: dict[str, Any] | None = None) -> bool:
+    message = str(error or "")
+    reason = action.get("reason") if isinstance(action, dict) and isinstance(action.get("reason"), dict) else {}
+    fixed_asset_quantity = reason.get("quantity_basis", "remaining_asset") == "remaining_asset"
+    return fixed_asset_quantity and (
+        "rounds to zero" in message or "Quantity is below Binance minimum" in message
+    )
+
+
 def progressive_swing_config_from_env() -> ProgressiveSwingConfig:
     return ProgressiveSwingConfig(
         close_profit_pct=float(os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "5") or 5),
@@ -76,6 +85,43 @@ class ProgressiveSpotSwingExecutor:
         self.config = config or progressive_swing_config_from_env()
         self.cleanup_config = cleanup_config or WaiterCleanupConfig()
         self.account_key = str(account_key or "manual_spot").strip() or "manual_spot"
+
+    def order_signals_for_execution(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Prioritize portfolio closes before any new openings consume shared quote."""
+        portfolio, _ = load_portfolio_snapshot()
+        holdings = {
+            (item.get("asset_symbol"), item.get("quote_symbol")): item
+            for item in portfolio.get("holdings", [])
+        }
+        exchange = portfolio.get("exchange") if isinstance(portfolio.get("exchange"), dict) else {}
+        summary = portfolio.get("summary") if isinstance(portfolio.get("summary"), dict) else {}
+        available_quote = min(
+            max(0.0, float(exchange.get("usdt_free") or 0.0)),
+            max(0.0, float(summary.get("vault_reserve") or summary.get("dry_powder") or 0.0)),
+        )
+        prioritized: list[tuple[tuple[int, int, float, int], dict[str, Any]]] = []
+        for index, signal in enumerate(signals):
+            asset = str(signal.get("asset_symbol") or "").strip().upper()
+            quote = str(signal.get("quote_symbol") or "USDT").strip().upper() or "USDT"
+            holding = holdings.get((asset, quote))
+            decision = None
+            if holding is not None:
+                decision = plan_spot_strategy_action(
+                    signal,
+                    holding,
+                    {},
+                    self._swing_states(asset, quote),
+                    available_quote=available_quote,
+                    config=self.config,
+                    cleanup_config=self.cleanup_config,
+                )
+            reason = decision.get("reason") if isinstance(decision, dict) else {}
+            is_close = isinstance(decision, dict) and decision.get("action_type") == "close"
+            is_profit = is_close and reason.get("close_reason") == "profit_target"
+            favorable = float(reason.get("favorable_move_pct") or 0.0)
+            prioritized.append(((0 if is_close else 1, 0 if is_profit else 1, -favorable, index), signal))
+        prioritized.sort(key=lambda item: item[0])
+        return [signal for _priority, signal in prioritized]
 
     def handle_signal(self, signal: dict[str, Any]) -> dict[str, Any] | None:
         asset = str(signal.get("asset_symbol") or "").strip().upper()
@@ -124,22 +170,32 @@ class ProgressiveSpotSwingExecutor:
         available_quote = min(exchange_quote, managed_quote)
         available_opening_quote = min(exchange_quote, opening_quote)
 
-        decision = plan_spot_strategy_action(
-            signal,
-            holding,
-            campaign,
-            self._swing_states(asset, quote),
-            available_quote=available_quote,
-            available_opening_quote=available_opening_quote,
-            config=self.config,
-            cleanup_config=self.cleanup_config,
-        )
-        if decision is None:
-            return None
-        if decision["action_type"] == "hold":
-            return None
-        if decision["action_type"] == "close":
-            return self._execute_action(self._persist_close_action(asset, quote, decision))
+        swing_states = self._swing_states(asset, quote)
+        excluded_close_swing_ids: set[str] = set()
+        while True:
+            decision = plan_spot_strategy_action(
+                signal,
+                holding,
+                campaign,
+                swing_states,
+                available_quote=available_quote,
+                available_opening_quote=available_opening_quote,
+                config=self.config,
+                cleanup_config=self.cleanup_config,
+                excluded_close_swing_ids=excluded_close_swing_ids,
+            )
+            if decision is None or decision["action_type"] == "hold":
+                return None
+            if decision["action_type"] != "close":
+                break
+            action = self._persist_close_action(asset, quote, decision)
+            if action["status"] == "blocked" and _is_permanent_close_block(action.get("error"), action):
+                excluded_close_swing_ids.add(str(decision["swing_id"]))
+                continue
+            result = self._execute_action(action)
+            if result.get("status") != "blocked":
+                return result
+            excluded_close_swing_ids.add(str(decision["swing_id"]))
 
         campaign_id = str(campaign.get("campaign_id") or "")
         quantity = float(decision["requested_quantity"])
@@ -275,7 +331,10 @@ class ProgressiveSpotSwingExecutor:
                 self._complete_action(action)
                 continue
             if intent is not None and intent["status"] in {"queueing", "queued"}:
-                return self._execute_action(action)
+                result = self._execute_action(action)
+                if result.get("status") == "blocked" and _is_permanent_close_block(result.get("error"), result):
+                    continue
+                return result
             if intent is not None and intent["status"] in ACTIVE_INTENT_STATUSES:
                 update_spot_strategy_action(action["action_key"], {"status": "executing"}, path=self.db_path)
                 return action
@@ -285,6 +344,10 @@ class ProgressiveSpotSwingExecutor:
                     {"status": "retryable", "error": intent.get("error")},
                     path=self.db_path,
                 ) or action
+                result = self._execute_action(action)
+                if result.get("status") == "blocked" and _is_permanent_close_block(result.get("error"), result):
+                    continue
+                return result
         return None
 
     def _execute_action(self, action: dict[str, Any]) -> dict[str, Any]:
@@ -292,25 +355,43 @@ class ProgressiveSpotSwingExecutor:
         try:
             if intent is None or intent["status"] in RETRYABLE_INTENT_STATUSES:
                 attempt = int(action.get("attempt_count") or 0) + 1
-                intent = create_strategy_spot_order_intent(
-                    {
-                        "asset_symbol": action["asset_symbol"],
-                        "quote_symbol": action["quote_symbol"],
-                        "side": action["side"],
-                        "quantity": action["requested_quantity"],
-                        "swing_id": action["swing_id"],
-                        "reason_text": (
-                            "Progressive Swing opening tranche."
-                            if action["action_type"] == "open"
-                            else (
-                                "Automated stale Bargain cleanup."
-                                if is_cleanup_reason((action.get("reason") or {}).get("close_reason"))
-                                else "Independent Bargain profit close."
-                            )
-                        ),
-                        "reason": action["reason"],
-                    }
-                )
+                try:
+                    intent = create_strategy_spot_order_intent(
+                        {
+                            "asset_symbol": action["asset_symbol"],
+                            "quote_symbol": action["quote_symbol"],
+                            "side": action["side"],
+                            "quantity": action["requested_quantity"],
+                            "swing_id": action["swing_id"],
+                            "reason_text": (
+                                "Progressive Swing opening tranche."
+                                if action["action_type"] == "open"
+                                else (
+                                    "Automated stale Bargain cleanup."
+                                    if is_cleanup_reason((action.get("reason") or {}).get("close_reason"))
+                                    else "Independent Bargain profit close."
+                                )
+                            ),
+                            "reason": action["reason"],
+                        }
+                    )
+                except ValueError as exc:
+                    blocked = update_spot_strategy_action(
+                        action["action_key"],
+                        {
+                            "status": "blocked",
+                            "attempt_count": attempt,
+                            "error": str(exc)[:500],
+                        },
+                        path=self.db_path,
+                    ) or action
+                    self.logger.info(
+                        "spot_strategy_action_blocked action_key=%s swing_id=%s error=%s",
+                        action["action_key"],
+                        action["swing_id"],
+                        exc,
+                    )
+                    return blocked
                 action = update_spot_strategy_action(
                     action["action_key"],
                     {
@@ -345,6 +426,19 @@ class ProgressiveSpotSwingExecutor:
                 intent["intent_id"],
             )
             return {**completed, "result": result}
+        except SpotOrderValidationError as exc:
+            blocked = update_spot_strategy_action(
+                action["action_key"],
+                {"status": "blocked", "error": str(exc)[:500]},
+                path=self.db_path,
+            ) or action
+            self.logger.info(
+                "spot_strategy_action_blocked action_key=%s swing_id=%s error=%s",
+                action["action_key"],
+                action["swing_id"],
+                exc,
+            )
+            return blocked
         except Exception as exc:  # noqa: BLE001
             persisted_intent = (
                 load_spot_order_intent(intent["intent_id"], path=self.db_path)

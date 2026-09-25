@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Set
 from typing import Any
 
 from shared.spot_progression import ProgressiveSwingConfig, plan_opening_quantity, plan_profitable_close
@@ -106,6 +107,7 @@ def plan_spot_strategy_action(
     available_opening_quote: float | None = None,
     config: ProgressiveSwingConfig | None = None,
     cleanup_config: WaiterCleanupConfig | None = None,
+    excluded_close_swing_ids: Set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Choose one profit close, waiter cleanup, opening, or capacity hold."""
     current_price = float(signal.get("current_price") or holding.get("market_price") or 0.0)
@@ -113,6 +115,7 @@ def plan_spot_strategy_action(
         return None
     resolved_config = config or ProgressiveSwingConfig()
     resolved_cleanup = cleanup_config or WaiterCleanupConfig()
+    excluded_closes = excluded_close_swing_ids or set()
     close_candidates: list[tuple[float, int, str, dict[str, Any]]] = []
     active_swings: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for item in swings:
@@ -122,6 +125,8 @@ def plan_spot_strategy_action(
             continue
         economics = calculate_swing_economics(swing, executions, current_price=current_price)
         active_swings.append((swing, economics))
+        if str(swing.get("swing_id") or "") in excluded_closes:
+            continue
         close = plan_profitable_close(
             swing,
             economics,
@@ -149,6 +154,7 @@ def plan_spot_strategy_action(
                         "weighted_opening_price": close["opening_price"],
                         "market_price": current_price,
                         "remaining_quantity": economics["remaining_quantity"],
+                        "quantity_basis": close.get("quantity_basis", "remaining_asset"),
                     },
                 },
             )
@@ -204,6 +210,8 @@ def plan_spot_strategy_action(
     cleanup_candidates: list[tuple[int, str, dict[str, Any]]] = []
     if resolved_cleanup.enabled and opportunity in {"buy", "sell"} and level > 0 and now_ms > 0:
         for swing, economics in active_swings:
+            if str(swing.get("swing_id") or "") in excluded_closes:
+                continue
             age_days = bargain_age_days(swing, now_ms=now_ms)
             pnl_pct = remaining_unrealized_pnl_pct(economics)
             scheduled = required_cleanup_level(
@@ -242,12 +250,15 @@ def plan_spot_strategy_action(
                 required_level = int(scheduled["required_reverse_level"])
             close_side = "sell" if swing.get("origin_side") == "buy" else "buy"
             quantity = float(economics.get("remaining_quantity") or 0.0)
+            quantity_basis = "remaining_asset"
             if close_side == "buy":
-                quantity = min(
-                    quantity,
+                cash_limited_quantity = (
                     max(0.0, float(available_quote))
-                    / (current_price * (1.0 + resolved_config.estimated_fee_rate)),
+                    / (current_price * (1.0 + resolved_config.estimated_fee_rate))
                 )
+                if cash_limited_quantity + 1e-12 < quantity:
+                    quantity_basis = "available_quote"
+                quantity = min(quantity, cash_limited_quantity)
             elif holding.get("immediately_sellable_quantity") is not None:
                 quantity = min(
                     quantity,
@@ -271,6 +282,7 @@ def plan_spot_strategy_action(
                 "remaining_opening_quote_quantity": economics.get(
                     "remaining_opening_quote_quantity"
                 ),
+                "quantity_basis": quantity_basis,
             }
             cleanup_candidates.append(
                 (

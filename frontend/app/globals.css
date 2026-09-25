@@ -2220,33 +2220,31 @@ button.treasury-summary-card-swings:focus-visible,
 .treasury-bargain-counts {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.42rem;
+  gap: 0.08rem;
 }
 
 .treasury-bargain-counts > span {
-  display: grid;
-  gap: 0.05rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.38rem;
   min-width: 0;
 }
 
 .treasury-bargain-counts small {
-  color: #778499;
-  font-size: 0.62rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  color: #8f9bae;
+  font-size: 0.72rem;
+  letter-spacing: 0.01em;
 }
 
-.treasury-bargain-counts strong {
+.treasury-summary-card .treasury-bargain-counts strong {
+  min-width: 1.8rem;
   margin: 0;
-  font-size: 0.94rem;
+  color: #c8d0dc;
+  font-size: 0.78rem;
+  font-weight: 600;
 }
 
-.treasury-bargain-counts > span:first-child strong {
-  color: #e8bd52;
-}
-
-.treasury-bargain-counts > span:nth-child(2) strong {
+.treasury-summary-card .treasury-bargain-counts strong.treasury-bargain-count-open {
   color: var(--value-positive-surface);
 }
 
@@ -2305,6 +2303,73 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-bargain-ledger-head > span {
   white-space: nowrap;
+}
+
+.treasury-bargain-ledger-controls {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.treasury-bargain-sort {
+  display: flex;
+  align-items: center;
+  gap: 0.38rem;
+  margin-top: 0.62rem;
+  color: #8996aa;
+  font-size: 0.7rem;
+}
+
+.treasury-bargain-sort-options {
+  display: inline-flex;
+  gap: 0.18rem;
+  border: 1px solid rgba(95, 108, 128, 0.28);
+  border-radius: 999px;
+  padding: 0.2rem;
+  background: rgba(8, 12, 18, 0.58);
+}
+
+.treasury-bargain-sort-options button,
+.treasury-bargain-sort-direction {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.28rem 0.62rem;
+  background: transparent;
+  color: #8f9db2;
+  font: inherit;
+  cursor: pointer;
+}
+
+.treasury-bargain-sort-options button:hover,
+.treasury-bargain-sort-options .treasury-bargain-sort-active,
+.treasury-bargain-sort-direction:hover,
+.treasury-bargain-sort-direction:focus-visible {
+  background: rgba(37, 57, 82, 0.78);
+  color: #edf4ff;
+}
+
+.treasury-bargain-sort-direction {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid rgba(95, 108, 128, 0.28);
+  background: rgba(8, 12, 18, 0.58);
+}
+
+.treasury-bargain-sort-arrow {
+  width: 0.38rem;
+  height: 0.38rem;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+}
+
+.treasury-bargain-sort-arrow-desc {
+  transform: rotate(45deg) translate(-0.08rem, -0.08rem);
+}
+
+.treasury-bargain-sort-arrow-asc {
+  transform: rotate(225deg) translate(-0.08rem, -0.08rem);
 }
 
 .treasury-summary-label,
@@ -5573,6 +5638,22 @@ body.logs-page-active .logs-page-panel .log-box {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     width: 100%;
+  }
+
+  .treasury-bargain-ledger-controls {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .treasury-bargain-sort {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .treasury-bargain-sort-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .treasury-swing-metrics {

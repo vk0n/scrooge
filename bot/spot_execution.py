@@ -42,6 +42,10 @@ class SpotOrderRejectedError(RuntimeError):
     pass
 
 
+class SpotOrderValidationError(ValueError):
+    """A deterministic pre-submission rejection; Binance cannot have accepted the order."""
+
+
 def _as_float(value: Any) -> float | None:
     try:
         numeric = float(value)
@@ -607,7 +611,10 @@ class SpotOrderExecutor:
                     expected_statuses={"queueing", "queued", "processing", "validated"},
                     path=self.db_path,
                 )
-                quantity = self._validate_for_submission(intent)
+                try:
+                    quantity = self._validate_for_submission(intent)
+                except ValueError as exc:
+                    raise SpotOrderValidationError(str(exc)) from exc
                 update_spot_order_intent(
                     intent_id,
                     {"status": "validated", "error": None},
@@ -660,6 +667,14 @@ class SpotOrderExecutor:
             raise
         except SpotOrderRejectedError as exc:
             self.logger.warning("spot_order_rejected intent_id=%s error=%s", intent_id, exc)
+            raise
+        except SpotOrderValidationError as exc:
+            self._safe_error_state(
+                intent_id,
+                {"status": "failed", "error": str(exc)[:500]},
+                expected_statuses={"processing", "validated"},
+            )
+            self.logger.info("spot_order_validation_failed intent_id=%s error=%s", intent_id, exc)
             raise
         except Exception as exc:
             if order_may_exist:

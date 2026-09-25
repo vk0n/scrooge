@@ -159,6 +159,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         swings: list[dict],
         *,
         cleanup: WaiterCleanupConfig | None = None,
+        excluded_close_swing_ids: set[str] | None = None,
     ) -> dict | None:
         return plan_spot_strategy_action(
             current_signal,
@@ -172,6 +173,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
             available_quote=100_000,
             config=ProgressiveSwingConfig(close_profit_pct=5, estimated_fee_rate=0),
             cleanup_config=cleanup or WaiterCleanupConfig(),
+            excluded_close_swing_ids=excluded_close_swing_ids,
         )
 
     def test_profitable_close_beats_cleanup(self):
@@ -186,6 +188,56 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         self.assertEqual(decision["action_type"], "close")
         self.assertEqual(decision["swing_id"], "waiter")
         self.assertEqual(decision["reason"]["close_reason"], "age_l3_cleanup")
+
+    def test_unexecutable_profit_candidate_does_not_block_next_bargain(self):
+        swings = [
+            swing_state("dust", origin_side="sell", price=120),
+            swing_state("tradable", origin_side="sell", price=110),
+        ]
+
+        decision = self.decide(
+            signal("buy", 1, 100),
+            swings,
+            excluded_close_swing_ids={"dust"},
+        )
+
+        self.assertEqual(decision["action_type"], "close")
+        self.assertEqual(decision["swing_id"], "tradable")
+        self.assertEqual(decision["reason"]["close_reason"], "profit_target")
+
+    def test_excluded_cleanup_candidate_falls_through_to_next_oldest(self):
+        swings = [
+            swing_state("oldest-dust", age_days=100),
+            swing_state("next-tradable", age_days=90),
+        ]
+
+        decision = self.decide(
+            signal("sell", 1, 80),
+            swings,
+            excluded_close_swing_ids={"oldest-dust"},
+        )
+
+        self.assertEqual(decision["swing_id"], "next-tradable")
+        self.assertEqual(decision["reason"]["close_reason"], "deep_loss_cleanup")
+
+    def test_cash_limited_cleanup_quantity_is_marked_as_temporary(self):
+        decision = plan_spot_strategy_action(
+            signal("buy", 1, 120),
+            {
+                "target_quantity": 1000,
+                "minimum_holding_pct": 80,
+                "immediately_sellable_quantity": 200,
+                "market_price": 120,
+            },
+            {},
+            [swing_state("cash-limited", origin_side="sell", age_days=100)],
+            available_quote=0.1,
+            config=ProgressiveSwingConfig(close_profit_pct=5, estimated_fee_rate=0),
+            cleanup_config=WaiterCleanupConfig(),
+        )
+
+        self.assertEqual(decision["action_type"], "close")
+        self.assertEqual(decision["reason"]["quantity_basis"], "available_quote")
 
     def test_maximum_open_bargains_prevents_eleventh_open(self):
         swings = [swing_state(f"buy-{index}", age_days=1) for index in range(10)]

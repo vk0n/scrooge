@@ -155,11 +155,15 @@ def get_asset_ledger(
 def get_bargain_ledger(
     entry_filter: Literal["all", "open", "closed"] = Query(default="all", alias="filter"),
     entry_offset: int = Query(default=0, ge=0),
+    sort_by: Literal["date", "pnl"] = Query(default="date", alias="sort"),
+    sort_direction: Literal["asc", "desc"] = Query(default="desc", alias="direction"),
 ) -> dict[str, object]:
     try:
         return load_portfolio_bargain_ledger(
             entry_filter=entry_filter,
             entry_offset=entry_offset,
+            sort_by=sort_by,
+            sort_direction=sort_direction,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

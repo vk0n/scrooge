@@ -56,6 +56,8 @@ SPOT_BALANCE_STALE_AFTER_SECONDS = float(os.getenv("SCROOGE_SPOT_BALANCE_STALE_A
 SPOT_ORDER_PREVIEW_TTL_SECONDS = float(os.getenv("SCROOGE_SPOT_ORDER_PREVIEW_TTL_SECONDS", "60") or "60")
 ASSET_LEDGER_PAGE_SIZE = 5
 ASSET_LEDGER_FILTERS = {"all", "open", "closed"}
+BARGAIN_LEDGER_SORTS = {"date", "pnl"}
+BARGAIN_LEDGER_DIRECTIONS = {"asc", "desc"}
 PRICE_ENDPOINTS = [
     endpoint.strip()
     for endpoint in (
@@ -954,11 +956,19 @@ def load_portfolio_bargain_ledger(
     *,
     entry_filter: str = "all",
     entry_offset: int = 0,
+    sort_by: str = "date",
+    sort_direction: str = "desc",
 ) -> dict[str, Any]:
     normalized_filter = str(entry_filter or "all").strip().lower()
     normalized_offset = max(0, int(entry_offset))
+    normalized_sort = str(sort_by or "date").strip().lower()
+    normalized_direction = str(sort_direction or "desc").strip().lower()
     if normalized_filter not in ASSET_LEDGER_FILTERS:
-        raise ValueError("Bargain Ledger filter must be all, open, or closed.")
+        raise ValueError("Bargains Ledger filter must be all, open, or closed.")
+    if normalized_sort not in BARGAIN_LEDGER_SORTS:
+        raise ValueError("Bargains Ledger sort must be date or pnl.")
+    if normalized_direction not in BARGAIN_LEDGER_DIRECTIONS:
+        raise ValueError("Bargains Ledger direction must be asc or desc.")
 
     entries: list[dict[str, Any]] = []
     open_count = 0
@@ -1008,13 +1018,24 @@ def load_portfolio_bargain_ledger(
             }
         )
 
-    entries.sort(
-        key=lambda item: (int(item["occurred_at_ms"]), str(item["entry_id"])),
-        reverse=True,
-    )
+    def sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
+        if normalized_sort == "pnl":
+            economics = item["swing"]["economics"]
+            pnl = (
+                economics["realized_pnl_quote"]
+                if economics["status"] == "closed"
+                else economics["unrealized_pnl_quote"]
+            )
+            return float(pnl or 0.0), int(item["occurred_at_ms"]), str(item["entry_id"])
+        occurred_at_ms = int(item["occurred_at_ms"])
+        return float(occurred_at_ms), occurred_at_ms, str(item["entry_id"])
+
+    entries.sort(key=sort_key, reverse=normalized_direction == "desc")
     paged_entries = entries[normalized_offset:normalized_offset + ASSET_LEDGER_PAGE_SIZE]
     return {
         "filter": normalized_filter,
+        "sort": normalized_sort,
+        "direction": normalized_direction,
         "entries": paged_entries,
         "entry_count": len(entries),
         "entry_limit": ASSET_LEDGER_PAGE_SIZE,

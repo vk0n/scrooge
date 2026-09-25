@@ -87,7 +87,9 @@ def plan_profitable_close(
 
     closing_side = "buy" if origin_side == "sell" else "sell"
     quantity = remaining_quantity
+    quantity_basis = "remaining_asset"
     if origin_side == "sell" and objective == "accumulate_asset":
+        quantity_basis = "reusable_quote"
         opening_quote = float(economics.get("opening_quote_quantity") or 0.0)
         closing_quote = float(economics.get("closing_quote_quantity") or 0.0)
         opening_quote_fee = float((economics.get("fees_by_asset") or {}).get(swing.get("quote_symbol"), 0.0))
@@ -114,4 +116,5 @@ def plan_profitable_close(
         "close_profit_pct": resolved.close_profit_pct,
         "opening_price": opening_price,
         "current_price": market_price,
+        "quantity_basis": quantity_basis,
     }

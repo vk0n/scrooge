@@ -106,6 +106,7 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         self.assertTrue(plan["eligible"])
         self.assertEqual(plan["side"], "buy")
         self.assertAlmostEqual(plan["quantity"], 500 / 4.5)
+        self.assertEqual(plan["quantity_basis"], "reusable_quote")
 
     def test_partial_accumulate_asset_close_reuses_only_unspent_quote(self):
         swing = {
@@ -149,6 +150,20 @@ class RecordingProgressiveExecutor(ProgressiveSpotSwingExecutor):
                 path=self.db_path,
             )
         return updated
+
+
+class BlockingFirstProgressiveExecutor(RecordingProgressiveExecutor):
+    def _execute_action(self, action):
+        if action["swing_id"] == "swing-dust":
+            return update_spot_strategy_action(
+                action["action_key"],
+                {
+                    "status": "blocked",
+                    "error": "Spot order quantity rounds to zero under the Binance step size.",
+                },
+                path=self.db_path,
+            ) or action
+        return super()._execute_action(action)
 
 
 class ProgressiveSwingPersistenceTests(unittest.TestCase):
@@ -302,6 +317,99 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
 
         self.assertEqual(action["swing_id"], "swing-near-6")
         self.assertEqual(action["side"], "buy")
+
+    def test_live_signal_batch_prioritizes_close_before_other_asset_opening(self):
+        executor = ProgressiveSpotSwingExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+        create_spot_swing(
+            {
+                "swing_id": "swing-near-close",
+                "account_key": "manual_spot",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "open-near-close",
+                "swing_id": "swing-near-close",
+                "symbol": "NEARUSDT",
+                "side": "sell",
+                "quantity": 10,
+                "price": 10,
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        portfolio = {
+            "holdings": [
+                {"asset_symbol": "XRP", "quote_symbol": "USDT", "market_price": 1},
+                {"asset_symbol": "NEAR", "quote_symbol": "USDT", "market_price": 5},
+            ],
+            "exchange": {"usdt_free": 1000},
+            "summary": {"vault_reserve": 1000},
+        }
+        signals = [
+            {"asset_symbol": "XRP", "quote_symbol": "USDT", "opportunity": "buy", "current_price": 1},
+            {"asset_symbol": "NEAR", "quote_symbol": "USDT", "opportunity": "hold", "current_price": 5},
+        ]
+
+        with patch("bot.spot_strategy.load_portfolio_snapshot", return_value=(portfolio, [])):
+            ordered = executor.order_signals_for_execution(signals)
+
+        self.assertEqual([item["asset_symbol"] for item in ordered], ["NEAR", "XRP"])
+
+    def test_blocked_dust_close_falls_through_to_next_profitable_swing(self):
+        executor = BlockingFirstProgressiveExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+        for swing_id, price, quantity in (
+            ("swing-dust", 10, 0.001),
+            ("swing-tradable", 8, 10),
+        ):
+            create_spot_swing(
+                {
+                    "swing_id": swing_id,
+                    "account_key": "manual_spot",
+                    "asset_symbol": "NEAR",
+                    "quote_symbol": "USDT",
+                    "origin_side": "sell",
+                    "trading_objective": "accumulate_cash",
+                    "source": "strategy",
+                },
+                path=self.db_path,
+            )
+            append_spot_swing_execution(
+                {
+                    "execution_id": f"open-{swing_id}",
+                    "swing_id": swing_id,
+                    "symbol": "NEARUSDT",
+                    "side": "sell",
+                    "quantity": quantity,
+                    "price": price,
+                    "source": "strategy",
+                },
+                path=self.db_path,
+            )
+
+        with patch("bot.spot_strategy.load_portfolio_snapshot", side_effect=self.portfolio):
+            result = executor.handle_signal(self.signal(1, 10))
+
+        actions = list_spot_strategy_actions(path=self.db_path)
+        self.assertEqual(result["swing_id"], "swing-tradable")
+        self.assertEqual(
+            {action["swing_id"]: action["status"] for action in actions},
+            {"swing-dust": "blocked", "swing-tradable": "completed"},
+        )
 
 
 if __name__ == "__main__":

@@ -154,6 +154,138 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             plan_spot_strategy_action,
         )
 
+    def test_untradeable_dust_does_not_starve_other_backtest_closes(self):
+        config = scenario((asset("AAA"),))
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 90))
+        replay.dataset.symbol_info["AAA"] = {
+            "filters": [
+                {
+                    "filterType": "MARKET_LOT_SIZE",
+                    "minQty": "0.01",
+                    "maxQty": "100000000",
+                    "stepSize": "0.01",
+                },
+                {"filterType": "MIN_NOTIONAL", "minNotional": "0.01"},
+            ]
+        }
+        opened_at_ms = int(config.start.timestamp() * 1000)
+        for swing_id, opening_price, quantity in (
+            ("dust", 120, 0.001),
+            ("tradable", 110, 10),
+        ):
+            replay.swings[swing_id] = {
+                "swing_id": swing_id,
+                "asset_symbol": "AAA",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "status": "open",
+                "source": "strategy",
+                "opened_at_ms": opened_at_ms,
+                "executions": [
+                    {
+                        "execution_id": f"open-{swing_id}",
+                        "side": "sell",
+                        "quantity": quantity,
+                        "price": opening_price,
+                        "quote_quantity": quantity * opening_price,
+                        "fee_amount": 0,
+                        "fee_asset": "USDT",
+                    }
+                ],
+            }
+
+        decision = replay._plan_executable_action(
+            "AAA",
+            signal={
+                "opportunity": "hold",
+                "level": 0,
+                "strategy_eligible": True,
+                "current_price": 90,
+                "current_at_ms": opened_at_ms,
+                "evaluated_at_ms": opened_at_ms,
+            },
+            campaign={},
+            observed_price=90,
+            available_quote=1000,
+            timestamp_ms=opened_at_ms,
+        )
+
+        self.assertEqual(decision["swing_id"], "tradable")
+        self.assertEqual(replay.permanently_blocked_close_swings, {"dust"})
+        self.assertEqual(len(replay.rejections), 1)
+
+    def test_cash_limited_asset_accumulation_close_is_rechecked_later(self):
+        config = scenario((asset("AAA", objective="accumulate_asset"),))
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 90))
+        replay.dataset.symbol_info["AAA"] = {
+            "filters": [
+                {
+                    "filterType": "MARKET_LOT_SIZE",
+                    "minQty": "0.01",
+                    "maxQty": "100000000",
+                    "stepSize": "0.01",
+                },
+                {"filterType": "MIN_NOTIONAL", "minNotional": "0.01"},
+            ]
+        }
+        error, permanent = replay._close_preflight_error(
+            "AAA",
+            {
+                "action_type": "close",
+                "side": "buy",
+                "swing_id": "cash-limited",
+                "requested_quantity": 0.001,
+                "reason": {"quantity_basis": "reusable_quote"},
+            },
+            observed_price=90,
+            available_quote=0.09,
+        )
+
+        self.assertIn("rounds to zero", error)
+        self.assertFalse(permanent)
+
+    def test_execution_time_cash_shortage_does_not_permanently_block_close(self):
+        config = scenario((asset("AAA"),), starting_usdt=0)
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 90))
+        replay._execute_action(
+            "AAA",
+            {
+                "action_type": "close",
+                "side": "buy",
+                "swing_id": "retry-when-cash-returns",
+                "requested_quantity": 10,
+                "reason": {"quantity_basis": "remaining_asset"},
+            },
+            observed_price=90,
+            timestamp_ms=int(config.start.timestamp() * 1000),
+        )
+
+        self.assertNotIn("retry-when-cash-returns", replay.permanently_blocked_close_swings)
+        self.assertEqual(replay.rejections[0]["swing_id"], "retry-when-cash-returns")
+
+    def test_pending_closes_execute_before_new_openings_across_assets(self):
+        config = scenario((asset("EARLY"), asset("LATE")))
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 90))
+        replay.pending = {
+            "EARLY": {"action_type": "open", "side": "buy", "requested_quantity": 1},
+            "LATE": {"action_type": "close", "side": "buy", "requested_quantity": 1},
+        }
+        candles = {
+            symbol: next(row for row in replay.dataset.candles[symbol] if row.open_time_ms == replay.start_ms)
+            for symbol in ("EARLY", "LATE")
+        }
+        order: list[tuple[str, str]] = []
+
+        with patch.object(
+            replay,
+            "_execute_action",
+            side_effect=lambda symbol, action, _price, _timestamp: order.append((symbol, action["action_type"])),
+        ):
+            replay._execute_pending(candles)
+
+        self.assertEqual(order, [("LATE", "close"), ("EARLY", "open")])
+
     def test_report_title_uses_replay_period_instead_of_market_migration_details(self):
         legacy_name = "treasury-10-assets-real-quantities-6m-ton-to-gram"
 

@@ -156,6 +156,8 @@ class SpotPortfolioBacktester:
         self.rejections: list[dict[str, Any]] = []
         self.pending: dict[str, dict[str, Any]] = {}
         self.ratcheted_swings: set[str] = set()
+        self.permanently_blocked_close_swings: set[str] = set()
+        self.close_preflight_reasons: dict[str, str] = {}
         self.execution_counter = 0
         self.start_ms = int(scenario.start.timestamp() * 1000)
         self.end_ms = int(scenario.end.timestamp() * 1000)
@@ -261,25 +263,32 @@ class SpotPortfolioBacktester:
     def _execute_pending(self, candles: dict[str, SpotCandle]) -> None:
         pending = self.pending
         self.pending = {}
-        for symbol in self.scenario.asset_order:
-            action = pending.get(symbol)
-            if action is not None:
-                if not self._is_market_available(symbol, candles[symbol].open_time_ms):
-                    self.rejections.append(
-                        {
-                            "timestamp_ms": candles[symbol].open_time_ms,
-                            "timestamp": self._timestamp(candles[symbol].open_time_ms),
-                            "asset_symbol": symbol,
-                            "side": action["side"],
-                            "action_type": action["action_type"],
-                            "requested_quantity": action["requested_quantity"],
-                            "reason": "Historical market unavailable during the declared symbol migration.",
-                        }
-                    )
-                    continue
-                self._execute_action(symbol, action, candles[symbol].open, candles[symbol].open_time_ms)
+        ordered = sorted(
+            pending.items(),
+            key=lambda item: (
+                0 if item[1]["action_type"] == "close" else 1,
+                0 if item[1]["side"] == "sell" else 1,
+            ),
+        )
+        for symbol, action in ordered:
+            if not self._is_market_available(symbol, candles[symbol].open_time_ms):
+                self.rejections.append(
+                    {
+                        "timestamp_ms": candles[symbol].open_time_ms,
+                        "timestamp": self._timestamp(candles[symbol].open_time_ms),
+                        "asset_symbol": symbol,
+                        "side": action["side"],
+                        "action_type": action["action_type"],
+                        "swing_id": action.get("swing_id"),
+                        "requested_quantity": action["requested_quantity"],
+                        "reason": "Historical market unavailable during the declared symbol migration.",
+                    }
+                )
+                continue
+            self._execute_action(symbol, action, candles[symbol].open, candles[symbol].open_time_ms)
 
     def _evaluate_cycle(self, candles: dict[str, SpotCandle], *, reserved_quote: float) -> None:
+        contexts: list[tuple[str, SpotCandle, dict[str, Any], dict[str, Any]]] = []
         for symbol in self.scenario.asset_order:
             candle = candles[symbol]
             if not self._is_market_available(symbol, candle.open_time_ms):
@@ -314,15 +323,63 @@ class SpotPortfolioBacktester:
                 new_campaign_id=campaign_id,
             )
             self.campaigns[symbol] = campaign
-            state = self.assets[symbol]
-            decision = plan_spot_strategy_action(
-                signal,
-                state.holding(candle.close),
-                campaign,
-                self._active_swing_states(symbol),
+            contexts.append((symbol, candle, signal, campaign))
+
+        # Closing existing obligations always gets the shared reserve before new openings.
+        closing_decisions: list[tuple[str, SpotCandle, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+        close_symbols: set[str] = set()
+        total_available_quote = max(0.0, self.usdt - reserved_quote)
+        for symbol, candle, signal, campaign in contexts:
+            decision = self._plan_executable_action(
+                symbol,
+                signal=signal,
+                campaign=campaign,
+                observed_price=candle.close,
+                available_quote=total_available_quote,
+                timestamp_ms=candle.close_time_ms,
+            )
+            if decision is None or decision["action_type"] != "close":
+                continue
+            close_symbols.add(symbol)
+            closing_decisions.append((symbol, candle, signal, campaign, decision))
+
+        closing_decisions.sort(key=self._portfolio_close_priority)
+        for symbol, candle, signal, campaign, decision in closing_decisions:
+            available_quote = max(0.0, self.usdt - reserved_quote)
+            error, permanent = self._close_preflight_error(
+                symbol,
+                decision,
+                observed_price=candle.close,
+                available_quote=available_quote,
+            )
+            if error is not None:
+                self._remember_close_preflight_rejection(
+                    symbol,
+                    decision,
+                    error=error,
+                    permanent=permanent,
+                    timestamp_ms=candle.close_time_ms,
+                )
+                continue
+            self._schedule_pending(symbol, candle, signal, campaign, decision)
+            if decision["side"] == "buy":
+                requested_quote = (
+                    float(decision["requested_quantity"])
+                    * candle.close
+                    * (1.0 + self.scenario.execution.fee_rate)
+                )
+                reserved_quote += min(available_quote, requested_quote)
+
+        for symbol, candle, signal, campaign in contexts:
+            if symbol in close_symbols:
+                continue
+            decision = self._plan_executable_action(
+                symbol,
+                signal=signal,
+                campaign=campaign,
+                observed_price=candle.close,
                 available_quote=max(0.0, self.usdt - reserved_quote),
-                config=self.scenario.progression,
-                cleanup_config=self.scenario.waiter_cleanup,
+                timestamp_ms=candle.close_time_ms,
             )
             if decision is None:
                 continue
@@ -348,22 +405,171 @@ class SpotPortfolioBacktester:
                     }
                 )
                 continue
-            pending = {
-                **decision,
-                "signal": signal,
-                "campaign_id": campaign.get("campaign_id"),
-                "decided_at_ms": candle.close_time_ms,
-                "reference_price": signal.get("reference_price"),
-            }
-            if decision["action_type"] == "open":
-                pending["swing_id"] = self._opening_swing_id(symbol, campaign, int(signal["level"]))
-            self.pending[symbol] = pending
+            self._schedule_pending(symbol, candle, signal, campaign, decision)
             if decision["side"] == "buy":
                 reserved_quote += (
                     float(decision["requested_quantity"])
                     * candle.close
                     * (1.0 + self.scenario.execution.fee_rate)
                 )
+
+    def _portfolio_close_priority(
+        self,
+        item: tuple[str, SpotCandle, dict[str, Any], dict[str, Any], dict[str, Any]],
+    ) -> tuple[int, float, int, str]:
+        symbol, _candle, _signal, _campaign, decision = item
+        reason = decision.get("reason") if isinstance(decision.get("reason"), dict) else {}
+        profit_target = reason.get("close_reason") == "profit_target"
+        favorable_move = float(reason.get("favorable_move_pct") or 0.0)
+        swing = self.swings.get(str(decision.get("swing_id") or "")) or {}
+        return (0 if profit_target else 1, -favorable_move, int(swing.get("opened_at_ms") or 0), symbol)
+
+    def _schedule_pending(
+        self,
+        symbol: str,
+        candle: SpotCandle,
+        signal: dict[str, Any],
+        campaign: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> None:
+        pending = {
+            **decision,
+            "signal": signal,
+            "campaign_id": campaign.get("campaign_id"),
+            "decided_at_ms": candle.close_time_ms,
+            "reference_price": signal.get("reference_price"),
+        }
+        if decision["action_type"] == "open":
+            pending["swing_id"] = self._opening_swing_id(symbol, campaign, int(signal["level"]))
+        self.pending[symbol] = pending
+
+    def _plan_executable_action(
+        self,
+        symbol: str,
+        *,
+        signal: dict[str, Any],
+        campaign: dict[str, Any],
+        observed_price: float,
+        available_quote: float,
+        timestamp_ms: int,
+    ) -> dict[str, Any] | None:
+        excluded = set(self.permanently_blocked_close_swings)
+        while True:
+            decision = plan_spot_strategy_action(
+                signal,
+                self.assets[symbol].holding(observed_price),
+                campaign,
+                self._active_swing_states(symbol),
+                available_quote=available_quote,
+                config=self.scenario.progression,
+                cleanup_config=self.scenario.waiter_cleanup,
+                excluded_close_swing_ids=excluded,
+            )
+            if decision is None or decision["action_type"] != "close":
+                return decision
+            error, permanent = self._close_preflight_error(
+                symbol,
+                decision,
+                observed_price=observed_price,
+                available_quote=available_quote,
+            )
+            swing_id = str(decision["swing_id"])
+            if error is None:
+                self.close_preflight_reasons.pop(swing_id, None)
+                return decision
+            excluded.add(swing_id)
+            self._remember_close_preflight_rejection(
+                symbol,
+                decision,
+                error=error,
+                permanent=permanent,
+                timestamp_ms=timestamp_ms,
+            )
+
+    def _remember_close_preflight_rejection(
+        self,
+        symbol: str,
+        decision: dict[str, Any],
+        *,
+        error: str,
+        permanent: bool,
+        timestamp_ms: int,
+    ) -> None:
+        swing_id = str(decision["swing_id"])
+        if permanent:
+            self.permanently_blocked_close_swings.add(swing_id)
+        if self.close_preflight_reasons.get(swing_id) == error:
+            return
+        self.close_preflight_reasons[swing_id] = error
+        self.rejections.append(
+            {
+                "timestamp_ms": timestamp_ms,
+                "timestamp": self._timestamp(timestamp_ms),
+                "asset_symbol": symbol,
+                "side": decision["side"],
+                "action_type": decision["action_type"],
+                "swing_id": decision.get("swing_id"),
+                "requested_quantity": decision["requested_quantity"],
+                "reason": error,
+            }
+        )
+
+    def _close_preflight_error(
+        self,
+        symbol: str,
+        decision: dict[str, Any],
+        *,
+        observed_price: float,
+        available_quote: float,
+    ) -> tuple[str | None, bool]:
+        side = str(decision["side"])
+        slippage = self.scenario.execution.slippage_bps / 10_000.0
+        price = observed_price * (1.0 + slippage if side == "buy" else 1.0 - slippage)
+        requested = float(decision["requested_quantity"])
+        try:
+            requested_quantity, _ = normalize_market_quantity(
+                self.dataset.symbol_info[symbol],
+                requested,
+            )
+            validate_market_notional(
+                self.dataset.symbol_info[symbol],
+                quantity=requested_quantity,
+                price=price,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            permanent = (
+                decision.get("reason", {}).get("quantity_basis", "remaining_asset") == "remaining_asset"
+                and (
+                    "rounds to zero" in message
+                    or "Quantity is below Binance minimum" in message
+                )
+            )
+            return message, permanent
+
+        constrained = requested
+        if side == "buy":
+            constrained = min(
+                constrained,
+                available_quote / (price * (1.0 + self.scenario.execution.fee_rate))
+                if price > 0
+                else 0.0,
+            )
+        else:
+            constrained = min(constrained, self.assets[symbol].immediately_sellable)
+        try:
+            constrained_quantity, _ = normalize_market_quantity(
+                self.dataset.symbol_info[symbol],
+                constrained,
+            )
+            validate_market_notional(
+                self.dataset.symbol_info[symbol],
+                quantity=constrained_quantity,
+                price=price,
+            )
+        except ValueError as exc:
+            return str(exc), False
+        return None, False
 
     def _is_market_available(self, symbol: str, open_time_ms: int) -> bool:
         return open_time_ms not in self.dataset.unavailable_open_times.get(symbol, frozenset())
@@ -438,6 +644,10 @@ class SpotPortfolioBacktester:
                 price=price,
             )
         except ValueError as exc:
+            if action["action_type"] == "close":
+                message = str(exc)
+                swing_id = str(action["swing_id"])
+                self.close_preflight_reasons[swing_id] = message
             self.rejections.append(
                 {
                     "timestamp_ms": timestamp_ms,
@@ -445,6 +655,7 @@ class SpotPortfolioBacktester:
                     "asset_symbol": symbol,
                     "side": side,
                     "action_type": action["action_type"],
+                    "swing_id": action.get("swing_id"),
                     "requested_quantity": requested,
                     "reason": str(exc),
                 }

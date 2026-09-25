@@ -778,6 +778,7 @@ if __name__ == "__main__":
                     logger=technical_logger,
                     db_path=db_path,
                     snapshot_handler=spot_swing_strategy.handle_signal,
+                    snapshot_orderer=spot_swing_strategy.order_signals_for_execution,
                 )
                 spot_signal_monitor.start()
             else:

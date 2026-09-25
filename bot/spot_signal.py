@@ -195,6 +195,7 @@ class RollingSpotSignalMonitor:
         indicator_interval: str | None = None,
         account_key: str = DEFAULT_ACCOUNT_KEY,
         snapshot_handler: Callable[[dict[str, Any]], Any] | None = None,
+        snapshot_orderer: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
     ) -> None:
         self.client = client
         self.interval_seconds = max(30.0, float(interval_seconds))
@@ -208,6 +209,7 @@ class RollingSpotSignalMonitor:
             raise ValueError(f"Unsupported Spot indicator interval: {self.indicator_interval}")
         self.account_key = str(account_key or DEFAULT_ACCOUNT_KEY).strip() or DEFAULT_ACCOUNT_KEY
         self.snapshot_handler = snapshot_handler
+        self.snapshot_orderer = snapshot_orderer
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_states: dict[tuple[str, str], tuple[object, ...]] = {}
@@ -244,6 +246,22 @@ class RollingSpotSignalMonitor:
             result = self._evaluate_policy(policy)
             if result is not None:
                 results.append(result)
+        if self.snapshot_handler is not None:
+            ordered = results
+            if self.snapshot_orderer is not None:
+                try:
+                    ordered = self.snapshot_orderer(results)
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.exception("spot_strategy_snapshot_ordering_failed error=%s", exc)
+            for saved in ordered:
+                try:
+                    self.snapshot_handler(saved)
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.exception(
+                        "spot_strategy_snapshot_handler_failed symbol=%s error=%s",
+                        saved.get("market_symbol"),
+                        exc,
+                    )
         return results
 
     def _evaluate_policy(self, policy: dict[str, Any]) -> dict[str, Any] | None:
@@ -348,15 +366,6 @@ class RollingSpotSignalMonitor:
                 saved["eligibility_reason"],
             )
         self._last_states[key] = state
-        if self.snapshot_handler is not None:
-            try:
-                self.snapshot_handler(saved)
-            except Exception as exc:  # noqa: BLE001
-                self.logger.exception(
-                    "spot_strategy_snapshot_handler_failed symbol=%s error=%s",
-                    market_symbol,
-                    exc,
-                )
         return saved
 
     def _run(self) -> None:

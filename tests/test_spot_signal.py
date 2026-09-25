@@ -299,6 +299,31 @@ class RollingSpotSignalMonitorTests(unittest.TestCase):
         self.assertTrue(xrp["strategy_eligible"])
         self.assertEqual(xrp["eligibility_reason"], "eligible")
 
+    def test_monitor_orders_complete_signal_batch_before_execution(self):
+        self.policy("NEAR", objective="accumulate_cash")
+        self.policy("XRP", objective="accumulate_cash")
+        client = FakeTickerClient(
+            {
+                "NEARUSDT": rolling_ticker(4, 4.4),
+                "XRPUSDT": rolling_ticker(1, 0.9),
+            }
+        )
+        handled: list[str] = []
+        monitor = RollingSpotSignalMonitor(
+            client,
+            interval_seconds=300,
+            execution_enabled=True,
+            logger=logging.getLogger("test.spot-signal"),
+            db_path=self.db_path,
+            snapshot_handler=lambda signal: handled.append(signal["asset_symbol"]),
+            snapshot_orderer=lambda signals: list(reversed(signals)),
+        )
+
+        results = monitor.refresh_once()
+
+        self.assertEqual([item["asset_symbol"] for item in results], ["NEAR", "XRP"])
+        self.assertEqual(handled, ["XRP", "NEAR"])
+
     def test_fully_protected_policy_is_not_strategy_eligible(self):
         self.policy("NEAR", objective="accumulate_asset", minimum=100)
         client = FakeTickerClient({"NEARUSDT": rolling_ticker(4, 4.8)})
