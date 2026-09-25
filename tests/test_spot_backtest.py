@@ -543,19 +543,18 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(actual["level"], expected["level"])
         self.assertEqual(actual["base_tranche_pct"], expected["base_tranche_pct"])
 
-    def test_shared_usdt_contention_is_deterministic_by_asset_order(self):
+    def test_buy_signal_does_not_open_buy_origin_bargains(self):
         config = scenario(
             (asset("BBB", quantity=10, target=10), asset("AAA", quantity=10, target=10)),
             hours=6,
             starting_usdt=100,
         )
         result = self.run_scenario(config, lambda _symbol, index: 90 if index >= 0 else 100)
-        buys = [item for item in result.actions if item["side"] == "buy"]
 
         self.assertEqual(config.asset_order, ("AAA", "BBB"))
-        self.assertEqual([item["asset_symbol"] for item in buys[:2]], ["AAA", "BBB"])
-        self.assertLess(buys[1]["executed_quantity"], buys[0]["executed_quantity"])
-        self.assertGreaterEqual(result.final_usdt, -1e-8)
+        self.assertEqual(result.actions, [])
+        self.assertEqual(result.swings, [])
+        self.assertEqual(result.final_usdt, 100)
 
     def test_cold_storage_and_full_floor_cannot_be_sold(self):
         config = scenario(
@@ -609,7 +608,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
 
         falling = self.run_scenario(
             scenario((asset("BBB"),), hours=6),
-            lambda _symbol, index: 90 if index >= 0 else 100,
+            lambda _symbol, index: 111 if index >= 0 else 100,
         )
         self.assertEqual(falling.swings[0]["status"], "open")
 
@@ -687,10 +686,10 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             fee_rate=0.001,
             slippage_bps=100,
         )
-        result = self.run_scenario(config, lambda _symbol, index: 89 if index >= 0 else 100)
+        result = self.run_scenario(config, lambda _symbol, index: 111 if index >= 0 else 100)
 
         execution = result.executions[0]
-        self.assertAlmostEqual(execution["price"], 89.89)
+        self.assertAlmostEqual(execution["price"], 109.89)
         self.assertAlmostEqual(execution["fee_amount"], execution["quote_quantity"] * 0.001)
         with tempfile.TemporaryDirectory() as tmp:
             artifacts = write_spot_backtest_artifacts(result, tmp)
@@ -787,6 +786,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(len(template.assets), 10)
         self.assertTrue(all(item.quantity == 0 for item in template.assets))
         self.assertTrue(template.waiter_cleanup.enabled)
+        self.assertFalse(template.progression.buy_origin_enabled)
 
         snapshot = {
             "holdings": [
@@ -832,6 +832,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(exported.assets[0].symbol, "NEAR")
         self.assertEqual(exported.assets[0].binance_quantity, 750)
         self.assertEqual(exported.assets[0].cold_storage_quantity, 250)
+        self.assertFalse(exported.progression.buy_origin_enabled)
         self.assertEqual(exported.metadata["export_warnings"][0], "review me")
         self.assertIn("Excluded USDC", exported.metadata["export_warnings"][1])
 

@@ -44,6 +44,7 @@ spot_backtest:
     progression:
       close_profit_pct: 5
       estimated_fee_rate: 0.001
+      buy_origin_enabled: false
     waiter_cleanup:
       enabled: true
       max_open_bargains_per_asset: 10

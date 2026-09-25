@@ -56,7 +56,7 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         self.assertEqual(plan["strategic_capacity"], 1000)
         self.assertEqual(plan["quantity"], 250)
 
-    def test_accumulate_asset_does_not_open_buy_origin_in_v1(self):
+    def test_buy_origin_is_disabled_for_every_objective(self):
         plan = plan_opening_quantity(
             {
                 "opportunity": "buy",
@@ -67,9 +67,9 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         )
 
         self.assertFalse(plan["eligible"])
-        self.assertEqual(plan["reason"], "accumulate_asset_sell_origin_only_v1")
+        self.assertEqual(plan["reason"], "buy_origin_disabled")
 
-    def test_accumulate_cash_buy_origin_is_capped_by_available_vault_reserve(self):
+    def test_accumulate_cash_buy_signal_does_not_open_bargain(self):
         decision = plan_spot_strategy_action(
             {
                 "opportunity": "buy",
@@ -86,8 +86,36 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
             available_opening_quote=40,
         )
 
-        self.assertEqual(decision["side"], "buy")
-        self.assertEqual(decision["requested_quantity"], 2)
+        self.assertIsNone(decision)
+
+    def test_buy_origin_can_be_enabled_for_research_replay(self):
+        plan = plan_opening_quantity(
+            {
+                "opportunity": "buy",
+                "trading_objective": "accumulate_cash",
+                "final_tranche_pct": 25,
+            },
+            {"target_quantity": 1000, "minimum_holding_pct": 80},
+            config=ProgressiveSwingConfig(buy_origin_enabled=True),
+        )
+
+        self.assertTrue(plan["eligible"])
+        self.assertEqual(plan["strategic_capacity"], 1000)
+        self.assertEqual(plan["quantity"], 250)
+
+    def test_research_buy_origin_does_not_change_accumulate_asset_semantics(self):
+        plan = plan_opening_quantity(
+            {
+                "opportunity": "buy",
+                "trading_objective": "accumulate_asset",
+                "final_tranche_pct": 25,
+            },
+            {"target_quantity": 1000, "minimum_holding_pct": 80},
+            config=ProgressiveSwingConfig(buy_origin_enabled=True),
+        )
+
+        self.assertFalse(plan["eligible"])
+        self.assertEqual(plan["reason"], "accumulate_asset_sell_origin_only_v1")
 
     def test_close_uses_swing_basis_and_can_reacquire_more_asset(self):
         swing = {
@@ -232,7 +260,7 @@ class SpotStrategyCampaignTests(unittest.TestCase):
         self.assertNotEqual(buy["campaign_id"], sell["campaign_id"])
         self.assertEqual(buy["active_side"], "buy")
         self.assertEqual(buy["highest_completed_level"], 0)
-        self.assertEqual(self.opening(buy, "buy", 1)["action_type"], "open")
+        self.assertIsNone(self.opening(buy, "buy", 1))
 
     def test_sell_l1_is_available_after_buy_campaign_resets_sell(self):
         sell = self.complete(self.transition(None, "sell", 3, 1), 3)

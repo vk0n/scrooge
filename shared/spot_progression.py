@@ -9,6 +9,7 @@ from typing import Any
 class ProgressiveSwingConfig:
     close_profit_pct: float = 5.0
     estimated_fee_rate: float = 0.001
+    buy_origin_enabled: bool = False
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.close_profit_pct) or self.close_profit_pct <= 0:
@@ -17,8 +18,14 @@ class ProgressiveSwingConfig:
             raise ValueError("Spot estimated fee rate must be in the range [0, 1).")
 
 
-def plan_opening_quantity(signal: dict[str, Any], holding: dict[str, Any]) -> dict[str, Any]:
+def plan_opening_quantity(
+    signal: dict[str, Any],
+    holding: dict[str, Any],
+    *,
+    config: ProgressiveSwingConfig | None = None,
+) -> dict[str, Any]:
     """Convert a sized opportunity into an economic quantity before exchange filters."""
+    resolved = config or ProgressiveSwingConfig()
     side = str(signal.get("opportunity") or "").strip().lower()
     objective = str(signal.get("trading_objective") or "").strip().lower()
     tranche_pct = float(signal.get("final_tranche_pct") or 0.0)
@@ -27,12 +34,19 @@ def plan_opening_quantity(signal: dict[str, Any], holding: dict[str, Any]) -> di
     minimum_holding_pct = 100.0 if minimum_holding_raw is None else float(minimum_holding_raw)
     if side not in {"buy", "sell"} or tranche_pct <= 0 or target_quantity <= 0:
         return {"eligible": False, "reason": "no_opening_opportunity", "quantity": 0.0}
-    if objective == "accumulate_asset" and side == "buy":
-        return {
-            "eligible": False,
-            "reason": "accumulate_asset_sell_origin_only_v1",
-            "quantity": 0.0,
-        }
+    if side == "buy":
+        if not resolved.buy_origin_enabled:
+            return {
+                "eligible": False,
+                "reason": "buy_origin_disabled",
+                "quantity": 0.0,
+            }
+        if objective == "accumulate_asset":
+            return {
+                "eligible": False,
+                "reason": "accumulate_asset_sell_origin_only_v1",
+                "quantity": 0.0,
+            }
 
     fraction = min(100.0, tranche_pct) / 100.0
     if side == "sell":

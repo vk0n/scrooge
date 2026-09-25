@@ -173,7 +173,7 @@ def plan_spot_strategy_action(
         and campaign.get("active_side") == opportunity
         and level > int(campaign.get("highest_completed_level") or 0)
     ):
-        opening = plan_opening_quantity(signal, holding)
+        opening = plan_opening_quantity(signal, holding, config=resolved_config)
         if opening.get("eligible"):
             quantity = float(opening["quantity"])
             if opportunity == "sell":

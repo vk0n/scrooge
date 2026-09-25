@@ -240,17 +240,20 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         self.assertEqual(decision["reason"]["quantity_basis"], "available_quote")
 
     def test_maximum_open_bargains_prevents_eleventh_open(self):
-        swings = [swing_state(f"buy-{index}", age_days=1) for index in range(10)]
-        decision = self.decide(signal("buy", 1, 80), swings)
+        swings = [
+            swing_state(f"sell-{index}", origin_side="sell", age_days=1)
+            for index in range(10)
+        ]
+        decision = self.decide(signal("sell", 1, 120), swings)
 
         self.assertEqual(decision["action_type"], "hold")
         self.assertEqual(decision["reason"]["hold_reason"], "max_open_bargains_per_asset")
 
-    def test_full_capacity_wrong_direction_holds(self):
+    def test_disabled_buy_origin_does_not_create_capacity_hold(self):
         swings = [swing_state(f"buy-{index}", age_days=31) for index in range(10)]
         decision = self.decide(signal("buy", 1, 80), swings)
 
-        self.assertEqual(decision["action_type"], "hold")
+        self.assertIsNone(decision)
 
     def test_capacity_cleanup_chooses_oldest_eligible_bargain(self):
         swings = [
@@ -265,9 +268,12 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         self.assertTrue(decision["reason"]["capacity_pressure"])
 
     def test_disabled_cleanup_preserves_uncapped_opening_behavior(self):
-        swings = [swing_state(f"buy-{index}", age_days=100) for index in range(10)]
+        swings = [
+            swing_state(f"sell-{index}", origin_side="sell", age_days=100)
+            for index in range(10)
+        ]
         decision = self.decide(
-            signal("buy", 1, 80),
+            signal("sell", 1, 120),
             swings,
             cleanup=WaiterCleanupConfig(enabled=False),
         )

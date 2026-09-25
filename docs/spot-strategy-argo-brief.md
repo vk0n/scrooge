@@ -1,15 +1,17 @@
 # Scrooge Spot: короткий опис для Арго
 
-Дата зрізу: 24 вересня 2026 року.
+Дата зрізу: 25 вересня 2026 року.
 
 ## Коротко
 
-Scrooge керує наявним Spot-портфелем через незалежні цикли **Bargain**. Він не намагається вгадати абсолютний максимум або мінімум. Після достатньо сильного 24-годинного руху ціни Scrooge відкриває частину позиції, а потім закриває саме цей Bargain після сприятливого руху щонайменше на 5% від його власної середньої ціни відкриття.
+Scrooge керує наявним Spot-портфелем через незалежні цикли **Bargain**. Він не намагається вгадати абсолютний максимум або мінімум. Після достатньо сильного 24-годинного зростання ціни Scrooge продає частину позиції, а потім закриває саме цей Bargain зворотною купівлею після сприятливого руху щонайменше на 5% від його власної середньої ціни відкриття.
 
 Є дві цілі:
 
-- **Accumulate Cash**: перетворювати коливання активу на USDT у спільному `Vault Reserve`. Дозволені sell-origin і buy-origin Bargains.
-- **Accumulate Asset**: продати частину активу на зростанні та викупити дешевше. У V1 дозволені лише sell-origin Bargains. Позитивний чистий приріст монет після повного закриття створює одноразовий idempotent Target-ratchet.
+- **Accumulate Cash**: продати частину активу на зростанні, викупити її дешевше та залишити прибуток у спільному `Vault Reserve`.
+- **Accumulate Asset**: продати частину активу на зростанні та використати виручку, щоб викупити більше монет. Позитивний чистий приріст після повного закриття створює одноразовий idempotent Target-ratchet.
+
+Нові Bargains відкриваються лише як **SELL-origin**. BUY opportunity використовується для їхнього прибуткового закриття та cleanup, але не створює новий BUY-origin exposure. Це правило увімкнене за замовчуванням і не має UI-перемикача.
 
 `Minimum Holding` утворює захищену підлогу. Стратегія може продавати тільки частину Target вище цієї підлоги, яка фактично доступна в Binance custody. Cold Storage враховується у вартості портфеля, але не продається.
 
@@ -21,7 +23,7 @@ Scrooge керує наявним Spot-портфелем через незал�
 4. Зростання створює SELL opportunity, падіння створює BUY opportunity.
 5. RSI, Bollinger Bands та EMA не змінюють напрямок, а лише масштабують транш: **0.5x / 1.0x / 1.25x / 1.5x**. ATR використовується тільки як контекст волатильності.
 6. У межах одного directional campaign кожен новий рівень виконується не більше одного разу.
-7. Прибуткове закриття існуючого Bargain має пріоритет над відкриттям нового. За один цикл дозволена максимум одна дія на актив.
+7. Закриття існуючого Bargain має пріоритет над відкриттям нового. Окрім звичайного profit close, waiter cleanup може закрити стару позицію за контрольованими правилами ризику. За один цикл дозволена максимум одна дія на актив.
 
 Binance executor є авторитетним для `stepSize`, `tickSize`, `minQty`, `minNotional` та інших exchange filters. Облік використовує фактичні fills і зберігає комісію в її реальному asset без штучної конвертації.
 
@@ -29,7 +31,7 @@ Binance executor є авторитетним для `stepSize`, `tickSize`, `min
 
 - Реальні кількості, entry prices, custody та policy десяти активів на момент зрізу.
 - Дев'ять активів торгуються; DOT повністю захищений у Cold Storage.
-- Початковий вільний USDT: **$0**. BUY може використовувати лише USDT, який перед цим згенерували simulated SELL.
+- Початковий вільний USDT: **$0**. Зворотні BUY для закриття SELL-origin Bargains використовують USDT, який перед цим згенерували simulated SELL.
 - Binance Spot candles, інтервал 1h, 60 warm-up candles.
 - Рішення після закриття candle N; fill за open candle N+1.
 - Комісія: **0.1%**, slippage: **0 bps**.
@@ -41,18 +43,29 @@ Binance executor є авторитетним для `stepSize`, `tickSize`, `min
 | Метрика | 6 місяців | 1 рік |
 |---|---:|---:|
 | Початкова ринкова вартість | $12,916.70 | $35,670.40 |
-| Final Treasury Value | $16,235.27 | $16,217.24 |
-| Результат Scrooge | +25.69% | -54.54% |
+| Final Treasury Value | $16,433.63 | $17,394.53 |
+| Результат Scrooge | +27.23% | -51.24% |
 | Результат HODL | +30.08% | -52.90% |
-| Різниця проти HODL | **-$567.13** | **-$585.16** |
-| Maximum drawdown | -35.45% | -72.11% |
-| Final Vault Reserve | $1,077.87 | $15.55 |
-| Execution fees | $34.23 | $55.33 |
+| Різниця проти HODL | **-$368.77** | **+$592.13** |
+| Maximum drawdown | -33.94% | -68.87% |
+| Final Vault Reserve | $1,360.54 | $2,009.88 |
+| Execution fees | $38.94 | $92.46 |
+
+### A/B: вплив вимкнення BUY-origin
+
+Обидві сторони A/B перераховані тим самим поточним engine та відрізняються лише дозволом на створення BUY-origin Bargains.
+
+| Горизонт | BUY + SELL origins | Лише SELL-origin | Зміна Final Treasury |
+|---|---:|---:|---:|
+| 6 місяців | $16,405.13 | $16,433.63 | **+$28.50** |
+| 1 рік | $16,835.87 | $17,394.53 | **+$558.66** |
 
 Інтерактивні звіти:
 
-- [Six-Month Portfolio Replay](../runtime/spot_backtests/runs/20260924T162333Z/report.html)
-- [One-Year Portfolio Replay](../runtime/spot_backtests/runs/20260924T162407Z/report.html)
+- [Six-Month SELL-origin Replay](../runtime/spot_backtests/comparisons/20260925T-campaign-hold-fix/6m/sell-origin-only/report.html)
+- [One-Year SELL-origin Replay](../runtime/spot_backtests/comparisons/20260925T-campaign-hold-fix/1y/sell-origin-only/report.html)
+- [Six-Month BUY+SELL Baseline](../runtime/spot_backtests/comparisons/20260925T-campaign-hold-fix/6m/buy-and-sell-current/report.html)
+- [One-Year BUY+SELL Baseline](../runtime/spot_backtests/comparisons/20260925T-campaign-hold-fix/1y/buy-and-sell-current/report.html)
 
 Початкова вартість відрізняється між періодами, бо це ринкова оцінка тих самих початкових кількостей на дату старту конкретного replay, а не сума історичних внесків власника.
 
@@ -60,27 +73,27 @@ Binance executor є авторитетним для `stepSize`, `tickSize`, `min
 
 | Метрика | 6 місяців | 1 рік |
 |---|---:|---:|
-| Відкрито Bargains | 486 | 328 |
-| Повністю закрито | 367 | 230 |
-| Closure rate | 75.51% | 70.12% |
-| Залишилось open | 119 | 98 |
-| Realized PnL, включно з partial closes | +$851.68 | +$1,866.10 |
-| Unrealized open PnL | -$1,452.37 | -$2,336.45 |
-| Bargain lifecycle PnL | **-$600.69** | **-$470.35** |
-| Underwater open Bargains | 85 | 49 |
-| Open 90+ днів | 74 | 96 |
-| Median closed duration | 68.0 год | 73.5 год |
-| P90 closed duration | 22.4 дня | 24.0 дня |
+| Відкрито Bargains | 311 | 671 |
+| Повністю закрито | 285 | 645 |
+| Closure rate | 91.64% | 96.13% |
+| Залишилось open | 26 | 26 |
+| Realized PnL, включно з cleanup | -$84.39 | +$986.12 |
+| Unrealized open PnL | -$308.98 | -$311.60 |
+| Bargain lifecycle PnL | **-$393.38** | **+$674.52** |
+| Underwater open Bargains | 21 | 21 |
+| Open 90+ днів | 0 | 0 |
+| Median closed duration | 70.0 год | 65.0 год |
+| P90 closed duration | 26.1 дня | 20.8 дня |
 
-Формальний closed win rate дорівнює 100%, але його не можна трактувати як звичайний win rate: V1 закриває Bargain тільки після досягнення profit target. Збиткові цикли не фіксують loss, а залишаються open і переходять в unrealized PnL. Тому головні показники тут: результат проти HODL, lifecycle PnL, вік open Bargains та зайнятий ними капітал/інвентар.
+Closed PnL включає як profit closes, так і контрольовані збитки waiter cleanup, тому closure rate і realized PnL треба читати разом. Головні показники: результат проти HODL, lifecycle PnL, вік open Bargains та зайнятий ними інвентар.
 
 ## Що видно з результатів
 
-1. **Механіка генерує realized profit, але open inventory перекриває його.** За 6 місяців +$851.68 realized перетворюється на -$600.69 lifecycle PnL після оцінки незакритих циклів. За рік маємо +$1,866.10 realized, але -$2,336.45 unrealized.
-2. **Buy-origin Bargains є головним ризиком тривалого падіння.** У річному replay sell-origin lifecycle PnL становить приблизно +$2,204.59, тоді як buy-origin становить приблизно -$2,674.94. Купівля падіння без regime filter залишає капітал у довгих underwater циклах.
-3. **Accumulate Asset виглядав стійкіше, але групи активів різні.** За 6 місяців його lifecycle PnL близький до нуля (-$8.51), за рік +$588.11. Accumulate Cash: -$592.18 і -$1,058.46 відповідно. Це корисний сигнал, але не чистий causal comparison, бо objectives призначені різним монетам і мають різні floors.
-4. **Відставання від HODL помірне відносно масштабу руху портфеля, але стабільне в обох вікнах.** У сильному зростанні стратегія завчасно продає частину переможців; у довгому падінні buy-origin Bargains можуть залишатися underwater. Це типовий path-dependency risk swing-механіки.
-5. **Річний резерв майже вичерпано.** Final Vault Reserve $15.55 означає, що значна частина згенерованого cash була повторно вкладена у BUY Bargains і залишилась у відкритому ризику.
+1. **Вимкнення BUY-origin покращило обидва replay.** Ефект невеликий за 6 місяців (+$28.50), але суттєвий за рік (+$558.66), де стратегія тепер випереджає HODL на $592.13.
+2. **Найбільша різниця проявилась у cleanup losses.** У річному A/B вони зменшилися з -$3,419.47 до -$1,415.74; maximum drawdown покращився з -70.77% до -68.87%.
+3. **SELL-only не гарантує перевагу на кожному горизонті.** За 6 місяців стратегія все ще відстає від HODL на $368.77, а її Bargain lifecycle PnL становить -$393.38.
+4. **Річний lifecycle став позитивним.** +$986.12 realized після cleanup та -$311.60 unrealized дають +$674.52; наприкінці немає Bargains старше 90 днів.
+5. **Vault Reserve більше не витрачається на нові BUY-origin цикли.** У річному replay він завершує на $2,009.88 замість $546.83 у BUY+SELL baseline і залишається доступним для закриття SELL-origin Bargains.
 
 ## Обмеження тесту
 
@@ -88,17 +101,17 @@ Binance executor є авторитетним для `stepSize`, `tickSize`, `min
 - Slippage у цих прогонах дорівнює нулю, тому execution assumptions оптимістичні.
 - Використовуються поточні Binance filters, а не їхні історичні версії.
 - Перевірено лише один фактичний market path для кожного горизонту.
-- Відсутність початкового USDT обмежує ранні BUY та впливає на порівняння objectives.
-- Open Bargains не мають stop-loss, time-stop або примусового settlement наприкінці.
+- Відсутність початкового USDT може обмежувати ранні зворотні BUY для закриття SELL-origin Bargains.
+- Open Bargains не мають примусового settlement наприкінці replay; натомість waiter cleanup застосовує age-, loss- і capacity-aware правила протягом replay.
 
 ## Питання для Арго
 
-1. Чи потрібен regime filter, який блокує buy-origin Bargains у вираженому downtrend і sell-origin у сильному uptrend?
-2. Чи варто додати time-stop або окрему політику для Bargains старше 30/90/180 днів?
+1. Чи варто колись повертати BUY-origin лише під суворим regime filter, чи залишити SELL-only як постійне правило?
+2. Чи достатньо поточних waiter cleanup правил, чи потрібна окрема політика для Bargains старше 30/60/90 днів?
 3. Чи потрібні ліміти на кількість одночасних Bargains, загальний open notional та exposure одного активу?
 4. Чи має profit target залишатися фіксованим 5%, чи бути volatility/fee-aware?
 5. Чи не надто активний Level 1 у 5%, і чи потрібен cooldown або campaign reset за іншими правилами?
 6. Як коректно закривати underwater цикл: фіксований loss budget, portfolio-level netting, inventory rebalance чи заборона loss realization?
 7. Які метрики треба оптимізувати першими: edge vs HODL, lifecycle PnL, drawdown, reserve growth, asset accumulation або capital lock duration?
 
-Головна теза для обговорення: **entry/close-механіка вже вміє системно збирати прибуткові коливання, але V1 поки не керує ризиком Bargains, для яких ринок не повернувся до ціни закриття.**
+Головна теза для обговорення: **SELL-origin-only прибирає збиткове джерело нового exposure, помітно покращує річний результат і drawdown, але шестимісячне відставання від HODL показує, що sizing, timing і cleanup ще потребують оптимізації.**

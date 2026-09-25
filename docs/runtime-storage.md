@@ -153,8 +153,9 @@ switch or a per-asset auto-trading toggle.
   close threshold is `5%` (`SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT`), and profitable closes take priority over new exposure.
 - At most one strategy action per asset is submitted in a signal cycle. Durable action keys and existing client order
   recovery prevent restarts or retries from creating a second real order for the same decision.
-- `accumulate_cash` restores the Swing quantity and leaves profit in shared quote cash. V1 `accumulate_asset` opens from
-  SELL opportunities and reuses profitable sale proceeds to buy back more asset. Its finalized positive asset gain
+- New strategy exposure opens only from SELL opportunities. BUY opportunities close existing SELL-origin Swings but do
+  not create BUY-origin Swings. `accumulate_cash` restores the Swing quantity and leaves profit in shared quote cash.
+  `accumulate_asset` reuses profitable sale proceeds to buy back more asset. Its finalized positive asset gain
   ratchets Target exactly once after the Swing is fully CLOSED.
 - `SCROOGE_SPOT_ESTIMATED_FEE_RATE` is used only for conservative strategy sizing. Actual Swing and portfolio accounting
   always use confirmed Binance fills and their native fee amount/asset.

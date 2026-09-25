@@ -298,6 +298,7 @@ def load_spot_backtest_scenario(
         progression=ProgressiveSwingConfig(
             close_profit_pct=float(progression_payload.get("close_profit_pct", 5)),
             estimated_fee_rate=float(progression_payload.get("estimated_fee_rate", fee_rate)),
+            buy_origin_enabled=bool(progression_payload.get("buy_origin_enabled", False)),
         ),
         data_cache_dir=cache_path,
         output_dir=output_path,
@@ -422,7 +423,11 @@ def export_current_treasury_scenario(
                     "strong_modifier": 1.25,
                     "very_strong_modifier": 1.5,
                 },
-                "progression": {"close_profit_pct": 5, "estimated_fee_rate": 0.001},
+                "progression": {
+                    "close_profit_pct": 5,
+                    "estimated_fee_rate": 0.001,
+                    "buy_origin_enabled": False,
+                },
                 "waiter_cleanup": {
                     "enabled": True,
                     "max_open_bargains_per_asset": 10,
