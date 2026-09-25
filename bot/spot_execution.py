@@ -263,14 +263,14 @@ class SpotOrderExecutor:
     def _validate_for_submission(self, intent: dict[str, Any]) -> Decimal:
         request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
         treasury_intake = bool(request.get("treasury_intake"))
-        if intent["source"] == "strategy":
-            if not intent.get("swing_id"):
-                raise ValueError("Strategy Spot orders must belong to a Swing.")
+        if intent["source"] == "strategy" and not intent.get("swing_id"):
+            raise ValueError("Strategy Spot orders must belong to a Swing.")
+        if intent.get("swing_id"):
             swing = load_spot_swing(intent["swing_id"], path=self.db_path)
             if swing is None:
-                raise ValueError("The strategy Spot order references a missing Swing.")
+                raise ValueError("The linked Spot order references a missing Swing.")
             if swing["status"] == "closed":
-                raise ValueError("A closed Spot Swing cannot accept another strategy order.")
+                raise ValueError("A closed Spot Swing cannot accept another linked order.")
             if swing["account_key"] != intent["account_key"]:
                 raise ValueError("Spot order and Swing belong to different Treasury accounts.")
             if swing["asset_symbol"] != intent["asset_symbol"] or swing["quote_symbol"] != intent["quote_symbol"]:

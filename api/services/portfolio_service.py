@@ -1078,16 +1078,17 @@ def _create_spot_order_intent_preview(
     normalized_swing_id = str(swing_id or "").strip() or None
     normalized_reason_text = str(reason_text or "").strip() or None
     normalized_reason = reason if isinstance(reason, dict) else {}
+    if normalized_source == "strategy" and normalized_swing_id is None:
+        raise ValueError("Strategy Spot orders must belong to a Swing.")
     if normalized_source == "strategy":
-        if normalized_swing_id is None:
-            raise ValueError("Strategy Spot orders must belong to a Swing.")
         if not normalized_reason_text and not normalized_reason:
             raise ValueError("Strategy Spot orders require an explainable reason.")
+    if normalized_swing_id is not None:
         swing = load_spot_swing(normalized_swing_id)
         if swing is None:
             raise LookupError("The linked Spot Swing was not found.")
         if swing["status"] == "closed":
-            raise ValueError("A closed Spot Swing cannot accept another strategy order.")
+            raise ValueError("A closed Spot Swing cannot accept another linked order.")
         if swing["account_key"] != DEFAULT_ACCOUNT_KEY:
             raise ValueError("The linked Spot Swing belongs to another Treasury account.")
         if swing["asset_symbol"] != asset_symbol or swing["quote_symbol"] != quote_symbol:
@@ -1121,7 +1122,7 @@ def _create_spot_order_intent_preview(
 
     estimated_quote_value = requested_quantity * estimated_price
     available_quote = _as_float(exchange.get("usdt_free")) or 0.0
-    if normalized_source == "strategy" and side == "buy" and normalized_swing_id is not None:
+    if side == "buy" and normalized_swing_id is not None:
         swing_executions = list_spot_swing_executions(normalized_swing_id)
         reserve_key = "vault_reserve_available" if not swing_executions else "dry_powder"
         managed_quote = _as_float(snapshot["summary"].get(reserve_key)) or 0.0
@@ -1183,6 +1184,62 @@ def _create_spot_order_intent_preview(
 def create_spot_order_preview(payload: dict[str, Any]) -> dict[str, Any]:
     """Create a user-confirmed manual intent; public payloads cannot impersonate strategy orders."""
     return _create_spot_order_intent_preview(payload, source="manual")
+
+
+def create_bargain_close_preview(swing_id: str) -> dict[str, Any]:
+    """Prepare a user-confirmed closing order while preserving Bargain accounting."""
+    normalized_swing_id = str(swing_id or "").strip()
+    swing = load_spot_swing(normalized_swing_id)
+    if swing is None or swing.get("account_key") != DEFAULT_ACCOUNT_KEY:
+        raise LookupError("The Bargain was not found.")
+
+    executions = list_spot_swing_executions(normalized_swing_id)
+    market_price, _, _ = _fetch_market_price(swing["asset_symbol"], swing["quote_symbol"])
+    if market_price is None or market_price <= 0:
+        raise ValueError("A current market price is required before closing a Bargain.")
+    economics = calculate_swing_economics(swing, executions, current_price=market_price)
+    if economics["status"] == "closed":
+        raise ValueError("This Bargain is already closed.")
+
+    remaining_quantity = float(economics.get("remaining_quantity") or 0.0)
+    if remaining_quantity <= 0:
+        raise ValueError("This Bargain has no executed opening quantity to close.")
+
+    quantity = remaining_quantity
+    quantity_basis = "remaining_asset"
+    if swing["origin_side"] == "sell" and swing.get("trading_objective") == "accumulate_asset":
+        estimated_fee_rate = float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001)
+        opening_quote = float(economics.get("opening_quote_quantity") or 0.0)
+        closing_quote = float(economics.get("closing_quote_quantity") or 0.0)
+        opening_quote_fee = float(
+            (economics.get("fees_by_asset") or {}).get(swing["quote_symbol"], 0.0)
+        )
+        reusable_quote = max(0.0, opening_quote - opening_quote_fee - closing_quote)
+        objective_quantity = reusable_quote / (market_price * (1.0 + estimated_fee_rate))
+        quantity = max(remaining_quantity, objective_quantity)
+        quantity_basis = "objective_or_remaining_asset"
+
+    reason = {
+        "action_type": "close",
+        "close_reason": "manual",
+        "requested_by": "treasury_control",
+        "weighted_opening_price": economics.get("weighted_opening_price"),
+        "market_price": market_price,
+        "remaining_quantity": remaining_quantity,
+        "quantity_basis": quantity_basis,
+    }
+    return _create_spot_order_intent_preview(
+        {
+            "asset_symbol": swing["asset_symbol"],
+            "quote_symbol": swing["quote_symbol"],
+            "side": economics["closing_side"],
+            "quantity": quantity,
+        },
+        source="manual",
+        swing_id=normalized_swing_id,
+        reason_text="Manual Bargain close requested from Treasury Control.",
+        reason=reason,
+    )
 
 
 def create_strategy_spot_order_intent(payload: dict[str, Any]) -> dict[str, Any]:

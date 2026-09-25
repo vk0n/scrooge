@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from services.portfolio_service import (
+    create_bargain_close_preview,
     create_custody_transfer,
     create_portfolio_transaction,
     create_spot_order_preview,
@@ -169,6 +170,18 @@ def get_bargain_ledger(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/bargains/{swing_id}/close-preview")
+def preview_bargain_close(swing_id: str) -> dict[str, object]:
+    try:
+        return create_bargain_close_preview(swing_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
 
 @router.post("/transactions/{transaction_id}/status")

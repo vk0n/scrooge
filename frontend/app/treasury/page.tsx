@@ -1300,8 +1300,19 @@ function AssetPolicyPanel({
   );
 }
 
-function SwingLedgerRow({ swing, occurredAt }: { swing: SpotSwing; occurredAt: string }): JSX.Element {
+function SwingLedgerRow({
+  swing,
+  occurredAt,
+  onBargainClosed,
+}: {
+  swing: SpotSwing;
+  occurredAt: string;
+  onBargainClosed: () => Promise<void>;
+}): JSX.Element {
   const [expanded, setExpanded] = useState<boolean>(false);
+  const [closing, setClosing] = useState<boolean>(false);
+  const [closeStatus, setCloseStatus] = useState<string | null>(null);
+  const [closeError, setCloseError] = useState<string | null>(null);
   const economics = swing.economics;
   const pnl = economics.status === "closed"
     ? economics.realized_pnl_quote
@@ -1309,6 +1320,46 @@ function SwingLedgerRow({ swing, occurredAt }: { swing: SpotSwing; occurredAt: s
   const quantity = economics.opening_quantity || swing.planned_quantity;
   const fees = Object.entries(economics.fees_by_asset);
   const reason = swingReasonText(swing.strategy_reason);
+  const canClose = economics.status !== "closed" && economics.opening_quantity > 0 && economics.remaining_quantity > 0;
+
+  async function closeBargain(): Promise<void> {
+    setClosing(true);
+    setCloseError(null);
+    setCloseStatus("Scrooge is pricing the closing order...");
+    try {
+      const preview = await fetchApi<SpotOrderIntent>(
+        `/api/portfolio/bargains/${encodeURIComponent(swing.swing_id)}/close-preview`,
+        { method: "POST" }
+      );
+      const confirmed = window.confirm(
+        `Close ${swingIdentity(swing.swing_id)} with a REAL Binance Spot ${preview.side.toUpperCase()} for ` +
+        `${formatNumber(preview.requested_quantity, 8)} ${preview.asset_symbol}?\n\n` +
+        `Estimated value: ${formatCurrency(preview.estimated_quote_value)}\n` +
+        `Current open PnL: ${formatSignedCurrency(economics.unrealized_pnl_quote)}\n` +
+        "This action may execute immediately and cannot be undone."
+      );
+      if (!confirmed) {
+        setCloseStatus(null);
+        return;
+      }
+      setCloseStatus("Closing order accepted. Scrooge is validating fresh balances...");
+      const queued = await fetchApi<SpotOrderQueueResponse>(
+        `/api/portfolio/spot-orders/${encodeURIComponent(preview.intent_id)}/execute`,
+        { method: "POST", body: { confirmation: "CONFIRM_SPOT_ORDER" } }
+      );
+      const command = await waitForSpotOrder(queued.command_id);
+      if (command.status !== "completed") {
+        throw new Error(command.message || "Bargain closing order failed.");
+      }
+      setCloseStatus(command.message || "Bargain closed. Treasury Ledger updated.");
+      await onBargainClosed();
+    } catch (error) {
+      setCloseStatus(null);
+      setCloseError(error instanceof Error ? error.message : "Could not close this Bargain.");
+    } finally {
+      setClosing(false);
+    }
+  }
 
   return (
     <article className={`treasury-swing-row treasury-swing-row-${economics.status}`}>
@@ -1379,13 +1430,35 @@ function SwingLedgerRow({ swing, occurredAt }: { swing: SpotSwing; occurredAt: s
                 : "None"}</strong>
             </span>
           </footer>
+          {canClose ? (
+            <div className="treasury-swing-close">
+              <div aria-live="polite">
+                {closeStatus ? <p>{closeStatus}</p> : null}
+                {closeError ? <p className="form-error">{closeError}</p> : null}
+              </div>
+              <button
+                type="button"
+                className="dialog-user-btn treasury-swing-close-button"
+                disabled={closing}
+                onClick={() => void closeBargain()}
+              >
+                {closing ? "Closing..." : "Close Bargain"}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </article>
   );
 }
 
-function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Element {
+function PortfolioBargainLedger({
+  refreshKey,
+  onBargainClosed,
+}: {
+  refreshKey: string;
+  onBargainClosed: () => Promise<void>;
+}): JSX.Element {
   const [ledger, setLedger] = useState<BargainLedgerPayload | null>(null);
   const [filter, setFilter] = useState<AssetLedgerFilter>("all");
   const [sortBy, setSortBy] = useState<BargainLedgerSort>("date");
@@ -1505,6 +1578,10 @@ function PortfolioBargainLedger({ refreshKey }: { refreshKey: string }): JSX.Ele
                 key={entry.entry_id}
                 swing={entry.swing}
                 occurredAt={entry.occurred_at}
+                onBargainClosed={async () => {
+                  await onBargainClosed();
+                  await loadEntries(offset);
+                }}
               />
             ))}
           </div>
@@ -1549,10 +1626,12 @@ function AssetLedger({
   holding,
   refreshKey,
   onPortfolioUpdated,
+  onReload,
 }: {
   holding: PortfolioHolding;
   refreshKey: string;
   onPortfolioUpdated: (response: CreatePortfolioTransactionResponse) => void;
+  onReload: () => Promise<void>;
 }): JSX.Element {
   const [ledger, setLedger] = useState<AssetLedgerPayload | null>(null);
   const [filter, setFilter] = useState<AssetLedgerFilter>("all");
@@ -1664,7 +1743,17 @@ function AssetLedger({
           <div className="treasury-ledger-stack">
             {entries.map((entry) => {
               if (entry.entry_type === "swing") {
-                return <SwingLedgerRow key={entry.entry_id} swing={entry.swing} occurredAt={entry.occurred_at} />;
+                return (
+                  <SwingLedgerRow
+                    key={entry.entry_id}
+                    swing={entry.swing}
+                    occurredAt={entry.occurred_at}
+                    onBargainClosed={async () => {
+                      await onReload();
+                      await loadEntries(offset);
+                    }}
+                  />
+                );
               }
               const transaction = entry.transaction;
               return (
@@ -1878,7 +1967,12 @@ function HoldingCard({
           {executionEnabled && !holding.is_dry_powder ? (
             <AssetPolicyPanel holding={holding} exchange={exchange} onUpdated={onPortfolioUpdated} />
           ) : null}
-          <AssetLedger holding={holding} refreshKey={refreshKey} onPortfolioUpdated={onPortfolioUpdated} />
+          <AssetLedger
+            holding={holding}
+            refreshKey={refreshKey}
+            onPortfolioUpdated={onPortfolioUpdated}
+            onReload={onReload}
+          />
         </div>
       ) : null}
     </article>
@@ -2038,7 +2132,7 @@ export default function TreasuryPage(): JSX.Element {
               <span className="treasury-summary-note">
                 {formatCurrency(summary?.vault_reserve_available ?? 0)} available
                 {(summary?.vault_reserve_committed ?? 0) > 0
-                  ? ` · ${formatCurrency(summary?.vault_reserve_committed ?? 0)} committed`
+                  ? <><br />{formatCurrency(summary?.vault_reserve_committed ?? 0)} committed</>
                   : ""}
               </span>
             </div>
@@ -2075,6 +2169,7 @@ export default function TreasuryPage(): JSX.Element {
                 summary?.closed_swing_count ?? 0,
                 summary?.prices_updated_at ?? "",
               ].join(":")}
+              onBargainClosed={() => loadPortfolio()}
             />
           ) : null}
 

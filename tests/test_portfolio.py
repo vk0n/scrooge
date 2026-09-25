@@ -143,6 +143,72 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             ["open-btc-swing", "closed-eth-swing"],
         )
 
+    def test_manual_bargain_close_preview_preserves_swing_linkage(self):
+        self.add("BTC", 1, 90, "binance")
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {
+                "target_quantity": 0.75,
+                "minimum_holding_pct": 100,
+                "trading_objective": "accumulate_cash",
+            },
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "manual-close-btc",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            }
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "manual-close-btc-open",
+                "swing_id": "manual-close-btc",
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "quantity": 0.25,
+                "price": 90,
+                "source": "strategy",
+            }
+        )
+
+        preview = portfolio_service.create_bargain_close_preview("manual-close-btc")
+
+        self.assertEqual(preview["side"], "sell")
+        self.assertEqual(preview["requested_quantity"], 0.25)
+        self.assertEqual(preview["source"], "manual")
+        self.assertEqual(preview["swing_id"], "manual-close-btc")
+        self.assertEqual(preview["reason"]["action_type"], "close")
+        self.assertEqual(preview["reason"]["close_reason"], "manual")
+
+    def test_manual_bargain_close_preview_rejects_unfilled_bargain(self):
+        create_spot_swing(
+            {
+                "swing_id": "unfilled-btc",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "no executed opening quantity"):
+            portfolio_service.create_bargain_close_preview("unfilled-btc")
+
     def test_strategy_fill_preserves_owner_capital_and_tracks_committed_reserve(self):
         self.add("BTC", 1, 90, "binance")
         create_spot_swing(

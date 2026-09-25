@@ -15,11 +15,13 @@ from bot.spot_execution import (
     SpotOrderValidationError,
 )
 from shared.runtime_db import (
+    append_spot_swing_execution,
     create_spot_swing,
     list_portfolio_transactions,
     list_spot_order_status_events,
     list_spot_swing_executions,
     load_spot_order_intent,
+    load_spot_swing,
     reserve_spot_order_intent,
     save_exchange_account_snapshot,
     update_spot_order_intent,
@@ -363,6 +365,66 @@ class SpotExecutionTests(unittest.TestCase):
             len([item for item in list_portfolio_transactions(path=self.db_path) if item.get("spot_quote_leg")]),
             1,
         )
+
+    def test_manual_bargain_close_uses_executor_and_closes_linked_swing(self):
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {
+                "target_quantity": 0.75,
+                "minimum_holding_pct": 100,
+                "trading_objective": "accumulate_cash",
+            },
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "manual-close-btc",
+                "account_key": "manual_spot",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_cash",
+                "planned_quantity": 0.25,
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "manual-close-btc-open",
+                "swing_id": "manual-close-btc",
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "quantity": 0.25,
+                "price": 90,
+                "source": "strategy",
+                "executed_at_ms": 1_790_000_000_000,
+            },
+            path=self.db_path,
+        )
+        preview = portfolio_service.create_bargain_close_preview("manual-close-btc")
+        self._queue_preview(preview)
+        client = FakeSpotExecutionClient(commission_amount=0.05, commission_asset="USDT")
+        executor = SpotOrderExecutor(client, logger=logging.getLogger("test.spot-execution"), db_path=self.db_path)
+
+        result = executor.execute(preview["intent_id"])
+
+        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual(result["swing_id"], "manual-close-btc")
+        self.assertEqual(client.order_params["side"], "SELL")
+        self.assertEqual(len(list_spot_swing_executions("manual-close-btc", path=self.db_path)), 2)
+        closed_swing = load_spot_swing("manual-close-btc", path=self.db_path)
+        self.assertEqual(closed_swing["status"], "closed")
+        self.assertEqual(closed_swing["close_reason"], "manual")
 
     def test_nonterminal_partial_fill_waits_for_reconciliation_without_resubmission(self):
         preview = self._preview_and_queue("buy", 0.25)
