@@ -10,6 +10,7 @@ from typing import Any
 
 from bot.spot_account import normalize_spot_account_snapshot
 from shared.runtime_db import (
+    apply_spot_accumulation_target_ratchet,
     apply_spot_swing_target_ratchet,
     append_portfolio_transaction,
     append_spot_swing_execution,
@@ -266,9 +267,21 @@ class SpotOrderExecutor:
     def _validate_for_submission(self, intent: dict[str, Any]) -> Decimal:
         request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
         treasury_intake = bool(request.get("treasury_intake"))
+        strategy_action_type = str(request.get("strategy_action_type") or "").strip().lower()
+        treasury_accumulation = (
+            intent["source"] == "strategy"
+            and not intent.get("swing_id")
+            and intent["side"] == "buy"
+            and strategy_action_type == "accumulate_asset"
+        )
+        accumulation_enabled = str(
+            os.getenv("SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED", "0") or "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if treasury_accumulation and not accumulation_enabled:
+            raise ValueError("Treasury accumulation is disabled by the production safety gate.")
         swing = None
-        if intent["source"] == "strategy" and not intent.get("swing_id"):
-            raise ValueError("Strategy Spot orders must belong to a Swing.")
+        if intent["source"] == "strategy" and not intent.get("swing_id") and not treasury_accumulation:
+            raise ValueError("A standalone Strategy Spot order must be Treasury accumulation.")
         if intent.get("swing_id"):
             swing = load_spot_swing(intent["swing_id"], path=self.db_path)
             if swing is None:
@@ -327,6 +340,8 @@ class SpotOrderExecutor:
             )
         if holding is None and not (treasury_intake and intent["source"] == "manual" and intent["side"] == "buy"):
             raise ValueError("Treasury asset disappeared before execution.")
+        if treasury_accumulation and holding.get("trading_objective") != "accumulate_asset":
+            raise ValueError("Treasury accumulation objective changed before execution.")
         quantity_float = float(quantity)
         if intent["side"] == "sell":
             if holding is None:
@@ -345,8 +360,19 @@ class SpotOrderExecutor:
                 raise ValueError("Sell rejected because Binance free balance changed after preview.")
         else:
             quote_free = balances.get(intent["quote_symbol"], {}).get("free", 0.0)
-            if quantity_float * market_price > quote_free + 0.00000001:
+            estimated_fee_rate = max(
+                0.0,
+                float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
+            )
+            required_quote = quantity_float * market_price * (1.0 + estimated_fee_rate)
+            if required_quote > quote_free + 0.00000001:
                 raise ValueError("Buy rejected because Binance USDT balance changed after preview.")
+            if treasury_accumulation:
+                free_reserve = _as_float(portfolio["summary"].get("vault_reserve_available")) or 0.0
+                if required_quote > free_reserve + 0.00000001:
+                    raise ValueError(
+                        "Treasury accumulation rejected because Free Vault Reserve changed after preview."
+                    )
         return quantity
 
     def _recover_order(self, intent: dict[str, Any]) -> dict[str, Any]:
@@ -556,6 +582,35 @@ class SpotOrderExecutor:
                         context=ratchet,
                         path=self.db_path,
                     )
+            elif (
+                intent["source"] == "strategy"
+                and intent["side"] == "buy"
+                and str(request.get("strategy_action_type") or "").strip().lower()
+                == "accumulate_asset"
+            ):
+                action_key = str(request.get("strategy_action_key") or "").strip()
+                ratchet = apply_spot_accumulation_target_ratchet(
+                    action_key,
+                    intent_id=intent["intent_id"],
+                    net_acquired_quantity=ledger_quantity,
+                    deployed_quote_quantity=executed_quote + quote_fee,
+                    average_price=float(ledger_price or summary["average_price"]),
+                    fee_amount=_as_float(summary.get("fee_amount")),
+                    fee_asset=str(summary.get("fee_asset") or "").strip().upper() or None,
+                    path=self.db_path,
+                )
+                append_treasury_event(
+                    code="treasury_accumulation_completed",
+                    tone="positive",
+                    message=(
+                        f"I deployed ${ratchet['deployed_quote_quantity']:,.2f} from Free Vault Reserve "
+                        f"and protected {ratchet['applied_gain_quantity']:,.8f} "
+                        f"{intent['asset_symbol']} in Target."
+                    ),
+                    source_ref=f"spot_accumulation_target_ratchet:{action_key}",
+                    context=ratchet,
+                    path=self.db_path,
+                )
         except Exception as accounting_error:  # noqa: BLE001
             self._safe_error_state(
                 intent["intent_id"],

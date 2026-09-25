@@ -108,10 +108,29 @@ def _report_payload(
                 "unrestoredQuantity": _number(
                     item["bad_cases"].get("quantity_sold_not_restored")
                 ),
+                "bargainAssetGain": _number(
+                    item.get("objective_metrics", {}).get("bargain_asset_gain")
+                ),
+                "reserveDeploymentAssetGain": _number(
+                    item.get("objective_metrics", {}).get("reserve_deployment_asset_gain")
+                ),
+                "accumulationBuys": int(
+                    item.get("objective_metrics", {}).get("accumulation_buys") or 0
+                ),
+                "accumulationUsdt": _number(
+                    item.get("objective_metrics", {}).get("usdt_deployed_into_accumulation")
+                ),
             }
         )
 
     fees = sum(_number(value) for value in report["swings"].get("fees_by_asset", {}).values())
+    fees += sum(
+        _number(value)
+        for value in report.get("treasury_accumulation", {})
+        .get("overview", {})
+        .get("fees_by_asset", {})
+        .values()
+    )
     hodl_values = [_number(item.get("hodl_value")) for item in equity]
     portfolio = report["portfolio"]
     swing_history: dict[str, list[dict[str, Any]]] = {
@@ -148,6 +167,7 @@ def _report_payload(
             "rollingChangePct": strategy_reason.get("rolling_change_pct"),
             "sizingModifier": strategy_reason.get("sizing_modifier"),
             "signalTier": (strategy_reason.get("indicator_assessment") or {}).get("tier"),
+            "indicatorContext": strategy_reason.get("indicator_context") or {},
             "returnPct": (
                 (
                     _number(economics.get("realized_pnl_quote"))
@@ -187,6 +207,8 @@ def _report_payload(
         "portfolio": portfolio,
         "reserve": report["shared_usdt"],
         "swings": report["swings"],
+        "treasuryAccumulation": report.get("treasury_accumulation") or {},
+        "sellCampaigns": report.get("sell_campaigns") or {},
         "waiterCleanup": report.get("waiter_cleanup") or {},
         "bargainAnalysis": report.get("bargain_analysis") or build_bargain_analysis(swings),
         "badCases": report["bad_cases"],
@@ -617,6 +639,34 @@ _HTML = r'''<!doctype html>
         <div class="callout" id="bargainCallout"></div>
       </article>
 
+      <article class="card full" id="treasuryAccumulation">
+        <div class="card-head"><div><h2>Treasury Accumulation</h2><div class="subtitle">Standalone Free Vault Reserve deployment. These purchases are not Bargains.</div></div><span class="tag" id="accumulationCount"></span></div>
+        <div class="analysis-kpis" id="accumulationKpis"></div>
+        <div class="analysis-grid">
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>By Asset</strong><br><span>Reserve deployed and net strategic asset protected in Target.</span></div></div>
+            <div class="cleanup-reasons" id="accumulationAssets"></div>
+          </section>
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>By Signal Level</strong><br><span>Attribution preserved for L1 through L4.</span></div></div>
+            <div class="cleanup-reasons" id="accumulationLevels"></div>
+          </section>
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>By Conviction</strong><br><span>Observational telemetry only; indicators do not change execution size.</span></div></div>
+            <div class="cleanup-reasons" id="accumulationConviction"></div>
+          </section>
+        </div>
+      </article>
+
+      <article class="card full" id="sellCampaignAnalytics">
+        <div class="card-head"><div><h2>SELL Campaign Capacity</h2><div class="subtitle">Frozen campaign budgets, utilization, and the 25% full-deploy boundary.</div></div><span class="tag" id="sellCampaignCount"></span></div>
+        <div class="analysis-kpis" id="sellCampaignKpis"></div>
+        <section class="analysis-panel">
+          <div class="analysis-panel-head"><div><strong>Inventory Deployment by Asset</strong><br><span>Normal and full-deploy campaigns with final budget utilization.</span></div></div>
+          <div class="cleanup-reasons" id="sellCampaignAssets"></div>
+        </section>
+      </article>
+
       <article class="card full" id="bargainAnalytics">
         <div class="card-head"><div><h2>Bargain Analytics</h2><div class="subtitle">Lifecycle returns, duration, signal quality, and capital still waiting for an exit.</div></div><span class="tag" id="analysisCount"></span></div>
         <div class="analysis-kpis" id="analysisKpis"></div>
@@ -792,6 +842,33 @@ _HTML = r'''<!doctype html>
     const maxAge=Math.max(...Object.values(swing.open_age_buckets),1);
     document.getElementById("ageBuckets").innerHTML=Object.entries(swing.open_age_buckets).map(([key,value])=>`<div class="bar-row"><span>${ageLabels[key]}</span><div class="bar-track"><div class="bar-fill" style="--width:${value/maxAge*100}%;--color:${key.includes("180")?"var(--red)":"var(--gold)"}"></div></div><span class="bar-value">${value}</span></div>`).join("");
     document.getElementById("bargainCallout").textContent=`${data.badCases.underwater_sell_origin_count} underwater sell-origin Bargains need ${money(data.badCases.value_required_to_restore)} to restore ${qty(data.badCases.quantity_sold_not_restored)} units.`;
+
+    const accumulation=data.treasuryAccumulation||{};
+    const accumulationOverview=accumulation.overview||{};
+    document.getElementById("accumulationCount").textContent=`${accumulationOverview.count||0} BUYS`;
+    document.getElementById("accumulationKpis").innerHTML=[
+      ["Accumulation Buys",accumulationOverview.count||0,"Standalone reserve deployments",""],
+      ["USDT Deployed",money(accumulationOverview.usdt_deployed||0),"Free reserve only","gold"],
+      ["Net Asset Units",qty(accumulationOverview.net_asset_acquired||0),"See per-asset units below","positive"],
+      ["Target Growth",qty(accumulationOverview.target_growth_quantity||0),"Net acquired quantity","positive"],
+      ["Fees",Object.entries(accumulationOverview.fees_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"None","Native fee assets preserved",""],
+    ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
+    const accumulationRows=(rows,labeler)=>Object.entries(rows||{}).map(([key,item])=>`<div class="cleanup-reason"><strong>${labeler(key)}</strong><span>${item.count} buys / ${qty(item.net_asset_acquired)} units</span><strong>${money(item.usdt_deployed)}</strong></div>`).join("")||`<div class="ledger-empty">No Treasury accumulation purchases.</div>`;
+    document.getElementById("accumulationAssets").innerHTML=accumulationRows(accumulation.per_asset,key=>key);
+    document.getElementById("accumulationLevels").innerHTML=accumulationRows(accumulation.per_level,key=>`Level ${key}`);
+    document.getElementById("accumulationConviction").innerHTML=accumulationRows(accumulation.per_conviction,key=>key.replaceAll("_"," ").replace(/\b\w/g,letter=>letter.toUpperCase()));
+
+    const sellCampaigns=data.sellCampaigns||{};
+    document.getElementById("sellCampaignCount").textContent=`${sellCampaigns.count||0} CAMPAIGNS`;
+    document.getElementById("sellCampaignKpis").innerHTML=[
+      ["Average Capacity",qty(sellCampaigns.average_capacity_quantity||0),"Asset-native units",""],
+      ["Median Capacity",qty(sellCampaigns.median_capacity_quantity||0),"Asset-native units",""],
+      ["Average Utilization",pct(sellCampaigns.average_utilization_pct||0),"Consumed frozen budget","gold"],
+      ["Median Utilization",pct(sellCampaigns.median_utilization_pct||0),"Consumed frozen budget","gold"],
+      ["Full Deploy",sellCampaigns.full_deploy_campaigns||0,"Start ratio at or below 25%","positive"],
+      ["Interrupted",sellCampaigns.interrupted_by_opposite_signal||0,"Ended by opposite actionable signal",""],
+    ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
+    document.getElementById("sellCampaignAssets").innerHTML=Object.entries(sellCampaigns.per_asset||{}).map(([asset,item])=>`<div class="cleanup-reason"><strong>${asset}</strong><span>${item.count} campaigns / ${item.normal_capacity_campaigns} normal / ${item.full_deploy_campaigns} full</span><strong>${pct(item.average_utilization_pct||0)}</strong></div>`).join("")||`<div class="ledger-empty">No SELL campaigns.</div>`;
 
     const maxDelta=Math.max(...data.assets.map(item=>Math.abs(item.deltaVsHodl)),1);
     document.getElementById("assetBars").innerHTML=data.assets.slice().sort((a,b)=>b.deltaVsHodl-a.deltaVsHodl).map(item=>`<div class="bar-row"><strong>${item.symbol}</strong><div class="bar-track"><div class="bar-fill" style="--width:${Math.abs(item.deltaVsHodl)/maxDelta*100}%;--color:${item.deltaVsHodl>=0?"var(--mint)":"var(--red)"}"></div></div><strong class="bar-value ${tone(item.deltaVsHodl)}">${money(item.deltaVsHodl)}</strong></div>`).join("");

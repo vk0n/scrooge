@@ -153,7 +153,7 @@ class SpotIndicatorSizingTests(unittest.TestCase):
         self.assertEqual(result["opportunity"], "sell")
         self.assertEqual(result["indicator_assessment"]["tier"], "very_strong")
         self.assertEqual(result["sizing_modifier"], 1.5)
-        self.assertEqual(result["final_tranche_pct"], 30)
+        self.assertEqual(result["final_tranche_pct"], 20)
 
     def test_conflicting_context_reduces_but_does_not_reverse_signal(self):
         result = apply_indicator_sizing(
@@ -164,7 +164,7 @@ class SpotIndicatorSizingTests(unittest.TestCase):
         self.assertEqual(result["opportunity"], "sell")
         self.assertEqual(result["indicator_assessment"]["tier"], "weak")
         self.assertEqual(result["sizing_modifier"], 0.5)
-        self.assertEqual(result["final_tranche_pct"], 10)
+        self.assertEqual(result["final_tranche_pct"], 20)
 
     def test_two_confirmations_without_conflicts_apply_strong_modifier(self):
         result = apply_indicator_sizing(
@@ -174,7 +174,7 @@ class SpotIndicatorSizingTests(unittest.TestCase):
 
         self.assertEqual(result["indicator_assessment"]["tier"], "strong")
         self.assertEqual(result["sizing_modifier"], 1.25)
-        self.assertEqual(result["final_tranche_pct"], 25)
+        self.assertEqual(result["final_tranche_pct"], 20)
 
     def test_one_confirmation_uses_neutral_modifier(self):
         result = apply_indicator_sizing(
@@ -372,7 +372,7 @@ class RollingSpotSignalMonitorTests(unittest.TestCase):
         self.assertEqual(snapshot["indicator_context"]["interval"], "1h")
         self.assertEqual(snapshot["indicator_assessment"]["tier"], "strong")
         self.assertEqual(snapshot["sizing_modifier"], 1.25)
-        self.assertEqual(snapshot["final_tranche_pct"], 25)
+        self.assertEqual(snapshot["final_tranche_pct"], 20)
         self.assertEqual(client.kline_calls[0]["limit"], 60)
 
     def test_hold_does_not_request_indicator_klines(self):
@@ -402,7 +402,7 @@ class RollingSpotSignalMonitorTests(unittest.TestCase):
         self.assertTrue(snapshot["strategy_eligible"])
         self.assertEqual(snapshot["indicator_status"], "unavailable")
         self.assertEqual(snapshot["sizing_modifier"], 0.5)
-        self.assertEqual(snapshot["final_tranche_pct"], 10)
+        self.assertEqual(snapshot["final_tranche_pct"], 20)
 
 
 if __name__ == "__main__":

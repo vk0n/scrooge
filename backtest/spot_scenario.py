@@ -298,7 +298,13 @@ def load_spot_backtest_scenario(
         progression=ProgressiveSwingConfig(
             close_profit_pct=float(progression_payload.get("close_profit_pct", 5)),
             estimated_fee_rate=float(progression_payload.get("estimated_fee_rate", fee_rate)),
-            buy_origin_enabled=bool(progression_payload.get("buy_origin_enabled", False)),
+            treasury_accumulation_enabled=bool(
+                progression_payload.get("treasury_accumulation_enabled", False)
+            ),
+            campaign_capacity_pct=float(progression_payload.get("campaign_capacity_pct", 50)),
+            full_deploy_threshold_pct=float(
+                progression_payload.get("full_deploy_threshold_pct", 25)
+            ),
         ),
         data_cache_dir=cache_path,
         output_dir=output_path,
@@ -426,7 +432,9 @@ def export_current_treasury_scenario(
                 "progression": {
                     "close_profit_pct": 5,
                     "estimated_fee_rate": 0.001,
-                    "buy_origin_enabled": False,
+                    "treasury_accumulation_enabled": True,
+                    "campaign_capacity_pct": 50,
+                    "full_deploy_threshold_pct": 25,
                 },
                 "waiter_cleanup": {
                     "enabled": True,

@@ -12,6 +12,7 @@ from backtest.spot_bargain_analysis import build_bargain_analysis
 from backtest.spot_engine import SpotBacktestResult
 from backtest.spot_report_html import display_spot_report_title, write_spot_backtest_html
 from backtest.spot_scenario import scenario_as_dict, write_scenario_snapshot
+from shared.spot_progression import policy_sellable_reference
 from shared.spot_swing import calculate_swing_economics
 from shared.spot_waiter_cleanup import CLEANUP_REASONS, is_cleanup_reason
 
@@ -97,6 +98,48 @@ def _swing_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _accumulation_metrics(accumulations: list[dict[str, Any]]) -> dict[str, Any]:
+    def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        deployed = sum(float(item.get("deployed_quote_quantity") or 0.0) for item in rows)
+        acquired = sum(float(item.get("net_asset_acquired") or 0.0) for item in rows)
+        fees: dict[str, float] = {}
+        for item in rows:
+            fee_asset = str(item.get("fee_asset") or "").strip().upper()
+            if fee_asset:
+                fees[fee_asset] = fees.get(fee_asset, 0.0) + float(item.get("fee_amount") or 0.0)
+        return {
+            "count": len(rows),
+            "usdt_deployed": deployed,
+            "net_asset_acquired": acquired,
+            "target_growth_quantity": sum(
+                float(item.get("target_growth_quantity") or 0.0) for item in rows
+            ),
+            "average_purchase_price": (
+                sum(
+                    float(item.get("quote_quantity") or 0.0)
+                    for item in rows
+                ) / acquired
+                if acquired > 1e-12
+                else None
+            ),
+            "fees_by_asset": fees,
+        }
+
+    def grouped(field: str) -> dict[str, Any]:
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for item in accumulations:
+            key = str(item.get(field) or "unknown")
+            buckets.setdefault(key, []).append(item)
+        return {key: summarize(rows) for key, rows in sorted(buckets.items())}
+
+    return {
+        "overview": summarize(accumulations),
+        "per_asset": grouped("asset_symbol"),
+        "per_level": grouped("signal_level"),
+        "per_conviction": grouped("conviction"),
+    }
+
+
 def _level_metrics(result: SpotBacktestResult, symbol: str) -> dict[str, Any]:
     signals = [item for item in result.signals if item["asset_symbol"] == symbol]
     actions = [
@@ -104,12 +147,94 @@ def _level_metrics(result: SpotBacktestResult, symbol: str) -> dict[str, Any]:
         for item in result.actions
         if item["asset_symbol"] == symbol and item["action_type"] == "open"
     ]
-    return {
-        f"level_{level}": {
+    swing_map = {item["swing_id"]: item for item in result.swings}
+    output = {}
+    for level in range(1, len(result.scenario.signal.levels_pct) + 1):
+        level_actions = [item for item in actions if int(item.get("signal_level") or 0) == level]
+        pnl = 0.0
+        for action in level_actions:
+            swing = swing_map.get(action.get("swing_id"))
+            if swing is not None:
+                economics = swing["economics"]
+                pnl += float(economics.get("realized_pnl_quote") or 0.0)
+                pnl += float(economics.get("unrealized_pnl_quote") or 0.0)
+        output[f"level_{level}"] = {
             "signals": sum(1 for item in signals if int(item["level"]) == level),
-            "swing_opens": sum(1 for item in actions if int(item.get("signal_level") or 0) == level),
+            "swing_opens": len(level_actions),
+            "executed_quantity": sum(float(item.get("executed_quantity") or 0.0) for item in level_actions),
+            "executed_notional": sum(float(item.get("executed_value") or 0.0) for item in level_actions),
+            "lifecycle_pnl_quote": pnl,
         }
-        for level in range(1, len(result.scenario.signal.levels_pct) + 1)
+    return output
+
+
+def _campaign_metrics(result: SpotBacktestResult) -> dict[str, Any]:
+    campaigns = result.sell_campaigns
+    capacities = [float(item.get("campaign_capacity_quantity") or 0.0) for item in campaigns]
+    utilizations = [
+        float(item.get("campaign_consumed_quantity") or 0.0) / capacity * 100.0
+        if capacity > 0 else 0.0
+        for item, capacity in zip(campaigns, capacities)
+    ]
+
+    def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        row_capacities = [float(item.get("campaign_capacity_quantity") or 0.0) for item in rows]
+        row_utilizations = [
+            float(item.get("campaign_consumed_quantity") or 0.0) / capacity * 100.0
+            if capacity > 0 else 0.0
+            for item, capacity in zip(rows, row_capacities)
+        ]
+        return {
+            "count": len(rows),
+            "average_capacity_quantity": mean(row_capacities) if row_capacities else 0.0,
+            "median_capacity_quantity": median(row_capacities) if row_capacities else 0.0,
+            "average_utilization_pct": mean(row_utilizations) if row_utilizations else 0.0,
+            "median_utilization_pct": median(row_utilizations) if row_utilizations else 0.0,
+            "normal_capacity_campaigns": sum(
+                1 for item in rows if item.get("campaign_capacity_mode") == "normal"
+            ),
+            "full_deploy_campaigns": sum(
+                1 for item in rows if item.get("campaign_capacity_mode") == "full_deploy"
+            ),
+            "interrupted_by_opposite_signal": sum(
+                1 for item in rows if item.get("ended_by_opposite_signal")
+            ),
+            **{
+                f"campaigns_reaching_l{level}": sum(
+                    1 for item in rows if int(item.get("highest_completed_level") or 0) >= level
+                )
+                for level in range(1, 5)
+            },
+        }
+
+    per_asset = {
+        symbol: summarize([item for item in campaigns if item.get("asset_symbol") == symbol])
+        for symbol in result.scenario.asset_order
+    }
+    return {
+        **summarize(campaigns),
+        "average_capacity_quantity": mean(capacities) if capacities else 0.0,
+        "median_capacity_quantity": median(capacities) if capacities else 0.0,
+        "average_utilization_pct": mean(utilizations) if utilizations else 0.0,
+        "median_utilization_pct": median(utilizations) if utilizations else 0.0,
+        "per_asset": per_asset,
+        "campaigns": [
+            {
+                **item,
+                "campaign_remaining_quantity": max(
+                    0.0,
+                    float(item.get("campaign_capacity_quantity") or 0.0)
+                    - float(item.get("campaign_consumed_quantity") or 0.0),
+                ),
+                "utilization_pct": (
+                    float(item.get("campaign_consumed_quantity") or 0.0)
+                    / float(item.get("campaign_capacity_quantity") or 0.0)
+                    * 100.0
+                    if float(item.get("campaign_capacity_quantity") or 0.0) > 0 else 0.0
+                ),
+            }
+            for item in campaigns
+        ],
     }
 
 
@@ -158,6 +283,19 @@ def _inventory_metrics(result: SpotBacktestResult, symbol: str) -> dict[str, Any
     rows = [item for item in result.inventory_history if item["asset_symbol"] == symbol]
     utilizations = [float(item["tradable_inventory_utilization_pct"]) for item in rows]
     distances = [float(item["distance_above_floor_pct"]) for item in rows]
+    state = result.assets[symbol]
+    reference = policy_sellable_reference(
+        state.target_quantity,
+        state.scenario.minimum_holding_pct,
+    )
+    campaigns = [item for item in result.sell_campaigns if item.get("asset_symbol") == symbol]
+    sold = sum(
+        float(item.get("executed_quantity") or 0.0)
+        for item in result.actions
+        if item.get("asset_symbol") == symbol
+        and item.get("action_type") == "open"
+        and item.get("side") == "sell"
+    )
     return {
         "average_tradable_inventory_utilization_pct": mean(utilizations) if utilizations else 0.0,
         "maximum_tradable_inventory_utilization_pct": max(utilizations, default=0.0),
@@ -176,6 +314,15 @@ def _inventory_metrics(result: SpotBacktestResult, symbol: str) -> dict[str, Any
             (float(item["open_buy_capital_tied_quote"]) for item in rows),
             default=0.0,
         ),
+        "current_target_quantity": state.target_quantity,
+        "minimum_holding_pct": state.scenario.minimum_holding_pct,
+        "current_policy_sellable_reference": reference,
+        "current_remaining_sellable_quantity": state.policy_sellable,
+        "remaining_sellable_pct_of_reference": (
+            state.policy_sellable / reference * 100.0 if reference > 0 else 0.0
+        ),
+        "sell_campaign_count": len(campaigns),
+        "total_quantity_sold": sold,
     }
 
 
@@ -228,6 +375,7 @@ def _bad_case_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
 def _asset_capital_performance(
     asset_config: Any,
     swings: list[dict[str, Any]],
+    accumulations: list[dict[str, Any]],
     *,
     final_price: float,
 ) -> dict[str, float | None]:
@@ -246,7 +394,13 @@ def _asset_capital_performance(
         )
 
     initial_quantity = float(asset_config.quantity)
-    settled_quantity = max(0.0, initial_quantity + accumulated_asset)
+    reserve_deployment_asset = sum(
+        float(item.get("net_asset_acquired") or 0.0) for item in accumulations
+    )
+    settled_quantity = max(
+        0.0,
+        initial_quantity + accumulated_asset + reserve_deployment_asset,
+    )
     initial_capital = (
         initial_quantity * float(asset_config.entry_cost)
         if asset_config.entry_cost is not None
@@ -271,6 +425,7 @@ def _asset_capital_performance(
         "initial_quantity": initial_quantity,
         "initial_capital": initial_capital,
         "accumulated_asset_quantity": accumulated_asset,
+        "reserve_deployment_asset_quantity": reserve_deployment_asset,
         "accumulated_cash_gain": accumulated_cash,
         "open_bargain_pnl": open_bargain_pnl,
         "settled_quantity": settled_quantity,
@@ -514,12 +669,17 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
         symbol = asset_config.symbol
         state = result.assets[symbol]
         swings = [item for item in result.swings if item["asset_symbol"] == symbol]
+        accumulations = [item for item in result.accumulations if item["asset_symbol"] == symbol]
         capital_performance = _asset_capital_performance(
             asset_config,
             swings,
+            accumulations,
             final_price=result.final_prices[symbol],
         )
         ratchets = [item for item in result.target_history if item["asset_symbol"] == symbol]
+        swing_ratchets = [
+            item for item in ratchets if item.get("ratchet_source") != "treasury_accumulation"
+        ]
         initial_floor = asset_config.target_holding * asset_config.minimum_holding_pct / 100.0
         final_market_value = state.quantity * result.final_prices[symbol]
         objective_metrics: dict[str, Any] = {}
@@ -532,9 +692,19 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 "final_target": state.target_quantity,
                 "total_target_ratchet": state.target_quantity - asset_config.target_holding,
                 "successful_ratchets": len(ratchets),
+                "bargain_target_ratchets": len(swing_ratchets),
+                "accumulation_buys": len(accumulations),
                 "initial_protected_floor": initial_floor,
                 "final_protected_floor": state.protected_floor,
-                "realized_asset_gain": sum(float(item["applied_gain_quantity"]) for item in ratchets),
+                "bargain_asset_gain": sum(
+                    float(item["applied_gain_quantity"]) for item in swing_ratchets
+                ),
+                "reserve_deployment_asset_gain": sum(
+                    float(item["net_asset_acquired"]) for item in accumulations
+                ),
+                "usdt_deployed_into_accumulation": sum(
+                    float(item["deployed_quote_quantity"]) for item in accumulations
+                ),
             }
         elif asset_config.trading_objective == "accumulate_cash":
             objective_metrics = {
@@ -623,6 +793,17 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
         for symbol in result.scenario.asset_order
     }
     final_allocations["USDT"] = result.final_usdt / final_value * 100 if final_value > 0 else 0.0
+    portfolio_levels = {}
+    for level in range(1, len(result.scenario.signal.levels_pct) + 1):
+        key = f"level_{level}"
+        rows = [item["trading"]["levels"][key] for item in per_asset.values()]
+        portfolio_levels[key] = {
+            field: sum(float(row.get(field) or 0.0) for row in rows)
+            for field in (
+                "signals", "swing_opens", "executed_quantity",
+                "executed_notional", "lifecycle_pnl_quote",
+            )
+        }
     return {
         "scenario": {
             "name": result.scenario.name,
@@ -676,6 +857,9 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             ),
         },
         "swings": _swing_metrics(result.swings),
+        "treasury_accumulation": _accumulation_metrics(result.accumulations),
+        "sell_campaigns": _campaign_metrics(result),
+        "sell_openings_by_level": portfolio_levels,
         "waiter_cleanup": _waiter_cleanup_metrics(result),
         "bargain_analysis": build_bargain_analysis(result.swings),
         "bad_cases": {
@@ -811,6 +995,8 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
     _write_json(target / "per_asset_summary.json", report["per_asset"])
     _write_json(target / "waiter_cleanup.json", report["waiter_cleanup"])
     _write_json(target / "swings.json", result.swings)
+    _write_json(target / "treasury_accumulation.json", report["treasury_accumulation"])
+    _write_json(target / "sell_campaigns.json", report["sell_campaigns"])
     _write_json(target / "final_state.json", {
         "shared_usdt": result.final_usdt,
         "assets": {
@@ -836,6 +1022,8 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
     _write_csv(target / "equity.csv", result.equity)
     _write_csv(target / "monthly.csv", monthly)
     _write_csv(target / "executions.csv", result.executions)
+    _write_csv(target / "treasury_accumulation.csv", result.accumulations)
+    _write_csv(target / "sell_campaigns.csv", report["sell_campaigns"]["campaigns"])
     _write_csv(target / "signals.csv", result.signals)
     _write_csv(target / "actions.csv", result.actions)
     _write_csv(target / "target_history.csv", result.target_history)
@@ -854,6 +1042,8 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
     bargain_analysis = report["bargain_analysis"]
     bargain_overview = bargain_analysis["overview"]
     cleanup_metrics = report["waiter_cleanup"]
+    accumulation_metrics = report["treasury_accumulation"]["overview"]
+    campaign_metrics = report["sell_campaigns"]
     closure_rate = bargain_overview["closure_rate_pct"]
     median_duration = bargain_overview["median_duration_hours"]
     p90_duration = bargain_overview["duration_p90_hours"]
@@ -897,6 +1087,22 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         ),
         f"- Underwater open Bargains: {bargain_analysis['risk']['underwater_open_count']}",
         f"- Underwater open lifecycle PnL: ${bargain_analysis['risk']['underwater_open_pnl_quote']:,.2f}",
+        "",
+        "## Treasury Accumulation",
+        "",
+        f"- Accumulation buys: {accumulation_metrics['count']}",
+        f"- USDT deployed: ${accumulation_metrics['usdt_deployed']:,.2f}",
+        f"- Net asset acquired: {accumulation_metrics['net_asset_acquired']:,.8f}",
+        f"- Target growth: {accumulation_metrics['target_growth_quantity']:,.8f}",
+        "",
+        "## SELL Campaign Capacity",
+        "",
+        f"- Campaigns: {campaign_metrics['count']}",
+        f"- Average utilization: {campaign_metrics['average_utilization_pct']:.2f}%",
+        f"- Median utilization: {campaign_metrics['median_utilization_pct']:.2f}%",
+        f"- Normal-capacity campaigns: {campaign_metrics['normal_capacity_campaigns']}",
+        f"- Full-deploy campaigns: {campaign_metrics['full_deploy_campaigns']}",
+        f"- Interrupted by opposite signal: {campaign_metrics['interrupted_by_opposite_signal']}",
         "",
         "## Waiter Cleanup",
         "",

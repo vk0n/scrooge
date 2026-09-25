@@ -76,6 +76,7 @@ def scenario(
     starting_usdt: float = 1000,
     fee_rate: float = 0,
     slippage_bps: float = 0,
+    treasury_accumulation_enabled: bool = False,
 ) -> SpotBacktestScenario:
     start = datetime(2026, 1, 10, tzinfo=UTC)
     return SpotBacktestScenario(
@@ -93,7 +94,11 @@ def scenario(
         ),
         signal=SpotSignalConfig(),
         sizing=IndicatorSizingConfig(),
-        progression=ProgressiveSwingConfig(close_profit_pct=5, estimated_fee_rate=fee_rate),
+        progression=ProgressiveSwingConfig(
+            close_profit_pct=5,
+            estimated_fee_rate=fee_rate,
+            treasury_accumulation_enabled=treasury_accumulation_enabled,
+        ),
         data_cache_dir=Path("/tmp/spot-data"),
         output_dir=Path("/tmp/spot-output"),
     )
@@ -209,6 +214,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             campaign={},
             observed_price=90,
             available_quote=1000,
+            available_accumulation_quote=1000,
             timestamp_ms=opened_at_ms,
         )
 
@@ -552,9 +558,118 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         result = self.run_scenario(config, lambda _symbol, index: 90 if index >= 0 else 100)
 
         self.assertEqual(config.asset_order, ("AAA", "BBB"))
-        self.assertEqual(result.actions, [])
+        self.assertTrue(result.actions)
+        self.assertTrue(all(item["action_type"] == "campaign_only" for item in result.actions))
         self.assertEqual(result.swings, [])
+        self.assertEqual(result.executions, [])
         self.assertEqual(result.final_usdt, 100)
+
+    def test_asset_buy_accumulates_from_diminishing_shared_free_reserve(self):
+        config = scenario(
+            (
+                asset("BBB", quantity=10, target=10, objective="accumulate_asset"),
+                asset("AAA", quantity=10, target=10, objective="accumulate_asset"),
+            ),
+            hours=6,
+            starting_usdt=100,
+            treasury_accumulation_enabled=True,
+        )
+
+        result = self.run_scenario(config, lambda _symbol, index: 90 if index >= 0 else 100)
+
+        self.assertEqual(result.swings, [])
+        self.assertEqual(len(result.accumulations), 2)
+        first, second = result.accumulations
+        self.assertEqual([first["asset_symbol"], second["asset_symbol"]], ["AAA", "BBB"])
+        self.assertAlmostEqual(first["deployed_quote_quantity"], 20, places=4)
+        self.assertAlmostEqual(second["deployed_quote_quantity"], 16, places=3)
+        self.assertAlmostEqual(result.final_usdt, 64, places=3)
+        self.assertAlmostEqual(
+            sum(item["deployed_quote_quantity"] for item in result.accumulations),
+            36,
+            places=3,
+        )
+        self.assertTrue(all(item["origin_side"] == "sell" for item in result.swings))
+
+    def test_accumulation_never_spends_quote_committed_to_open_sell_bargain(self):
+        config = scenario(
+            (asset("AAA", quantity=10, target=10, objective="accumulate_asset"),),
+            starting_usdt=100,
+            treasury_accumulation_enabled=True,
+        )
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 100))
+        replay.swings["committed-sell"] = {
+            "swing_id": "committed-sell",
+            "asset_symbol": "AAA",
+            "quote_symbol": "USDT",
+            "origin_side": "sell",
+            "trading_objective": "accumulate_asset",
+            "status": "open",
+            "source": "strategy",
+            "opened_at_ms": replay.start_ms,
+            "executions": [
+                {
+                    "side": "sell",
+                    "quantity": 0.8,
+                    "price": 100,
+                    "quote_quantity": 80,
+                    "fee_amount": 0,
+                    "fee_asset": "USDT",
+                }
+            ],
+        }
+        campaign = {"campaign_id": "buy", "active_side": "buy", "highest_completed_level": 0}
+        signal = {
+            "opportunity": "buy",
+            "level": 1,
+            "strategy_eligible": True,
+            "trading_objective": "accumulate_asset",
+            "final_tranche_pct": 50,
+            "current_price": 100,
+        }
+
+        decision = replay._plan_executable_action(
+            "AAA",
+            signal=signal,
+            campaign=campaign,
+            observed_price=100,
+            available_quote=100,
+            available_accumulation_quote=replay._free_reserve_quote(),
+            timestamp_ms=replay.start_ms,
+        )
+
+        self.assertAlmostEqual(replay._free_reserve_quote(), 20)
+        self.assertEqual(decision["action_type"], "accumulate_asset")
+        self.assertAlmostEqual(decision["reason"]["planned_quote_to_spend"], 10)
+
+    def test_rejected_dust_accumulation_does_not_consume_campaign_level(self):
+        config = scenario(
+            (asset("AAA", quantity=10, target=10, objective="accumulate_asset"),),
+            hours=6,
+            starting_usdt=1,
+            treasury_accumulation_enabled=True,
+        )
+        historical = dataset(config, lambda _symbol, index: 90 if index >= 0 else 100)
+        historical.symbol_info["AAA"] = {
+            "filters": [
+                {
+                    "filterType": "MARKET_LOT_SIZE",
+                    "minQty": "0.000001",
+                    "maxQty": "100000000",
+                    "stepSize": "0.000001",
+                },
+                {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+            ]
+        }
+
+        replay = SpotPortfolioBacktester(config, historical)
+        result = replay.run()
+
+        self.assertEqual(result.accumulations, [])
+        self.assertEqual(result.swings, [])
+        self.assertEqual(replay.campaigns["AAA"]["highest_completed_level"], 0)
+        self.assertTrue(result.rejections)
+        self.assertTrue(all("minimum $5" in item["reason"] for item in result.rejections))
 
     def test_cold_storage_and_full_floor_cannot_be_sold(self):
         config = scenario(
@@ -786,7 +901,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(len(template.assets), 10)
         self.assertTrue(all(item.quantity == 0 for item in template.assets))
         self.assertTrue(template.waiter_cleanup.enabled)
-        self.assertFalse(template.progression.buy_origin_enabled)
+        self.assertTrue(template.progression.treasury_accumulation_enabled)
 
         snapshot = {
             "holdings": [
@@ -832,7 +947,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(exported.assets[0].symbol, "NEAR")
         self.assertEqual(exported.assets[0].binance_quantity, 750)
         self.assertEqual(exported.assets[0].cold_storage_quantity, 250)
-        self.assertFalse(exported.progression.buy_origin_enabled)
+        self.assertTrue(exported.progression.treasury_accumulation_enabled)
         self.assertEqual(exported.metadata["export_warnings"][0], "review me")
         self.assertIn("Excluded USDC", exported.metadata["export_warnings"][1])
 

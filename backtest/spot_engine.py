@@ -14,6 +14,7 @@ from shared.spot_execution_rules import (
     validate_market_notional,
 )
 from shared.spot_policy import calculate_spot_inventory_policy
+from shared.spot_progression import initialize_sell_campaign_capacity
 from shared.spot_signal import ROLLING_WINDOW_MS, evaluate_rolling_24h_opportunity
 from shared.spot_strategy import (
     finalize_spot_strategy_signal,
@@ -132,9 +133,11 @@ class SpotBacktestResult:
     actions: list[dict[str, Any]]
     swings: list[dict[str, Any]]
     executions: list[dict[str, Any]]
+    accumulations: list[dict[str, Any]]
     target_history: list[dict[str, Any]]
     inventory_history: list[dict[str, Any]]
     rejections: list[dict[str, Any]]
+    sell_campaigns: list[dict[str, Any]]
 
 
 class SpotPortfolioBacktester:
@@ -153,11 +156,13 @@ class SpotPortfolioBacktester:
         self.campaigns: dict[str, dict[str, Any]] = {}
         self.swings: dict[str, dict[str, Any]] = {}
         self.executions: list[dict[str, Any]] = []
+        self.accumulations: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
         self.signals: list[dict[str, Any]] = []
         self.target_history: list[dict[str, Any]] = []
         self.inventory_history: list[dict[str, Any]] = []
         self.rejections: list[dict[str, Any]] = []
+        self.sell_campaigns: list[dict[str, Any]] = []
         self.pending: dict[str, dict[str, Any]] = {}
         self.ratcheted_swings: set[str] = set()
         self.permanently_blocked_close_swings: set[str] = set()
@@ -215,9 +220,11 @@ class SpotPortfolioBacktester:
             actions=self.actions,
             swings=swings,
             executions=list(self.executions),
+            accumulations=list(self.accumulations),
             target_history=list(self.target_history),
             inventory_history=list(self.inventory_history),
             rejections=list(self.rejections),
+            sell_campaigns=[dict(item) for item in self.sell_campaigns],
         )
 
     def _validate_dataset(self) -> None:
@@ -311,11 +318,27 @@ class SpotPortfolioBacktester:
                     "base_tranche_pct": signal["base_tranche_pct"],
                     "sizing_modifier": signal["sizing_modifier"],
                     "final_tranche_pct": signal["final_tranche_pct"],
+                    "indicator_tier": (signal.get("indicator_assessment") or {}).get("tier"),
+                    "rsi": (signal.get("indicator_context") or {}).get("rsi"),
+                    "ema": (signal.get("indicator_context") or {}).get("ema"),
+                    "bb_lower": (signal.get("indicator_context") or {}).get("bb_lower"),
+                    "bb_upper": (signal.get("indicator_context") or {}).get("bb_upper"),
+                    "atr": (signal.get("indicator_context") or {}).get("atr"),
                     "strategy_eligible": signal["strategy_eligible"],
                     "eligibility_reason": signal["eligibility_reason"],
                 }
             )
             prior = self.campaigns.get(symbol)
+            if (
+                prior is not None
+                and prior.get("active_side") == "sell"
+                and signal["opportunity"] == "buy"
+            ):
+                prior["ended_by_opposite_signal"] = True
+                for historical in reversed(self.sell_campaigns):
+                    if historical.get("campaign_id") == prior.get("campaign_id"):
+                        historical["ended_by_opposite_signal"] = True
+                        break
             campaign_id = hashlib.sha256(
                 f"{symbol}|{signal['opportunity']}|{candle.close_time_ms}".encode("utf-8")
             ).hexdigest()[:24]
@@ -326,13 +349,28 @@ class SpotPortfolioBacktester:
                 signal_at_ms=candle.close_time_ms,
                 new_campaign_id=campaign_id,
             )
+            if (
+                bool(signal.get("strategy_eligible"))
+                and campaign.get("active_side") == "sell"
+                and campaign.get("campaign_capacity_quantity") is None
+            ):
+                campaign = initialize_sell_campaign_capacity(
+                    campaign,
+                    self.assets[symbol].holding(candle.close),
+                    config=self.scenario.progression,
+                )
+                campaign["asset_symbol"] = symbol
+                campaign["started_at_ms"] = candle.close_time_ms
+                campaign["ended_by_opposite_signal"] = False
+                self.sell_campaigns.append(campaign)
             self.campaigns[symbol] = campaign
             contexts.append((symbol, candle, signal, campaign))
 
-        # Closing existing obligations always gets the shared reserve before new openings.
+        # Closing existing obligations always gets the shared reserve before new actions.
         closing_decisions: list[tuple[str, SpotCandle, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
         close_symbols: set[str] = set()
         total_available_quote = max(0.0, self.usdt - reserved_quote)
+        total_committed_quote = self._committed_quote_reserve()
         for symbol, candle, signal, campaign in contexts:
             decision = self._plan_executable_action(
                 symbol,
@@ -340,6 +378,10 @@ class SpotPortfolioBacktester:
                 campaign=campaign,
                 observed_price=candle.close,
                 available_quote=total_available_quote,
+                available_accumulation_quote=max(
+                    0.0,
+                    self.usdt - total_committed_quote - reserved_quote,
+                ),
                 timestamp_ms=candle.close_time_ms,
             )
             if decision is None or decision["action_type"] != "close":
@@ -348,6 +390,8 @@ class SpotPortfolioBacktester:
             closing_decisions.append((symbol, candle, signal, campaign, decision))
 
         closing_decisions.sort(key=self._portfolio_close_priority)
+        closing_quote_reserved = 0.0
+        commitment_released = 0.0
         for symbol, candle, signal, campaign, decision in closing_decisions:
             available_quote = max(0.0, self.usdt - reserved_quote)
             error, permanent = self._close_preflight_error(
@@ -373,6 +417,8 @@ class SpotPortfolioBacktester:
                     * (1.0 + self.scenario.execution.fee_rate)
                 )
                 reserved_quote += min(available_quote, requested_quote)
+                closing_quote_reserved += min(available_quote, requested_quote)
+                commitment_released += self._released_commitment_for_close(decision)
 
         for symbol, candle, signal, campaign in contexts:
             if symbol in close_symbols:
@@ -383,6 +429,13 @@ class SpotPortfolioBacktester:
                 campaign=campaign,
                 observed_price=candle.close,
                 available_quote=max(0.0, self.usdt - reserved_quote),
+                available_accumulation_quote=max(
+                    0.0,
+                    self.usdt
+                    - closing_quote_reserved
+                    - max(0.0, total_committed_quote - commitment_released)
+                    - max(0.0, reserved_quote - closing_quote_reserved),
+                ),
                 timestamp_ms=candle.close_time_ms,
             )
             if decision is None:
@@ -395,6 +448,32 @@ class SpotPortfolioBacktester:
                         "asset_symbol": symbol,
                         "action_type": "hold",
                         "side": None,
+                        "swing_id": None,
+                        "signal_level": signal.get("level"),
+                        "base_tranche_pct": signal.get("base_tranche_pct"),
+                        "sizing_modifier": signal.get("sizing_modifier"),
+                        "final_tranche_pct": signal.get("final_tranche_pct"),
+                        "requested_quantity": 0.0,
+                        "executed_quantity": 0.0,
+                        "requested_value": 0.0,
+                        "executed_value": 0.0,
+                        "fee": 0.0,
+                        "reason": decision["reason"],
+                    }
+                )
+                continue
+            if decision["action_type"] == "campaign_only":
+                campaign["highest_completed_level"] = max(
+                    int(campaign.get("highest_completed_level") or 0),
+                    int(signal.get("level") or 0),
+                )
+                self.actions.append(
+                    {
+                        "timestamp_ms": candle.close_time_ms,
+                        "timestamp": self._timestamp(candle.close_time_ms),
+                        "asset_symbol": symbol,
+                        "action_type": "campaign_only",
+                        "side": "buy",
                         "swing_id": None,
                         "signal_level": signal.get("level"),
                         "base_tranche_pct": signal.get("base_tranche_pct"),
@@ -440,8 +519,13 @@ class SpotPortfolioBacktester:
             **decision,
             "signal": signal,
             "campaign_id": campaign.get("campaign_id"),
+            "action_key": (
+                f"{decision['action_type']}:{campaign.get('campaign_id')}:"
+                f"level:{int(signal['level'])}"
+            ),
             "decided_at_ms": candle.close_time_ms,
             "reference_price": signal.get("reference_price"),
+            "swing_id": decision.get("swing_id"),
         }
         if decision["action_type"] == "open":
             pending["swing_id"] = self._opening_swing_id(symbol, campaign, int(signal["level"]))
@@ -455,6 +539,7 @@ class SpotPortfolioBacktester:
         campaign: dict[str, Any],
         observed_price: float,
         available_quote: float,
+        available_accumulation_quote: float,
         timestamp_ms: int,
     ) -> dict[str, Any] | None:
         excluded = set(self.permanently_blocked_close_swings)
@@ -465,6 +550,7 @@ class SpotPortfolioBacktester:
                 campaign,
                 self._active_swing_states(symbol),
                 available_quote=available_quote,
+                available_accumulation_quote=available_accumulation_quote,
                 config=self.scenario.progression,
                 cleanup_config=self.scenario.waiter_cleanup,
                 excluded_close_swing_ids=excluded,
@@ -648,6 +734,13 @@ class SpotPortfolioBacktester:
                 required_quote = quantity * price * (1.0 + self.scenario.execution.fee_rate)
                 if required_quote > self.usdt + 1e-9:
                     raise ValueError("Buy rejected because simulated USDT balance changed after planning.")
+                if (
+                    action["action_type"] == "accumulate_asset"
+                    and required_quote > self._free_reserve_quote() + 1e-9
+                ):
+                    raise ValueError(
+                        "Treasury accumulation rejected because Free Vault Reserve changed after planning."
+                    )
             elif quantity > state.immediately_sellable + 1e-9:
                 raise ValueError(
                     "Sell rejected because simulated immediately sellable inventory changed after planning."
@@ -687,6 +780,101 @@ class SpotPortfolioBacktester:
         quote_quantity = quantity * price
         fee = quote_quantity * self.scenario.execution.fee_rate
         if side == "buy" and quote_quantity + fee > self.usdt + 1e-9:
+            return
+
+        if action["action_type"] == "accumulate_asset":
+            self.usdt -= quote_quantity + fee
+            state.apply_buy(quantity, quote_quantity, fee)
+            self.minimum_usdt = min(self.minimum_usdt, self.usdt)
+            self.maximum_usdt = max(self.maximum_usdt, self.usdt)
+            previous_target = state.target_quantity
+            state.target_quantity += quantity
+            self.execution_counter += 1
+            execution_id = f"sim-{self.execution_counter:08d}"
+            accumulation = {
+                "action_key": action["action_key"],
+                "execution_id": execution_id,
+                "timestamp_ms": timestamp_ms,
+                "timestamp": self._timestamp(timestamp_ms),
+                "asset_symbol": symbol,
+                "quote_symbol": "USDT",
+                "campaign_id": action.get("campaign_id"),
+                "signal_level": action.get("signal", {}).get("level"),
+                "conviction": (
+                    action.get("signal", {}).get("indicator_assessment") or {}
+                ).get("tier"),
+                "sizing_modifier": action.get("signal", {}).get("sizing_modifier"),
+                "requested_quantity": requested,
+                "executed_quantity": quantity,
+                "net_asset_acquired": quantity,
+                "price": price,
+                "quote_quantity": quote_quantity,
+                "deployed_quote_quantity": quote_quantity + fee,
+                "fee_amount": fee,
+                "fee_asset": "USDT",
+                "previous_target_quantity": previous_target,
+                "next_target_quantity": state.target_quantity,
+                "target_growth_quantity": quantity,
+            }
+            self.accumulations.append(accumulation)
+            self.executions.append(
+                {
+                    "execution_id": execution_id,
+                    "swing_id": None,
+                    "strategy_action_key": action["action_key"],
+                    "venue": "binance-simulated",
+                    "symbol": f"{symbol}USDT",
+                    "side": "buy",
+                    "quantity": quantity,
+                    "price": price,
+                    "quote_quantity": quote_quantity,
+                    "fee_amount": fee,
+                    "fee_asset": "USDT",
+                    "source": "strategy",
+                    "reason": action.get("reason") or {},
+                    "executed_at_ms": timestamp_ms,
+                    "executed_at": self._timestamp(timestamp_ms),
+                }
+            )
+            self.target_history.append(
+                {
+                    "timestamp_ms": timestamp_ms,
+                    "timestamp": self._timestamp(timestamp_ms),
+                    "asset_symbol": symbol,
+                    "swing_id": None,
+                    "action_key": action["action_key"],
+                    "ratchet_source": "treasury_accumulation",
+                    "previous_target_quantity": previous_target,
+                    "applied_gain_quantity": quantity,
+                    "next_target_quantity": state.target_quantity,
+                }
+            )
+            campaign = self.campaigns[symbol]
+            campaign["highest_completed_level"] = max(
+                int(campaign.get("highest_completed_level") or 0),
+                int(action.get("signal", {}).get("level") or 0),
+            )
+            self.actions.append(
+                {
+                    "timestamp_ms": timestamp_ms,
+                    "timestamp": self._timestamp(timestamp_ms),
+                    "asset_symbol": symbol,
+                    "action_type": "accumulate_asset",
+                    "side": "buy",
+                    "swing_id": None,
+                    "action_key": action["action_key"],
+                    "signal_level": action.get("signal", {}).get("level"),
+                    "base_tranche_pct": action.get("signal", {}).get("base_tranche_pct"),
+                    "sizing_modifier": action.get("signal", {}).get("sizing_modifier"),
+                    "final_tranche_pct": action.get("signal", {}).get("final_tranche_pct"),
+                    "requested_quantity": requested,
+                    "executed_quantity": quantity,
+                    "requested_value": requested * observed_price,
+                    "executed_value": quote_quantity,
+                    "fee": fee,
+                    "reason": dict(action.get("reason") or {}),
+                }
+            )
             return
 
         swing_id = str(action["swing_id"])
@@ -753,11 +941,23 @@ class SpotPortfolioBacktester:
             swing["close_context"] = dict(action.get("reason") or {})
             self._apply_target_ratchet(state, swing, economics, timestamp_ms)
         if action["action_type"] == "open":
-            campaign = self.campaigns[symbol]
-            campaign["highest_completed_level"] = max(
-                int(campaign.get("highest_completed_level") or 0),
-                int(action.get("signal", {}).get("level") or 0),
+            current_campaign = self.campaigns[symbol]
+            campaign = next(
+                (
+                    item for item in reversed(self.sell_campaigns)
+                    if item.get("campaign_id") == action.get("campaign_id")
+                ),
+                current_campaign,
             )
+            for target_campaign in {id(campaign): campaign, id(current_campaign): current_campaign}.values():
+                target_campaign["highest_completed_level"] = max(
+                    int(target_campaign.get("highest_completed_level") or 0),
+                    int(action.get("signal", {}).get("level") or 0),
+                )
+                target_campaign["campaign_consumed_quantity"] = min(
+                    float(target_campaign.get("campaign_capacity_quantity") or 0.0),
+                    float(target_campaign.get("campaign_consumed_quantity") or 0.0) + quantity,
+                )
         self.actions.append(
             {
                 "timestamp_ms": timestamp_ms,
@@ -852,7 +1052,10 @@ class SpotPortfolioBacktester:
             self.assets[symbol].unrealized_portfolio_pnl(prices[symbol])
             for symbol in self.scenario.asset_order
         )
-        reserved_quote = self._pending_quote_reserve(prices)
+        reserved_quote = min(
+            self.usdt,
+            self._committed_quote_reserve() + self._pending_accumulation_quote_reserve(prices),
+        )
         return {
             "timestamp_ms": timestamp_ms,
             "timestamp": self._timestamp(timestamp_ms),
@@ -878,6 +1081,49 @@ class SpotPortfolioBacktester:
             for symbol, action in self.pending.items()
             if action["side"] == "buy"
         )
+
+    def _pending_accumulation_quote_reserve(self, prices: dict[str, float]) -> float:
+        return sum(
+            float(action["requested_quantity"])
+            * prices[symbol]
+            * (1.0 + self.scenario.execution.fee_rate)
+            for symbol, action in self.pending.items()
+            if action.get("action_type") == "accumulate_asset"
+        )
+
+    def _swing_committed_quote(self, swing: dict[str, Any]) -> float:
+        if swing.get("origin_side") != "sell" or swing.get("status") == "closed":
+            return 0.0
+        economics = calculate_swing_economics(
+            swing,
+            swing["executions"],
+        )
+        quote_fees = float(
+            (economics.get("fees_by_asset") or {}).get(swing.get("quote_symbol"), 0.0)
+        )
+        return max(
+            0.0,
+            float(economics.get("opening_quote_quantity") or 0.0)
+            - float(economics.get("closing_quote_quantity") or 0.0)
+            - quote_fees,
+        )
+
+    def _committed_quote_reserve(self) -> float:
+        return sum(self._swing_committed_quote(swing) for swing in self.swings.values())
+
+    def _free_reserve_quote(self) -> float:
+        return max(0.0, self.usdt - self._committed_quote_reserve())
+
+    def _released_commitment_for_close(self, decision: dict[str, Any]) -> float:
+        swing = self.swings.get(str(decision.get("swing_id") or ""))
+        if swing is None or swing.get("origin_side") != "sell":
+            return 0.0
+        economics = calculate_swing_economics(swing, swing["executions"])
+        remaining = float(economics.get("remaining_quantity") or 0.0)
+        if remaining <= 1e-12:
+            return 0.0
+        fraction = min(1.0, float(decision.get("requested_quantity") or 0.0) / remaining)
+        return self._swing_committed_quote(swing) * fraction
 
     def _record_inventory(self, timestamp_ms: int, prices: dict[str, float]) -> None:
         for symbol in self.scenario.asset_order:

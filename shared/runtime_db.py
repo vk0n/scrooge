@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -22,8 +23,8 @@ from shared.spot_strategy import transition_spot_strategy_campaign
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 14
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Persistent Spot strategy campaigns across HOLD signals"
+RUNTIME_DB_SCHEMA_VERSION = 16
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Frozen SELL campaign capacity and idempotent consumption"
 
 
 class RuntimeDbError(OSError):
@@ -559,6 +560,18 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             last_signal_side TEXT CHECK (last_signal_side IS NULL OR last_signal_side IN ('hold', 'buy', 'sell')),
             last_signal_level INTEGER NOT NULL DEFAULT 0,
             last_signal_at_ms INTEGER,
+            campaign_start_target_quantity REAL,
+            campaign_start_minimum_holding_pct REAL,
+            campaign_start_policy_sellable_reference REAL,
+            campaign_start_remaining_sellable_quantity REAL,
+            remaining_sellable_ratio_at_start REAL,
+            campaign_capacity_pct REAL,
+            full_deploy_threshold_pct REAL,
+            campaign_capacity_quantity REAL,
+            campaign_consumed_quantity REAL NOT NULL DEFAULT 0,
+            campaign_capacity_mode TEXT CHECK (
+                campaign_capacity_mode IS NULL OR campaign_capacity_mode IN ('normal', 'full_deploy')
+            ),
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
             PRIMARY KEY (account_key, asset_symbol, quote_symbol),
@@ -571,10 +584,12 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             asset_symbol TEXT NOT NULL,
             quote_symbol TEXT NOT NULL DEFAULT 'USDT',
             campaign_id TEXT,
-            action_type TEXT NOT NULL CHECK (action_type IN ('open', 'close')),
+            action_type TEXT NOT NULL CHECK (
+                action_type IN ('open', 'close', 'accumulate_asset', 'campaign_only')
+            ),
             side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
             signal_level INTEGER,
-            swing_id TEXT NOT NULL,
+            swing_id TEXT,
             intent_id TEXT,
             status TEXT NOT NULL CHECK (
                 status IN ('planned', 'intent_created', 'executing', 'completed', 'retryable', 'blocked')
@@ -591,6 +606,37 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_spot_strategy_actions_asset_status
         ON spot_strategy_actions(account_key, asset_symbol, quote_symbol, status, created_at_ms ASC);
+
+        CREATE TABLE IF NOT EXISTS spot_strategy_campaign_consumptions (
+            action_key TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            campaign_id TEXT NOT NULL,
+            consumed_quantity REAL NOT NULL CHECK (consumed_quantity >= 0),
+            recorded_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(action_key) REFERENCES spot_strategy_actions(action_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS spot_accumulation_target_ratchets (
+            action_key TEXT PRIMARY KEY,
+            intent_id TEXT NOT NULL UNIQUE,
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            campaign_id TEXT NOT NULL,
+            signal_level INTEGER NOT NULL,
+            previous_target_quantity REAL NOT NULL,
+            applied_gain_quantity REAL NOT NULL,
+            next_target_quantity REAL NOT NULL,
+            deployed_quote_quantity REAL NOT NULL,
+            average_price REAL NOT NULL,
+            fee_amount REAL,
+            fee_asset TEXT,
+            applied_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key),
+            FOREIGN KEY(action_key) REFERENCES spot_strategy_actions(action_key)
+        );
 
         CREATE TABLE IF NOT EXISTS spot_swing_target_ratchets (
             swing_id TEXT PRIMARY KEY,
@@ -621,6 +667,96 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_portfolio_daily_snapshots_time
         ON portfolio_daily_snapshots(account_key, captured_at_ms ASC);
+        """
+    )
+    action_table = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'spot_strategy_actions'"
+    ).fetchone()
+    action_columns = {
+        str(row["name"]): row
+        for row in connection.execute("PRAGMA table_info(spot_strategy_actions)").fetchall()
+    }
+    action_sql = str(action_table["sql"] or "") if action_table is not None else ""
+    if (
+        "accumulate_asset" not in action_sql
+        or bool(action_columns.get("swing_id") and action_columns["swing_id"]["notnull"])
+    ):
+        # Version 15 introduces this empty table and then widens its parent action table.
+        connection.execute("DROP TABLE spot_accumulation_target_ratchets")
+        connection.execute("ALTER TABLE spot_strategy_actions RENAME TO spot_strategy_actions_legacy")
+        connection.execute(
+            """
+            CREATE TABLE spot_strategy_actions (
+                action_key TEXT PRIMARY KEY,
+                account_key TEXT NOT NULL,
+                asset_symbol TEXT NOT NULL,
+                quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+                campaign_id TEXT,
+                action_type TEXT NOT NULL CHECK (
+                    action_type IN ('open', 'close', 'accumulate_asset', 'campaign_only')
+                ),
+                side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+                signal_level INTEGER,
+                swing_id TEXT,
+                intent_id TEXT,
+                status TEXT NOT NULL CHECK (
+                    status IN ('planned', 'intent_created', 'executing', 'completed', 'retryable', 'blocked')
+                ),
+                requested_quantity REAL NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                reason_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                completed_at_ms INTEGER,
+                FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO spot_strategy_actions (
+                action_key, account_key, asset_symbol, quote_symbol, campaign_id,
+                action_type, side, signal_level, swing_id, intent_id, status,
+                requested_quantity, attempt_count, reason_json, error,
+                created_at_ms, updated_at_ms, completed_at_ms
+            )
+            SELECT
+                action_key, account_key, asset_symbol, quote_symbol, campaign_id,
+                action_type, side, signal_level, swing_id, intent_id, status,
+                requested_quantity, attempt_count, reason_json, error,
+                created_at_ms, updated_at_ms, completed_at_ms
+            FROM spot_strategy_actions_legacy
+            """
+        )
+        connection.execute("DROP TABLE spot_strategy_actions_legacy")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_spot_strategy_actions_asset_status
+            ON spot_strategy_actions(account_key, asset_symbol, quote_symbol, status, created_at_ms ASC)
+            """
+        )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS spot_accumulation_target_ratchets (
+            action_key TEXT PRIMARY KEY,
+            intent_id TEXT NOT NULL UNIQUE,
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            campaign_id TEXT NOT NULL,
+            signal_level INTEGER NOT NULL,
+            previous_target_quantity REAL NOT NULL,
+            applied_gain_quantity REAL NOT NULL,
+            next_target_quantity REAL NOT NULL,
+            deployed_quote_quantity REAL NOT NULL,
+            average_price REAL NOT NULL,
+            fee_amount REAL,
+            fee_asset TEXT,
+            applied_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key),
+            FOREIGN KEY(action_key) REFERENCES spot_strategy_actions(action_key)
+        )
         """
     )
     transaction_columns = {
@@ -657,6 +793,40 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             "ALTER TABLE spot_strategy_campaigns ADD COLUMN last_signal_side "
             "TEXT CHECK (last_signal_side IS NULL OR last_signal_side IN ('hold', 'buy', 'sell'))"
         )
+    campaign_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(spot_strategy_campaigns)").fetchall()
+    }
+    for column_name, definition in (
+        ("campaign_start_target_quantity", "REAL"),
+        ("campaign_start_minimum_holding_pct", "REAL"),
+        ("campaign_start_policy_sellable_reference", "REAL"),
+        ("campaign_start_remaining_sellable_quantity", "REAL"),
+        ("remaining_sellable_ratio_at_start", "REAL"),
+        ("campaign_capacity_pct", "REAL"),
+        ("full_deploy_threshold_pct", "REAL"),
+        ("campaign_capacity_quantity", "REAL"),
+        ("campaign_consumed_quantity", "REAL NOT NULL DEFAULT 0"),
+        ("campaign_capacity_mode", "TEXT"),
+    ):
+        if column_name not in campaign_columns:
+            connection.execute(
+                f"ALTER TABLE spot_strategy_campaigns ADD COLUMN {column_name} {definition}"
+            )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS spot_strategy_campaign_consumptions (
+            action_key TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            campaign_id TEXT NOT NULL,
+            consumed_quantity REAL NOT NULL CHECK (consumed_quantity >= 0),
+            recorded_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(action_key) REFERENCES spot_strategy_actions(action_key)
+        )
+        """
+    )
     intent_columns = {
         str(row["name"])
         for row in connection.execute("PRAGMA table_info(spot_order_intents)").fetchall()
@@ -1922,6 +2092,18 @@ def _spot_strategy_campaign_from_row(row: sqlite3.Row) -> dict[str, Any]:
         ),
         "last_signal_level": int(row["last_signal_level"]),
         "last_signal_at_ms": int(row["last_signal_at_ms"]) if row["last_signal_at_ms"] is not None else None,
+        "campaign_start_target_quantity": _as_float_or_none(row["campaign_start_target_quantity"]),
+        "campaign_start_minimum_holding_pct": _as_float_or_none(row["campaign_start_minimum_holding_pct"]),
+        "campaign_start_policy_sellable_reference": _as_float_or_none(row["campaign_start_policy_sellable_reference"]),
+        "campaign_start_remaining_sellable_quantity": _as_float_or_none(row["campaign_start_remaining_sellable_quantity"]),
+        "remaining_sellable_ratio_at_start": _as_float_or_none(row["remaining_sellable_ratio_at_start"]),
+        "campaign_capacity_pct": _as_float_or_none(row["campaign_capacity_pct"]),
+        "full_deploy_threshold_pct": _as_float_or_none(row["full_deploy_threshold_pct"]),
+        "campaign_capacity_quantity": _as_float_or_none(row["campaign_capacity_quantity"]),
+        "campaign_consumed_quantity": float(row["campaign_consumed_quantity"] or 0.0),
+        "campaign_capacity_mode": (
+            str(row["campaign_capacity_mode"]) if row["campaign_capacity_mode"] is not None else None
+        ),
         "created_at_ms": int(row["created_at_ms"]),
         "updated_at_ms": int(row["updated_at_ms"]),
     }
@@ -1987,9 +2169,14 @@ def sync_spot_strategy_campaign(
             INSERT INTO spot_strategy_campaigns (
                 account_key, asset_symbol, quote_symbol, campaign_id, active_side,
                 highest_completed_level, last_signal_side, last_signal_level, last_signal_at_ms,
+                campaign_start_target_quantity, campaign_start_minimum_holding_pct,
+                campaign_start_policy_sellable_reference,
+                campaign_start_remaining_sellable_quantity, remaining_sellable_ratio_at_start,
+                campaign_capacity_pct, full_deploy_threshold_pct, campaign_capacity_quantity,
+                campaign_consumed_quantity, campaign_capacity_mode,
                 created_at_ms, updated_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_key, asset_symbol, quote_symbol) DO UPDATE SET
                 campaign_id = excluded.campaign_id,
                 active_side = excluded.active_side,
@@ -1997,6 +2184,16 @@ def sync_spot_strategy_campaign(
                 last_signal_side = excluded.last_signal_side,
                 last_signal_level = excluded.last_signal_level,
                 last_signal_at_ms = excluded.last_signal_at_ms,
+                campaign_start_target_quantity = excluded.campaign_start_target_quantity,
+                campaign_start_minimum_holding_pct = excluded.campaign_start_minimum_holding_pct,
+                campaign_start_policy_sellable_reference = excluded.campaign_start_policy_sellable_reference,
+                campaign_start_remaining_sellable_quantity = excluded.campaign_start_remaining_sellable_quantity,
+                remaining_sellable_ratio_at_start = excluded.remaining_sellable_ratio_at_start,
+                campaign_capacity_pct = excluded.campaign_capacity_pct,
+                full_deploy_threshold_pct = excluded.full_deploy_threshold_pct,
+                campaign_capacity_quantity = excluded.campaign_capacity_quantity,
+                campaign_consumed_quantity = excluded.campaign_consumed_quantity,
+                campaign_capacity_mode = excluded.campaign_capacity_mode,
                 updated_at_ms = excluded.updated_at_ms
             """,
             (
@@ -2009,6 +2206,16 @@ def sync_spot_strategy_campaign(
                 transition["last_signal_side"],
                 transition["last_signal_level"],
                 transition["last_signal_at_ms"],
+                transition["campaign_start_target_quantity"],
+                transition["campaign_start_minimum_holding_pct"],
+                transition["campaign_start_policy_sellable_reference"],
+                transition["campaign_start_remaining_sellable_quantity"],
+                transition["remaining_sellable_ratio_at_start"],
+                transition["campaign_capacity_pct"],
+                transition["full_deploy_threshold_pct"],
+                transition["campaign_capacity_quantity"],
+                transition["campaign_consumed_quantity"] or 0.0,
+                transition["campaign_capacity_mode"],
                 now_ms,
                 now_ms,
             ),
@@ -2025,6 +2232,53 @@ def sync_spot_strategy_campaign(
     return _spot_strategy_campaign_from_row(saved)
 
 
+def initialize_spot_strategy_campaign_capacity(
+    *,
+    account_key: str,
+    asset_symbol: str,
+    quote_symbol: str,
+    campaign_id: str,
+    snapshot: dict[str, Any],
+    path: Path | None = None,
+) -> dict[str, Any]:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            UPDATE spot_strategy_campaigns
+            SET campaign_start_target_quantity = ?,
+                campaign_start_minimum_holding_pct = ?,
+                campaign_start_policy_sellable_reference = ?,
+                campaign_start_remaining_sellable_quantity = ?,
+                remaining_sellable_ratio_at_start = ?, campaign_capacity_pct = ?,
+                full_deploy_threshold_pct = ?, campaign_capacity_quantity = ?,
+                campaign_consumed_quantity = 0, campaign_capacity_mode = ?, updated_at_ms = ?
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+              AND campaign_id = ? AND active_side = 'sell'
+              AND campaign_capacity_quantity IS NULL
+            """,
+            (
+                snapshot.get("campaign_start_target_quantity"),
+                snapshot.get("campaign_start_minimum_holding_pct"),
+                snapshot.get("campaign_start_policy_sellable_reference"),
+                snapshot.get("campaign_start_remaining_sellable_quantity"),
+                snapshot.get("remaining_sellable_ratio_at_start"),
+                snapshot.get("campaign_capacity_pct"), snapshot.get("full_deploy_threshold_pct"),
+                snapshot.get("campaign_capacity_quantity"), snapshot.get("campaign_capacity_mode"),
+                now_ms, str(account_key), str(asset_symbol).strip().upper(),
+                str(quote_symbol).strip().upper(), str(campaign_id),
+            ),
+        )
+        row = connection.execute(
+            """SELECT * FROM spot_strategy_campaigns
+               WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?""",
+            (str(account_key), str(asset_symbol).strip().upper(), str(quote_symbol).strip().upper()),
+        ).fetchone()
+    if row is None:
+        raise RuntimeDbError("Spot strategy campaign was not persisted.")
+    return _spot_strategy_campaign_from_row(row)
+
+
 def complete_spot_strategy_campaign_level(
     *,
     account_key: str,
@@ -2032,17 +2286,44 @@ def complete_spot_strategy_campaign_level(
     quote_symbol: str,
     campaign_id: str,
     signal_level: int,
+    consumed_quantity: float = 0.0,
+    action_key: str | None = None,
     path: Path | None = None,
 ) -> None:
     with _connection(path) as connection:
+        consumption = max(0.0, float(consumed_quantity))
+        inserted = False
+        if consumption > 0 and action_key:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO spot_strategy_campaign_consumptions (
+                    action_key, account_key, asset_symbol, quote_symbol,
+                    campaign_id, consumed_quantity, recorded_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(action_key), str(account_key), str(asset_symbol).strip().upper(),
+                    str(quote_symbol).strip().upper(), str(campaign_id), consumption,
+                    int(datetime.now(timezone.utc).timestamp() * 1000),
+                ),
+            )
+            inserted = cursor.rowcount > 0
+        increment = consumption if inserted else 0.0
         connection.execute(
             """
             UPDATE spot_strategy_campaigns
-            SET highest_completed_level = MAX(highest_completed_level, ?), updated_at_ms = ?
+            SET highest_completed_level = MAX(highest_completed_level, ?),
+                campaign_consumed_quantity = MIN(
+                    COALESCE(campaign_capacity_quantity, campaign_consumed_quantity + ?),
+                    campaign_consumed_quantity + ?
+                ),
+                updated_at_ms = ?
             WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ? AND campaign_id = ?
             """,
             (
                 int(signal_level),
+                increment,
+                increment,
                 int(datetime.now(timezone.utc).timestamp() * 1000),
                 str(account_key),
                 str(asset_symbol).strip().upper(),
@@ -2063,7 +2344,7 @@ def _spot_strategy_action_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "action_type": str(row["action_type"]),
         "side": str(row["side"]),
         "signal_level": int(row["signal_level"]) if row["signal_level"] is not None else None,
-        "swing_id": str(row["swing_id"]),
+        "swing_id": str(row["swing_id"]) if row["swing_id"] is not None else None,
         "intent_id": str(row["intent_id"]) if row["intent_id"] is not None else None,
         "status": str(row["status"]),
         "requested_quantity": float(row["requested_quantity"]),
@@ -2101,7 +2382,7 @@ def ensure_spot_strategy_action(action: dict[str, Any], *, path: Path | None = N
                 str(action.get("action_type") or "").strip().lower(),
                 str(action.get("side") or "").strip().lower(),
                 int(action["signal_level"]) if action.get("signal_level") is not None else None,
-                str(action.get("swing_id") or "").strip(),
+                str(action.get("swing_id") or "").strip() or None,
                 float(action["requested_quantity"]),
                 _json_text(action.get("reason") if isinstance(action.get("reason"), dict) else {}),
                 now_ms,
@@ -3135,6 +3416,145 @@ def apply_spot_swing_target_ratchet(
         "applied_at_ms": now_ms,
         "idempotent_replay": False,
     }
+
+
+def _spot_accumulation_ratchet_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "action_key": str(row["action_key"]),
+        "intent_id": str(row["intent_id"]),
+        "account_key": str(row["account_key"]),
+        "asset_symbol": str(row["asset_symbol"]),
+        "quote_symbol": str(row["quote_symbol"]),
+        "campaign_id": str(row["campaign_id"]),
+        "signal_level": int(row["signal_level"]),
+        "previous_target_quantity": float(row["previous_target_quantity"]),
+        "applied_gain_quantity": float(row["applied_gain_quantity"]),
+        "next_target_quantity": float(row["next_target_quantity"]),
+        "deployed_quote_quantity": float(row["deployed_quote_quantity"]),
+        "average_price": float(row["average_price"]),
+        "fee_amount": _as_float_or_none(row["fee_amount"]),
+        "fee_asset": str(row["fee_asset"]) if row["fee_asset"] is not None else None,
+        "applied_at_ms": int(row["applied_at_ms"]),
+    }
+
+
+def apply_spot_accumulation_target_ratchet(
+    action_key: str,
+    *,
+    intent_id: str,
+    net_acquired_quantity: float,
+    deployed_quote_quantity: float,
+    average_price: float,
+    fee_amount: float | None,
+    fee_asset: str | None,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Protect a confirmed reserve-deployment fill by increasing Target exactly once."""
+    normalized_key = str(action_key or "").strip()
+    normalized_intent = str(intent_id or "").strip()
+    acquired = float(net_acquired_quantity)
+    if not normalized_key or not normalized_intent:
+        raise ValueError("Treasury accumulation ratchet requires action and intent identities.")
+    if not math.isfinite(acquired) or acquired <= 0:
+        raise ValueError("Treasury accumulation ratchet requires positive net acquired asset.")
+    with _connection(path) as connection:
+        existing = connection.execute(
+            "SELECT * FROM spot_accumulation_target_ratchets WHERE action_key = ?",
+            (normalized_key,),
+        ).fetchone()
+        if existing is not None:
+            return {**_spot_accumulation_ratchet_from_row(existing), "idempotent_replay": True}
+        action = connection.execute(
+            "SELECT * FROM spot_strategy_actions WHERE action_key = ?",
+            (normalized_key,),
+        ).fetchone()
+        if action is None or str(action["action_type"]) != "accumulate_asset":
+            raise ValueError("Treasury accumulation strategy action was not found.")
+        if str(action["intent_id"] or "") != normalized_intent:
+            raise ValueError("Treasury accumulation intent does not match its strategy action.")
+        policy = connection.execute(
+            """
+            SELECT * FROM portfolio_asset_policies
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (action["account_key"], action["asset_symbol"], action["quote_symbol"]),
+        ).fetchone()
+        if policy is None:
+            raise ValueError("Treasury accumulation Target policy was not found.")
+        previous_target = float(policy["target_quantity"])
+        next_target = previous_target + acquired
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        connection.execute(
+            """
+            UPDATE portfolio_asset_policies
+            SET target_quantity = ?, updated_at_ms = ?
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (
+                next_target,
+                now_ms,
+                action["account_key"],
+                action["asset_symbol"],
+                action["quote_symbol"],
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO spot_accumulation_target_ratchets (
+                action_key, intent_id, account_key, asset_symbol, quote_symbol,
+                campaign_id, signal_level, previous_target_quantity,
+                applied_gain_quantity, next_target_quantity, deployed_quote_quantity,
+                average_price, fee_amount, fee_asset, applied_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_key,
+                normalized_intent,
+                action["account_key"],
+                action["asset_symbol"],
+                action["quote_symbol"],
+                action["campaign_id"],
+                action["signal_level"],
+                previous_target,
+                acquired,
+                next_target,
+                float(deployed_quote_quantity),
+                float(average_price),
+                fee_amount,
+                str(fee_asset).strip().upper() if fee_asset else None,
+                now_ms,
+            ),
+        )
+        saved = connection.execute(
+            "SELECT * FROM spot_accumulation_target_ratchets WHERE action_key = ?",
+            (normalized_key,),
+        ).fetchone()
+    if saved is None:
+        raise RuntimeDbError("Treasury accumulation Target ratchet was not persisted.")
+    return {**_spot_accumulation_ratchet_from_row(saved), "idempotent_replay": False}
+
+
+def list_spot_accumulation_target_ratchets(
+    *,
+    account_key: str | None = None,
+    asset_symbol: str | None = None,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    if account_key is not None:
+        conditions.append("account_key = ?")
+        params.append(str(account_key))
+    if asset_symbol is not None:
+        conditions.append("asset_symbol = ?")
+        params.append(str(asset_symbol).strip().upper())
+    sql = "SELECT * FROM spot_accumulation_target_ratchets"
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY applied_at_ms ASC, action_key ASC"
+    with _connection(path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [_spot_accumulation_ratchet_from_row(row) for row in rows]
 
 
 def upsert_portfolio_daily_snapshot(

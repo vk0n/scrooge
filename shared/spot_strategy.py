@@ -4,7 +4,12 @@ import math
 from collections.abc import Set
 from typing import Any
 
-from shared.spot_progression import ProgressiveSwingConfig, plan_opening_quantity, plan_profitable_close
+from shared.spot_progression import (
+    ProgressiveSwingConfig,
+    plan_opening_quantity,
+    plan_profitable_close,
+    plan_treasury_accumulation,
+)
 from shared.spot_sizing import IndicatorSizingConfig, apply_indicator_sizing
 from shared.spot_swing import calculate_swing_economics
 from shared.spot_waiter_cleanup import (
@@ -59,6 +64,19 @@ def transition_spot_strategy_campaign(
         campaign_id = prior.get("campaign_id")
         active_side = normalized_side
         highest_level = int(prior.get("highest_completed_level") or 0)
+    sizing_fields = (
+        "campaign_start_target_quantity",
+        "campaign_start_minimum_holding_pct",
+        "campaign_start_policy_sellable_reference",
+        "campaign_start_remaining_sellable_quantity",
+        "remaining_sellable_ratio_at_start",
+        "campaign_capacity_pct",
+        "full_deploy_threshold_pct",
+        "campaign_capacity_quantity",
+        "campaign_consumed_quantity",
+        "campaign_capacity_mode",
+    )
+    preserve_sizing = normalized_side == "hold" or prior_side == normalized_side
     return {
         "campaign_id": campaign_id,
         "active_side": active_side,
@@ -66,6 +84,7 @@ def transition_spot_strategy_campaign(
         "last_signal_side": normalized_side,
         "last_signal_level": max(0, int(signal_level)),
         "last_signal_at_ms": int(signal_at_ms),
+        **{field: prior.get(field) if preserve_sizing else None for field in sizing_fields},
     }
 
 
@@ -105,7 +124,7 @@ def plan_spot_strategy_action(
     swings: list[dict[str, Any]],
     *,
     available_quote: float,
-    available_opening_quote: float | None = None,
+    available_accumulation_quote: float | None = None,
     config: ProgressiveSwingConfig | None = None,
     cleanup_config: WaiterCleanupConfig | None = None,
     excluded_close_swing_ids: Set[str] | None = None,
@@ -166,26 +185,72 @@ def plan_spot_strategy_action(
 
     opportunity = str(signal.get("opportunity") or "hold").strip().lower()
     level = int(signal.get("level") or 0)
-    opening_decision: dict[str, Any] | None = None
+    new_strategy_decision: dict[str, Any] | None = None
     if (
         bool(signal.get("strategy_eligible"))
         and opportunity != "hold"
         and campaign.get("active_side") == opportunity
         and level > int(campaign.get("highest_completed_level") or 0)
     ):
-        opening = plan_opening_quantity(signal, holding, config=resolved_config)
-        if opening.get("eligible"):
-            quantity = float(opening["quantity"])
-            if opportunity == "sell":
-                quantity = min(quantity, float(holding.get("immediately_sellable_quantity") or 0.0))
+        objective = str(signal.get("trading_objective") or "").strip().lower()
+        if opportunity == "buy" and objective == "accumulate_cash":
+            new_strategy_decision = {
+                "action_type": "campaign_only",
+                "side": "buy",
+                "signal_level": level,
+                "requested_quantity": 0.0,
+                "reason": {
+                    "action_type": "campaign_only",
+                    "campaign_reason": "accumulate_cash_buy_signal",
+                    "signal": opportunity,
+                    "signal_level": level,
+                    "campaign_id": campaign.get("campaign_id"),
+                },
+            }
+        elif opportunity == "buy" and objective == "accumulate_asset":
+            # Reserve deployment fails closed when a caller has not projected free reserve.
+            accumulation_quote = max(0.0, float(available_accumulation_quote or 0.0))
+            accumulation = plan_treasury_accumulation(
+                signal,
+                free_reserve_quote=accumulation_quote,
+                current_price=current_price,
+                config=resolved_config,
+            )
+            if accumulation.get("eligible"):
+                new_strategy_decision = {
+                    "action_type": "accumulate_asset",
+                    "side": "buy",
+                    "signal_level": level,
+                    "requested_quantity": float(accumulation["quantity"]),
+                    "reason": {
+                        "action_type": "accumulate_asset",
+                        "signal": opportunity,
+                        "signal_level": level,
+                        "rolling_change_pct": signal.get("rolling_change_pct"),
+                        "base_tranche_pct": signal.get("base_tranche_pct"),
+                        "sizing_modifier": signal.get("sizing_modifier"),
+                        "final_tranche_pct": signal.get("final_tranche_pct"),
+                        "indicator_assessment": signal.get("indicator_assessment"),
+                        "indicator_context": signal.get("indicator_context"),
+                        "campaign_id": campaign.get("campaign_id"),
+                        "free_reserve_quote": accumulation.get("free_reserve_quote"),
+                        "planned_quote_to_spend": accumulation.get("quote_to_spend"),
+                    },
+                }
+        elif opportunity == "sell":
+            opening = plan_opening_quantity(signal, holding, campaign, config=resolved_config)
+            if opening.get("eligible"):
+                quantity = min(
+                    float(opening["quantity"]),
+                    float(holding.get("immediately_sellable_quantity") or 0.0),
+                )
             else:
-                opening_quote = available_quote if available_opening_quote is None else available_opening_quote
-                cash_fraction = min(100.0, float(signal.get("final_tranche_pct") or 0.0)) / 100.0
-                quantity = min(quantity, max(0.0, float(opening_quote)) * cash_fraction / current_price)
+                quantity = 0.0
             if math.isfinite(quantity) and quantity > 0:
-                opening_decision = {
+                campaign_snapshot = opening.get("campaign") or campaign
+                new_strategy_decision = {
                     "action_type": "open",
-                    "side": opportunity,
+                    "side": "sell",
                     "signal_level": level,
                     "requested_quantity": quantity,
                     "reason": {
@@ -195,10 +260,23 @@ def plan_spot_strategy_action(
                         "rolling_change_pct": signal.get("rolling_change_pct"),
                         "base_tranche_pct": signal.get("base_tranche_pct"),
                         "sizing_modifier": signal.get("sizing_modifier"),
-                        "final_tranche_pct": signal.get("final_tranche_pct"),
+                        "final_tranche_pct": signal.get("base_tranche_pct"),
                         "indicator_assessment": signal.get("indicator_assessment"),
+                        "indicator_context": signal.get("indicator_context"),
                         "campaign_id": campaign.get("campaign_id"),
-                        "strategy_capacity": opening.get("strategic_capacity"),
+                        "campaign_start_target_quantity": campaign_snapshot.get("campaign_start_target_quantity"),
+                        "campaign_start_minimum_holding_pct": campaign_snapshot.get("campaign_start_minimum_holding_pct"),
+                        "campaign_start_policy_sellable_reference": campaign_snapshot.get("campaign_start_policy_sellable_reference"),
+                        "campaign_start_remaining_sellable_quantity": campaign_snapshot.get("campaign_start_remaining_sellable_quantity"),
+                        "remaining_sellable_ratio_at_start": campaign_snapshot.get("remaining_sellable_ratio_at_start"),
+                        "campaign_capacity_pct": campaign_snapshot.get("campaign_capacity_pct"),
+                        "full_deploy_threshold_pct": campaign_snapshot.get("full_deploy_threshold_pct"),
+                        "campaign_capacity_mode": campaign_snapshot.get("campaign_capacity_mode"),
+                        "campaign_capacity_quantity": opening.get("campaign_capacity_quantity"),
+                        "campaign_consumed_quantity": opening.get("campaign_consumed_quantity"),
+                        "campaign_remaining_quantity": opening.get("campaign_remaining_quantity"),
+                        "level_allocation_pct": opening.get("tranche_pct"),
+                        "requested_level_quantity": opening.get("requested_level_quantity"),
                     },
                 }
 
@@ -206,7 +284,11 @@ def plan_spot_strategy_action(
         resolved_cleanup.enabled
         and len(active_swings) >= resolved_cleanup.max_open_bargains_per_asset
     )
-    capacity_pressure = at_capacity and opening_decision is not None
+    capacity_pressure = (
+        at_capacity
+        and new_strategy_decision is not None
+        and new_strategy_decision.get("action_type") == "open"
+    )
     now_ms = int(signal.get("evaluated_at_ms") or signal.get("current_at_ms") or 0)
     cleanup_candidates: list[tuple[int, str, dict[str, Any]]] = []
     if resolved_cleanup.enabled and opportunity in {"buy", "sell"} and level > 0 and now_ms > 0:
@@ -309,8 +391,8 @@ def plan_spot_strategy_action(
                 "hold_reason": "max_open_bargains_per_asset",
                 "open_bargains": len(active_swings),
                 "max_open_bargains_per_asset": resolved_cleanup.max_open_bargains_per_asset,
-                "prevented_side": opening_decision["side"],
-                "prevented_signal_level": opening_decision["signal_level"],
+                "prevented_side": new_strategy_decision["side"],
+                "prevented_signal_level": new_strategy_decision["signal_level"],
             },
         }
-    return opening_decision
+    return new_strategy_decision

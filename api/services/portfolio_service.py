@@ -1093,8 +1093,22 @@ def _create_spot_order_intent_preview(
     normalized_swing_id = str(swing_id or "").strip() or None
     normalized_reason_text = str(reason_text or "").strip() or None
     normalized_reason = reason if isinstance(reason, dict) else {}
-    if normalized_source == "strategy" and normalized_swing_id is None:
-        raise ValueError("Strategy Spot orders must belong to a Swing.")
+    strategy_action_type = str(
+        payload.get("strategy_action_type") or normalized_reason.get("action_type") or ""
+    ).strip().lower()
+    standalone_accumulation = (
+        normalized_source == "strategy"
+        and normalized_swing_id is None
+        and strategy_action_type == "accumulate_asset"
+        and side == "buy"
+    )
+    accumulation_enabled = str(
+        os.getenv("SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED", "0") or "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if standalone_accumulation and not accumulation_enabled:
+        raise ValueError("Treasury accumulation is disabled by the production safety gate.")
+    if normalized_source == "strategy" and normalized_swing_id is None and not standalone_accumulation:
+        raise ValueError("A standalone Strategy Spot order must be Treasury accumulation.")
     if normalized_source == "strategy":
         if not normalized_reason_text and not normalized_reason:
             raise ValueError("Strategy Spot orders require an explainable reason.")
@@ -1129,6 +1143,8 @@ def _create_spot_order_intent_preview(
         )
     if holding is None and not treasury_intake:
         raise LookupError("Treasury asset was not found.")
+    if standalone_accumulation and holding.get("trading_objective") != "accumulate_asset":
+        raise ValueError("Treasury accumulation requires the ACCUMULATE_ASSET objective.")
     estimated_price = _as_float(holding.get("market_price")) if holding is not None else None
     if estimated_price is None and treasury_intake:
         estimated_price, _, _ = _fetch_market_price(asset_symbol, quote_symbol)
@@ -1137,9 +1153,17 @@ def _create_spot_order_intent_preview(
 
     estimated_quote_value = requested_quantity * estimated_price
     available_quote = _as_float(exchange.get("usdt_free")) or 0.0
-    if side == "buy" and normalized_swing_id is not None:
-        swing_executions = list_spot_swing_executions(normalized_swing_id)
-        reserve_key = "vault_reserve_available" if not swing_executions else "dry_powder"
+    if side == "buy" and (normalized_swing_id is not None or standalone_accumulation):
+        swing_executions = (
+            list_spot_swing_executions(normalized_swing_id)
+            if normalized_swing_id is not None
+            else []
+        )
+        reserve_key = (
+            "vault_reserve_available"
+            if standalone_accumulation or not swing_executions
+            else "dry_powder"
+        )
         managed_quote = _as_float(snapshot["summary"].get(reserve_key)) or 0.0
         available_quote = min(available_quote, managed_quote)
     if holding is None:
@@ -1189,6 +1213,8 @@ def _create_spot_order_intent_preview(
             "swing_id": normalized_swing_id,
             "reason_text": normalized_reason_text,
             "reason": normalized_reason,
+            "strategy_action_type": strategy_action_type or None,
+            "strategy_action_key": str(payload.get("strategy_action_key") or "").strip() or None,
             "treasury_intake": treasury_intake,
             "initial_target_quantity": requested_quantity if treasury_intake else None,
             "preview_expires_at_ms": int((time.time() + SPOT_ORDER_PREVIEW_TTL_SECONDS) * 1000),

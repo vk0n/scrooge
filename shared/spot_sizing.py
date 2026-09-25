@@ -153,5 +153,6 @@ def apply_indicator_sizing(
             "atr_role": "volatility_context_only",
         },
         "sizing_modifier": modifier,
-        "final_tranche_pct": min(100.0, base_tranche_pct * modifier),
+        # The modifier is research telemetry only. Execution always uses the fixed level allocation.
+        "final_tranche_pct": base_tranche_pct,
     }

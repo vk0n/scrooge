@@ -36,7 +36,7 @@ On a clean instance:
 `schema_migrations` is the authoritative schema-version table.
 
 Current schema version:
-- `13`
+- `15`
 
 Current runtime tables:
 - `schema_migrations`
@@ -59,6 +59,7 @@ Current runtime tables:
 - `spot_strategy_campaigns`
 - `spot_strategy_actions`
 - `spot_swing_target_ratchets`
+- `spot_accumulation_target_ratchets`
 
 `portfolio_transactions` remains the accounting source of truth for Treasury. `ui_log_entries` is a structured,
 filterable Ledger projection spanning both Futures trade events and Treasury events; Treasury transaction entries are
@@ -85,7 +86,8 @@ derive or rewrite Target Holding.
 - The authoritative Spot executor owns `stepSize`, `tickSize`, `minQty`, `minNotional`, and other venue constraints.
 - Swing accounting consumes actual Binance fill quantity and price, never requested or pre-quantized values.
 - Manual and strategy intents converge on the same authoritative executor. Public Control Plane previews are always
-  manual; strategy intents must carry a valid `swing_id` and an explainable reason before they can be submitted.
+  manual. Strategy intents must carry either a valid `swing_id`, or an explicit standalone `accumulate_asset`
+  action identity and explainable reason.
 - Intent quantities remain economic requests. Immediately before submission the executor rounds quantity down to the
   Binance `stepSize`, then validates `minQty`, `maxQty`, notional rules, current balances, and Protected Floor.
 - Fees retain their original `fee_amount` and `fee_asset`. Fees paid in BNB or another third asset remain unpriced until
@@ -101,11 +103,14 @@ derive or rewrite Target Holding.
 - A closed `accumulate_asset` Swing may produce a Target ratchet only after its net asset gain is final. Authoritative
   settlement applies it atomically and idempotently exactly once. Partial closes never ratchet Target, and a losing
   Swing never lowers it.
+- A confirmed standalone Treasury accumulation BUY ratchets Target by the net acquired base asset exactly once. Its
+  action-key ratchet is stored separately from Swing ratchets and does not create Swing execution state.
 
 ## Treasury Policy Mode
 
-`SCROOGE_SPOT_EXECUTION_ENABLED` is the only Spot execution mode switch. Treasury does not introduce a second global
-switch or a per-asset auto-trading toggle.
+`SCROOGE_SPOT_EXECUTION_ENABLED` remains the global Spot execution switch. The new reserve-deployment behavior also
+requires `SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED`; it defaults OFF in live deployments and is explicitly enabled
+only in reviewed research scenarios. There is no UI or per-asset automation toggle.
 
 - With execution disabled, every holding is `locked`, immediate sellable inventory is zero, and trading policy/order
   controls are omitted from the UI. Stored Target and Minimum Holding values remain unchanged.
@@ -132,31 +137,39 @@ switch or a per-asset auto-trading toggle.
   indicator candles and always keeps a zero final tranche.
 - Spot uses its own strictly closed-candle context instead of coupling to Futures execution: RSI 11, EMA 50,
   Bollinger 20/2, and ATR 14 on Binance Spot candles configured by `SCROOGE_SPOT_INDICATOR_INTERVAL` (`1h` by default).
-- RSI, Bollinger, and EMA provide directional sizing evidence. ATR is preserved as volatility context only and cannot
-  create or reverse an opportunity.
+- RSI, Bollinger, EMA, and ATR are retained as observational research telemetry. They cannot create or reverse an
+  opportunity and no longer change execution quantity.
 - Initial sizing tiers are weak `0.5x`, neutral `1.0x`, strong `1.25x`, and very strong `1.5x`; the ordered modifiers
   are configurable with `SCROOGE_SPOT_INDICATOR_SIZING_MODIFIERS`.
 - Three confirmations without conflicts are very strong; at least two are strong; conflicting evidence that dominates
   confirmations is weak; remaining mixed or partial context is neutral.
-- Missing indicator data applies the conservative weak modifier while preserving the rolling signal. The context,
-  confirmations, conflicts, tier, modifier, and final tranche percentage remain in the persisted signal snapshot.
-- Indicator sizing still does not create Swings, order intents, or orders. Portfolio and exchange limits remain a later
-  progressive execution concern.
+- Missing indicator data still records the legacy weak tier while preserving the rolling signal. Context,
+  confirmations, conflicts, tier, and legacy modifier remain in the persisted signal snapshot for research only;
+  `final_tranche_pct` equals the fixed level allocation.
 
 ## Progressive Spot Swing Execution
 
-- An eligible rolling opportunity opens at most one independent Swing for each newly reached level in the current
-  directional campaign. HOLD or a direction reversal starts a new campaign; completed levels survive restarts.
-- The final indicator-sized tranche is converted to an economic quantity first. The unified Spot executor remains
-  authoritative for Binance lot size, notional, current balances, and Protected Floor validation.
+- An eligible rolling opportunity processes at most one action for each newly reached level in the current directional
+  campaign. HOLD preserves the campaign; an opposite actionable signal starts a new campaign; completed levels survive
+  restarts.
+- A new SELL campaign freezes a budget from current policy sellable inventory. Normally the budget is 50% of current
+  remaining sellable; when remaining sellable is at most 25% of `Target × (1 - Minimum Holding %)`, the budget is the
+  full remainder. L1/L2/L3/L4 consume fixed 10/20/30/40% shares of that budget. Current Protected Floor and Binance
+  free inventory always cap execution. Configure the two percentages with `SCROOGE_SPOT_CAMPAIGN_CAPACITY_PCT` and
+  `SCROOGE_SPOT_FULL_DEPLOY_THRESHOLD_PCT`.
+- Campaign-start Target, Minimum Holding, policy reference, remaining sellable, ratio, capacity mode, frozen capacity,
+  and idempotently consumed quantity are persisted in `spot_strategy_campaigns`. A Target ratchet affects only future
+  campaigns. A direct jump to L3 executes only L3's 30% share; it does not backfill L1 and L2.
 - Existing Swings are evaluated independently from their own weighted opening execution price. The default profitable
   close threshold is `5%` (`SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT`), and profitable closes take priority over new exposure.
 - At most one strategy action per asset is submitted in a signal cycle. Durable action keys and existing client order
   recovery prevent restarts or retries from creating a second real order for the same decision.
 - New strategy exposure opens only from SELL opportunities. BUY opportunities close existing SELL-origin Swings but do
-  not create BUY-origin Swings. `accumulate_cash` restores the Swing quantity and leaves profit in shared quote cash.
-  `accumulate_asset` reuses profitable sale proceeds to buy back more asset. Its finalized positive asset gain
-  ratchets Target exactly once after the Swing is fully CLOSED.
+  not create BUY-origin Swings. For `accumulate_cash`, an otherwise unused BUY advances campaign state without an
+  order. For `accumulate_asset`, it may deploy only Free Vault Reserve through a standalone BUY, and a confirmed fill
+  increases Target by net acquired asset. `accumulate_cash` SELL Bargains restore the Swing quantity and leave profit
+  in shared quote cash. `accumulate_asset` SELL Bargains reuse sale proceeds to buy back more asset, with finalized
+  positive asset gain ratcheting Target exactly once after full closure.
 - `SCROOGE_SPOT_ESTIMATED_FEE_RATE` is used only for conservative strategy sizing. Actual Swing and portfolio accounting
   always use confirmed Binance fills and their native fee amount/asset.
 

@@ -13,6 +13,7 @@ from shared.runtime_db import (
     complete_spot_strategy_campaign_level,
     create_spot_swing,
     ensure_spot_strategy_action,
+    initialize_spot_strategy_campaign_capacity,
     list_spot_strategy_actions,
     list_spot_swing_executions,
     list_spot_swings,
@@ -25,6 +26,7 @@ from shared.runtime_db import (
 )
 from shared.spot_progression import (
     ProgressiveSwingConfig,
+    initialize_sell_campaign_capacity,
 )
 from shared.spot_strategy import plan_spot_strategy_action
 from shared.spot_waiter_cleanup import WaiterCleanupConfig, is_cleanup_reason
@@ -58,9 +60,15 @@ def progressive_swing_config_from_env() -> ProgressiveSwingConfig:
     return ProgressiveSwingConfig(
         close_profit_pct=float(os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "5") or 5),
         estimated_fee_rate=float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
-        buy_origin_enabled=str(
-            os.getenv("SCROOGE_SPOT_BUY_ORIGIN_ENABLED", "0") or "0"
+        treasury_accumulation_enabled=str(
+            os.getenv("SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
+        campaign_capacity_pct=float(
+            os.getenv("SCROOGE_SPOT_CAMPAIGN_CAPACITY_PCT", "50") or 50
+        ),
+        full_deploy_threshold_pct=float(
+            os.getenv("SCROOGE_SPOT_FULL_DEPLOY_THRESHOLD_PCT", "25") or 25
+        ),
     )
 
 
@@ -159,6 +167,20 @@ class ProgressiveSpotSwingExecutor:
         )
         if holding is None:
             return None
+        if (
+            bool(signal.get("strategy_eligible"))
+            and campaign.get("active_side") == "sell"
+            and campaign.get("campaign_capacity_quantity") is None
+        ):
+            snapshot = initialize_sell_campaign_capacity(campaign, holding, config=self.config)
+            campaign = initialize_spot_strategy_campaign_capacity(
+                account_key=self.account_key,
+                asset_symbol=asset,
+                quote_symbol=quote,
+                campaign_id=str(campaign.get("campaign_id") or ""),
+                snapshot=snapshot,
+                path=self.db_path,
+            )
         current_price = float(signal.get("current_price") or holding.get("market_price") or 0.0)
         if not math.isfinite(current_price) or current_price <= 0:
             return None
@@ -171,7 +193,7 @@ class ProgressiveSpotSwingExecutor:
         )
         opening_quote = max(0.0, float(summary.get("vault_reserve_available") or 0.0))
         available_quote = min(exchange_quote, managed_quote)
-        available_opening_quote = min(exchange_quote, opening_quote)
+        available_accumulation_quote = min(exchange_quote, opening_quote)
 
         swing_states = self._swing_states(asset, quote)
         excluded_close_swing_ids: set[str] = set()
@@ -182,7 +204,7 @@ class ProgressiveSpotSwingExecutor:
                 campaign,
                 swing_states,
                 available_quote=available_quote,
-                available_opening_quote=available_opening_quote,
+                available_accumulation_quote=available_accumulation_quote,
                 config=self.config,
                 cleanup_config=self.cleanup_config,
                 excluded_close_swing_ids=excluded_close_swing_ids,
@@ -202,8 +224,9 @@ class ProgressiveSpotSwingExecutor:
 
         campaign_id = str(campaign.get("campaign_id") or "")
         quantity = float(decision["requested_quantity"])
-        action_key = f"open:{campaign_id}:level:{level}"
-        swing_id = f"swing-{_stable_key(action_key)[:24]}"
+        action_type = str(decision["action_type"])
+        action_key = f"{action_type}:{campaign_id}:level:{level}"
+        swing_id = f"swing-{_stable_key(action_key)[:24]}" if action_type == "open" else None
         reason = decision["reason"]
         action = ensure_spot_strategy_action(
             {
@@ -212,7 +235,7 @@ class ProgressiveSpotSwingExecutor:
                 "asset_symbol": asset,
                 "quote_symbol": quote,
                 "campaign_id": campaign_id,
-                "action_type": "open",
+                "action_type": action_type,
                 "side": opportunity,
                 "signal_level": level,
                 "swing_id": swing_id,
@@ -221,13 +244,15 @@ class ProgressiveSpotSwingExecutor:
             },
             path=self.db_path,
         )
-        if action["status"] in {"planned", "retryable"}:
+        if action["status"] in {"planned", "retryable", "blocked"}:
             action = update_spot_strategy_action(
                 action_key,
                 {"requested_quantity": quantity, "reason_json": reason},
                 path=self.db_path,
             ) or action
-        if load_spot_swing(swing_id, path=self.db_path) is None:
+        if action_type == "campaign_only":
+            return self._complete_action(action)
+        if action_type == "open" and load_spot_swing(str(swing_id), path=self.db_path) is None:
             create_spot_swing(
                 {
                     "swing_id": swing_id,
@@ -366,9 +391,13 @@ class ProgressiveSpotSwingExecutor:
                             "side": action["side"],
                             "quantity": action["requested_quantity"],
                             "swing_id": action["swing_id"],
+                            "strategy_action_type": action["action_type"],
+                            "strategy_action_key": action["action_key"],
                             "reason_text": (
                                 "Progressive Swing opening tranche."
                                 if action["action_type"] == "open"
+                                else "Treasury accumulation from Free Vault Reserve."
+                                if action["action_type"] == "accumulate_asset"
                                 else (
                                     "Automated stale Bargain cleanup."
                                     if is_cleanup_reason((action.get("reason") or {}).get("close_reason"))
@@ -474,13 +503,22 @@ class ProgressiveSpotSwingExecutor:
             {"status": "completed", "error": None, "completed_at_ms": completed_at_ms},
             path=self.db_path,
         )
-        if action["action_type"] == "open" and action.get("campaign_id") and action.get("signal_level"):
+        if (
+            action["action_type"] in {"open", "accumulate_asset", "campaign_only"}
+            and action.get("campaign_id")
+            and action.get("signal_level")
+        ):
+            consumed_quantity = 0.0
+            if action["action_type"] == "open" and intent is not None:
+                consumed_quantity = float(intent.get("executed_quantity") or 0.0)
             complete_spot_strategy_campaign_level(
                 account_key=action["account_key"],
                 asset_symbol=action["asset_symbol"],
                 quote_symbol=action["quote_symbol"],
                 campaign_id=action["campaign_id"],
                 signal_level=int(action["signal_level"]),
+                consumed_quantity=consumed_quantity,
+                action_key=action["action_key"] if consumed_quantity > 0 else None,
                 path=self.db_path,
             )
         return updated or action

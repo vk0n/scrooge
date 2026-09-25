@@ -17,14 +17,19 @@ from bot.spot_execution import (
 from shared.runtime_db import (
     append_spot_swing_execution,
     create_spot_swing,
+    ensure_spot_strategy_action,
+    list_portfolio_asset_policies,
     list_portfolio_transactions,
+    list_spot_accumulation_target_ratchets,
     list_spot_order_status_events,
+    list_spot_swings,
     list_spot_swing_executions,
     load_spot_order_intent,
     load_spot_swing,
     reserve_spot_order_intent,
     save_exchange_account_snapshot,
     update_spot_order_intent,
+    update_spot_strategy_action,
 )
 
 
@@ -190,6 +195,128 @@ class SpotExecutionTests(unittest.TestCase):
             expected_statuses={"queueing"},
             path=self.db_path,
         )
+
+    def _accumulation_preview(self, *, quantity: float = 0.25) -> dict:
+        portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "deposit",
+                "asset_symbol": "USDT",
+                "quantity": 100,
+                "quote_symbol": "USDT",
+                "custody_location": "binance",
+            }
+        )
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {
+                "target_quantity": 1,
+                "minimum_holding_pct": 80,
+                "trading_objective": "accumulate_asset",
+            },
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+        action_key = "accumulate_asset:BTC:campaign-live:level:1"
+        ensure_spot_strategy_action(
+            {
+                "action_key": action_key,
+                "account_key": "manual_spot",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "campaign_id": "campaign-live",
+                "action_type": "accumulate_asset",
+                "side": "buy",
+                "signal_level": 1,
+                "swing_id": None,
+                "requested_quantity": quantity,
+                "reason": {"action_type": "accumulate_asset"},
+            },
+            path=self.db_path,
+        )
+        preview = portfolio_service.create_strategy_spot_order_intent(
+            {
+                "asset_symbol": "BTC",
+                "side": "buy",
+                "quantity": quantity,
+                "strategy_action_type": "accumulate_asset",
+                "strategy_action_key": action_key,
+                "reason": {"action_type": "accumulate_asset", "signal_level": 1},
+            }
+        )
+        update_spot_strategy_action(
+            action_key,
+            {"intent_id": preview["intent_id"]},
+            path=self.db_path,
+        )
+        self._queue_preview(preview)
+        return preview
+
+    def test_accumulation_fill_uses_net_asset_for_target_and_is_restart_safe(self):
+        with patch.dict(os.environ, {"SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED": "1"}):
+            preview = self._accumulation_preview()
+            client = FakeSpotExecutionClient(commission_amount=0.01, commission_asset="BTC")
+            executor = SpotOrderExecutor(
+                client,
+                logger=logging.getLogger("test.spot-execution"),
+                db_path=self.db_path,
+            )
+
+            executor.execute(preview["intent_id"])
+            executor.execute(preview["intent_id"])
+
+        policy = next(
+            item for item in list_portfolio_asset_policies(path=self.db_path)
+            if item["asset_symbol"] == "BTC"
+        )
+        transaction = next(
+            item for item in list_portfolio_transactions(path=self.db_path)
+            if item.get("spot_order_intent_id") == preview["intent_id"]
+            and not item.get("spot_quote_leg")
+        )
+        self.assertAlmostEqual(transaction["quantity"], 0.24)
+        self.assertAlmostEqual(policy["target_quantity"], 1.24)
+        self.assertEqual(len(list_spot_accumulation_target_ratchets(path=self.db_path)), 1)
+        self.assertEqual(client.create_calls, 1)
+        self.assertEqual(list_spot_swings(path=self.db_path), [])
+
+    def test_accumulation_execution_rechecks_feature_gate(self):
+        with patch.dict(os.environ, {"SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED": "1"}):
+            preview = self._accumulation_preview()
+        client = FakeSpotExecutionClient()
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        with patch.dict(os.environ, {"SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED": "0"}):
+            with self.assertRaisesRegex(SpotOrderValidationError, "production safety gate"):
+                executor.execute(preview["intent_id"])
+
+        self.assertEqual(client.create_calls, 0)
+
+    def test_accumulation_execution_is_capped_by_actual_binance_usdt(self):
+        with patch.dict(os.environ, {"SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED": "1"}):
+            preview = self._accumulation_preview()
+            client = FakeSpotExecutionClient(usdt_free=20)
+            executor = SpotOrderExecutor(
+                client,
+                logger=logging.getLogger("test.spot-execution"),
+                db_path=self.db_path,
+            )
+
+            with self.assertRaisesRegex(SpotOrderValidationError, "Binance USDT balance"):
+                executor.execute(preview["intent_id"])
+
+        self.assertEqual(client.create_calls, 0)
 
     def test_filled_buy_is_recorded_once_in_treasury_ledger(self):
         preview = self._preview_and_queue("buy", 0.25)

@@ -7,7 +7,7 @@ Phase H replays the production Spot strategy over an isolated historical Treasur
 Live and research both call the same implementations for:
 
 - rolling 24-hour opportunity levels in `shared/spot_signal.py`
-- indicator sizing and HOLD invariants in `shared/spot_sizing.py`
+- indicator telemetry and HOLD invariants in `shared/spot_sizing.py`
 - policy eligibility and action selection in `shared/spot_strategy.py`
 - progressive opening and profitable close economics in `shared/spot_progression.py`
 - Bargain accounting and Target ratchet proposals in `shared/spot_swing.py`
@@ -85,6 +85,7 @@ Each run writes:
 - `per_asset_summary.json`
 - `waiter_cleanup.json` and `waiter_cleanup_reasons.csv`
 - `swings.json` and `executions.csv`
+- `sell_campaigns.json` and `sell_campaigns.csv`
 - `signals.csv` and `actions.csv`
 - `inventory.csv` and `target_history.csv`
 - `final_state.json` and `rejections.csv`

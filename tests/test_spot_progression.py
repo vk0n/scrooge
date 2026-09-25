@@ -9,11 +9,15 @@ from unittest.mock import patch
 from bot.spot_strategy import ProgressiveSpotSwingExecutor
 from shared.runtime_db import (
     append_spot_swing_execution,
+    apply_spot_accumulation_target_ratchet,
     apply_spot_swing_target_ratchet,
     bootstrap_runtime_db,
     complete_spot_strategy_campaign_level,
     create_spot_swing,
+    ensure_spot_strategy_action,
+    initialize_spot_strategy_campaign_capacity,
     list_portfolio_asset_policies,
+    list_spot_accumulation_target_ratchets,
     list_spot_strategy_actions,
     list_spot_swings,
     load_spot_strategy_campaign,
@@ -21,14 +25,101 @@ from shared.runtime_db import (
     upsert_portfolio_asset_policy,
     update_spot_strategy_action,
 )
-from shared.spot_progression import ProgressiveSwingConfig, plan_opening_quantity, plan_profitable_close
+from shared.spot_progression import (
+    ProgressiveSwingConfig,
+    initialize_sell_campaign_capacity,
+    plan_opening_quantity,
+    plan_profitable_close,
+    plan_treasury_accumulation,
+    policy_sellable_reference,
+)
 from shared.spot_strategy import plan_spot_strategy_action, transition_spot_strategy_campaign
 from shared.spot_swing import calculate_swing_economics
 from shared.spot_waiter_cleanup import WaiterCleanupConfig
 
 
 class ProgressiveSwingDomainTests(unittest.TestCase):
-    def test_sell_tranche_uses_policy_trading_capacity(self):
+    def test_policy_sellable_reference_uses_only_current_target_and_minimum(self):
+        self.assertEqual(policy_sellable_reference(1000, 60), 400)
+        self.assertEqual(policy_sellable_reference(2000, 75), 500)
+        self.assertEqual(policy_sellable_reference(1100, 60), 440)
+
+    def test_campaign_capacity_boundary_uses_full_deploy_at_exactly_25_pct(self):
+        expected = ((400, 200, "normal"), (300, 150, "normal"), (101, 50.5, "normal"),
+                    (100, 100, "full_deploy"), (80, 80, "full_deploy"))
+        for remaining, capacity, mode in expected:
+            with self.subTest(remaining=remaining):
+                campaign = initialize_sell_campaign_capacity(
+                    {"active_side": "sell", "campaign_id": f"sell-{remaining}"},
+                    {
+                        "target_quantity": 1000,
+                        "minimum_holding_pct": 60,
+                        "policy_sellable_quantity": remaining,
+                    },
+                )
+                self.assertEqual(campaign["campaign_capacity_quantity"], capacity)
+                self.assertEqual(campaign["campaign_capacity_mode"], mode)
+
+    def test_fixed_level_allocations_ignore_conviction(self):
+        campaign = initialize_sell_campaign_capacity(
+            {"active_side": "sell", "campaign_id": "sell-fixed"},
+            {
+                "target_quantity": 1000,
+                "minimum_holding_pct": 60,
+                "policy_sellable_quantity": 400,
+            },
+        )
+        expected = {1: 20, 2: 40, 3: 60, 4: 80}
+        for level, quantity in expected.items():
+            for tier, modifier in (("weak", 0.5), ("very_strong", 1.5)):
+                with self.subTest(level=level, tier=tier):
+                    plan = plan_opening_quantity(
+                        {
+                            "opportunity": "sell",
+                            "base_tranche_pct": level * 10,
+                            "sizing_modifier": modifier,
+                            "indicator_assessment": {"tier": tier},
+                        },
+                        {"immediately_sellable_quantity": 400},
+                        campaign,
+                    )
+                    self.assertEqual(plan["quantity"], quantity)
+
+    def test_active_campaign_snapshot_does_not_resize_after_target_change(self):
+        started = initialize_sell_campaign_capacity(
+            {"active_side": "sell", "campaign_id": "sell-frozen"},
+            {
+                "target_quantity": 1000,
+                "minimum_holding_pct": 60,
+                "policy_sellable_quantity": 300,
+            },
+        )
+        resumed = initialize_sell_campaign_capacity(
+            started,
+            {
+                "target_quantity": 1100,
+                "minimum_holding_pct": 60,
+                "policy_sellable_quantity": 260,
+            },
+        )
+        self.assertEqual(resumed["campaign_start_policy_sellable_reference"], 400)
+        self.assertEqual(resumed["campaign_capacity_quantity"], 150)
+
+    def test_current_policy_and_exchange_inventory_cap_frozen_budget(self):
+        campaign = {
+            "active_side": "sell",
+            "campaign_id": "sell-capped",
+            "campaign_capacity_quantity": 200,
+            "campaign_consumed_quantity": 140,
+        }
+        plan = plan_opening_quantity(
+            {"opportunity": "sell", "base_tranche_pct": 40},
+            {"immediately_sellable_quantity": 25},
+            campaign,
+        )
+        self.assertEqual(plan["quantity"], 25)
+
+    def test_sell_tranche_uses_frozen_campaign_capacity(self):
         plan = plan_opening_quantity(
             {
                 "opportunity": "sell",
@@ -39,8 +130,8 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         )
 
         self.assertTrue(plan["eligible"])
-        self.assertEqual(plan["strategic_capacity"], 200)
-        self.assertEqual(plan["quantity"], 50)
+        self.assertEqual(plan["campaign_capacity_quantity"], 100)
+        self.assertEqual(plan["quantity"], 25)
 
     def test_zero_minimum_holding_exposes_full_target_capacity(self):
         plan = plan_opening_quantity(
@@ -53,10 +144,10 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         )
 
         self.assertTrue(plan["eligible"])
-        self.assertEqual(plan["strategic_capacity"], 1000)
-        self.assertEqual(plan["quantity"], 250)
+        self.assertEqual(plan["campaign_capacity_quantity"], 500)
+        self.assertEqual(plan["quantity"], 125)
 
-    def test_buy_origin_is_disabled_for_every_objective(self):
+    def test_buy_signal_never_opens_a_bargain(self):
         plan = plan_opening_quantity(
             {
                 "opportunity": "buy",
@@ -67,7 +158,7 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         )
 
         self.assertFalse(plan["eligible"])
-        self.assertEqual(plan["reason"], "buy_origin_disabled")
+        self.assertEqual(plan["reason"], "no_opening_opportunity")
 
     def test_accumulate_cash_buy_signal_does_not_open_bargain(self):
         decision = plan_spot_strategy_action(
@@ -83,39 +174,74 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
             {"active_side": "buy", "highest_completed_level": 0, "campaign_id": "buy-campaign"},
             [],
             available_quote=1000,
-            available_opening_quote=40,
+            available_accumulation_quote=40,
         )
 
-        self.assertIsNone(decision)
+        self.assertEqual(decision["action_type"], "campaign_only")
+        self.assertEqual(decision["requested_quantity"], 0)
+        self.assertNotIn("swing_id", decision)
 
-    def test_buy_origin_can_be_enabled_for_research_replay(self):
-        plan = plan_opening_quantity(
+    def test_accumulate_asset_buy_uses_a_fraction_of_free_reserve(self):
+        plan = plan_treasury_accumulation(
             {
                 "opportunity": "buy",
-                "trading_objective": "accumulate_cash",
                 "final_tranche_pct": 25,
             },
-            {"target_quantity": 1000, "minimum_holding_pct": 80},
-            config=ProgressiveSwingConfig(buy_origin_enabled=True),
+            free_reserve_quote=40,
+            current_price=5,
+            config=ProgressiveSwingConfig(
+                treasury_accumulation_enabled=True,
+                estimated_fee_rate=0,
+            ),
         )
 
         self.assertTrue(plan["eligible"])
-        self.assertEqual(plan["strategic_capacity"], 1000)
-        self.assertEqual(plan["quantity"], 250)
+        self.assertEqual(plan["quote_to_spend"], 10)
+        self.assertEqual(plan["quantity"], 2)
 
-    def test_research_buy_origin_does_not_change_accumulate_asset_semantics(self):
-        plan = plan_opening_quantity(
+    def test_accumulate_asset_buy_is_a_standalone_treasury_action(self):
+        decision = plan_spot_strategy_action(
             {
                 "opportunity": "buy",
+                "level": 2,
+                "strategy_eligible": True,
                 "trading_objective": "accumulate_asset",
                 "final_tranche_pct": 25,
+                "current_price": 5,
             },
-            {"target_quantity": 1000, "minimum_holding_pct": 80},
-            config=ProgressiveSwingConfig(buy_origin_enabled=True),
+            {"target_quantity": 1000, "minimum_holding_pct": 80, "market_price": 5},
+            {"active_side": "buy", "highest_completed_level": 1, "campaign_id": "buy-campaign"},
+            [],
+            available_quote=1000,
+            available_accumulation_quote=40,
+            config=ProgressiveSwingConfig(
+                treasury_accumulation_enabled=True,
+                estimated_fee_rate=0,
+            ),
         )
 
-        self.assertFalse(plan["eligible"])
-        self.assertEqual(plan["reason"], "accumulate_asset_sell_origin_only_v1")
+        self.assertEqual(decision["action_type"], "accumulate_asset")
+        self.assertEqual(decision["requested_quantity"], 2)
+        self.assertNotIn("swing_id", decision)
+
+    def test_accumulation_fails_closed_without_an_explicit_free_reserve_projection(self):
+        decision = plan_spot_strategy_action(
+            {
+                "opportunity": "buy",
+                "level": 1,
+                "strategy_eligible": True,
+                "trading_objective": "accumulate_asset",
+                "final_tranche_pct": 25,
+                "current_price": 5,
+            },
+            {"target_quantity": 1000, "minimum_holding_pct": 80, "market_price": 5},
+            {"active_side": "buy", "highest_completed_level": 0, "campaign_id": "buy-campaign"},
+            [],
+            available_quote=1000,
+            config=ProgressiveSwingConfig(treasury_accumulation_enabled=True),
+        )
+
+        self.assertIsNone(decision)
 
     def test_close_uses_swing_basis_and_can_reacquire_more_asset(self):
         swing = {
@@ -252,6 +378,13 @@ class SpotStrategyCampaignTests(unittest.TestCase):
         self.assertEqual(decision["action_type"], "open")
         self.assertEqual(decision["signal_level"], 3)
 
+    def test_direct_l3_jump_executes_only_l3_allocation(self):
+        campaign = self.transition(None, "sell", 3, 1)
+
+        decision = self.opening(campaign, "sell", 3)
+
+        self.assertEqual(decision["requested_quantity"], 15)
+
     def test_opposite_actionable_signal_starts_new_campaign(self):
         sell = self.complete(self.transition(None, "sell", 1, 1), 1)
         held = self.transition(sell, "hold", 0, 2)
@@ -260,7 +393,8 @@ class SpotStrategyCampaignTests(unittest.TestCase):
         self.assertNotEqual(buy["campaign_id"], sell["campaign_id"])
         self.assertEqual(buy["active_side"], "buy")
         self.assertEqual(buy["highest_completed_level"], 0)
-        self.assertIsNone(self.opening(buy, "buy", 1))
+        decision = self.opening(buy, "buy", 1)
+        self.assertEqual(decision["action_type"], "campaign_only")
 
     def test_sell_l1_is_available_after_buy_campaign_resets_sell(self):
         sell = self.complete(self.transition(None, "sell", 3, 1), 3)
@@ -351,6 +485,72 @@ class SpotStrategyCampaignTests(unittest.TestCase):
             self.assertEqual(persisted, resumed)
             self.assertIsNone(self.opening(resumed, "sell", 1))
 
+    def test_campaign_capacity_and_consumption_survive_restart_idempotently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "runtime.sqlite3"
+            bootstrap_runtime_db(db_path)
+            opened = sync_spot_strategy_campaign(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                opportunity="sell",
+                signal_level=1,
+                signal_at_ms=1,
+                path=db_path,
+            )
+            snapshot = initialize_sell_campaign_capacity(
+                opened,
+                {
+                    "target_quantity": 1000,
+                    "minimum_holding_pct": 60,
+                    "policy_sellable_quantity": 400,
+                },
+            )
+            persisted = initialize_spot_strategy_campaign_capacity(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                campaign_id=opened["campaign_id"],
+                snapshot=snapshot,
+                path=db_path,
+            )
+            ensure_spot_strategy_action(
+                {
+                    "action_key": "open:restart-safe:level:1",
+                    "account_key": "manual_spot",
+                    "asset_symbol": "NEAR",
+                    "quote_symbol": "USDT",
+                    "campaign_id": opened["campaign_id"],
+                    "action_type": "open",
+                    "side": "sell",
+                    "signal_level": 1,
+                    "swing_id": None,
+                    "requested_quantity": 20,
+                    "reason": {},
+                },
+                path=db_path,
+            )
+            for _ in range(2):
+                complete_spot_strategy_campaign_level(
+                    account_key="manual_spot",
+                    asset_symbol="NEAR",
+                    quote_symbol="USDT",
+                    campaign_id=opened["campaign_id"],
+                    signal_level=1,
+                    consumed_quantity=20,
+                    action_key="open:restart-safe:level:1",
+                    path=db_path,
+                )
+
+            bootstrap_runtime_db(db_path)
+            resumed = load_spot_strategy_campaign("NEAR", path=db_path)
+
+            self.assertEqual(persisted["campaign_capacity_quantity"], 200)
+            self.assertEqual(resumed["campaign_start_policy_sellable_reference"], 400)
+            self.assertEqual(resumed["campaign_capacity_quantity"], 200)
+            self.assertEqual(resumed["campaign_consumed_quantity"], 20)
+            self.assertEqual(resumed["highest_completed_level"], 1)
+
     def test_campaign_migration_preserves_existing_progress(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "runtime.sqlite3"
@@ -394,6 +594,81 @@ class SpotStrategyCampaignTests(unittest.TestCase):
             self.assertEqual(held["highest_completed_level"], 2)
             self.assertEqual(held["last_signal_side"], "hold")
 
+    def test_action_migration_preserves_historical_open_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "runtime.sqlite3"
+            bootstrap_runtime_db(db_path)
+            action = ensure_spot_strategy_action(
+                {
+                    "action_key": "open:legacy-campaign:level:1",
+                    "account_key": "manual_spot",
+                    "asset_symbol": "NEAR",
+                    "quote_symbol": "USDT",
+                    "campaign_id": "legacy-campaign",
+                    "action_type": "open",
+                    "side": "sell",
+                    "signal_level": 1,
+                    "swing_id": "legacy-swing",
+                    "requested_quantity": 10,
+                    "reason": {"action_type": "open"},
+                },
+                path=db_path,
+            )
+            with closing(sqlite3.connect(db_path)) as connection:
+                connection.executescript(
+                    """
+                    DROP TABLE spot_accumulation_target_ratchets;
+                    ALTER TABLE spot_strategy_actions RENAME TO spot_strategy_actions_v15;
+                    CREATE TABLE spot_strategy_actions (
+                        action_key TEXT PRIMARY KEY,
+                        account_key TEXT NOT NULL,
+                        asset_symbol TEXT NOT NULL,
+                        quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+                        campaign_id TEXT,
+                        action_type TEXT NOT NULL CHECK (action_type IN ('open', 'close')),
+                        side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+                        signal_level INTEGER,
+                        swing_id TEXT NOT NULL,
+                        intent_id TEXT,
+                        status TEXT NOT NULL CHECK (
+                            status IN ('planned', 'intent_created', 'executing', 'completed', 'retryable', 'blocked')
+                        ),
+                        requested_quantity REAL NOT NULL,
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        reason_json TEXT NOT NULL DEFAULT '{}',
+                        error TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        completed_at_ms INTEGER
+                    );
+                    INSERT INTO spot_strategy_actions SELECT * FROM spot_strategy_actions_v15;
+                    DROP TABLE spot_strategy_actions_v15;
+                    """
+                )
+
+            bootstrap_runtime_db(db_path)
+            migrated = list_spot_strategy_actions(path=db_path)
+            nullable_swing = ensure_spot_strategy_action(
+                {
+                    "action_key": "campaign_only:new-campaign:level:1",
+                    "account_key": "manual_spot",
+                    "asset_symbol": "NEAR",
+                    "quote_symbol": "USDT",
+                    "campaign_id": "new-campaign",
+                    "action_type": "campaign_only",
+                    "side": "buy",
+                    "signal_level": 1,
+                    "swing_id": None,
+                    "requested_quantity": 0,
+                    "reason": {"action_type": "campaign_only"},
+                },
+                path=db_path,
+            )
+
+            self.assertEqual(migrated[0]["action_key"], action["action_key"])
+            self.assertEqual(migrated[0]["swing_id"], "legacy-swing")
+            self.assertIsNone(nullable_swing["swing_id"])
+
 
 class RecordingProgressiveExecutor(ProgressiveSpotSwingExecutor):
     def _execute_action(self, action):
@@ -402,13 +677,17 @@ class RecordingProgressiveExecutor(ProgressiveSpotSwingExecutor):
             {"status": "completed", "completed_at_ms": action["updated_at_ms"]},
             path=self.db_path,
         ) or action
-        if action["action_type"] == "open":
+        if action["action_type"] in {"open", "accumulate_asset"}:
             complete_spot_strategy_campaign_level(
                 account_key=action["account_key"],
                 asset_symbol=action["asset_symbol"],
                 quote_symbol=action["quote_symbol"],
                 campaign_id=action["campaign_id"],
                 signal_level=action["signal_level"],
+                consumed_quantity=(
+                    action["requested_quantity"] if action["action_type"] == "open" else 0
+                ),
+                action_key=(action["action_key"] if action["action_type"] == "open" else None),
                 path=self.db_path,
             )
         return updated
@@ -537,6 +816,131 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
         self.assertEqual(first["applied_gain_quantity"], 5)
         self.assertTrue(second["idempotent_replay"])
         self.assertEqual(policy["target_quantity"], 1005)
+
+    def test_accumulation_target_ratchet_uses_net_fill_and_is_idempotent(self):
+        upsert_portfolio_asset_policy(
+            {
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "target_quantity": 1000,
+                "minimum_holding_pct": 80,
+                "trading_objective": "accumulate_asset",
+            },
+            path=self.db_path,
+        )
+        action = ensure_spot_strategy_action(
+            {
+                "action_key": "accumulate_asset:NEAR:campaign-buy:level:1",
+                "account_key": "manual_spot",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "campaign_id": "campaign-buy",
+                "action_type": "accumulate_asset",
+                "side": "buy",
+                "signal_level": 1,
+                "swing_id": None,
+                "requested_quantity": 50,
+                "reason": {"action_type": "accumulate_asset"},
+            },
+            path=self.db_path,
+        )
+        update_spot_strategy_action(
+            action["action_key"],
+            {"intent_id": "intent-accumulation"},
+            path=self.db_path,
+        )
+
+        first = apply_spot_accumulation_target_ratchet(
+            action["action_key"],
+            intent_id="intent-accumulation",
+            net_acquired_quantity=49.95,
+            deployed_quote_quantity=100,
+            average_price=2,
+            fee_amount=0.05,
+            fee_asset="NEAR",
+            path=self.db_path,
+        )
+        second = apply_spot_accumulation_target_ratchet(
+            action["action_key"],
+            intent_id="intent-accumulation",
+            net_acquired_quantity=49.95,
+            deployed_quote_quantity=100,
+            average_price=2,
+            fee_amount=0.05,
+            fee_asset="NEAR",
+            path=self.db_path,
+        )
+
+        policy = list_portfolio_asset_policies(path=self.db_path)[0]
+        self.assertEqual(first["applied_gain_quantity"], 49.95)
+        self.assertTrue(second["idempotent_replay"])
+        self.assertAlmostEqual(policy["target_quantity"], 1049.95)
+        self.assertEqual(len(list_spot_accumulation_target_ratchets(path=self.db_path)), 1)
+
+    def test_cash_buy_campaign_levels_are_consumed_without_order_or_swing(self):
+        executor = RecordingProgressiveExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+        buy = {
+            **self.signal(1, 10),
+            "opportunity": "buy",
+            "current_price": 4,
+            "rolling_change_pct": -10,
+        }
+        with patch("bot.spot_strategy.load_portfolio_snapshot", side_effect=self.portfolio):
+            first = executor.handle_signal(buy)
+            repeated = executor.handle_signal(buy)
+            second = executor.handle_signal({**buy, "level": 2, "final_tranche_pct": 20})
+
+        campaign = load_spot_strategy_campaign("NEAR", path=self.db_path)
+        actions = list_spot_strategy_actions(path=self.db_path)
+        self.assertEqual(first["action_type"], "campaign_only")
+        self.assertIsNone(repeated)
+        self.assertEqual(second["action_type"], "campaign_only")
+        self.assertEqual(campaign["highest_completed_level"], 2)
+        self.assertEqual(list_spot_swings(path=self.db_path), [])
+        self.assertEqual(len(actions), 2)
+
+    def test_asset_buy_levels_create_accumulations_but_no_swings(self):
+        upsert_portfolio_asset_policy(
+            {
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "target_quantity": 1000,
+                "minimum_holding_pct": 80,
+                "trading_objective": "accumulate_asset",
+            },
+            path=self.db_path,
+        )
+        executor = RecordingProgressiveExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+            config=ProgressiveSwingConfig(
+                treasury_accumulation_enabled=True,
+                estimated_fee_rate=0,
+            ),
+        )
+        buy = {
+            **self.signal(1, 10),
+            "opportunity": "buy",
+            "trading_objective": "accumulate_asset",
+            "current_price": 4,
+            "rolling_change_pct": -10,
+        }
+        portfolio = self.portfolio()[0]
+        portfolio["summary"] = {"vault_reserve": 1000, "vault_reserve_available": 100}
+        with patch("bot.spot_strategy.load_portfolio_snapshot", return_value=(portfolio, [])):
+            first = executor.handle_signal(buy)
+            repeated = executor.handle_signal(buy)
+            second = executor.handle_signal({**buy, "level": 2, "final_tranche_pct": 20})
+
+        self.assertEqual(first["action_type"], "accumulate_asset")
+        self.assertIsNone(repeated)
+        self.assertEqual(second["action_type"], "accumulate_asset")
+        self.assertEqual(list_spot_swings(path=self.db_path), [])
 
     def test_profitable_swing_can_close_while_another_remains_under_target(self):
         executor = ProgressiveSpotSwingExecutor(

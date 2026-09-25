@@ -249,11 +249,39 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         self.assertEqual(decision["action_type"], "hold")
         self.assertEqual(decision["reason"]["hold_reason"], "max_open_bargains_per_asset")
 
-    def test_disabled_buy_origin_does_not_create_capacity_hold(self):
+    def test_cash_buy_campaign_does_not_create_capacity_hold(self):
         swings = [swing_state(f"buy-{index}", age_days=31) for index in range(10)]
         decision = self.decide(signal("buy", 1, 80), swings)
 
-        self.assertIsNone(decision)
+        self.assertEqual(decision["action_type"], "campaign_only")
+
+    def test_sell_waiter_cleanup_precedes_asset_accumulation_buy(self):
+        waiter = swing_state("asset-waiter", origin_side="sell", age_days=31)
+        waiter["swing"]["trading_objective"] = "accumulate_asset"
+        buy_signal = {
+            **signal("buy", 3, 120),
+            "trading_objective": "accumulate_asset",
+            "final_tranche_pct": 30,
+        }
+
+        decision = plan_spot_strategy_action(
+            buy_signal,
+            holding(120),
+            {"campaign_id": "buy-campaign", "active_side": "buy", "highest_completed_level": 0},
+            [waiter],
+            available_quote=1000,
+            available_accumulation_quote=100,
+            config=ProgressiveSwingConfig(
+                close_profit_pct=5,
+                estimated_fee_rate=0,
+                treasury_accumulation_enabled=True,
+            ),
+            cleanup_config=WaiterCleanupConfig(),
+        )
+
+        self.assertEqual(decision["action_type"], "close")
+        self.assertEqual(decision["swing_id"], "asset-waiter")
+        self.assertEqual(decision["reason"]["close_reason"], "deep_loss_cleanup")
 
     def test_capacity_cleanup_chooses_oldest_eligible_bargain(self):
         swings = [

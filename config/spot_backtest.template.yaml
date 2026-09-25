@@ -44,7 +44,9 @@ spot_backtest:
     progression:
       close_profit_pct: 5
       estimated_fee_rate: 0.001
-      buy_origin_enabled: false
+      treasury_accumulation_enabled: true
+      campaign_capacity_pct: 50
+      full_deploy_threshold_pct: 25
     waiter_cleanup:
       enabled: true
       max_open_bargains_per_asset: 10
