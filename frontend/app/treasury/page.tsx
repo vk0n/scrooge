@@ -1908,6 +1908,17 @@ function HoldingCard({
               </span>
             </span>
             <span className="treasury-share">{formatPercent(holding.allocation_pct)}</span>
+            {holding.rolling_24h_change_pct === null ? null : (
+              <span
+                className={signedToneClass(
+                  holding.rolling_24h_change_pct,
+                  "treasury-rolling-change",
+                )}
+                title="Rolling 24-hour price change used by Spot signals"
+              >
+                {formatSignedPercent(holding.rolling_24h_change_pct)}
+              </span>
+            )}
           </span>
           <span className="treasury-holding-lines">
             <span>
@@ -1960,17 +1971,6 @@ function HoldingCard({
               )}
             </span>
           </span>
-          {holding.rolling_24h_change_pct === null ? null : (
-            <span
-              className={signedToneClass(
-                holding.rolling_24h_change_pct,
-                "treasury-rolling-change",
-              )}
-              title="Rolling 24-hour price change used by Spot signals"
-            >
-              {formatSignedPercent(holding.rolling_24h_change_pct)}
-            </span>
-          )}
           <span className="treasury-holding-chevron" aria-hidden="true" />
         </button>
       </div>

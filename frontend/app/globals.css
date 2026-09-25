@@ -2851,7 +2851,7 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-holding-toggle {
   display: grid;
-  grid-template-columns: minmax(7.2rem, 0.65fr) minmax(0, 4.8fr) max-content 1rem;
+  grid-template-columns: minmax(8.8rem, 0.8fr) minmax(0, 4.8fr) 1rem;
   align-items: center;
   gap: 0.8rem;
   min-width: 0;
@@ -2872,9 +2872,16 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-holding-head {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
   justify-items: start;
   align-content: center;
+  align-items: center;
   gap: 0.32rem;
+}
+
+.treasury-holding-head .treasury-coin-line,
+.treasury-holding-head .treasury-share {
+  grid-column: 1;
 }
 
 .treasury-coin-line {
@@ -2987,7 +2994,8 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-rolling-change {
-  grid-column: 3;
+  grid-column: 2;
+  grid-row: 1 / 3;
   align-self: center;
   justify-self: end;
   padding-left: 0.35rem;
@@ -3006,7 +3014,7 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-holding-chevron {
-  grid-column: 4;
+  grid-column: 3;
   width: 0.52rem;
   height: 0.52rem;
   border-right: 1px solid #8fa0b8;
@@ -4967,15 +4975,12 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-holding-toggle {
-    grid-template-columns: minmax(0, 1fr) max-content 1rem;
+    grid-template-columns: minmax(0, 1fr) 1rem;
     gap: 0.52rem;
   }
 
   .treasury-holding-head {
-    display: flex;
     grid-column: 1;
-    align-items: center;
-    justify-content: space-between;
   }
 
   .treasury-holding-lines {
@@ -4986,7 +4991,6 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-rolling-change {
     grid-column: 2;
-    grid-row: 1 / 3;
   }
 
   .treasury-holding-lines > span {
@@ -4996,7 +5000,7 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-holding-chevron {
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 1 / 3;
     justify-self: center;
   }
