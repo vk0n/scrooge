@@ -30,6 +30,7 @@ from shared.runtime_db import (  # noqa: E402
     load_spot_order_intent,
     load_spot_swing,
     list_spot_order_status_events,
+    list_spot_signal_snapshots,
     list_spot_swing_executions,
     list_spot_swings,
     list_portfolio_daily_snapshots,
@@ -331,6 +332,19 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
         )
     )
     return holdings, warnings
+
+
+def _attach_spot_signal_changes(holdings: list[dict[str, Any]]) -> None:
+    signals = {
+        (str(item.get("asset_symbol") or ""), str(item.get("quote_symbol") or "")): item
+        for item in list_spot_signal_snapshots(account_key=DEFAULT_ACCOUNT_KEY)
+        if item.get("status") == "ok"
+    }
+    for holding in holdings:
+        signal = signals.get((str(holding["asset_symbol"]), str(holding["quote_symbol"])))
+        holding["rolling_24h_change_pct"] = (
+            _as_float(signal.get("rolling_change_pct")) if signal is not None else None
+        )
 
 
 def _derive_owner_positions(
@@ -769,6 +783,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
         transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     holdings, warnings = _derive_holdings(transactions)
     _attach_asset_policies(holdings)
+    _attach_spot_signal_changes(holdings)
     exchange = _load_spot_exchange_state()
     _attach_exchange_state(holdings, exchange)
     swings = list_spot_swings(account_key=DEFAULT_ACCOUNT_KEY)

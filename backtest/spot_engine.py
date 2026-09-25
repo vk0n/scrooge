@@ -8,7 +8,11 @@ from typing import Any
 from backtest.spot_market_data import SpotCandle, SpotHistoricalDataset
 from backtest.spot_scenario import SpotBacktestAsset, SpotBacktestScenario
 from bot.spot_signal import calculate_spot_indicator_context
-from shared.spot_execution_rules import normalize_market_quantity, validate_market_notional
+from shared.spot_execution_rules import (
+    normalize_market_quantity,
+    validate_market_close_remainder,
+    validate_market_notional,
+)
 from shared.spot_policy import calculate_spot_inventory_policy
 from shared.spot_signal import ROLLING_WINDOW_MS, evaluate_rolling_24h_opportunity
 from shared.spot_strategy import (
@@ -547,26 +551,30 @@ class SpotPortfolioBacktester:
             )
             return message, permanent
 
-        constrained = requested
+        quantity = float(requested_quantity)
         if side == "buy":
-            constrained = min(
-                constrained,
-                available_quote / (price * (1.0 + self.scenario.execution.fee_rate))
-                if price > 0
-                else 0.0,
+            required_quote = quantity * price * (1.0 + self.scenario.execution.fee_rate)
+            if required_quote > available_quote + 1e-9:
+                return "Buy rejected because simulated USDT balance changed after planning.", False
+        elif quantity > self.assets[symbol].immediately_sellable + 1e-9:
+            return (
+                "Sell rejected because simulated immediately sellable inventory changed after planning.",
+                False,
             )
-        else:
-            constrained = min(constrained, self.assets[symbol].immediately_sellable)
         try:
-            constrained_quantity, _ = normalize_market_quantity(
-                self.dataset.symbol_info[symbol],
-                constrained,
-            )
-            validate_market_notional(
-                self.dataset.symbol_info[symbol],
-                quantity=constrained_quantity,
-                price=price,
-            )
+            swing = self.swings.get(str(decision.get("swing_id") or ""))
+            if swing is not None:
+                economics = calculate_swing_economics(
+                    swing,
+                    swing["executions"],
+                    current_price=observed_price,
+                )
+                validate_market_close_remainder(
+                    self.dataset.symbol_info[symbol],
+                    remaining_quantity=float(economics.get("remaining_quantity") or 0.0),
+                    closing_quantity=requested_quantity,
+                    price=price,
+                )
         except ValueError as exc:
             return str(exc), False
         return None, False
@@ -625,24 +633,39 @@ class SpotPortfolioBacktester:
         slippage = self.scenario.execution.slippage_bps / 10_000.0
         price = observed_price * (1.0 + slippage if side == "buy" else 1.0 - slippage)
         requested = float(action["requested_quantity"])
-        constrained = requested
-        if side == "buy":
-            constrained = min(
-                constrained,
-                self.usdt / (price * (1.0 + self.scenario.execution.fee_rate)) if price > 0 else 0.0,
-            )
-        else:
-            constrained = min(constrained, state.immediately_sellable)
         try:
             quantity_decimal, _ = normalize_market_quantity(
                 self.dataset.symbol_info[symbol],
-                constrained,
+                requested,
             )
             validate_market_notional(
                 self.dataset.symbol_info[symbol],
                 quantity=quantity_decimal,
                 price=price,
             )
+            quantity = float(quantity_decimal)
+            if side == "buy":
+                required_quote = quantity * price * (1.0 + self.scenario.execution.fee_rate)
+                if required_quote > self.usdt + 1e-9:
+                    raise ValueError("Buy rejected because simulated USDT balance changed after planning.")
+            elif quantity > state.immediately_sellable + 1e-9:
+                raise ValueError(
+                    "Sell rejected because simulated immediately sellable inventory changed after planning."
+                )
+            if action["action_type"] == "close":
+                swing = self.swings.get(str(action.get("swing_id") or ""))
+                if swing is not None:
+                    economics = calculate_swing_economics(
+                        swing,
+                        swing["executions"],
+                        current_price=observed_price,
+                    )
+                    validate_market_close_remainder(
+                        self.dataset.symbol_info[symbol],
+                        remaining_quantity=float(economics.get("remaining_quantity") or 0.0),
+                        closing_quantity=quantity_decimal,
+                        price=price,
+                    )
         except ValueError as exc:
             if action["action_type"] == "close":
                 message = str(exc)
@@ -661,7 +684,6 @@ class SpotPortfolioBacktester:
                 }
             )
             return
-        quantity = float(quantity_decimal)
         quote_quantity = quantity * price
         fee = quote_quantity * self.scenario.execution.fee_rate
         if side == "buy" and quote_quantity + fee > self.usdt + 1e-9:

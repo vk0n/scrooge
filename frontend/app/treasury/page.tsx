@@ -137,6 +137,7 @@ type PortfolioHolding = {
   floating_gain: number | null;
   total_gain: number | null;
   total_gain_pct: number | null;
+  rolling_24h_change_pct: number | null;
   spot_trading_state: "locked" | "unlocked";
   spot_trading_state_reason:
     | "execution_disabled"
@@ -407,6 +408,13 @@ function formatPercent(value: number | null | undefined): string {
     return "Pending";
   }
   return `${formatNumber(value, 2)}%`;
+}
+
+function formatSignedPercent(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "";
+  }
+  return `${value > 0 ? "+" : ""}${formatNumber(value, 2)}%`;
 }
 
 function signedToneClass(value: number | null | undefined, baseClass: string): string {
@@ -1952,6 +1960,17 @@ function HoldingCard({
               )}
             </span>
           </span>
+          {holding.rolling_24h_change_pct === null ? null : (
+            <span
+              className={signedToneClass(
+                holding.rolling_24h_change_pct,
+                "treasury-rolling-change",
+              )}
+              title="Rolling 24-hour price change used by Spot signals"
+            >
+              {formatSignedPercent(holding.rolling_24h_change_pct)}
+            </span>
+          )}
           <span className="treasury-holding-chevron" aria-hidden="true" />
         </button>
       </div>

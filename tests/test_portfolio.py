@@ -18,6 +18,7 @@ from shared.runtime_db import (
     list_portfolio_transactions,
     mark_exchange_account_snapshot_error,
     save_exchange_account_snapshot,
+    save_spot_signal_snapshot,
 )
 
 
@@ -62,9 +63,32 @@ class PortfolioPhaseOneTests(unittest.TestCase):
     def test_holdings_are_sorted_by_allocation(self):
         self.add("ETH", 1, 10)
         self.add("BTC", 1, 90)
+        save_spot_signal_snapshot(
+            {
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "opportunity": "sell",
+                "level": 1,
+                "base_tranche_pct": 10,
+                "rolling_change_pct": 6.25,
+                "current_price": 100,
+                "reference_price": 94.117647,
+                "current_at_ms": 1_790_000_000_000,
+                "reference_at_ms": 1_789_913_600_000,
+                "window_ms": 86_400_000,
+                "strategy_eligible": True,
+                "eligibility_reason": "eligible",
+                "trading_objective": "accumulate_cash",
+                "levels_pct": [5, 8, 12, 18],
+                "base_tranches_pct": [10, 20, 30, 40],
+                "reason_code": "rolling_24h_level_reached",
+            }
+        )
         snapshot, _ = portfolio_service.load_portfolio_snapshot()
         self.assertEqual([holding["asset_symbol"] for holding in snapshot["holdings"]], ["BTC", "ETH"])
         self.assertEqual([round(holding["allocation_pct"], 2) for holding in snapshot["holdings"]], [83.33, 16.67])
+        self.assertEqual(snapshot["holdings"][0]["rolling_24h_change_pct"], 6.25)
+        self.assertIsNone(snapshot["holdings"][1]["rolling_24h_change_pct"])
         self.assertEqual(snapshot["summary"]["prices_updated_at"], "2026-09-22 13:45:00")
         self.assertTrue(all(holding["market_price_updated_at"] for holding in snapshot["holdings"]))
 

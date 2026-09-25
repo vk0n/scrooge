@@ -433,6 +433,74 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(quote_legs[0]["source"], "binance_manual")
         self.assertEqual(quote_legs[0]["tx_type"], "buy")
 
+    def test_live_partial_close_rejects_untradeable_remainder(self):
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {
+                "target_quantity": 0.75,
+                "minimum_holding_pct": 100,
+                "trading_objective": "accumulate_cash",
+            },
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "partial-close-dust",
+                "account_key": "manual_spot",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_cash",
+                "planned_quantity": 0.25,
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "partial-close-dust-open",
+                "swing_id": "partial-close-dust",
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "quantity": 0.25,
+                "price": 90,
+                "source": "strategy",
+                "executed_at_ms": 1_790_000_000_000,
+            },
+            path=self.db_path,
+        )
+        preview = portfolio_service.create_strategy_spot_order_intent(
+            {
+                "asset_symbol": "BTC",
+                "side": "sell",
+                "quantity": 0.249,
+                "swing_id": "partial-close-dust",
+                "reason": {"action_type": "close", "close_reason": "profit_target"},
+            }
+        )
+        self._queue_preview(preview)
+        client = FakeSpotExecutionClient()
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        with self.assertRaisesRegex(SpotOrderValidationError, "untradeable remainder"):
+            executor.execute(preview["intent_id"])
+
+        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(len(list_spot_swing_executions("partial-close-dust", path=self.db_path)), 1)
+
     def test_nonterminal_partial_fill_waits_for_reconciliation_without_resubmission(self):
         preview = self._preview_and_queue("buy", 0.25)
         client = FakeSpotExecutionClient(order_status="PARTIALLY_FILLED")

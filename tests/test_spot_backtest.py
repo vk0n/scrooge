@@ -24,6 +24,7 @@ from backtest.spot_scenario import (
 )
 from bot.spot_strategy import ProgressiveSpotSwingExecutor
 from shared.spot_progression import ProgressiveSwingConfig
+from shared.spot_execution_rules import normalize_market_quantity
 from shared.spot_signal import SpotSignalConfig, evaluate_rolling_24h_opportunity
 from shared.spot_sizing import IndicatorSizingConfig
 from shared.spot_strategy import plan_spot_strategy_action
@@ -215,6 +216,75 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(replay.permanently_blocked_close_swings, {"dust"})
         self.assertEqual(len(replay.rejections), 1)
 
+    def test_quantity_normalization_snaps_float_noise_to_exact_step(self):
+        quantity, _ = normalize_market_quantity(
+            {
+                "filters": [
+                    {
+                        "filterType": "MARKET_LOT_SIZE",
+                        "minQty": "0.01",
+                        "maxQty": "100000000",
+                        "stepSize": "0.01",
+                    }
+                ]
+            },
+            261.17999999999995,
+        )
+
+        self.assertEqual(str(quantity), "261.18")
+
+    def test_partial_close_that_would_leave_dust_is_deferred(self):
+        config = scenario((asset("AAA"),), starting_usdt=100)
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 1.4))
+        replay.dataset.symbol_info["AAA"] = {
+            "filters": [
+                {
+                    "filterType": "MARKET_LOT_SIZE",
+                    "minQty": "0.1",
+                    "maxQty": "100000000",
+                    "stepSize": "0.1",
+                },
+                {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+            ]
+        }
+        replay.swings["close-without-dust"] = {
+            "swing_id": "close-without-dust",
+            "asset_symbol": "AAA",
+            "quote_symbol": "USDT",
+            "origin_side": "sell",
+            "trading_objective": "accumulate_cash",
+            "status": "open",
+            "source": "strategy",
+            "opened_at_ms": replay.start_ms,
+            "executions": [
+                {
+                    "execution_id": "opening",
+                    "side": "sell",
+                    "quantity": 5,
+                    "price": 1.5,
+                    "quote_quantity": 7.5,
+                    "fee_amount": 0,
+                    "fee_asset": "USDT",
+                }
+            ],
+        }
+
+        error, permanent = replay._close_preflight_error(
+            "AAA",
+            {
+                "action_type": "close",
+                "side": "buy",
+                "swing_id": "close-without-dust",
+                "requested_quantity": 4.8,
+                "reason": {"quantity_basis": "available_quote"},
+            },
+            observed_price=1.4,
+            available_quote=100,
+        )
+
+        self.assertIn("untradeable remainder", error)
+        self.assertFalse(permanent)
+
     def test_cash_limited_asset_accumulation_close_is_rechecked_later(self):
         config = scenario((asset("AAA", objective="accumulate_asset"),))
         replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 90))
@@ -263,6 +333,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
 
         self.assertNotIn("retry-when-cash-returns", replay.permanently_blocked_close_swings)
         self.assertEqual(replay.rejections[0]["swing_id"], "retry-when-cash-returns")
+        self.assertEqual(replay.executions, [])
 
     def test_pending_closes_execute_before_new_openings_across_assets(self):
         config = scenario((asset("EARLY"), asset("LATE")))

@@ -16,6 +16,7 @@ from shared.runtime_db import (
     ensure_portfolio_asset_policies,
     list_portfolio_transactions,
     list_spot_order_intents,
+    list_spot_swing_executions,
     load_spot_order_intent,
     load_spot_swing,
     save_exchange_account_snapshot,
@@ -25,8 +26,10 @@ from shared.spot_accounting import ensure_spot_quote_leg
 from shared.spot_execution_rules import (
     format_decimal as _format_decimal,
     normalize_market_quantity as _market_quantity,
+    validate_market_close_remainder as _validate_close_remainder,
     validate_market_notional as _validate_notional,
 )
+from shared.spot_swing import calculate_swing_economics
 from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction
 
 
@@ -263,6 +266,7 @@ class SpotOrderExecutor:
     def _validate_for_submission(self, intent: dict[str, Any]) -> Decimal:
         request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
         treasury_intake = bool(request.get("treasury_intake"))
+        swing = None
         if intent["source"] == "strategy" and not intent.get("swing_id"):
             raise ValueError("Strategy Spot orders must belong to a Swing.")
         if intent.get("swing_id"):
@@ -292,6 +296,18 @@ class SpotOrderExecutor:
             raise ValueError("Binance symbol quote asset does not match the Treasury intent.")
         quantity, _ = _market_quantity(symbol_info, intent["requested_quantity"])
         _validate_notional(symbol_info, quantity=quantity, price=market_price)
+        if swing is not None and intent["side"] != swing["origin_side"]:
+            economics = calculate_swing_economics(
+                swing,
+                list_spot_swing_executions(swing["swing_id"], path=self.db_path),
+                current_price=market_price,
+            )
+            _validate_close_remainder(
+                symbol_info,
+                remaining_quantity=float(economics.get("remaining_quantity") or 0.0),
+                closing_quantity=quantity,
+                price=market_price,
+            )
 
         from api.services.portfolio_service import load_portfolio_snapshot
 

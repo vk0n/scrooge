@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any
 
 
@@ -41,7 +41,13 @@ def normalize_market_quantity(
         normalized = requested
         step_size = Decimal("0")
     else:
-        normalized = (requested / step_size).to_integral_value(rounding=ROUND_DOWN) * step_size
+        step_count = requested / step_size
+        nearest_step_count = step_count.to_integral_value(rounding=ROUND_HALF_UP)
+        # Quantities derived from prior float executions can land infinitesimally
+        # below an exact exchange step (for example 261.17999999999995).
+        if abs(step_count - nearest_step_count) <= Decimal("1e-9"):
+            step_count = nearest_step_count
+        normalized = step_count.to_integral_value(rounding=ROUND_DOWN) * step_size
     if normalized <= 0:
         raise ValueError("Spot order quantity rounds to zero under the Binance step size.")
     if normalized < min_quantity:
@@ -72,3 +78,36 @@ def validate_market_notional(
         raise ValueError(f"Estimated order value is below Binance minimum ${format_decimal(min_notional)}.")
     if max_notional > 0 and notional > max_notional:
         raise ValueError(f"Estimated order value exceeds Binance maximum ${format_decimal(max_notional)}.")
+
+
+def validate_market_close_remainder(
+    symbol_info: dict[str, Any],
+    *,
+    remaining_quantity: float,
+    closing_quantity: Decimal,
+    price: float,
+) -> None:
+    """Reject a partial close that would strand an untradeable remainder."""
+    remaining = as_decimal(remaining_quantity)
+    if remaining is None or remaining <= 0:
+        return
+    remainder = remaining - closing_quantity
+    if remainder <= Decimal("1e-12"):
+        return
+    try:
+        normalized_remainder, step_size = normalize_market_quantity(
+            symbol_info,
+            float(remainder),
+        )
+        tolerance = max(Decimal("1e-12"), step_size * Decimal("1e-9"))
+        if remainder - normalized_remainder > tolerance:
+            raise ValueError("The remainder does not align with the Binance step size.")
+        validate_market_notional(
+            symbol_info,
+            quantity=normalized_remainder,
+            price=price,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "Partial Spot close would leave an untradeable remainder under Binance filters."
+        ) from exc

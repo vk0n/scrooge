@@ -552,6 +552,48 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
         self.assertEqual(action["swing_id"], "swing-near-6")
         self.assertEqual(action["side"], "buy")
 
+    def test_temporary_blocked_close_is_replanned_with_fresh_quantity(self):
+        executor = ProgressiveSpotSwingExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+        first = executor._persist_close_action(
+            "NEAR",
+            "USDT",
+            {
+                "action_type": "close",
+                "side": "buy",
+                "swing_id": "swing-replanned-close",
+                "requested_quantity": 4.8,
+                "reason": {"quantity_basis": "available_quote"},
+            },
+        )
+        update_spot_strategy_action(
+            first["action_key"],
+            {
+                "status": "blocked",
+                "error": "Partial Spot close would leave an untradeable remainder under Binance filters.",
+            },
+            path=self.db_path,
+        )
+
+        replanned = executor._persist_close_action(
+            "NEAR",
+            "USDT",
+            {
+                "action_type": "close",
+                "side": "buy",
+                "swing_id": "swing-replanned-close",
+                "requested_quantity": 5.0,
+                "reason": {"quantity_basis": "remaining_asset"},
+            },
+        )
+
+        self.assertEqual(replanned["status"], "blocked")
+        self.assertEqual(replanned["requested_quantity"], 5.0)
+        self.assertEqual(replanned["reason"]["quantity_basis"], "remaining_asset")
+
     def test_live_signal_batch_prioritizes_close_before_other_asset_opening(self):
         executor = ProgressiveSpotSwingExecutor(
             object(),

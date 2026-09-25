@@ -306,7 +306,7 @@ class ProgressiveSpotSwingExecutor:
             **decision,
         }
         action = ensure_spot_strategy_action(candidate, path=self.db_path)
-        if action["status"] in {"planned", "retryable"}:
+        if action["status"] in {"planned", "retryable", "blocked"}:
             action = update_spot_strategy_action(
                 action["action_key"],
                 {
