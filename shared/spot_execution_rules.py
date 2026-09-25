@@ -80,6 +80,59 @@ def validate_market_notional(
         raise ValueError(f"Estimated order value exceeds Binance maximum ${format_decimal(max_notional)}.")
 
 
+def validate_sell_opening_round_trip(
+    symbol_info: dict[str, Any],
+    *,
+    quantity: Decimal,
+    price: float,
+    trading_objective: str,
+    close_profit_pct: float,
+    estimated_fee_rate: float,
+) -> None:
+    """Reject a SELL opening that cannot produce a valid minimum-size profit close."""
+    filters = {
+        str(item.get("filterType") or ""): item
+        for item in symbol_info.get("filters", [])
+        if isinstance(item, dict)
+    }
+    notional_filter = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL")
+    if not isinstance(notional_filter, dict):
+        return
+    min_notional = as_decimal(notional_filter.get("minNotional")) or Decimal("0")
+    if min_notional <= 0:
+        return
+
+    opening_price = as_decimal(price)
+    profit_pct = as_decimal(close_profit_pct)
+    fee_rate = as_decimal(estimated_fee_rate)
+    if opening_price is None or opening_price <= 0:
+        raise ValueError("Spot opening price must be greater than zero.")
+    if profit_pct is None or not Decimal("0") < profit_pct < Decimal("100"):
+        raise ValueError("Spot close profit must be between zero and 100 percent.")
+    if fee_rate is None or not Decimal("0") <= fee_rate < Decimal("1"):
+        raise ValueError("Spot estimated fee rate must be in the range [0, 1).")
+
+    opening_notional = quantity * opening_price
+    objective = str(trading_objective or "").strip().lower()
+    if objective == "accumulate_cash":
+        target_close_notional = opening_notional * (
+            Decimal("1") - profit_pct / Decimal("100")
+        )
+    elif objective == "accumulate_asset":
+        # The closing BUY reuses net opening proceeds and must leave room for its own fee.
+        target_close_notional = (
+            opening_notional * (Decimal("1") - fee_rate) / (Decimal("1") + fee_rate)
+        )
+    else:
+        return
+
+    if target_close_notional < min_notional:
+        raise ValueError(
+            "Strategy SELL opening is too small to remain closable at its profit target "
+            f"under Binance minimum ${format_decimal(min_notional)}."
+        )
+
+
 def validate_market_close_remainder(
     symbol_info: dict[str, Any],
     *,

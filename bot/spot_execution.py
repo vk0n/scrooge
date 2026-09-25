@@ -29,6 +29,7 @@ from shared.spot_execution_rules import (
     normalize_market_quantity as _market_quantity,
     validate_market_close_remainder as _validate_close_remainder,
     validate_market_notional as _validate_notional,
+    validate_sell_opening_round_trip as _validate_sell_opening_round_trip,
 )
 from shared.spot_swing import calculate_swing_economics
 from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction
@@ -309,6 +310,25 @@ class SpotOrderExecutor:
             raise ValueError("Binance symbol quote asset does not match the Treasury intent.")
         quantity, _ = _market_quantity(symbol_info, intent["requested_quantity"])
         _validate_notional(symbol_info, quantity=quantity, price=market_price)
+        if (
+            swing is not None
+            and intent["source"] == "strategy"
+            and intent["side"] == "sell"
+            and intent["side"] == swing["origin_side"]
+        ):
+            _validate_sell_opening_round_trip(
+                symbol_info,
+                quantity=quantity,
+                price=market_price,
+                trading_objective=str(swing.get("trading_objective") or ""),
+                close_profit_pct=float(
+                    os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "5") or 5
+                ),
+                estimated_fee_rate=max(
+                    0.0,
+                    float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
+                ),
+            )
         if swing is not None and intent["side"] != swing["origin_side"]:
             economics = calculate_swing_economics(
                 swing,

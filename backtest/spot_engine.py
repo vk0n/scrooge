@@ -12,6 +12,7 @@ from shared.spot_execution_rules import (
     normalize_market_quantity,
     validate_market_close_remainder,
     validate_market_notional,
+    validate_sell_opening_round_trip,
 )
 from shared.spot_policy import calculate_spot_inventory_policy
 from shared.spot_progression import initialize_sell_campaign_capacity
@@ -729,6 +730,15 @@ class SpotPortfolioBacktester:
                 quantity=quantity_decimal,
                 price=price,
             )
+            if action["action_type"] == "open" and side == "sell":
+                validate_sell_opening_round_trip(
+                    self.dataset.symbol_info[symbol],
+                    quantity=quantity_decimal,
+                    price=price,
+                    trading_objective=state.scenario.trading_objective or "",
+                    close_profit_pct=self.scenario.progression.close_profit_pct,
+                    estimated_fee_rate=self.scenario.execution.fee_rate,
+                )
             quantity = float(quantity_decimal)
             if side == "buy":
                 required_quote = quantity * price * (1.0 + self.scenario.execution.fee_rate)

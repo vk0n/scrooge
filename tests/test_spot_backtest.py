@@ -24,7 +24,10 @@ from backtest.spot_scenario import (
 )
 from bot.spot_strategy import ProgressiveSpotSwingExecutor
 from shared.spot_progression import ProgressiveSwingConfig
-from shared.spot_execution_rules import normalize_market_quantity
+from shared.spot_execution_rules import (
+    normalize_market_quantity,
+    validate_sell_opening_round_trip,
+)
 from shared.spot_signal import SpotSignalConfig, evaluate_rolling_24h_opportunity
 from shared.spot_sizing import IndicatorSizingConfig
 from shared.spot_strategy import plan_spot_strategy_action
@@ -238,6 +241,74 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         )
 
         self.assertEqual(str(quantity), "261.18")
+
+    def test_sell_opening_must_remain_closable_at_profit_target(self):
+        symbol_info = {
+            "filters": [
+                {
+                    "filterType": "MARKET_LOT_SIZE",
+                    "minQty": "0.01",
+                    "maxQty": "100000000",
+                    "stepSize": "0.01",
+                },
+                {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+            ]
+        }
+        quantity, _ = normalize_market_quantity(symbol_info, 5.1)
+
+        with self.assertRaisesRegex(ValueError, "too small to remain closable"):
+            validate_sell_opening_round_trip(
+                symbol_info,
+                quantity=quantity,
+                price=1,
+                trading_objective="accumulate_cash",
+                close_profit_pct=5,
+                estimated_fee_rate=0.001,
+            )
+
+        quantity, _ = normalize_market_quantity(symbol_info, 5.3)
+        validate_sell_opening_round_trip(
+            symbol_info,
+            quantity=quantity,
+            price=1,
+            trading_objective="accumulate_cash",
+            close_profit_pct=5,
+            estimated_fee_rate=0.001,
+        )
+
+    def test_asset_accumulation_opening_reserves_room_for_both_fees(self):
+        symbol_info = {
+            "filters": [
+                {
+                    "filterType": "MARKET_LOT_SIZE",
+                    "minQty": "0.001",
+                    "maxQty": "100000000",
+                    "stepSize": "0.001",
+                },
+                {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+            ]
+        }
+        quantity, _ = normalize_market_quantity(symbol_info, 5.005)
+
+        with self.assertRaisesRegex(ValueError, "too small to remain closable"):
+            validate_sell_opening_round_trip(
+                symbol_info,
+                quantity=quantity,
+                price=1,
+                trading_objective="accumulate_asset",
+                close_profit_pct=5,
+                estimated_fee_rate=0.001,
+            )
+
+        quantity, _ = normalize_market_quantity(symbol_info, 5.02)
+        validate_sell_opening_round_trip(
+            symbol_info,
+            quantity=quantity,
+            price=1,
+            trading_objective="accumulate_asset",
+            close_profit_pct=5,
+            estimated_fee_rate=0.001,
+        )
 
     def test_partial_close_that_would_leave_dust_is_deferred(self):
         config = scenario((asset("AAA"),), starting_usdt=100)

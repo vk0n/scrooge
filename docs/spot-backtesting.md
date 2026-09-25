@@ -36,6 +36,8 @@ All assets draw from one USDT pool. BUY decisions reserve estimated quote value 
 
 Waiter cleanup is enabled by default. Profitable closes retain priority, then the oldest eligible Bargain may close on a reverse signal. Deep loss at 15 days and -20% requires L1+; the 30/60/90-day thresholds require L3+/L2+/L1+. A hard cap of 10 open Bargains per asset may use an eligible 30-day reverse signal for capacity cleanup, otherwise the cycle holds instead of opening an eleventh Bargain. Cleanup uses each Bargain's remaining open economics and the same executor, fees, quantization, and accounting path as every other close.
 
+Strategy SELL openings also pass a round-trip exchange check. An opening is rejected when its projected profit-target BUY would fall below Binance minimum notional after the objective's quantity semantics and estimated fees; this prevents valid entries from becoming permanently uncloseable dust.
+
 Set `strategy.waiter_cleanup.enabled: false` only for a research baseline. There is no separate production or UI toggle.
 
 ## Scenario Workflow
