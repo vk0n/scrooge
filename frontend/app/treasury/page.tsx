@@ -1438,7 +1438,7 @@ function SwingLedgerRow({
               </div>
               <button
                 type="button"
-                className="dialog-user-btn treasury-swing-close-button"
+                className={signedToneClass(pnl, "dialog-user-btn treasury-swing-close-button")}
                 disabled={closing}
                 onClick={() => void closeBargain()}
               >

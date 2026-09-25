@@ -425,6 +425,13 @@ class SpotExecutionTests(unittest.TestCase):
         closed_swing = load_spot_swing("manual-close-btc", path=self.db_path)
         self.assertEqual(closed_swing["status"], "closed")
         self.assertEqual(closed_swing["close_reason"], "manual")
+        quote_legs = [
+            item for item in list_portfolio_transactions(path=self.db_path)
+            if item.get("spot_quote_leg") and item.get("swing_id") == "manual-close-btc"
+        ]
+        self.assertEqual(len(quote_legs), 1)
+        self.assertEqual(quote_legs[0]["source"], "binance_manual")
+        self.assertEqual(quote_legs[0]["tx_type"], "buy")
 
     def test_nonterminal_partial_fill_waits_for_reconciliation_without_resubmission(self):
         preview = self._preview_and_queue("buy", 0.25)

@@ -15,12 +15,20 @@ def _number(value: Any) -> float:
 
 
 def build_spot_quote_leg(transaction: dict[str, Any]) -> dict[str, Any] | None:
-    """Build the managed quote-currency leg for one confirmed strategy fill."""
+    """Build the managed quote-currency leg for one confirmed Bargain fill."""
     source = str(transaction.get("source") or "").strip().lower()
     side = str(transaction.get("tx_type") or "").strip().lower()
     quote_symbol = str(transaction.get("quote_symbol") or "USDT").strip().upper() or "USDT"
     transaction_id = str(transaction.get("transaction_id") or "").strip()
-    if source != "binance_strategy" or side not in {"buy", "sell"} or not transaction_id:
+    is_strategy_fill = source == "binance_strategy"
+    is_linked_manual_fill = source == "binance_manual" and bool(
+        str(transaction.get("swing_id") or "").strip()
+    )
+    if (
+        not (is_strategy_fill or is_linked_manual_fill)
+        or side not in {"buy", "sell"}
+        or not transaction_id
+    ):
         return None
     if bool(transaction.get("spot_quote_leg")):
         return None

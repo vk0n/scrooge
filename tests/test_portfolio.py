@@ -209,6 +209,40 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no executed opening quantity"):
             portfolio_service.create_bargain_close_preview("unfilled-btc")
 
+    def test_snapshot_backfills_quote_spend_for_existing_manual_bargain_close(self):
+        self.add("USDT", 341.31, 1, "binance")
+        append_portfolio_transaction(
+            {
+                "transaction_id": "manual-near-close",
+                "account_key": "manual_spot",
+                "executed_at": "2026-09-25 10:36:42",
+                "tx_type": "buy",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "quantity": 70,
+                "price": 4.5074285714,
+                "source": "binance_manual",
+                "status": "settled",
+                "custody_location": "binance",
+                "swing_id": "manual-near-bargain",
+                "executed_quote_quantity": 315.52,
+            }
+        )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+        repeated_snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        self.assertAlmostEqual(snapshot["summary"]["dry_powder"], 25.79, places=8)
+        self.assertAlmostEqual(repeated_snapshot["summary"]["dry_powder"], 25.79, places=8)
+        quote_legs = [
+            item for item in list_portfolio_transactions()
+            if item.get("base_transaction_id") == "manual-near-close"
+            and item.get("spot_quote_leg")
+        ]
+        self.assertEqual(len(quote_legs), 1)
+        self.assertEqual(quote_legs[0]["tx_type"], "sell")
+        self.assertEqual(quote_legs[0]["quantity"], 315.52)
+
     def test_strategy_fill_preserves_owner_capital_and_tracks_committed_reserve(self):
         self.add("BTC", 1, 90, "binance")
         create_spot_swing(
