@@ -3079,6 +3079,7 @@ def list_spot_swings(
     asset_symbol: str | None = None,
     quote_symbol: str | None = None,
     status: str | None = None,
+    materialized_only: bool = False,
     path: Path | None = None,
 ) -> list[dict[str, Any]]:
     conditions: list[str] = []
@@ -3092,6 +3093,11 @@ def list_spot_swings(
         if value is not None:
             conditions.append(f"{column} = ?")
             params.append(value)
+    if materialized_only:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM spot_swing_executions "
+            "WHERE spot_swing_executions.swing_id = spot_swings.swing_id)"
+        )
     sql = "SELECT * FROM spot_swings"
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)

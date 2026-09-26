@@ -104,6 +104,28 @@ class PortfolioPhaseOneTests(unittest.TestCase):
                 "opened_at_ms": 1_700_000_000_000,
             }
         )
+        append_spot_swing_execution(
+            {
+                "execution_id": "open-btc-buy",
+                "swing_id": "open-btc-swing",
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "quantity": 1,
+                "price": 90,
+                "source": "strategy",
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "rejected-btc-swing",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+                "opened_at_ms": 1_700_000_050_000,
+            }
+        )
         create_spot_swing(
             {
                 "swing_id": "closed-eth-swing",
@@ -164,7 +186,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(pnl_ascending["direction"], "asc")
         self.assertEqual(
             [entry["swing"]["swing_id"] for entry in pnl_ascending["entries"]],
-            ["open-btc-swing", "closed-eth-swing"],
+            ["closed-eth-swing", "open-btc-swing"],
         )
 
     def test_manual_bargain_close_preview_preserves_swing_linkage(self):

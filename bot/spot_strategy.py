@@ -304,6 +304,7 @@ class ProgressiveSpotSwingExecutor:
             account_key=self.account_key,
             asset_symbol=asset,
             quote_symbol=quote,
+            materialized_only=True,
             path=self.db_path,
         ):
             if swing["source"] != "strategy" or swing["status"] not in {"open", "partially_closed"}:

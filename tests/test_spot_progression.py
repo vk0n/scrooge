@@ -777,6 +777,22 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
         self.assertEqual({action["signal_level"] for action in actions}, {1, 2})
         self.assertEqual({swing["swing_id"] for swing in swings}, {action["swing_id"] for action in actions})
 
+    def test_unfilled_strategy_swing_is_not_an_active_bargain(self):
+        executor = RecordingProgressiveExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+        with patch("bot.spot_strategy.load_portfolio_snapshot", side_effect=self.portfolio):
+            executor.handle_signal(self.signal(1, 10))
+
+        self.assertEqual(len(list_spot_swings(path=self.db_path)), 1)
+        self.assertEqual(
+            list_spot_swings(materialized_only=True, path=self.db_path),
+            [],
+        )
+        self.assertEqual(executor._swing_states("NEAR", "USDT"), [])
+
     def test_target_ratchet_is_applied_exactly_once(self):
         swing_id = "swing-ratchet"
         create_spot_swing(

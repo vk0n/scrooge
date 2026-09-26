@@ -342,6 +342,8 @@ const CUSTODY_LABELS: Record<CustodyLocation, string> = {
 
 const CUSTODY_LOCATIONS = Object.keys(CUSTODY_LABELS) as CustodyLocation[];
 const STABLE_ASSETS = new Set(["USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI"]);
+const TREASURY_REFRESH_MS = 60_000;
+const INITIAL_TREASURY_RETRY_DELAYS_MS = [1_000, 3_000, 7_000] as const;
 
 const ALLOCATION_COLORS = [
   "#d9ae45",
@@ -355,6 +357,22 @@ const ALLOCATION_COLORS = [
   "#cc8e45",
   "#7888bd",
 ];
+
+function waitForRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
+}
+
+function isRetryablePortfolioLoad(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return true;
+  }
+  const statusMatch = /^API\s+(\d{3}):/.exec(error.message);
+  if (!statusMatch) {
+    return true;
+  }
+  const status = Number(statusMatch[1]);
+  return status === 408 || status === 429 || status >= 500;
+}
 
 function asNumber(value: string): number | null {
   const trimmed = value.trim();
@@ -2009,6 +2027,7 @@ export default function TreasuryPage(): JSX.Element {
   const [buyAssetSymbol, setBuyAssetSymbol] = useState<string>("");
   const [bargainsExpanded, setBargainsExpanded] = useState<boolean>(false);
   const refreshInFlight = useRef<boolean>(false);
+  const initialLoadSettled = useRef<boolean>(false);
 
   const loadPortfolio = useCallback(async (background = false): Promise<void> => {
     if (refreshInFlight.current) {
@@ -2018,13 +2037,30 @@ export default function TreasuryPage(): JSX.Element {
     if (!background) {
       setLoading(true);
     }
+    const retryDelays = !background && !initialLoadSettled.current
+      ? INITIAL_TREASURY_RETRY_DELAYS_MS
+      : [];
     try {
-      const payload = await fetchApi<PortfolioPayload>("/api/portfolio");
-      setPortfolio(payload);
-      setError(null);
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const payload = await fetchApi<PortfolioPayload>("/api/portfolio");
+          setPortfolio(payload);
+          setError(null);
+          break;
+        } catch (loadError) {
+          const retryDelay = retryDelays[attempt];
+          if (retryDelay === undefined || !isRetryablePortfolioLoad(loadError)) {
+            throw loadError;
+          }
+          await waitForRetry(retryDelay);
+        }
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Treasury is unavailable.");
     } finally {
+      if (!background) {
+        initialLoadSettled.current = true;
+      }
       refreshInFlight.current = false;
       if (!background) {
         setLoading(false);
@@ -2036,7 +2072,7 @@ export default function TreasuryPage(): JSX.Element {
     void loadPortfolio();
     const refreshTimer = window.setInterval(() => {
       void loadPortfolio(true);
-    }, 60_000);
+    }, TREASURY_REFRESH_MS);
     return () => window.clearInterval(refreshTimer);
   }, [loadPortfolio]);
 

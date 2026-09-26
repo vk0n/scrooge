@@ -786,7 +786,10 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     _attach_spot_signal_changes(holdings)
     exchange = _load_spot_exchange_state()
     _attach_exchange_state(holdings, exchange)
-    swings = list_spot_swings(account_key=DEFAULT_ACCOUNT_KEY)
+    swings = list_spot_swings(
+        account_key=DEFAULT_ACCOUNT_KEY,
+        materialized_only=True,
+    )
     economics_by_swing = _swing_economics_by_id(swings, holdings)
     owner_positions = _derive_owner_positions(transactions)
     realized_accumulated_cash = _attach_asset_performance(
@@ -917,6 +920,7 @@ def load_portfolio_asset_ledger(
         account_key=DEFAULT_ACCOUNT_KEY,
         asset_symbol=normalized_asset,
         quote_symbol=normalized_quote,
+        materialized_only=True,
     )
     for swing in swings:
         executions = list_spot_swing_executions(swing["swing_id"])
@@ -989,7 +993,10 @@ def load_portfolio_bargain_ledger(
     open_count = 0
     closed_count = 0
     prices: dict[tuple[str, str], tuple[float | None, str | None]] = {}
-    for swing in list_spot_swings(account_key=DEFAULT_ACCOUNT_KEY):
+    for swing in list_spot_swings(
+        account_key=DEFAULT_ACCOUNT_KEY,
+        materialized_only=True,
+    ):
         asset_symbol = str(swing["asset_symbol"])
         quote_symbol = str(swing["quote_symbol"])
         pair = (asset_symbol, quote_symbol)
