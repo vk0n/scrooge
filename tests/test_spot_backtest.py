@@ -13,7 +13,11 @@ from backtest.spot_market_data import (
     SpotCandle,
     SpotHistoricalDataset,
 )
-from backtest.spot_reporting import build_spot_backtest_report, write_spot_backtest_artifacts
+from backtest.spot_reporting import (
+    _accumulation_metrics,
+    build_spot_backtest_report,
+    write_spot_backtest_artifacts,
+)
 from backtest.spot_report_html import display_spot_report_title
 from backtest.spot_scenario import (
     SpotBacktestAsset,
@@ -662,6 +666,62 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         )
         self.assertTrue(all(item["origin_side"] == "sell" for item in result.swings))
 
+    def test_accumulation_report_attributes_earned_cash_to_asset_buys(self):
+        metrics = _accumulation_metrics(
+            [
+                {
+                    "execution_id": "buy-before-profit",
+                    "action_type": "accumulate_asset",
+                    "side": "buy",
+                    "timestamp_ms": 10,
+                    "deployed_quote_quantity": 7.0,
+                    "net_asset_acquired": 1.0,
+                    "target_growth_quantity": 1.0,
+                    "quote_quantity": 7.0,
+                    "fee_amount": 0.0,
+                    "fee_asset": "USDT",
+                    "asset_symbol": "AAA",
+                },
+                {
+                    "execution_id": "buy-after-profit",
+                    "action_type": "accumulate_asset",
+                    "side": "buy",
+                    "timestamp_ms": 30,
+                    "deployed_quote_quantity": 8.0,
+                    "net_asset_acquired": 1.0,
+                    "target_growth_quantity": 1.0,
+                    "quote_quantity": 8.0,
+                    "fee_amount": 0.0,
+                    "fee_asset": "USDT",
+                    "asset_symbol": "AAA",
+                },
+            ],
+            [
+                {
+                    "status": "closed",
+                    "origin_side": "sell",
+                    "trading_objective": "accumulate_cash",
+                    "closed_at_ms": 20,
+                    "economics": {"realized_cash_gain_quote": 5.0},
+                },
+                {
+                    "status": "closed",
+                    "origin_side": "sell",
+                    "trading_objective": "accumulate_asset",
+                    "closed_at_ms": 25,
+                    "economics": {"realized_cash_gain_quote": 3.0},
+                },
+            ],
+        )
+
+        self.assertAlmostEqual(metrics["earned_cash_generated_quote"], 8.0)
+        self.assertAlmostEqual(metrics["earned_cash_allocated_quote"], 8.0)
+        self.assertAlmostEqual(metrics["earned_cash_allocated_pct"], 100.0)
+        self.assertAlmostEqual(
+            metrics["per_asset"]["AAA"]["earned_cash_allocated_quote"],
+            8.0,
+        )
+
     def test_accumulation_never_spends_quote_committed_to_open_sell_bargain(self):
         config = scenario(
             (asset("AAA", quantity=10, target=10, objective="accumulate_asset"),),
@@ -810,7 +870,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         )
         cash_performance = cash_report["per_asset"]["CASH"]["capital_performance"]
         self.assertGreater(cash_performance["accumulated_cash_gain"], 0)
-        self.assertLess(cash_performance["effective_entry_cost"], 100)
+        self.assertLess(cash_performance["effective_entry_cost"], 120)
         self.assertAlmostEqual(
             cash_performance["total_gain"],
             cash_performance["market_gain"]
@@ -830,7 +890,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertGreater(asset_result.assets["COIN"].target_quantity, 100)
         self.assertGreater(asset_performance["accumulated_asset_quantity"], 0)
         self.assertGreater(asset_performance["settled_quantity"], 100)
-        self.assertLess(asset_performance["effective_entry_cost"], 100)
+        self.assertLess(asset_performance["effective_entry_cost"], 120)
         self.assertEqual(len(asset_result.target_history), 1)
         self.assertEqual(len({item["swing_id"] for item in asset_result.target_history}), 1)
 
@@ -855,14 +915,25 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         )
         self.assertEqual(report["portfolio"]["difference_vs_hodl"], 0)
         performance = report["per_asset"]["AAA"]["capital_performance"]
-        self.assertEqual(performance["initial_capital"], 10000)
-        self.assertEqual(performance["effective_entry_cost"], 100)
-        self.assertEqual(performance["market_gain"], 2000)
+        self.assertEqual(performance["initial_capital"], 12000)
+        self.assertEqual(performance["effective_entry_cost"], 120)
+        self.assertEqual(performance["market_gain"], 0)
         self.assertEqual(performance["accumulated_cash_gain"], 0)
         self.assertEqual(performance["open_bargain_pnl"], 0)
-        self.assertEqual(performance["total_gain"], 2000)
-        self.assertEqual(report["portfolio"]["initial_invested_capital"], 10500)
-        self.assertEqual(report["portfolio"]["total_gain_on_initial_capital"], 2000)
+        self.assertEqual(performance["total_gain"], 0)
+        self.assertEqual(performance["initial_price"], 120)
+        self.assertEqual(report["portfolio"]["initial_invested_capital"], 12500)
+        self.assertEqual(report["portfolio"]["total_gain_on_initial_capital"], 0)
+        self.assertEqual(report["portfolio"]["edge_vs_hodl_pct_points"], 0)
+        self.assertEqual(report["success_metrics"]["free_reserve"]["quote"], 500)
+        self.assertEqual(
+            report["success_metrics"]["free_reserve"]["pct_of_initial_invested_capital"],
+            4,
+        )
+        self.assertEqual(
+            report["success_metrics"]["asset_recovery"]["average_effective_quantity_pct"],
+            100,
+        )
 
     def test_fee_slippage_and_artifacts_are_explicit(self):
         config = scenario(
@@ -973,6 +1044,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertTrue(all(item.quantity == 0 for item in template.assets))
         self.assertTrue(template.waiter_cleanup.enabled)
         self.assertTrue(template.progression.treasury_accumulation_enabled)
+        self.assertEqual(template.progression.close_profit_pct, 3)
 
         snapshot = {
             "holdings": [
@@ -1019,6 +1091,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(exported.assets[0].binance_quantity, 750)
         self.assertEqual(exported.assets[0].cold_storage_quantity, 250)
         self.assertTrue(exported.progression.treasury_accumulation_enabled)
+        self.assertEqual(exported.progression.close_profit_pct, 3)
         self.assertEqual(exported.metadata["export_warnings"][0], "review me")
         self.assertIn("Excluded USDC", exported.metadata["export_warnings"][1])
 

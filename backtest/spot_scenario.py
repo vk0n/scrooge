@@ -195,6 +195,8 @@ def load_spot_backtest_scenario(
     end_override: str | None = None,
     preset: str | None = None,
     output_override: str | Path | None = None,
+    close_profit_pct_override: float | None = None,
+    levels_pct_override: tuple[float, ...] | None = None,
 ) -> SpotBacktestScenario:
     scenario_path = Path(path).expanduser().resolve()
     with scenario_path.open("r", encoding="utf-8") as file_obj:
@@ -284,7 +286,7 @@ def load_spot_backtest_scenario(
             force_close_at_end=bool(execution_payload.get("force_close_at_end", False)),
         ),
         signal=SpotSignalConfig(
-            levels_pct=tuple(signal_payload.get("levels_pct", (5, 8, 12, 18))),
+            levels_pct=levels_pct_override or tuple(signal_payload.get("levels_pct", (5, 8, 12, 18))),
             base_tranches_pct=tuple(signal_payload.get("base_tranches_pct", (10, 20, 30, 40))),
         ),
         sizing=IndicatorSizingConfig(
@@ -296,7 +298,11 @@ def load_spot_backtest_scenario(
             rsi_overbought=float(sizing_payload.get("rsi_overbought", 70)),
         ),
         progression=ProgressiveSwingConfig(
-            close_profit_pct=float(progression_payload.get("close_profit_pct", 5)),
+            close_profit_pct=(
+                float(progression_payload.get("close_profit_pct", 3))
+                if close_profit_pct_override is None
+                else float(close_profit_pct_override)
+            ),
             estimated_fee_rate=float(progression_payload.get("estimated_fee_rate", fee_rate)),
             treasury_accumulation_enabled=bool(
                 progression_payload.get("treasury_accumulation_enabled", False)
@@ -430,7 +436,7 @@ def export_current_treasury_scenario(
                     "very_strong_modifier": 1.5,
                 },
                 "progression": {
-                    "close_profit_pct": 5,
+                    "close_profit_pct": 3,
                     "estimated_fee_rate": 0.001,
                     "treasury_accumulation_enabled": True,
                     "campaign_capacity_pct": 50,

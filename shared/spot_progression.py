@@ -7,7 +7,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ProgressiveSwingConfig:
-    close_profit_pct: float = 5.0
+    close_profit_pct: float = 3.0
     estimated_fee_rate: float = 0.001
     treasury_accumulation_enabled: bool = False
     campaign_capacity_pct: float = 50.0

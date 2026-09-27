@@ -38,7 +38,7 @@ class SimulatedAssetState:
 
     @classmethod
     def from_scenario(cls, asset: SpotBacktestAsset) -> SimulatedAssetState:
-        known_quantity = asset.quantity if asset.entry_cost is not None else 0.0
+        known_quantity = asset.quantity
         return cls(
             scenario=asset,
             binance_quantity=asset.binance_quantity,
@@ -86,6 +86,11 @@ class SimulatedAssetState:
 
     def unrealized_portfolio_pnl(self, market_price: float) -> float:
         return self.known_cost_quantity * market_price - self.known_cost_basis
+
+    def rebase_cost_basis(self, initial_price: float) -> None:
+        """Use the first replay price as the portfolio's backtest entry basis."""
+        normalized_price = float(initial_price)
+        self.known_cost_basis = self.known_cost_quantity * normalized_price
 
     def holding(self, market_price: float) -> dict[str, Any]:
         return {
@@ -184,6 +189,8 @@ class SpotPortfolioBacktester:
     def run(self) -> SpotBacktestResult:
         replay_rows = self._replay_rows()
         initial_prices = {symbol: rows[0].open for symbol, rows in replay_rows.items()}
+        for symbol, state in self.assets.items():
+            state.rebase_cost_basis(initial_prices[symbol])
         final_prices = {symbol: rows[-1].close for symbol, rows in replay_rows.items()}
         starting_value = self.usdt + sum(
             self.assets[symbol].quantity * initial_prices[symbol]
@@ -804,6 +811,8 @@ class SpotPortfolioBacktester:
             accumulation = {
                 "action_key": action["action_key"],
                 "execution_id": execution_id,
+                "action_type": "accumulate_asset",
+                "side": "buy",
                 "timestamp_ms": timestamp_ms,
                 "timestamp": self._timestamp(timestamp_ms),
                 "asset_symbol": symbol,

@@ -42,7 +42,7 @@ spot_backtest:
       rsi_oversold: 30
       rsi_overbought: 70
     progression:
-      close_profit_pct: 5
+      close_profit_pct: 3
       estimated_fee_rate: 0.001
       treasury_accumulation_enabled: true
       campaign_capacity_pct: 50

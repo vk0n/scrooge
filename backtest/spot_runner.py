@@ -9,6 +9,7 @@ from backtest.spot_engine import SpotPortfolioBacktester
 from backtest.spot_market_data import BinanceSpotHistoricalAdapter
 from backtest.spot_reporting import write_spot_backtest_artifacts
 from backtest.spot_scenario import export_current_treasury_scenario, load_spot_backtest_scenario
+from shared.spot_signal import parse_percentage_series
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -18,6 +19,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", help="Override scenario end in ISO-8601 UTC.")
     parser.add_argument("--preset", choices=("6m", "1y"), help="Derive start relative to the chosen end.")
     parser.add_argument("--output", help="Override artifact output directory.")
+    parser.add_argument(
+        "--close-profit-pct",
+        type=float,
+        help="Override the progression close-profit target for this replay.",
+    )
+    parser.add_argument(
+        "--levels-pct",
+        help="Override rolling 24H signal thresholds as comma-separated percentages, e.g. 5,8,12,18.",
+    )
     parser.add_argument("--export-current", metavar="PATH", help="Export current Treasury into a reviewable scenario.")
     parser.add_argument("--name", default="current-treasury-counterfactual", help="Exported scenario name.")
     return parser
@@ -61,6 +71,12 @@ def main(argv: list[str] | None = None) -> int:
         end_override=args.end,
         preset=args.preset,
         output_override=args.output,
+        close_profit_pct_override=args.close_profit_pct,
+        levels_pct_override=(
+            parse_percentage_series(args.levels_pct, field_name="levels-pct")
+            if args.levels_pct
+            else None
+        ),
     )
     output_dir = _resolve_output(scenario.output_dir)
     adapter = BinanceSpotHistoricalAdapter(scenario.data_cache_dir)

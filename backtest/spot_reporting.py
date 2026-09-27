@@ -98,7 +98,62 @@ def _swing_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _accumulation_metrics(accumulations: list[dict[str, Any]]) -> dict[str, Any]:
+def _accumulation_metrics(
+    accumulations: list[dict[str, Any]],
+    swings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    accumulation_buys = [
+        item
+        for item in accumulations
+        if str(item.get("action_type") or "accumulate_asset").strip().lower() == "accumulate_asset"
+        and str(item.get("side") or "buy").strip().lower() == "buy"
+    ]
+    earned_cash_events = sorted(
+        (
+            int(swing.get("closed_at_ms") or 0),
+            max(0.0, float((swing.get("economics") or {}).get("realized_cash_gain_quote") or 0.0)),
+        )
+        for swing in swings
+        if swing.get("status") == "closed"
+        and str(swing.get("origin_side") or "").strip().lower() == "sell"
+        and float((swing.get("economics") or {}).get("realized_cash_gain_quote") or 0.0) > 0.0
+    )
+    earned_cash_generated = sum(amount for _, amount in earned_cash_events)
+    earned_cash_available = 0.0
+    earned_cash_allocated_by_execution: dict[str, float] = {}
+    cash_events = [
+        (timestamp_ms, 0, "earned", amount, None)
+        for timestamp_ms, amount in earned_cash_events
+    ] + [
+        (
+            int(item.get("timestamp_ms") or 0),
+            1,
+            "buy",
+            max(0.0, float(item.get("deployed_quote_quantity") or 0.0)),
+            str(item.get("execution_id") or ""),
+        )
+        for item in accumulation_buys
+    ]
+    for _, _, event_type, amount, execution_id in sorted(cash_events):
+        if event_type == "earned":
+            earned_cash_available += amount
+            continue
+        allocated = min(amount, earned_cash_available)
+        earned_cash_available -= allocated
+        if execution_id:
+            earned_cash_allocated_by_execution[execution_id] = allocated
+
+    annotated_accumulations = [
+        {
+            **item,
+            "_earned_cash_allocated_quote": earned_cash_allocated_by_execution.get(
+                str(item.get("execution_id") or ""),
+                0.0,
+            ),
+        }
+        for item in accumulation_buys
+    ]
+
     def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         deployed = sum(float(item.get("deployed_quote_quantity") or 0.0) for item in rows)
         acquired = sum(float(item.get("net_asset_acquired") or 0.0) for item in rows)
@@ -110,6 +165,9 @@ def _accumulation_metrics(accumulations: list[dict[str, Any]]) -> dict[str, Any]
         return {
             "count": len(rows),
             "usdt_deployed": deployed,
+            "earned_cash_allocated_quote": sum(
+                float(item.get("_earned_cash_allocated_quote") or 0.0) for item in rows
+            ),
             "net_asset_acquired": acquired,
             "target_growth_quantity": sum(
                 float(item.get("target_growth_quantity") or 0.0) for item in rows
@@ -127,13 +185,20 @@ def _accumulation_metrics(accumulations: list[dict[str, Any]]) -> dict[str, Any]
 
     def grouped(field: str) -> dict[str, Any]:
         buckets: dict[str, list[dict[str, Any]]] = {}
-        for item in accumulations:
+        for item in annotated_accumulations:
             key = str(item.get(field) or "unknown")
             buckets.setdefault(key, []).append(item)
         return {key: summarize(rows) for key, rows in sorted(buckets.items())}
 
     return {
-        "overview": summarize(accumulations),
+        "overview": summarize(annotated_accumulations),
+        "earned_cash_generated_quote": earned_cash_generated,
+        "earned_cash_allocated_quote": sum(earned_cash_allocated_by_execution.values()),
+        "earned_cash_allocated_pct": (
+            sum(earned_cash_allocated_by_execution.values()) / earned_cash_generated * 100.0
+            if earned_cash_generated > 1e-12
+            else None
+        ),
         "per_asset": grouped("asset_symbol"),
         "per_level": grouped("signal_level"),
         "per_conviction": grouped("conviction"),
@@ -377,6 +442,7 @@ def _asset_capital_performance(
     swings: list[dict[str, Any]],
     accumulations: list[dict[str, Any]],
     *,
+    initial_price: float,
     final_price: float,
 ) -> dict[str, float | None]:
     accumulated_asset = 0.0
@@ -402,27 +468,22 @@ def _asset_capital_performance(
         initial_quantity + accumulated_asset + reserve_deployment_asset,
     )
     initial_capital = (
-        initial_quantity * float(asset_config.entry_cost)
-        if asset_config.entry_cost is not None
-        else None
+        initial_quantity * float(initial_price)
+        if initial_quantity > 0
+        else 0.0
     )
-    effective_cost_basis = (
-        initial_capital - accumulated_cash if initial_capital is not None else None
-    )
+    effective_cost_basis = initial_capital - accumulated_cash
     effective_entry_cost = (
         effective_cost_basis / settled_quantity
-        if effective_cost_basis is not None and settled_quantity > 1e-12
+        if settled_quantity > 1e-12
         else None
     )
-    market_gain = (
-        settled_quantity * final_price - initial_capital
-        if initial_capital is not None
-        else None
-    )
-    floating_gain = market_gain + accumulated_cash if market_gain is not None else None
-    total_gain = floating_gain + open_bargain_pnl if floating_gain is not None else None
+    market_gain = settled_quantity * final_price - initial_capital
+    floating_gain = market_gain + accumulated_cash
+    total_gain = floating_gain + open_bargain_pnl
     return {
         "initial_quantity": initial_quantity,
+        "initial_price": float(initial_price),
         "initial_capital": initial_capital,
         "accumulated_asset_quantity": accumulated_asset,
         "reserve_deployment_asset_quantity": reserve_deployment_asset,
@@ -436,8 +497,72 @@ def _asset_capital_performance(
         "total_gain": total_gain,
         "total_gain_pct": (
             total_gain / initial_capital * 100.0
-            if total_gain is not None and initial_capital is not None and initial_capital > 0
+            if initial_capital > 0
             else None
+        ),
+    }
+
+
+def _asset_recovery_metrics(
+    asset_config: Any,
+    swings: list[dict[str, Any]],
+    *,
+    final_quantity: float,
+    final_price: float,
+    fee_rate: float,
+) -> dict[str, Any]:
+    """Estimate end-of-run inventory after buyback funded only by open-sell cash."""
+    initial_quantity = float(asset_config.quantity)
+    open_sell_quantity = 0.0
+    committed_cash = 0.0
+    hypothetical_buyback_quantity = 0.0
+    for swing in swings:
+        if swing.get("status") == "closed" or swing.get("origin_side") != "sell":
+            continue
+        economics = swing.get("economics") or {}
+        remaining = max(0.0, float(economics.get("remaining_quantity") or 0.0))
+        if remaining <= 1e-12:
+            continue
+        quote_fees = float((economics.get("fees_by_asset") or {}).get("USDT", 0.0))
+        swing_committed_cash = max(
+            0.0,
+            float(economics.get("opening_quote_quantity") or 0.0)
+            - float(economics.get("closing_quote_quantity") or 0.0)
+            - quote_fees,
+        )
+        open_sell_quantity += remaining
+        committed_cash += swing_committed_cash
+        hypothetical_buyback_quantity += min(
+            remaining,
+            swing_committed_cash / (final_price * (1.0 + fee_rate))
+            if final_price > 0
+            else 0.0,
+        )
+
+    effective_quantity = final_quantity + hypothetical_buyback_quantity
+    actual_pct = (
+        final_quantity / initial_quantity * 100.0
+        if initial_quantity > 1e-12
+        else None
+    )
+    effective_pct = (
+        effective_quantity / initial_quantity * 100.0
+        if initial_quantity > 1e-12
+        else None
+    )
+    return {
+        "initial_quantity": initial_quantity,
+        "actual_final_quantity": final_quantity,
+        "actual_final_quantity_pct": actual_pct,
+        "open_sell_quantity": open_sell_quantity,
+        "open_sell_committed_cash": committed_cash,
+        "hypothetical_buyback_quantity": hypothetical_buyback_quantity,
+        "effective_final_quantity": effective_quantity,
+        "effective_final_quantity_pct": effective_pct,
+        "open_sell_buyback_coverage_pct": (
+            hypothetical_buyback_quantity / open_sell_quantity * 100.0
+            if open_sell_quantity > 1e-12
+            else 100.0
         ),
     }
 
@@ -674,7 +799,15 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             asset_config,
             swings,
             accumulations,
+            initial_price=result.initial_prices[symbol],
             final_price=result.final_prices[symbol],
+        )
+        recovery_metrics = _asset_recovery_metrics(
+            asset_config,
+            swings,
+            final_quantity=state.quantity,
+            final_price=result.final_prices[symbol],
+            fee_rate=result.scenario.execution.fee_rate,
         )
         ratchets = [item for item in result.target_history if item["asset_symbol"] == symbol]
         swing_ratchets = [
@@ -723,7 +856,8 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
         per_asset[symbol] = {
             "starting": {
                 "quantity": asset_config.quantity,
-                "entry_cost": asset_config.entry_cost,
+                "entry_cost": result.initial_prices[symbol],
+                "configured_entry_cost": asset_config.entry_cost,
                 "binance_quantity": asset_config.binance_quantity,
                 "cold_storage_quantity": asset_config.cold_storage_quantity,
                 "target_holding": asset_config.target_holding,
@@ -744,6 +878,7 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             },
             "inventory": _inventory_metrics(result, symbol),
             "bad_cases": _bad_case_metrics(swings),
+            "asset_recovery": recovery_metrics,
             "objective_metrics": objective_metrics,
             "capital_performance": capital_performance,
             "final": {
@@ -766,24 +901,12 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 "scrooge_asset_value": final_market_value,
             },
         }
-    capital_basis_complete = all(
-        asset.entry_cost is not None or asset.quantity <= 1e-12
-        for asset in result.scenario.assets
-    )
     known_initial_asset_capital = sum(
         float(item["capital_performance"]["initial_capital"] or 0.0)
         for item in per_asset.values()
     )
-    initial_invested_capital = (
-        result.scenario.starting_usdt + known_initial_asset_capital
-        if capital_basis_complete
-        else None
-    )
-    total_gain_on_initial_capital = (
-        final_value - initial_invested_capital
-        if initial_invested_capital is not None
-        else None
-    )
+    initial_invested_capital = result.scenario.starting_usdt + known_initial_asset_capital
+    total_gain_on_initial_capital = final_value - initial_invested_capital
     final_allocations = {
         symbol: (
             result.assets[symbol].quantity * result.final_prices[symbol] / final_value * 100
@@ -804,6 +927,19 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 "executed_notional", "lifecycle_pnl_quote",
             )
         }
+    recovery_pct_values = [
+        float(item["asset_recovery"]["effective_final_quantity_pct"])
+        for item in per_asset.values()
+        if item["asset_recovery"]["effective_final_quantity_pct"] is not None
+    ]
+    initial_quantity_total = sum(
+        float(item["asset_recovery"]["initial_quantity"])
+        for item in per_asset.values()
+    )
+    effective_quantity_total = sum(
+        float(item["asset_recovery"]["effective_final_quantity"])
+        for item in per_asset.values()
+    )
     return {
         "scenario": {
             "name": result.scenario.name,
@@ -824,9 +960,17 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             "total_gain_on_initial_capital": total_gain_on_initial_capital,
             "total_gain_on_initial_capital_pct": (
                 total_gain_on_initial_capital / initial_invested_capital * 100.0
-                if total_gain_on_initial_capital is not None
-                and initial_invested_capital is not None
-                and initial_invested_capital > 0
+                if initial_invested_capital > 0
+                else None
+            ),
+            "edge_vs_hodl_pct_points": (
+                ((final_value - hodl_final) / initial_value) * 100.0
+                if initial_value > 0
+                else None
+            ),
+            "edge_vs_hodl_relative_pct": (
+                (final_value / hodl_final - 1.0) * 100.0
+                if hodl_final > 0
                 else None
             ),
             "maximum_treasury_drawdown_pct": _maximum_drawdown(
@@ -856,8 +1000,57 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 else 0.0
             ),
         },
+        "success_metrics": {
+            "edge_vs_hodl": {
+                "quote": final_value - hodl_final,
+                "strategy_return_pct": (
+                    (final_value / initial_value - 1.0) * 100.0
+                    if initial_value > 0
+                    else None
+                ),
+                "hodl_return_pct": (
+                    (hodl_final / initial_value - 1.0) * 100.0
+                    if initial_value > 0
+                    else None
+                ),
+                "difference_pct_points": (
+                    (final_value - hodl_final) / initial_value * 100.0
+                    if initial_value > 0
+                    else None
+                ),
+                "relative_outperformance_pct": (
+                    (final_value / hodl_final - 1.0) * 100.0
+                    if hodl_final > 0
+                    else None
+                ),
+            },
+            "free_reserve": {
+                "quote": cash_available[-1],
+                "pct_of_initial_invested_capital": (
+                    cash_available[-1] / initial_invested_capital * 100.0
+                    if initial_invested_capital > 0
+                    else None
+                ),
+                "committed_quote": cash_reserved[-1],
+                "total_usdt": result.final_usdt,
+            },
+            "asset_recovery": {
+                "average_effective_quantity_pct": (
+                    mean(recovery_pct_values) if recovery_pct_values else None
+                ),
+                "weighted_effective_quantity_pct": (
+                    effective_quantity_total / initial_quantity_total * 100.0
+                    if initial_quantity_total > 0
+                    else None
+                ),
+                "per_asset": {
+                    symbol: item["asset_recovery"]
+                    for symbol, item in per_asset.items()
+                },
+            },
+        },
         "swings": _swing_metrics(result.swings),
-        "treasury_accumulation": _accumulation_metrics(result.accumulations),
+        "treasury_accumulation": _accumulation_metrics(result.accumulations, result.swings),
         "sell_campaigns": _campaign_metrics(result),
         "sell_openings_by_level": portfolio_levels,
         "waiter_cleanup": _waiter_cleanup_metrics(result),
@@ -1044,6 +1237,10 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
     cleanup_metrics = report["waiter_cleanup"]
     accumulation_metrics = report["treasury_accumulation"]["overview"]
     campaign_metrics = report["sell_campaigns"]
+    success_metrics = report["success_metrics"]
+    edge_metrics = success_metrics["edge_vs_hodl"]
+    reserve_metrics = success_metrics["free_reserve"]
+    recovery_metrics = success_metrics["asset_recovery"]
     closure_rate = bargain_overview["closure_rate_pct"]
     median_duration = bargain_overview["median_duration_hours"]
     p90_duration = bargain_overview["duration_p90_hours"]
@@ -1064,6 +1261,9 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         f"- Difference vs HODL: ${portfolio['difference_vs_hodl']:,.2f}",
         f"- Total Return: {portfolio['total_return_pct']:.2f}%",
         f"- HODL Return: {portfolio['hodl_return_pct']:.2f}%",
+        f"- Edge vs HODL: {edge_metrics['difference_pct_points']:.2f} pp ({edge_metrics['relative_outperformance_pct']:.2f}% relative)",
+        f"- Free Reserve: ${reserve_metrics['quote']:,.2f} ({reserve_metrics['pct_of_initial_invested_capital']:.2f}% of initial invested capital)",
+        f"- Effective Asset Recovery: {recovery_metrics['average_effective_quantity_pct']:.2f}% average / {recovery_metrics['weighted_effective_quantity_pct']:.2f}% weighted",
         f"- Maximum Treasury Drawdown: {portfolio['maximum_treasury_drawdown_pct']:.2f}%",
         "",
         "## Bargains",

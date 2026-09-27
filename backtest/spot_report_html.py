@@ -91,6 +91,15 @@ def _report_payload(
                 "scroogeValue": _number(benchmark.get("scrooge_asset_value")),
                 "startingQuantity": _number(starting.get("quantity")),
                 "finalQuantity": _number(final.get("quantity")),
+                "actualQuantityPct": _number(
+                    item.get("asset_recovery", {}).get("actual_final_quantity_pct")
+                ),
+                "effectiveQuantityPct": _number(
+                    item.get("asset_recovery", {}).get("effective_final_quantity_pct")
+                ),
+                "hypotheticalBuybackQuantity": _number(
+                    item.get("asset_recovery", {}).get("hypothetical_buyback_quantity")
+                ),
                 "targetQuantity": _number(final.get("target_holding")),
                 "opened": int(trading.get("total_opened") or 0),
                 "closed": int(trading.get("total_closed") or 0),
@@ -98,6 +107,7 @@ def _report_payload(
                 "realizedPnl": _number(trading.get("realized_pnl_quote")),
                 "unrealizedPnl": _number(trading.get("unrealized_open_pnl_quote")),
                 "initialCapitalKnown": performance.get("initial_capital") is not None,
+                "initialPrice": performance.get("initial_price"),
                 "effectiveEntryCost": performance.get("effective_entry_cost"),
                 "marketGain": performance.get("market_gain"),
                 "accumulatedCashGain": _number(performance.get("accumulated_cash_gain")),
@@ -205,6 +215,7 @@ def _report_payload(
     return {
         "scenario": report["scenario"],
         "portfolio": portfolio,
+        "successMetrics": report.get("success_metrics") or {},
         "reserve": report["shared_usdt"],
         "swings": report["swings"],
         "treasuryAccumulation": report.get("treasury_accumulation") or {},
@@ -472,18 +483,6 @@ _HTML = r'''<!doctype html>
     .risk-row span { color: var(--muted); text-align: right; }
     .analysis-note { margin-top: 13px; color: var(--dim); font-size: 11px; line-height: 1.55; }
 
-    .monthly { display: grid; grid-template-columns: repeat(7, minmax(72px, 1fr)); gap: 10px; align-items: end; min-height: 230px; overflow-x: auto; padding-top: 15px; }
-    .month { display: grid; grid-template-rows: 180px auto; gap: 8px; min-width: 72px; }
-    .month-bars { position: relative; border-bottom: 1px solid var(--line); }
-    .month-bars::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px dashed rgba(145,153,169,.2); }
-    .month-bar { width: 22%; min-width: 12px; height: var(--height); background: var(--color); position: absolute; z-index: 1; }
-    .month-bar.scrooge { left: 26%; }
-    .month-bar.hodl { right: 26%; }
-    .month-bar.up { bottom: 50%; border-radius: 4px 4px 1px 1px; }
-    .month-bar.down { top: 50%; border-radius: 1px 1px 4px 4px; }
-    .month-label { color: var(--muted); font-size: 10px; text-align: center; }
-    .month-return { display: block; color: var(--ink); margin-bottom: 3px; }
-
     .table-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: 12px; }
     table { border-collapse: collapse; width: 100%; min-width: 1040px; font-size: 11px; }
     th { color: var(--muted); font-weight: 400; text-align: right; padding: 12px 10px; background: #0a0f16; position: sticky; top: 0; }
@@ -627,11 +626,6 @@ _HTML = r'''<!doctype html>
         <div class="chart-wrap compact"><canvas id="reserveChart"></canvas><div class="tooltip"></div></div>
       </article>
 
-      <article class="card wide">
-        <div class="card-head"><div><h2>Monthly Contest</h2><div class="subtitle">Return by month. Bars rise or fall from the center line.</div></div><div class="legend"><span class="legend-item" style="--series:var(--gold)">Scrooge</span><span class="legend-item" style="--series:var(--blue)">HODL</span></div></div>
-        <div class="monthly" id="monthly"></div>
-      </article>
-
       <article class="card narrow">
         <div class="card-head"><div><h2>Bargain Health</h2><div class="subtitle">Closed profit versus unfinished exposure.</div></div></div>
         <div class="bargain-score" id="bargainScore"></div>
@@ -734,16 +728,20 @@ _HTML = r'''<!doctype html>
 
     document.getElementById("period").textContent = `${shortDate(data.scenario.start)} to ${shortDate(data.scenario.end)} / ${data.scenario.interval} candles / ${data.scenario.data_source}`;
     const edge = data.portfolio.difference_vs_hodl;
+    const success = data.successMetrics || {};
+    const edgeMetrics = success.edge_vs_hodl || {};
+    const reserveMetrics = success.free_reserve || {};
+    const recoveryMetrics = success.asset_recovery || {};
     document.getElementById("verdict").innerHTML = edge >= 0
       ? `My bargains added <strong class="positive">${money(edge)}</strong> beyond simply guarding the coins.`
       : `The vault grew, but untouched coins kept <strong class="negative">${money(Math.abs(edge))}</strong> more. The unfinished bargains reveal where my gold was left waiting.`;
 
     const metrics = [
       ["Final Treasury", money(data.portfolio.final_treasury_value), `Started at ${money(data.portfolio.starting_treasury_value)}`, "primary gold"],
-      ["Total Return", pct(data.portfolio.total_return_pct), `HODL ${pct(data.portfolio.hodl_return_pct)}`, tone(data.portfolio.total_return_pct)],
-      ["Edge vs HODL", money(edge), `${(data.portfolio.total_return_pct-data.portfolio.hodl_return_pct).toFixed(2)} pp`, tone(edge)],
+      ["Edge vs HODL", pct(edgeMetrics.difference_pct_points || 0), `${money(edgeMetrics.quote || edge)} / HODL ${pct(edgeMetrics.hodl_return_pct || 0)}`, tone(edgeMetrics.difference_pct_points || 0)],
+      ["Free Reserve", money(reserveMetrics.quote || 0), `${pct(reserveMetrics.pct_of_initial_invested_capital || 0)} of initial capital`, ""],
+      ["Asset Recovery", pct(recoveryMetrics.average_effective_quantity_pct || 0), `Weighted ${pct(recoveryMetrics.weighted_effective_quantity_pct || 0)}`, tone((recoveryMetrics.average_effective_quantity_pct || 0) - 100)],
       ["Max Drawdown", pct(data.portfolio.maximum_treasury_drawdown_pct), `HODL ${pct(data.hodlDrawdownPct)}`, "negative"],
-      ["Vault Reserve", money(data.reserve.ending), `${data.portfolio.final_allocation_pct.USDT.toFixed(2)}% of vault`, ""],
       ["Execution Fees", money(data.fees), `${data.rejectedOrders.toLocaleString()} filtered attempts`, ""],
     ];
     document.getElementById("metrics").innerHTML = metrics.map(([label,value,note,classes]) => `<div class="metric ${classes}"><div class="metric-label">${label}</div><div class="metric-value ${classes}">${value}</div><div class="metric-note">${note}</div></div>`).join("");
@@ -830,9 +828,6 @@ _HTML = r'''<!doctype html>
     document.getElementById("reserveShare").textContent=`${data.portfolio.final_allocation_pct.USDT.toFixed(1)}%`;
     document.getElementById("allocationList").innerHTML=allocations.map(([name,value],index)=>`<div class="allocation-row"><span class="allocation-name" style="--swatch:${COLORS[index%COLORS.length]}">${name}</span><strong>${value.toFixed(2)}%</strong></div>`).join("");
 
-    const maxMonthly=Math.max(...data.monthly.flatMap(item=>[Math.abs(item.scroogeReturn),Math.abs(item.hodlReturn)]),1);
-    document.getElementById("monthly").innerHTML=data.monthly.map(item=>{ const bar=(value,color,name)=>`<span class="month-bar ${name} ${value>=0?"up":"down"}" title="${pct(value)}" style="--height:${Math.max(Math.abs(value)/maxMonthly*45,1)}%;--color:${color}"></span>`; return `<div class="month"><div class="month-bars">${bar(item.scroogeReturn,"#e9b949","scrooge")}${bar(item.hodlReturn,"#83a8e8","hodl")}</div><div class="month-label"><strong class="month-return ${tone(item.scroogeReturn)}">${pct(item.scroogeReturn)}</strong>${item.month}</div></div>`; }).join("");
-
     const swing=data.swings;
     document.getElementById("bargainScore").innerHTML=[
       ["Opened",swing.total_opened,""], ["Closed",swing.total_closed,"positive"], ["Still Open",swing.still_open,"negative"],
@@ -849,6 +844,9 @@ _HTML = r'''<!doctype html>
     document.getElementById("accumulationKpis").innerHTML=[
       ["Accumulation Buys",accumulationOverview.count||0,"Standalone reserve deployments",""],
       ["USDT Deployed",money(accumulationOverview.usdt_deployed||0),"Free reserve only","gold"],
+      ["Earned Cash Generated",money(accumulation.earned_cash_generated_quote||0),"Closed SELL-origin swings","positive"],
+      ["Earned Cash Allocated",money(accumulation.earned_cash_allocated_quote||0),"Used by ACCUMULATE_ASSET + BUY","gold"],
+      ["Earned Cash Share",accumulation.earned_cash_allocated_pct==null?"N/A":pct(accumulation.earned_cash_allocated_pct),"Of earned cash generated","positive"],
       ["Net Asset Units",qty(accumulationOverview.net_asset_acquired||0),"See per-asset units below","positive"],
       ["Target Growth",qty(accumulationOverview.target_growth_quantity||0),"Net acquired quantity","positive"],
       ["Fees",Object.entries(accumulationOverview.fees_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"None","Native fee assets preserved",""],
@@ -953,7 +951,7 @@ _HTML = r'''<!doctype html>
     assetTable.innerHTML=data.assets.map(item=>`
       <tr class="asset-summary" id="asset-${item.symbol}" data-asset="${item.symbol}" tabindex="0" role="button" aria-expanded="false" aria-controls="ledger-${item.symbol}">
         <td class="asset"><span class="asset-toggle">${item.symbol}<i class="asset-chevron" aria-hidden="true"></i></span></td>
-        <td class="objective">${objective(item.objective)}</td><td class="${tone(item.marketReturn)}">${pct(item.marketReturn)}</td><td class="${tone(item.deltaVsHodl)}">${money(item.deltaVsHodl)}</td><td>${optionalMoney(item.effectiveEntryCost,6)}</td><td class="${tone(item.totalGain)}"><strong>${optionalMoney(item.totalGain)}</strong>${item.initialCapitalKnown?`<span class="gain-breakdown">Market ${optionalMoney(item.marketGain)} / Cash ${money(item.accumulatedCashGain)} / Open ${money(item.openBargainPnl)}</span>`:""}</td><td>${item.closed} / ${item.opened}<br><span class="muted">${item.open} open</span></td><td>${qty(item.finalQuantity)} / ${qty(item.startingQuantity)}</td><td>${qty(item.targetQuantity)}</td><td>${item.nearFloorPct.toFixed(1)}%</td>
+        <td class="objective">${objective(item.objective)}</td><td class="${tone(item.marketReturn)}">${pct(item.marketReturn)}</td><td class="${tone(item.deltaVsHodl)}">${money(item.deltaVsHodl)}</td><td>${optionalMoney(item.effectiveEntryCost,6)}</td><td class="${tone(item.totalGain)}"><strong>${optionalMoney(item.totalGain)}</strong>${item.initialCapitalKnown?`<span class="gain-breakdown">Market ${optionalMoney(item.marketGain)} / Cash ${money(item.accumulatedCashGain)} / Open ${money(item.openBargainPnl)}</span>`:""}</td><td>${item.closed} / ${item.opened}<br><span class="muted">${item.open} open</span></td><td>${qty(item.finalQuantity)} / ${qty(item.startingQuantity)}<br><span class="muted">Effective ${pct(item.effectiveQuantityPct)}</span></td><td>${qty(item.targetQuantity)}</td><td>${item.nearFloorPct.toFixed(1)}%</td>
       </tr>
       <tr class="asset-detail" id="ledger-${item.symbol}" hidden><td colspan="10"><div class="asset-ledger" data-ledger="${item.symbol}"></div></td></tr>`).join("");
 
