@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import tempfile
@@ -18,7 +19,7 @@ from backtest.spot_reporting import (
     build_spot_backtest_report,
     write_spot_backtest_artifacts,
 )
-from backtest.spot_report_html import display_spot_report_title
+from backtest.spot_report_html import _free_reserve, display_spot_report_title
 from backtest.spot_scenario import (
     SpotBacktestAsset,
     SpotBacktestExecutionConfig,
@@ -27,7 +28,7 @@ from backtest.spot_scenario import (
     load_spot_backtest_scenario,
 )
 from bot.spot_strategy import ProgressiveSpotSwingExecutor
-from shared.spot_progression import ProgressiveSwingConfig
+from shared.spot_progression import ProgressiveSwingConfig, initialize_sell_campaign_capacity
 from shared.spot_execution_rules import (
     normalize_market_quantity,
     validate_sell_opening_round_trip,
@@ -429,27 +430,120 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(replay.rejections[0]["swing_id"], "retry-when-cash-returns")
         self.assertEqual(replay.executions, [])
 
-    def test_pending_closes_execute_before_new_openings_across_assets(self):
+    def test_signal_batches_with_closes_run_before_new_openings_across_assets(self):
         config = scenario((asset("EARLY"), asset("LATE")))
         replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 90))
-        replay.pending = {
-            "EARLY": {"action_type": "open", "side": "buy", "requested_quantity": 1},
-            "LATE": {"action_type": "close", "side": "buy", "requested_quantity": 1},
+        replay.swings["late-close"] = {
+            "swing_id": "late-close",
+            "asset_symbol": "LATE",
+            "quote_symbol": "USDT",
+            "origin_side": "sell",
+            "trading_objective": "accumulate_cash",
+            "status": "open",
+            "source": "strategy",
+            "opened_at_ms": replay.start_ms,
+            "executions": [
+                {
+                    "execution_id": "late-open",
+                    "side": "sell",
+                    "quantity": 1,
+                    "price": 100,
+                    "quote_quantity": 100,
+                    "fee_amount": 0,
+                    "fee_asset": "USDT",
+                }
+            ],
         }
         candles = {
             symbol: next(row for row in replay.dataset.candles[symbol] if row.open_time_ms == replay.start_ms)
             for symbol in ("EARLY", "LATE")
         }
-        order: list[tuple[str, str]] = []
+        sell_signal = {
+            "opportunity": "sell",
+            "level": 1,
+            "strategy_eligible": True,
+            "trading_objective": "accumulate_cash",
+            "current_price": 90,
+            "evaluated_at_ms": candles["EARLY"].close_time_ms,
+            "base_tranche_pct": 10,
+        }
+        hold_signal = {
+            **sell_signal,
+            "opportunity": "hold",
+            "level": 0,
+            "base_tranche_pct": 0,
+        }
+        early_campaign = initialize_sell_campaign_capacity(
+            {"campaign_id": "early", "active_side": "sell", "highest_completed_level": 0},
+            replay.assets["EARLY"].holding(90),
+            config=config.progression,
+        )
+        contexts = [
+            ("EARLY", candles["EARLY"], sell_signal, early_campaign),
+            ("LATE", candles["LATE"], hold_signal, {}),
+        ]
 
-        with patch.object(
-            replay,
-            "_execute_action",
-            side_effect=lambda symbol, action, _price, _timestamp: order.append((symbol, action["action_type"])),
-        ):
-            replay._execute_pending(candles)
+        ordered = sorted(
+            enumerate(contexts),
+            key=lambda item: replay._signal_context_priority(item[1], item[0]),
+        )
 
-        self.assertEqual(order, [("LATE", "close"), ("EARLY", "open")])
+        self.assertEqual([context[0] for _index, context in ordered], ["LATE", "EARLY"])
+
+    def test_backtest_executes_all_eligible_asset_actions_in_one_signal_batch(self):
+        config = scenario((asset("AAA", minimum=0),), starting_usdt=1000)
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 90))
+        replay.assets["AAA"].binance_quantity -= 2
+        replay.usdt += 220
+        for index, opening_price in enumerate((100, 120), start=1):
+            swing_id = f"profit-{index}"
+            replay.swings[swing_id] = {
+                "swing_id": swing_id,
+                "asset_symbol": "AAA",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "status": "open",
+                "source": "strategy",
+                "opened_at_ms": replay.start_ms - index,
+                "executions": [
+                    {
+                        "execution_id": f"open-{index}",
+                        "side": "sell",
+                        "quantity": 1,
+                        "price": opening_price,
+                        "quote_quantity": opening_price,
+                        "fee_amount": 0,
+                        "fee_asset": "USDT",
+                    }
+                ],
+            }
+        candle = next(
+            row for row in replay.dataset.candles["AAA"] if row.open_time_ms == replay.start_ms
+        )
+        signal = {
+            "opportunity": "sell",
+            "level": 1,
+            "strategy_eligible": True,
+            "trading_objective": "accumulate_cash",
+            "current_price": 90,
+            "evaluated_at_ms": candle.close_time_ms,
+            "base_tranche_pct": 10,
+            "final_tranche_pct": 10,
+            "sizing_modifier": 1,
+        }
+        campaign = initialize_sell_campaign_capacity(
+            {"campaign_id": "sell-campaign", "active_side": "sell", "highest_completed_level": 0},
+            replay.assets["AAA"].holding(90),
+            config=config.progression,
+        )
+        replay.campaigns["AAA"] = campaign
+
+        replay._execute_signal_batch("AAA", candle, signal, campaign)
+
+        self.assertEqual([action["action_type"] for action in replay.actions], ["close", "close", "open"])
+        self.assertEqual(len({action["timestamp_ms"] for action in replay.actions}), 1)
+        self.assertTrue(all(replay.swings[swing_id]["status"] == "closed" for swing_id in ("profit-1", "profit-2")))
 
     def test_report_title_uses_replay_period_instead_of_market_migration_details(self):
         legacy_name = "treasury-10-assets-real-quantities-6m-ton-to-gram"
@@ -636,6 +730,45 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(actual["opportunity"], expected["opportunity"])
         self.assertEqual(actual["level"], expected["level"])
         self.assertEqual(actual["base_tranche_pct"], expected["base_tranche_pct"])
+
+    def test_minute_replay_builds_indicator_context_from_closed_hourly_candles(self):
+        base = scenario((asset("AAA"),), hours=1)
+        config = replace(
+            base,
+            interval="1m",
+            warmup_candles=3600,
+            end=base.start + timedelta(minutes=2),
+        )
+        first_open = config.start - timedelta(minutes=config.warmup_candles)
+        rows = []
+        for index in range(config.warmup_candles + 2):
+            open_time_ms = int((first_open + timedelta(minutes=index)).timestamp() * 1000)
+            price = 108.0 if index >= config.warmup_candles else 100.0
+            rows.append(
+                SpotCandle(
+                    open_time_ms=open_time_ms,
+                    close_time_ms=open_time_ms + 60_000 - 1,
+                    open=price,
+                    high=price,
+                    low=price,
+                    close=price,
+                    volume=1,
+                )
+            )
+        historical = SpotHistoricalDataset(
+            candles={"AAA": tuple(rows)},
+            symbol_info={"AAA": SYMBOL_INFO},
+            interval="1m",
+            interval_ms=60_000,
+            source="synthetic",
+        )
+        replay = SpotPortfolioBacktester(config, historical)
+
+        signal = replay._signal_for("AAA", replay._replay_rows()["AAA"][0])
+
+        self.assertEqual(signal["indicator_context"]["interval"], "1h")
+        self.assertEqual(signal["indicator_context"]["candle_count"], 60)
+        self.assertLess(signal["indicator_context"]["latest_closed_at_ms"], config.start.timestamp() * 1000)
 
     def test_buy_signal_does_not_open_buy_origin_bargains(self):
         config = scenario(
@@ -989,6 +1122,20 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             100,
         )
 
+    def test_report_chart_uses_only_uncommitted_free_reserve(self):
+        current_row = {
+            "shared_usdt": 757.56,
+            "shared_usdt_reserved": 743.55,
+            "shared_usdt_available": 14.01,
+        }
+        legacy_row = {
+            "shared_usdt": "757.56",
+            "shared_usdt_reserved": "743.55",
+        }
+
+        self.assertEqual(_free_reserve(current_row), 14.01)
+        self.assertAlmostEqual(_free_reserve(legacy_row), 14.01)
+
     def test_fee_slippage_and_artifacts_are_explicit(self):
         config = scenario(
             (asset("AAA", quantity=10, target=10),),
@@ -1014,6 +1161,8 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertIn("Scrooge Research", report_html)
             self.assertIn("Vault Value", report_html)
             self.assertIn("Final Allocation", report_html)
+            self.assertIn("Free Reserve", report_html)
+            self.assertIn('"freeReserve"', report_html)
             self.assertIn("Bargain History", report_html)
             self.assertIn("Bargain Analytics", report_html)
             self.assertIn("Waiter Cleanup", report_html)
@@ -1099,6 +1248,8 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertTrue(template.waiter_cleanup.enabled)
         self.assertTrue(template.progression.treasury_accumulation_enabled)
         self.assertEqual(template.progression.close_profit_pct, 3)
+        self.assertEqual(template.interval, "1m")
+        self.assertEqual(template.warmup_candles, 3600)
 
         snapshot = {
             "holdings": [
@@ -1146,6 +1297,8 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(exported.assets[0].cold_storage_quantity, 250)
         self.assertTrue(exported.progression.treasury_accumulation_enabled)
         self.assertEqual(exported.progression.close_profit_pct, 3)
+        self.assertEqual(exported.interval, "1m")
+        self.assertEqual(exported.warmup_candles, 3600)
         self.assertEqual(exported.metadata["export_warnings"][0], "review me")
         self.assertIn("Excluded USDC", exported.metadata["export_warnings"][1])
 

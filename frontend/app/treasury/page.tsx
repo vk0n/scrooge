@@ -8,6 +8,7 @@ import { formatDateTimeEu } from "../../lib/datetime";
 
 type PortfolioSummary = {
   total_value: number;
+  total_value_24h_change_pct: number | null;
   invested_capital: number;
   total_gain: number;
   total_gain_pct: number | null;
@@ -2166,6 +2167,16 @@ export default function TreasuryPage(): JSX.Element {
                 </span>
                 <span>{formatNumber(summary?.total_value ?? 0)}</span>
               </strong>
+              {typeof summary?.total_value_24h_change_pct === "number" ? (
+                <span
+                  className={signedToneClass(
+                    summary.total_value_24h_change_pct,
+                    "treasury-total-change"
+                  )}
+                >
+                  24h {formatSignedPercent(summary.total_value_24h_change_pct)}
+                </span>
+              ) : null}
             </div>
             <div className="treasury-summary-card">
               <span className="treasury-summary-label">Invested Capital</span>

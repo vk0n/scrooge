@@ -1170,17 +1170,22 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         "scenario": scenario_as_dict(result.scenario),
         "strategy_code_revision": _git_revision(),
         "timing": (
-            "Evaluate after candle N closes using data through N; execute one queued market action per asset "
-            "at candle N+1 open. Warm-up candles never trade."
+            "Evaluate after candle N closes using data through N; execute every eligible action sequentially "
+            "at candle N close, refreshing simulated state after every fill. Warm-up candles never trade."
         ),
         "rolling_24h_reference": "Candle close exactly 24 hours before the evaluated candle close.",
         "missing_candles": "Fail the run; no interpolation or forward fill.",
         "cross_asset_order": {
-            "rule": "asset symbol ascending, matching the live policy query order",
+            "rule": (
+                "assets whose first eligible action is a close run first; ties preserve asset-symbol "
+                "order, matching the live signal executor"
+            ),
             "symbols": list(result.scenario.asset_order),
         },
         "quantization": "Current cached Binance Spot filters, not historical filter versions.",
-        "execution_model": "Deterministic next-candle-open market fill plus configured fee and slippage.",
+        "execution_model": (
+            "Deterministic synchronous candle-close market-action batch plus configured fee and slippage."
+        ),
     }
     _write_json(target / "summary.json", report)
     _write_json(target / "scenario.resolved.json", reproducibility)

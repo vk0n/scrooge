@@ -14,6 +14,28 @@ from shared.spot_waiter_cleanup import WaiterCleanupConfig, waiter_cleanup_confi
 
 
 VALID_OBJECTIVES = {None, "accumulate_cash", "accumulate_asset"}
+INTERVAL_SECONDS = {
+    "1m": 60,
+    "3m": 180,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "2h": 7200,
+    "4h": 14400,
+    "6h": 21600,
+    "8h": 28800,
+    "12h": 43200,
+    "1d": 86400,
+}
+INDICATOR_WARMUP_SECONDS = 60 * 60 * 60
+
+
+def _minimum_warmup_candles(interval: str) -> int:
+    interval_seconds = INTERVAL_SECONDS.get(interval)
+    if interval_seconds is None:
+        raise ValueError(f"Unsupported Spot backtest interval: {interval}")
+    return max(60, (INDICATOR_WARMUP_SECONDS + interval_seconds - 1) // interval_seconds)
 
 
 def _utc_datetime(value: Any, *, field_name: str) -> datetime:
@@ -268,12 +290,16 @@ def load_spot_backtest_scenario(
         cache_path = (base_dir / cache_path).resolve()
     if not output_path.is_absolute():
         output_path = (base_dir / output_path).resolve()
+    interval = str(payload.get("interval") or "1m").strip().lower()
     return SpotBacktestScenario(
         name=str(payload.get("name") or scenario_path.stem),
         start=start,
         end=end,
-        interval=str(payload.get("interval") or "1h").strip().lower(),
-        warmup_candles=max(60, int(payload.get("warmup_candles", 60))),
+        interval=interval,
+        warmup_candles=max(
+            _minimum_warmup_candles(interval),
+            int(payload.get("warmup_candles", 0)),
+        ),
         starting_usdt=_number(payload.get("starting_usdt", 0), field_name="starting_usdt", minimum=0),
         assets=assets,
         execution=SpotBacktestExecutionConfig(
@@ -427,8 +453,8 @@ def export_current_treasury_scenario(
             "name": name,
             "start": _utc_datetime(start, field_name="start").isoformat(),
             "end": _utc_datetime(end, field_name="end").isoformat(),
-            "interval": "1h",
-            "warmup_candles": 60,
+            "interval": "1m",
+            "warmup_candles": 3600,
             "starting_usdt": starting_usdt,
             "assets": assets,
             "execution": {"fee_rate": 0.001, "slippage_bps": 0, "force_close_at_end": False},

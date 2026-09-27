@@ -41,6 +41,16 @@ def _maximum_drawdown(values: list[float]) -> float:
     return worst
 
 
+def _free_reserve(row: dict[str, Any]) -> float:
+    available = row.get("shared_usdt_available")
+    if available is not None:
+        return _number(available)
+    return max(
+        0.0,
+        _number(row.get("shared_usdt")) - _number(row.get("shared_usdt_reserved")),
+    )
+
+
 def display_spot_report_title(name: str, start: str | None = None, end: str | None = None) -> str:
     normalized = name.strip().lower().replace("_", "-")
     if normalized == "scrooge-treasury-portfolio-replay" or normalized.startswith(
@@ -231,7 +241,7 @@ def _report_payload(
                 "timestamp": item.get("timestamp"),
                 "treasury": _number(item.get("treasury_value")),
                 "hodl": _number(item.get("hodl_value")),
-                "reserve": _number(item.get("shared_usdt")),
+                "freeReserve": _free_reserve(item),
                 "openBargains": int(_number(item.get("open_swings"))),
             }
             for item in sampled_equity
@@ -622,7 +632,7 @@ _HTML = r'''<!doctype html>
       </article>
 
       <article class="card">
-        <div class="card-head"><div><h2>Vault Reserve</h2><div class="subtitle">Shared USDT generated and redeployed over time.</div></div><div class="legend"><span class="legend-item" style="--series:var(--mint)">USDT</span></div></div>
+        <div class="card-head"><div><h2>Free Reserve</h2><div class="subtitle">USDT available after reserving cash to restore open SELL Bargains.</div></div><div class="legend"><span class="legend-item" style="--series:var(--mint)">Available USDT</span></div></div>
         <div class="chart-wrap compact"><canvas id="reserveChart"></canvas><div class="tooltip"></div></div>
       </article>
 
@@ -818,7 +828,7 @@ _HTML = r'''<!doctype html>
       {name:"HODL",color:"#83a8e8",value:p=>p.hodlDd,format:pct},
     ], {zeroTop:true});
     drawLineChart(document.getElementById("reserveChart"), data.equity, [
-      {name:"Reserve",color:"#43d6a0",value:p=>p.reserve,format:v=>money(v)},
+      {name:"Free Reserve",color:"#43d6a0",value:p=>p.freeReserve,format:v=>money(v)},
     ], {money:true});
 
     const allocations = Object.entries(data.portfolio.final_allocation_pct).sort((a,b)=>b[1]-a[1]);

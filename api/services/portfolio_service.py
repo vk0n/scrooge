@@ -509,6 +509,29 @@ def _attach_asset_performance(
     return portfolio_accumulated_cash
 
 
+def _portfolio_24h_change_pct(holdings: list[dict[str, Any]]) -> float | None:
+    current_total = 0.0
+    previous_total = 0.0
+    for holding in holdings:
+        market_value = _as_float(holding.get("market_value"))
+        if market_value is None:
+            continue
+        current_total += market_value
+        if bool(holding.get("is_dry_powder")):
+            previous_total += market_value
+            continue
+        change_pct = _as_float(holding.get("rolling_24h_change_pct"))
+        if change_pct is None:
+            return None
+        price_ratio = 1.0 + change_pct / 100.0
+        if price_ratio <= 0:
+            return None
+        previous_total += market_value / price_ratio
+    if current_total <= 0 or previous_total <= 0:
+        return None
+    return (current_total / previous_total - 1.0) * 100.0
+
+
 def _summary_from_holdings(
     holdings: list[dict[str, Any]],
     *,
@@ -536,6 +559,7 @@ def _summary_from_holdings(
     ]
     return {
         "total_value": total_value,
+        "total_value_24h_change_pct": _portfolio_24h_change_pct(holdings),
         "invested_capital": invested_capital,
         "total_gain": total_gain,
         "total_gain_pct": (total_gain / invested_capital) * 100 if invested_capital > 0 else None,

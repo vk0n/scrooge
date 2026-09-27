@@ -20,10 +20,13 @@ The replay replaces only the market source, clock, executor, state store, and re
 - Data source: Binance Spot klines from `/api/v3/klines`, never Futures candles.
 - Cache: deterministic CSV files under `data/spot_backtest/klines`; current exchange filters are cached as JSON.
 - Timezone: all scenario and candle timestamps are UTC.
-- Default interval: one hour.
-- Warm-up: at least 60 candles before the requested start. Warm-up cannot generate signals, orders, Bargains, or balance changes.
+- Default interval: one minute, matching the live signal poll cadence.
+- Warm-up: at least 60 hours (`3600` candles at `1m`) before the requested start. Warm-up cannot generate signals,
+  orders, Bargains, or balance changes.
 - Decision: candle N closes, then Scrooge evaluates only data whose close timestamp is at or before candle N close.
-- Fill: one queued action per asset executes deterministically at candle N+1 open, adjusted by configured slippage and fee.
+- Fill: every action that remains eligible is executed sequentially at candle N close, adjusted by configured slippage
+  and fee. Portfolio, reserve, Swing, and campaign state are recalculated after every fill before planning the next
+  action from that signal.
 - Rolling reference: the candle close exactly 24 hours before candle N close.
 - Missing candles: the run fails. There is no interpolation or forward fill.
 - End of run: open Bargains remain open and are marked to market unless the analysis-only `force_close_at_end` flag is enabled.
@@ -32,9 +35,17 @@ This is a strategy backtest, not a Binance order-book or market-impact simulatio
 
 ## Shared Cash And Ordering
 
-All assets draw from one USDT pool. BUY decisions reserve estimated quote value during a cycle, and actual fills are constrained again by the remaining pool. Assets are processed alphabetically by symbol, matching the live policy query order; the resolved order is recorded in every result. Cold Storage contributes to value and Protected Floor economics but is never sellable.
+All assets draw from one USDT pool. As in live execution, asset batches whose first action is a close run before batches
+without a close; ties retain alphabetical policy order. Within one asset, profitable closes run first, then every
+eligible waiter/capacity cleanup, then the current campaign-level opening or reserve accumulation. Every BUY is
+constrained by the pool remaining after prior fills. The resolved asset order is recorded in every result. Cold Storage
+contributes to value and Protected Floor economics but is never sellable.
 
-Waiter cleanup is enabled by default. Profitable closes retain priority, then the oldest eligible Bargain may close on a reverse signal. Deep loss at 15 days and -20% requires L1+; the 30/60/90-day thresholds require L3+/L2+/L1+. A hard cap of 10 open Bargains per asset may use an eligible 30-day reverse signal for capacity cleanup, otherwise the cycle holds instead of opening an eleventh Bargain. Cleanup uses each Bargain's remaining open economics and the same executor, fees, quantization, and accounting path as every other close.
+Waiter cleanup is enabled by default. Profitable closes retain priority, then all eligible Bargains close oldest-first on
+the same reverse signal. Deep loss at 15 days and -20% requires L1+; the 30/60/90-day thresholds require
+L3+/L2+/L1+. A hard cap of 10 open Bargains per asset may use an eligible 30-day reverse signal for capacity cleanup,
+otherwise the cycle holds instead of opening an eleventh Bargain. Cleanup uses each Bargain's remaining open economics
+and the same executor, fees, quantization, and accounting path as every other close.
 
 Opening and closing market actions are lifecycle-atomic. A SELL-origin close may spend only that Bargain's committed quote plus Free Vault Reserve and buys the maximum exchange-valid quantity available from that budget. Once the terminal market order fills, the Bargain closes without a partial or dust tail; any quantity that could not be restored is recorded as realized inventory deficit rather than left waiting for future reserve.
 
@@ -119,8 +130,12 @@ The generated page embeds its sampled chart data and has no CDN, API, or fronten
 
 ## Known V1 Limits
 
-- Live signals poll Binance's rolling ticker at wall-clock times; replay evaluates aligned closed hourly candles and uses the close exactly 24 hours earlier.
-- Live orders face the real order book, latency, partial fills, and changing exchange balances. Replay uses the next candle open plus configured slippage and a deterministic same-cycle USDT reservation.
+- Live signals poll Binance's rolling ticker every minute by default; exported replay scenarios now evaluate `1m`
+  candle closes and use the close exactly 24 hours earlier. Replay indicator telemetry is independently aggregated into
+  strictly closed `1h` candles, matching live RSI/EMA/Bollinger inputs.
+- Live orders face the real order book, latency, and changing exchange balances. Replay approximates immediate market
+  execution at the observed candle close plus configured slippage, with the same sequential action ordering and
+  state refresh after each fill.
 - Current Binance Spot filters are used; historical filter changes are not reconstructed.
 - The simulator's configured fee is charged in USDT. Shared Swing accounting still preserves third-asset fee amounts when such executions are supplied, but does not invent historical conversion rates.
 - Every configured symbol must have a complete Binance Spot candle range. Missing, newly listed, or delisted markets fail the run rather than being filled or substituted.

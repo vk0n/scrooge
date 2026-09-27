@@ -2401,6 +2401,11 @@ button.treasury-summary-card-swings:focus-visible,
   text-shadow: 0 0 10px rgba(225, 184, 79, 0.14);
 }
 
+.treasury-total-change {
+  font-size: 0.78rem;
+  line-height: 1.22;
+}
+
 .treasury-total-dollar.value-positive {
   color: var(--value-positive-surface);
   text-shadow: 0 0 8px rgba(67, 219, 163, 0.42);
@@ -5673,6 +5678,22 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-summary-card-hero {
     grid-column: auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .treasury-summary-card-hero > .treasury-summary-label {
+    grid-column: 1 / -1;
+  }
+
+  .treasury-summary-card-hero > .treasury-total-value {
+    grid-column: 1;
+  }
+
+  .treasury-summary-card-hero > .treasury-total-change {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
   }
 
   .treasury-holding-lines > span {
