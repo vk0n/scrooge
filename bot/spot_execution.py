@@ -27,11 +27,10 @@ from shared.spot_accounting import ensure_spot_quote_leg
 from shared.spot_execution_rules import (
     format_decimal as _format_decimal,
     normalize_market_quantity as _market_quantity,
-    validate_market_close_remainder as _validate_close_remainder,
     validate_market_notional as _validate_notional,
     validate_sell_opening_round_trip as _validate_sell_opening_round_trip,
 )
-from shared.spot_swing import calculate_swing_economics
+from shared.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics
 from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction
 
 
@@ -329,19 +328,6 @@ class SpotOrderExecutor:
                     float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
                 ),
             )
-        if swing is not None and intent["side"] != swing["origin_side"]:
-            economics = calculate_swing_economics(
-                swing,
-                list_spot_swing_executions(swing["swing_id"], path=self.db_path),
-                current_price=market_price,
-            )
-            _validate_close_remainder(
-                symbol_info,
-                remaining_quantity=float(economics.get("remaining_quantity") or 0.0),
-                closing_quantity=quantity,
-                price=market_price,
-            )
-
         from api.services.portfolio_service import load_portfolio_snapshot
 
         portfolio, _ = load_portfolio_snapshot()
@@ -392,6 +378,17 @@ class SpotOrderExecutor:
                 if required_quote > free_reserve + 0.00000001:
                     raise ValueError(
                         "Treasury accumulation rejected because Free Vault Reserve changed after preview."
+                    )
+            elif swing is not None and swing.get("origin_side") == "sell":
+                economics = calculate_swing_economics(
+                    swing,
+                    list_spot_swing_executions(swing["swing_id"], path=self.db_path),
+                )
+                free_reserve = _as_float(portfolio["summary"].get("vault_reserve_available")) or 0.0
+                close_budget = free_reserve + calculate_sell_origin_committed_quote(swing, economics)
+                if required_quote > close_budget + 0.00000001:
+                    raise ValueError(
+                        "Buy close rejected because it would spend another Bargain's committed cash."
                     )
         return quantity
 

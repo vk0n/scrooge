@@ -31,6 +31,7 @@ from shared.runtime_db import (
     update_spot_order_intent,
     update_spot_strategy_action,
 )
+from shared.spot_swing import calculate_swing_economics
 
 
 class FakeSpotExecutionClient:
@@ -560,7 +561,7 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(quote_legs[0]["source"], "binance_manual")
         self.assertEqual(quote_legs[0]["tx_type"], "buy")
 
-    def test_live_partial_close_rejects_untradeable_remainder(self):
+    def test_live_atomic_close_accepts_normalized_quantity_and_folds_dust(self):
         portfolio_service.update_portfolio_asset_policy(
             "BTC",
             {
@@ -622,11 +623,18 @@ class SpotExecutionTests(unittest.TestCase):
             db_path=self.db_path,
         )
 
-        with self.assertRaisesRegex(SpotOrderValidationError, "untradeable remainder"):
-            executor.execute(preview["intent_id"])
+        result = executor.execute(preview["intent_id"])
 
-        self.assertEqual(client.create_calls, 0)
-        self.assertEqual(len(list_spot_swing_executions("partial-close-dust", path=self.db_path)), 1)
+        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual(client.create_calls, 1)
+        self.assertEqual(len(list_spot_swing_executions("partial-close-dust", path=self.db_path)), 2)
+        swing = load_spot_swing("partial-close-dust", path=self.db_path)
+        economics = calculate_swing_economics(
+            swing,
+            list_spot_swing_executions("partial-close-dust", path=self.db_path),
+        )
+        self.assertEqual(swing["status"], "closed")
+        self.assertEqual(economics["remaining_quantity"], 0)
 
     def test_nonterminal_partial_fill_waits_for_reconciliation_without_resubmission(self):
         preview = self._preview_and_queue("buy", 0.25)

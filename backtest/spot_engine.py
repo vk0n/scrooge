@@ -3,14 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
-from typing import Any
+from typing import Any, Callable
 
 from backtest.spot_market_data import SpotCandle, SpotHistoricalDataset
 from backtest.spot_scenario import SpotBacktestAsset, SpotBacktestScenario
 from bot.spot_signal import calculate_spot_indicator_context
 from shared.spot_execution_rules import (
     normalize_market_quantity,
-    validate_market_close_remainder,
     validate_market_notional,
     validate_sell_opening_round_trip,
 )
@@ -22,7 +21,11 @@ from shared.spot_strategy import (
     plan_spot_strategy_action,
     transition_spot_strategy_campaign,
 )
-from shared.spot_swing import calculate_swing_economics, calculate_target_ratchet
+from shared.spot_swing import (
+    calculate_sell_origin_committed_quote,
+    calculate_swing_economics,
+    calculate_target_ratchet,
+)
 
 
 @dataclass
@@ -161,6 +164,11 @@ class SpotPortfolioBacktester:
         self.maximum_usdt = self.usdt
         self.campaigns: dict[str, dict[str, Any]] = {}
         self.swings: dict[str, dict[str, Any]] = {}
+        self._swing_ids_by_asset: dict[str, list[str]] = {
+            symbol: [] for symbol in scenario.asset_order
+        }
+        self._indexed_swing_ids: set[str] = set()
+        self._economics_cache: dict[tuple[str, float | None], dict[str, Any]] = {}
         self.executions: list[dict[str, Any]] = []
         self.accumulations: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
@@ -186,7 +194,11 @@ class SpotPortfolioBacktester:
             for symbol, rows in self.dataset.candles.items()
         }
 
-    def run(self) -> SpotBacktestResult:
+    def run(
+        self,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> SpotBacktestResult:
         replay_rows = self._replay_rows()
         initial_prices = {symbol: rows[0].open for symbol, rows in replay_rows.items()}
         for symbol, state in self.assets.items():
@@ -199,7 +211,10 @@ class SpotPortfolioBacktester:
         equity = [self._equity_point(self.start_ms, initial_prices, starting_value)]
 
         step_count = len(next(iter(replay_rows.values())))
+        if progress is not None:
+            progress(0, step_count)
         for step in range(step_count):
+            self._economics_cache.clear()
             candles = {symbol: replay_rows[symbol][step] for symbol in self.scenario.asset_order}
             self._execute_pending(candles)
             prices = {symbol: candle.close for symbol, candle in candles.items()}
@@ -207,11 +222,15 @@ class SpotPortfolioBacktester:
                 self._evaluate_cycle(candles, reserved_quote=0.0)
             equity.append(self._equity_point(candles[self.scenario.asset_order[0]].close_time_ms, prices, starting_value))
             self._record_inventory(candles[self.scenario.asset_order[0]].close_time_ms, prices)
+            if progress is not None:
+                progress(step + 1, step_count)
 
         if self.scenario.execution.force_close_at_end:
+            self._economics_cache.clear()
             self._force_close(final_prices, self.end_ms)
             equity.append(self._equity_point(self.end_ms, final_prices, starting_value))
 
+        self._economics_cache.clear()
         swings = self._final_swings(final_prices)
         return SpotBacktestResult(
             scenario=self.scenario,
@@ -387,6 +406,7 @@ class SpotPortfolioBacktester:
                 campaign=campaign,
                 observed_price=candle.close,
                 available_quote=total_available_quote,
+                free_quote_reserve=max(0.0, self.usdt - total_committed_quote - reserved_quote),
                 available_accumulation_quote=max(
                     0.0,
                     self.usdt - total_committed_quote - reserved_quote,
@@ -401,8 +421,12 @@ class SpotPortfolioBacktester:
         closing_decisions.sort(key=self._portfolio_close_priority)
         closing_quote_reserved = 0.0
         commitment_released = 0.0
+        free_quote_available = max(0.0, self.usdt - total_committed_quote)
         for symbol, candle, signal, campaign, decision in closing_decisions:
-            available_quote = max(0.0, self.usdt - reserved_quote)
+            available_quote = self._close_quote_budget(
+                decision,
+                free_quote_reserve=free_quote_available,
+            )
             error, permanent = self._close_preflight_error(
                 symbol,
                 decision,
@@ -427,7 +451,9 @@ class SpotPortfolioBacktester:
                 )
                 reserved_quote += min(available_quote, requested_quote)
                 closing_quote_reserved += min(available_quote, requested_quote)
-                commitment_released += self._released_commitment_for_close(decision)
+                released = self._released_commitment_for_close(decision)
+                commitment_released += released
+                free_quote_available = max(0.0, free_quote_available + released - requested_quote)
 
         for symbol, candle, signal, campaign in contexts:
             if symbol in close_symbols:
@@ -438,6 +464,10 @@ class SpotPortfolioBacktester:
                 campaign=campaign,
                 observed_price=candle.close,
                 available_quote=max(0.0, self.usdt - reserved_quote),
+                free_quote_reserve=max(
+                    0.0,
+                    self.usdt - total_committed_quote - reserved_quote + commitment_released,
+                ),
                 available_accumulation_quote=max(
                     0.0,
                     self.usdt
@@ -550,6 +580,7 @@ class SpotPortfolioBacktester:
         available_quote: float,
         available_accumulation_quote: float,
         timestamp_ms: int,
+        free_quote_reserve: float | None = None,
     ) -> dict[str, Any] | None:
         excluded = set(self.permanently_blocked_close_swings)
         while True:
@@ -559,6 +590,7 @@ class SpotPortfolioBacktester:
                 campaign,
                 self._active_swing_states(symbol),
                 available_quote=available_quote,
+                free_quote_reserve=free_quote_reserve,
                 available_accumulation_quote=available_accumulation_quote,
                 config=self.scenario.progression,
                 cleanup_config=self.scenario.waiter_cleanup,
@@ -570,7 +602,14 @@ class SpotPortfolioBacktester:
                 symbol,
                 decision,
                 observed_price=observed_price,
-                available_quote=available_quote,
+                available_quote=(
+                    available_quote
+                    if free_quote_reserve is None
+                    else self._close_quote_budget(
+                        decision,
+                        free_quote_reserve=free_quote_reserve,
+                    )
+                ),
             )
             swing_id = str(decision["swing_id"])
             if error is None:
@@ -656,22 +695,6 @@ class SpotPortfolioBacktester:
                 "Sell rejected because simulated immediately sellable inventory changed after planning.",
                 False,
             )
-        try:
-            swing = self.swings.get(str(decision.get("swing_id") or ""))
-            if swing is not None:
-                economics = calculate_swing_economics(
-                    swing,
-                    swing["executions"],
-                    current_price=observed_price,
-                )
-                validate_market_close_remainder(
-                    self.dataset.symbol_info[symbol],
-                    remaining_quantity=float(economics.get("remaining_quantity") or 0.0),
-                    closing_quantity=requested_quantity,
-                    price=price,
-                )
-        except ValueError as exc:
-            return str(exc), False
         return None, False
 
     def _is_market_available(self, symbol: str, open_time_ms: int) -> bool:
@@ -766,17 +789,13 @@ class SpotPortfolioBacktester:
             if action["action_type"] == "close":
                 swing = self.swings.get(str(action.get("swing_id") or ""))
                 if swing is not None:
-                    economics = calculate_swing_economics(
-                        swing,
-                        swing["executions"],
-                        current_price=observed_price,
-                    )
-                    validate_market_close_remainder(
-                        self.dataset.symbol_info[symbol],
-                        remaining_quantity=float(economics.get("remaining_quantity") or 0.0),
-                        closing_quantity=quantity_decimal,
-                        price=price,
-                    )
+                    if side == "buy":
+                        allowed_quote = self._close_quote_budget(action)
+                        required_quote = quantity * price * (1.0 + self.scenario.execution.fee_rate)
+                        if required_quote > allowed_quote + 1e-9:
+                            raise ValueError(
+                                "Buy close rejected because it would spend another Bargain's committed cash."
+                            )
         except ValueError as exc:
             if action["action_type"] == "close":
                 message = str(exc)
@@ -922,6 +941,7 @@ class SpotPortfolioBacktester:
                 "closed_at_ms": None,
                 "executions": [],
             }
+            self._register_swing(swing_id, self.swings[swing_id])
         swing = self.swings.get(swing_id)
         if swing is None:
             return
@@ -954,7 +974,8 @@ class SpotPortfolioBacktester:
         }
         swing["executions"].append(execution)
         self.executions.append(execution)
-        economics = calculate_swing_economics(swing, swing["executions"], current_price=price)
+        self._invalidate_swing_economics(swing_id)
+        economics = self._swing_economics(swing, swing["executions"], current_price=price)
         swing["status"] = economics["status"]
         if economics["status"] == "closed":
             swing["closed_at_ms"] = timestamp_ms
@@ -1031,12 +1052,50 @@ class SpotPortfolioBacktester:
             }
         )
 
+    def _register_swing(self, swing_id: str, swing: dict[str, Any]) -> None:
+        if swing_id in self._indexed_swing_ids:
+            return
+        self._indexed_swing_ids.add(swing_id)
+        self._swing_ids_by_asset.setdefault(str(swing["asset_symbol"]), []).append(swing_id)
+
+    def _sync_swing_index(self) -> None:
+        if len(self._indexed_swing_ids) == len(self.swings):
+            return
+        for swing_id, swing in self.swings.items():
+            self._register_swing(str(swing_id), swing)
+
     def _active_swing_states(self, symbol: str) -> list[dict[str, Any]]:
+        self._sync_swing_index()
         return [
             {"swing": swing, "executions": swing["executions"]}
-            for swing in self.swings.values()
-            if swing["asset_symbol"] == symbol and swing["status"] in {"open", "partially_closed"}
+            for swing_id in self._swing_ids_by_asset.get(symbol, ())
+            if (swing := self.swings.get(swing_id)) is not None
+            and swing["status"] in {"open", "partially_closed"}
         ]
+
+    def _swing_economics(
+        self,
+        swing: dict[str, Any],
+        executions: list[dict[str, Any]],
+        *,
+        current_price: float | None = None,
+    ) -> dict[str, Any]:
+        swing_id = str(swing.get("swing_id") or id(swing))
+        key = (swing_id, None if current_price is None else float(current_price))
+        cached = self._economics_cache.get(key)
+        if cached is None:
+            cached = calculate_swing_economics(
+                swing,
+                executions,
+                current_price=current_price,
+            )
+            self._economics_cache[key] = cached
+        return cached
+
+    def _invalidate_swing_economics(self, swing_id: str) -> None:
+        for key in tuple(self._economics_cache):
+            if key[0] == swing_id:
+                del self._economics_cache[key]
 
     def _equity_point(
         self,
@@ -1056,7 +1115,7 @@ class SpotPortfolioBacktester:
         realized = 0.0
         open_count = 0
         for swing in self.swings.values():
-            economics = calculate_swing_economics(
+            economics = self._swing_economics(
                 swing,
                 swing["executions"],
                 current_price=prices[swing["asset_symbol"]],
@@ -1113,20 +1172,13 @@ class SpotPortfolioBacktester:
         )
 
     def _swing_committed_quote(self, swing: dict[str, Any]) -> float:
-        if swing.get("origin_side") != "sell" or swing.get("status") == "closed":
-            return 0.0
-        economics = calculate_swing_economics(
+        economics = self._swing_economics(
             swing,
             swing["executions"],
         )
-        quote_fees = float(
-            (economics.get("fees_by_asset") or {}).get(swing.get("quote_symbol"), 0.0)
-        )
-        return max(
-            0.0,
-            float(economics.get("opening_quote_quantity") or 0.0)
-            - float(economics.get("closing_quote_quantity") or 0.0)
-            - quote_fees,
+        return calculate_sell_origin_committed_quote(
+            swing,
+            economics,
         )
 
     def _committed_quote_reserve(self) -> float:
@@ -1135,11 +1187,25 @@ class SpotPortfolioBacktester:
     def _free_reserve_quote(self) -> float:
         return max(0.0, self.usdt - self._committed_quote_reserve())
 
+    def _close_quote_budget(
+        self,
+        decision: dict[str, Any],
+        *,
+        free_quote_reserve: float | None = None,
+    ) -> float:
+        if decision.get("action_type") != "close" or decision.get("side") != "buy":
+            return self.usdt
+        swing = self.swings.get(str(decision.get("swing_id") or ""))
+        if swing is None or swing.get("origin_side") != "sell":
+            return self.usdt
+        free_quote = self._free_reserve_quote() if free_quote_reserve is None else free_quote_reserve
+        return min(self.usdt, max(0.0, free_quote) + self._swing_committed_quote(swing))
+
     def _released_commitment_for_close(self, decision: dict[str, Any]) -> float:
         swing = self.swings.get(str(decision.get("swing_id") or ""))
         if swing is None or swing.get("origin_side") != "sell":
             return 0.0
-        economics = calculate_swing_economics(swing, swing["executions"])
+        economics = self._swing_economics(swing, swing["executions"])
         remaining = float(economics.get("remaining_quantity") or 0.0)
         if remaining <= 1e-12:
             return 0.0
@@ -1157,7 +1223,7 @@ class SpotPortfolioBacktester:
             open_buy_mtm_pnl = 0.0
             for item in active_swing_states:
                 swing = item["swing"]
-                economics = calculate_swing_economics(
+                economics = self._swing_economics(
                     swing,
                     item["executions"],
                     current_price=prices[symbol],
@@ -1204,7 +1270,7 @@ class SpotPortfolioBacktester:
     def _final_swings(self, final_prices: dict[str, float]) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []
         for swing in sorted(self.swings.values(), key=lambda item: (item["opened_at_ms"], item["swing_id"])):
-            economics = calculate_swing_economics(
+            economics = self._swing_economics(
                 swing,
                 swing["executions"],
                 current_price=final_prices[swing["asset_symbol"]],
@@ -1225,7 +1291,7 @@ class SpotPortfolioBacktester:
         for symbol in self.scenario.asset_order:
             for item in list(self._active_swing_states(symbol)):
                 swing = item["swing"]
-                economics = calculate_swing_economics(
+                economics = self._swing_economics(
                     swing,
                     item["executions"],
                     current_price=final_prices[symbol],

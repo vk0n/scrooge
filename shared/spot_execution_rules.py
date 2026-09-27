@@ -131,36 +131,3 @@ def validate_sell_opening_round_trip(
             "Strategy SELL opening is too small to remain closable at its profit target "
             f"under Binance minimum ${format_decimal(min_notional)}."
         )
-
-
-def validate_market_close_remainder(
-    symbol_info: dict[str, Any],
-    *,
-    remaining_quantity: float,
-    closing_quantity: Decimal,
-    price: float,
-) -> None:
-    """Reject a partial close that would strand an untradeable remainder."""
-    remaining = as_decimal(remaining_quantity)
-    if remaining is None or remaining <= 0:
-        return
-    remainder = remaining - closing_quantity
-    if remainder <= Decimal("1e-12"):
-        return
-    try:
-        normalized_remainder, step_size = normalize_market_quantity(
-            symbol_info,
-            float(remainder),
-        )
-        tolerance = max(Decimal("1e-12"), step_size * Decimal("1e-9"))
-        if remainder - normalized_remainder > tolerance:
-            raise ValueError("The remainder does not align with the Binance step size.")
-        validate_market_notional(
-            symbol_info,
-            quantity=normalized_remainder,
-            price=price,
-        )
-    except ValueError as exc:
-        raise ValueError(
-            "Partial Spot close would leave an untradeable remainder under Binance filters."
-        ) from exc

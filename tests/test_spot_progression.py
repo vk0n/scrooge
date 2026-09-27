@@ -692,6 +692,8 @@ class SpotStrategyCampaignTests(unittest.TestCase):
 
 class RecordingProgressiveExecutor(ProgressiveSpotSwingExecutor):
     def _execute_action(self, action):
+        self.executed_action_types = getattr(self, "executed_action_types", [])
+        self.executed_action_types.append(action["action_type"])
         updated = update_spot_strategy_action(
             action["action_key"],
             {"status": "completed", "completed_at_ms": action["updated_at_ms"]},
@@ -1149,11 +1151,91 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             result = executor.handle_signal(self.signal(1, 10))
 
         actions = list_spot_strategy_actions(path=self.db_path)
-        self.assertEqual(result["swing_id"], "swing-tradable")
+        self.assertEqual(result["profit_close_batch_swing_ids"], ["swing-tradable"])
+        self.assertEqual(result["signal_action_count"], 2)
         self.assertEqual(
-            {action["swing_id"]: action["status"] for action in actions},
+            {
+                action["swing_id"]: action["status"]
+                for action in actions
+                if action["swing_id"] in {"swing-dust", "swing-tradable"}
+            },
             {"swing-dust": "blocked", "swing-tradable": "completed"},
         )
+        self.assertEqual(result["action_type"], "open")
+
+    def test_live_cycle_executes_every_eligible_action_in_priority_order(self):
+        executor = RecordingProgressiveExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+        swing_ids = ("swing-profit-8", "swing-profit-9", "swing-profit-10")
+        for swing_id, price in zip(swing_ids, (8, 9, 10)):
+            create_spot_swing(
+                {
+                    "swing_id": swing_id,
+                    "account_key": "manual_spot",
+                    "asset_symbol": "NEAR",
+                    "quote_symbol": "USDT",
+                    "origin_side": "sell",
+                    "trading_objective": "accumulate_cash",
+                    "source": "strategy",
+                },
+                path=self.db_path,
+            )
+            append_spot_swing_execution(
+                {
+                    "execution_id": f"open-{swing_id}",
+                    "swing_id": swing_id,
+                    "symbol": "NEARUSDT",
+                    "side": "sell",
+                    "quantity": 10,
+                    "price": price,
+                    "source": "strategy",
+                },
+                path=self.db_path,
+            )
+
+        cleanup_swing_id = "swing-cleanup-buy"
+        create_spot_swing(
+            {
+                "swing_id": cleanup_swing_id,
+                "account_key": "manual_spot",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "origin_side": "buy",
+                "trading_objective": "accumulate_asset",
+                "source": "strategy",
+                "opened_at_ms": 1_800_000_000_000 - 100 * 24 * 60 * 60 * 1000,
+            },
+            path=self.db_path,
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": f"open-{cleanup_swing_id}",
+                "swing_id": cleanup_swing_id,
+                "symbol": "NEARUSDT",
+                "side": "buy",
+                "quantity": 10,
+                "price": 8,
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+
+        with patch("bot.spot_strategy.load_portfolio_snapshot", side_effect=self.portfolio):
+            result = executor.handle_signal(self.signal(1, 10))
+
+        actions = list_spot_strategy_actions(path=self.db_path)
+        self.assertEqual(result["profit_close_batch_count"], 3)
+        self.assertEqual(set(result["profit_close_batch_swing_ids"]), set(swing_ids))
+        self.assertEqual(result["signal_action_count"], 5)
+        self.assertEqual(
+            executor.executed_action_types,
+            ["close", "close", "close", "close", "open"],
+        )
+        self.assertEqual(len(actions), 5)
+        self.assertTrue(all(action["status"] == "completed" for action in actions))
 
 
 if __name__ == "__main__":

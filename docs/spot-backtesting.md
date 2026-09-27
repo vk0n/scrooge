@@ -36,6 +36,8 @@ All assets draw from one USDT pool. BUY decisions reserve estimated quote value 
 
 Waiter cleanup is enabled by default. Profitable closes retain priority, then the oldest eligible Bargain may close on a reverse signal. Deep loss at 15 days and -20% requires L1+; the 30/60/90-day thresholds require L3+/L2+/L1+. A hard cap of 10 open Bargains per asset may use an eligible 30-day reverse signal for capacity cleanup, otherwise the cycle holds instead of opening an eleventh Bargain. Cleanup uses each Bargain's remaining open economics and the same executor, fees, quantization, and accounting path as every other close.
 
+Opening and closing market actions are lifecycle-atomic. A SELL-origin close may spend only that Bargain's committed quote plus Free Vault Reserve and buys the maximum exchange-valid quantity available from that budget. Once the terminal market order fills, the Bargain closes without a partial or dust tail; any quantity that could not be restored is recorded as realized inventory deficit rather than left waiting for future reserve.
+
 Strategy SELL openings also pass a round-trip exchange check. An opening is rejected when its projected profit-target BUY would fall below Binance minimum notional after the objective's quantity semantics and estimated fees; this prevents valid entries from becoming permanently uncloseable dust.
 
 Set `strategy.waiter_cleanup.enabled: false` only for a research baseline. There is no separate production or UI toggle.
@@ -59,6 +61,8 @@ Explicit period:
   --config runtime/current-treasury-spot.yaml \
   --start 2026-03-23 --end 2026-09-23
 ```
+
+The CLI reports market-data loading, replay progress with elapsed time and ETA, and artifact generation. Interactive terminals receive a single updating progress bar; redirected logs receive a milestone every 5%.
 
 Six-month preset relative to an explicit end:
 

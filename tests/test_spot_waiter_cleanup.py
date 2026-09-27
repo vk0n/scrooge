@@ -239,6 +239,24 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         self.assertEqual(decision["action_type"], "close")
         self.assertEqual(decision["reason"]["quantity_basis"], "available_quote")
 
+    def test_sell_cleanup_cannot_spend_another_bargains_committed_cash(self):
+        decision = plan_spot_strategy_action(
+            signal("buy", 1, 120),
+            holding(120),
+            {},
+            [swing_state("lossy-sell", origin_side="sell", age_days=100, price=100)],
+            # The whole reserve includes this Swing's $1,000 proceeds plus $5 genuinely free cash.
+            available_quote=1005,
+            free_quote_reserve=5,
+            config=ProgressiveSwingConfig(close_profit_pct=5, estimated_fee_rate=0),
+            cleanup_config=WaiterCleanupConfig(),
+        )
+
+        self.assertEqual(decision["action_type"], "close")
+        self.assertEqual(decision["reason"]["close_reason"], "deep_loss_cleanup")
+        self.assertEqual(decision["reason"]["quantity_basis"], "available_quote")
+        self.assertAlmostEqual(decision["requested_quantity"], 1005 / 120)
+
     def test_maximum_open_bargains_prevents_eleventh_open(self):
         swings = [
             swing_state(f"sell-{index}", origin_side="sell", age_days=1)

@@ -18,6 +18,7 @@ from shared.runtime_db import (
     list_spot_swing_executions,
     list_spot_swings,
     load_spot_order_intent,
+    load_spot_strategy_campaign,
     load_spot_swing,
     reserve_spot_order_intent,
     sync_spot_strategy_campaign,
@@ -110,6 +111,10 @@ class ProgressiveSpotSwingExecutor:
             max(0.0, float(exchange.get("usdt_free") or 0.0)),
             max(0.0, float(summary.get("vault_reserve") or summary.get("dry_powder") or 0.0)),
         )
+        free_quote_reserve = min(
+            max(0.0, float(exchange.get("usdt_free") or 0.0)),
+            max(0.0, float(summary.get("vault_reserve_available") or 0.0)),
+        )
         prioritized: list[tuple[tuple[int, int, float, int], dict[str, Any]]] = []
         for index, signal in enumerate(signals):
             asset = str(signal.get("asset_symbol") or "").strip().upper()
@@ -123,6 +128,7 @@ class ProgressiveSpotSwingExecutor:
                     {},
                     self._swing_states(asset, quote),
                     available_quote=available_quote,
+                    free_quote_reserve=free_quote_reserve,
                     config=self.config,
                     cleanup_config=self.cleanup_config,
                 )
@@ -156,14 +162,8 @@ class ProgressiveSpotSwingExecutor:
         if pending is not None:
             return pending
 
-        portfolio, _ = load_portfolio_snapshot()
-        holding = next(
-            (
-                item
-                for item in portfolio.get("holdings", [])
-                if item.get("asset_symbol") == asset and item.get("quote_symbol") == quote
-            ),
-            None,
+        holding, available_quote, free_quote_reserve, available_accumulation_quote = (
+            self._load_execution_context(asset, quote)
         )
         if holding is None:
             return None
@@ -184,44 +184,91 @@ class ProgressiveSpotSwingExecutor:
         current_price = float(signal.get("current_price") or holding.get("market_price") or 0.0)
         if not math.isfinite(current_price) or current_price <= 0:
             return None
-        exchange = portfolio.get("exchange") if isinstance(portfolio.get("exchange"), dict) else {}
-        summary = portfolio.get("summary") if isinstance(portfolio.get("summary"), dict) else {}
-        exchange_quote = max(0.0, float(exchange.get("usdt_free") or 0.0))
-        managed_quote = max(
-            0.0,
-            float(summary.get("vault_reserve") or summary.get("dry_powder") or 0.0),
-        )
-        opening_quote = max(0.0, float(summary.get("vault_reserve_available") or 0.0))
-        available_quote = min(exchange_quote, managed_quote)
-        available_accumulation_quote = min(exchange_quote, opening_quote)
 
-        swing_states = self._swing_states(asset, quote)
         excluded_close_swing_ids: set[str] = set()
+        completed_actions: list[dict[str, Any]] = []
         while True:
+            swing_states = self._swing_states(asset, quote)
             decision = plan_spot_strategy_action(
                 signal,
                 holding,
                 campaign,
                 swing_states,
                 available_quote=available_quote,
+                free_quote_reserve=free_quote_reserve,
                 available_accumulation_quote=available_accumulation_quote,
                 config=self.config,
                 cleanup_config=self.cleanup_config,
                 excluded_close_swing_ids=excluded_close_swing_ids,
             )
             if decision is None or decision["action_type"] == "hold":
-                return None
-            if decision["action_type"] != "close":
-                break
-            action = self._persist_close_action(asset, quote, decision)
-            if action["status"] == "blocked" and _is_permanent_close_block(action.get("error"), action):
+                return self._signal_batch_result(asset, completed_actions)
+
+            action_type = str(decision["action_type"])
+            if action_type == "close":
+                action = self._persist_close_action(asset, quote, decision)
+            else:
+                action = self._persist_campaign_action(
+                    asset=asset,
+                    quote=quote,
+                    opportunity=opportunity,
+                    level=level,
+                    signal=signal,
+                    signal_at_ms=signal_at_ms,
+                    current_price=current_price,
+                    campaign=campaign,
+                    decision=decision,
+                )
+
+            if (
+                action_type == "close"
+                and action["status"] == "blocked"
+                and _is_permanent_close_block(action.get("error"), action)
+            ):
                 excluded_close_swing_ids.add(str(decision["swing_id"]))
                 continue
-            result = self._execute_action(action)
-            if result.get("status") != "blocked":
-                return result
-            excluded_close_swing_ids.add(str(decision["swing_id"]))
+            if action["status"] == "completed":
+                result = self._complete_action(action)
+            elif action_type == "campaign_only":
+                result = self._complete_action(action)
+            else:
+                result = self._execute_action(action)
 
+            if result.get("status") == "blocked" and action_type == "close":
+                excluded_close_swing_ids.add(str(decision["swing_id"]))
+                continue
+            if result.get("status") != "completed":
+                return result
+
+            completed_actions.append(result)
+            if action_type == "close":
+                excluded_close_swing_ids.add(str(decision["swing_id"]))
+
+            holding, available_quote, free_quote_reserve, available_accumulation_quote = (
+                self._load_execution_context(asset, quote)
+            )
+            if holding is None:
+                return self._signal_batch_result(asset, completed_actions)
+            campaign = load_spot_strategy_campaign(
+                asset,
+                account_key=self.account_key,
+                quote_symbol=quote,
+                path=self.db_path,
+            ) or campaign
+
+    def _persist_campaign_action(
+        self,
+        *,
+        asset: str,
+        quote: str,
+        opportunity: str,
+        level: int,
+        signal: dict[str, Any],
+        signal_at_ms: int,
+        current_price: float,
+        campaign: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
         campaign_id = str(campaign.get("campaign_id") or "")
         quantity = float(decision["requested_quantity"])
         action_type = str(decision["action_type"])
@@ -250,8 +297,6 @@ class ProgressiveSpotSwingExecutor:
                 {"requested_quantity": quantity, "reason_json": reason},
                 path=self.db_path,
             ) or action
-        if action_type == "campaign_only":
-            return self._complete_action(action)
         if action_type == "open" and load_spot_swing(str(swing_id), path=self.db_path) is None:
             create_spot_swing(
                 {
@@ -275,7 +320,64 @@ class ProgressiveSpotSwingExecutor:
                 },
                 path=self.db_path,
             )
-        return self._execute_action(action)
+        return action
+
+    def _load_execution_context(
+        self,
+        asset: str,
+        quote: str,
+    ) -> tuple[dict[str, Any] | None, float, float, float]:
+        portfolio, _ = load_portfolio_snapshot()
+        holding = next(
+            (
+                item
+                for item in portfolio.get("holdings", [])
+                if item.get("asset_symbol") == asset and item.get("quote_symbol") == quote
+            ),
+            None,
+        )
+        exchange = portfolio.get("exchange") if isinstance(portfolio.get("exchange"), dict) else {}
+        summary = portfolio.get("summary") if isinstance(portfolio.get("summary"), dict) else {}
+        exchange_quote = max(0.0, float(exchange.get("usdt_free") or 0.0))
+        managed_quote = max(
+            0.0,
+            float(summary.get("vault_reserve") or summary.get("dry_powder") or 0.0),
+        )
+        free_quote = max(0.0, float(summary.get("vault_reserve_available") or 0.0))
+        return (
+            holding,
+            min(exchange_quote, managed_quote),
+            min(exchange_quote, free_quote),
+            min(exchange_quote, free_quote),
+        )
+
+    def _signal_batch_result(
+        self,
+        asset: str,
+        results: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not results:
+            return None
+        profit_closes = [
+            result
+            for result in results
+            if result.get("action_type") == "close"
+            and (result.get("reason") or {}).get("close_reason") == "profit_target"
+        ]
+        profit_swing_ids = [str(result.get("swing_id") or "") for result in profit_closes]
+        self.logger.info(
+            "spot_signal_batch_completed asset=%s count=%s action_types=%s",
+            asset,
+            len(results),
+            [str(result.get("action_type") or "") for result in results],
+        )
+        return {
+            **results[-1],
+            "signal_action_count": len(results),
+            "signal_action_keys": [str(result.get("action_key") or "") for result in results],
+            "profit_close_batch_count": len(profit_closes),
+            "profit_close_batch_swing_ids": profit_swing_ids,
+        }
 
     def _plan_close(
         self,
@@ -363,6 +465,8 @@ class ProgressiveSpotSwingExecutor:
                 result = self._execute_action(action)
                 if result.get("status") == "blocked" and _is_permanent_close_block(result.get("error"), result):
                     continue
+                if result.get("status") == "completed":
+                    continue
                 return result
             if intent is not None and intent["status"] in ACTIVE_INTENT_STATUSES:
                 update_spot_strategy_action(action["action_key"], {"status": "executing"}, path=self.db_path)
@@ -375,6 +479,8 @@ class ProgressiveSpotSwingExecutor:
                 ) or action
                 result = self._execute_action(action)
                 if result.get("status") == "blocked" and _is_permanent_close_block(result.get("error"), result):
+                    continue
+                if result.get("status") == "completed":
                     continue
                 return result
         return None

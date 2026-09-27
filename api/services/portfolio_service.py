@@ -43,7 +43,7 @@ from shared.runtime_db import (  # noqa: E402
 )
 from shared.spot_accounting import backfill_spot_quote_legs  # noqa: E402
 from shared.spot_policy import calculate_spot_inventory_policy  # noqa: E402
-from shared.spot_swing import calculate_swing_economics  # noqa: E402
+from shared.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics  # noqa: E402
 from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction  # noqa: E402
 
 DEFAULT_ACCOUNT_KEY = "manual_spot"
@@ -1166,12 +1166,12 @@ def _create_spot_order_intent_preview(
             if normalized_swing_id is not None
             else []
         )
-        reserve_key = (
-            "vault_reserve_available"
-            if standalone_accumulation or not swing_executions
-            else "dry_powder"
-        )
-        managed_quote = _as_float(snapshot["summary"].get(reserve_key)) or 0.0
+        free_reserve = _as_float(snapshot["summary"].get("vault_reserve_available")) or 0.0
+        if standalone_accumulation or not swing_executions:
+            managed_quote = free_reserve
+        else:
+            economics = calculate_swing_economics(swing, swing_executions)
+            managed_quote = free_reserve + calculate_sell_origin_committed_quote(swing, economics)
         available_quote = min(available_quote, managed_quote)
     if holding is None:
         available_asset = protected_floor = policy_sellable = immediate_sellable = current_quantity = 0.0

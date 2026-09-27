@@ -200,17 +200,22 @@ def plan_profitable_close(
     closing_side = "buy" if origin_side == "sell" else "sell"
     quantity = remaining_quantity
     quantity_basis = "remaining_asset"
-    if origin_side == "sell" and objective == "accumulate_asset":
-        quantity_basis = "reusable_quote"
-        opening_quote = float(economics.get("opening_quote_quantity") or 0.0)
-        closing_quote = float(economics.get("closing_quote_quantity") or 0.0)
-        opening_quote_fee = float((economics.get("fees_by_asset") or {}).get(swing.get("quote_symbol"), 0.0))
-        reusable_quote = max(0.0, opening_quote - opening_quote_fee - closing_quote)
-        desired_quantity = reusable_quote / (market_price * (1.0 + resolved.estimated_fee_rate))
+    if origin_side == "sell":
         cash_limited_quantity = max(0.0, available_quote_quantity) / (
             market_price * (1.0 + resolved.estimated_fee_rate)
         )
-        quantity = min(desired_quantity, cash_limited_quantity)
+        if objective == "accumulate_asset":
+            quantity_basis = "reusable_quote"
+            opening_quote = float(economics.get("opening_quote_quantity") or 0.0)
+            closing_quote = float(economics.get("closing_quote_quantity") or 0.0)
+            opening_quote_fee = float((economics.get("fees_by_asset") or {}).get(swing.get("quote_symbol"), 0.0))
+            reusable_quote = max(0.0, opening_quote - opening_quote_fee - closing_quote)
+            desired_quantity = reusable_quote / (market_price * (1.0 + resolved.estimated_fee_rate))
+            quantity = min(desired_quantity, cash_limited_quantity)
+        else:
+            quantity = min(remaining_quantity, cash_limited_quantity)
+            if cash_limited_quantity + 1e-12 < remaining_quantity:
+                quantity_basis = "available_quote"
 
     if not math.isfinite(quantity) or quantity <= 0:
         return {

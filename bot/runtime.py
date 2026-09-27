@@ -555,7 +555,7 @@ if __name__ == "__main__":
     load_dotenv()
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
-    spot_signal_refresh_seconds = _env_int("SCROOGE_SPOT_SIGNAL_REFRESH_SECONDS", 300)
+    spot_signal_refresh_seconds = _env_int("SCROOGE_SPOT_SIGNAL_REFRESH_SECONDS", 60)
     spot_execution_enabled = _env_flag("SCROOGE_SPOT_EXECUTION_ENABLED", False)
     client = create_binance_client(api_key, api_secret, logger=technical_logger)
     data_module.set_client(client)

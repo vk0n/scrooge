@@ -11,7 +11,7 @@ from shared.spot_progression import (
     plan_treasury_accumulation,
 )
 from shared.spot_sizing import IndicatorSizingConfig, apply_indicator_sizing
-from shared.spot_swing import calculate_swing_economics
+from shared.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics
 from shared.spot_waiter_cleanup import (
     WaiterCleanupConfig,
     bargain_age_days,
@@ -124,6 +124,7 @@ def plan_spot_strategy_action(
     swings: list[dict[str, Any]],
     *,
     available_quote: float,
+    free_quote_reserve: float | None = None,
     available_accumulation_quote: float | None = None,
     config: ProgressiveSwingConfig | None = None,
     cleanup_config: WaiterCleanupConfig | None = None,
@@ -147,11 +148,17 @@ def plan_spot_strategy_action(
         active_swings.append((swing, economics))
         if str(swing.get("swing_id") or "") in excluded_closes:
             continue
+        close_available_quote = available_quote
+        if free_quote_reserve is not None and str(swing.get("origin_side") or "").lower() == "sell":
+            close_available_quote = (
+                max(0.0, float(free_quote_reserve))
+                + calculate_sell_origin_committed_quote(swing, economics)
+            )
         close = plan_profitable_close(
             swing,
             economics,
             current_price=current_price,
-            available_quote_quantity=available_quote,
+            available_quote_quantity=close_available_quote,
             config=resolved_config,
         )
         if not close.get("eligible"):
@@ -336,8 +343,14 @@ def plan_spot_strategy_action(
             quantity = float(economics.get("remaining_quantity") or 0.0)
             quantity_basis = "remaining_asset"
             if close_side == "buy":
+                close_available_quote = available_quote
+                if free_quote_reserve is not None:
+                    close_available_quote = (
+                        max(0.0, float(free_quote_reserve))
+                        + calculate_sell_origin_committed_quote(swing, economics)
+                    )
                 cash_limited_quantity = (
-                    max(0.0, float(available_quote))
+                    max(0.0, float(close_available_quote))
                     / (current_price * (1.0 + resolved_config.estimated_fee_rate))
                 )
                 if cash_limited_quantity + 1e-12 < quantity:

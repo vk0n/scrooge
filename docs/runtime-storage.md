@@ -120,7 +120,8 @@ only in reviewed research scenarios. There is no UI or per-asset automation togg
 ## Rolling Spot Signal Boundaries
 
 - When Spot execution is enabled, the bot samples Binance rolling 24-hour tickers on a configurable interval and
-  persists the latest explainable signal per managed asset in `spot_signal_snapshots`.
+  persists the latest explainable signal per managed asset in `spot_signal_snapshots`. The live default is 60 seconds,
+  configured through `SCROOGE_SPOT_SIGNAL_REFRESH_SECONDS`.
 - The primary signal is `current price / approximately-24h reference price - 1`. It is independent of UTC midnight.
 - Default absolute movement levels are `5,8,12,18%`. SELL openings use base tranches `10,20,30,40%`, configured
   through `SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT`. `ACCUMULATE_ASSET + BUY` uses separate Free Vault Reserve
@@ -132,6 +133,11 @@ only in reviewed research scenarios. There is no UI or per-asset automation togg
   policy, disabled execution, or unavailable market data cannot become an eligible strategy action.
 - The signal monitor does not create a Swing, create an order intent, submit an order, or mutate Treasury accounting.
   Those remain later strategy/execution phases.
+- Every live cycle exhausts all currently eligible actions for an asset in deterministic order: profit-target closes,
+  waiter/capacity cleanup closes, then the current campaign-level opening or reserve accumulation. Orders are submitted
+  sequentially, with Binance balances, Treasury reserve accounting, Swing state, and campaign state refreshed after
+  each terminal fill. A non-terminal, retryable, or uncertain order stops the batch instead of risking duplicate
+  spending.
 
 ## Spot Indicator Sizing Boundaries
 
@@ -163,9 +169,10 @@ only in reviewed research scenarios. There is no UI or per-asset automation togg
   and idempotently consumed quantity are persisted in `spot_strategy_campaigns`. A Target ratchet affects only future
   campaigns. A direct jump to L3 executes only L3's 30% share; it does not backfill L1 and L2.
 - Existing Swings are evaluated independently from their own weighted opening execution price. The default profitable
-  close threshold is `5%` (`SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT`), and profitable closes take priority over new exposure.
-- At most one strategy action per asset is submitted in a signal cycle. Durable action keys and existing client order
-  recovery prevent restarts or retries from creating a second real order for the same decision.
+  close threshold is `3%` (`SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT`), and profitable closes take priority over new exposure.
+- A signal cycle may submit multiple strategy actions for the same asset when each remains eligible after the preceding
+  fill. Durable action keys and existing client order recovery prevent restarts or retries from creating a second real
+  order for the same decision.
 - New strategy exposure opens only from SELL opportunities. BUY opportunities close existing SELL-origin Swings but do
   not create BUY-origin Swings. For `accumulate_cash`, an otherwise unused BUY advances campaign state without an
   order. For `accumulate_asset`, it may deploy only Free Vault Reserve through a standalone BUY, and a confirmed fill

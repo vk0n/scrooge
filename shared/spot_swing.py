@@ -68,6 +68,7 @@ def calculate_swing_economics(
     net_asset_flow = 0.0
     opening_inventory_quantity = 0.0
     closing_inventory_quantity = 0.0
+    terminal_close_price: float | None = None
     fees_by_asset: dict[str, float] = {}
     epsilon = 0.0000000001
 
@@ -113,6 +114,9 @@ def calculate_swing_economics(
         closing_quantity += quantity
         closing_quote += quantity * unit_price
         closing_inventory_quantity += asset_flow if origin_side == "sell" else -asset_flow
+        reason = execution.get("reason") if isinstance(execution.get("reason"), dict) else {}
+        if reason.get("action_type") == "close":
+            terminal_close_price = unit_price
 
         quantity_to_match = quantity
         matched_total = 0.0
@@ -132,6 +136,25 @@ def calculate_swing_economics(
             realized_quote_fees += fee_amount * (matched_total / quantity)
 
     remaining_quantity = max(0.0, opening_inventory_quantity - closing_inventory_quantity)
+    terminal_residual_quantity = 0.0
+    unrecovered_quantity = 0.0
+    retained_quantity = 0.0
+    if terminal_close_price is not None and remaining_quantity > epsilon:
+        terminal_residual_quantity = remaining_quantity
+        if origin_side == "sell":
+            unrecovered_quantity = remaining_quantity
+        else:
+            retained_quantity = remaining_quantity
+        for lot in opening_lots:
+            if lot["remaining"] <= epsilon:
+                continue
+            if origin_side == "sell":
+                realized_gross += lot["remaining"] * (lot["unit_price"] - terminal_close_price)
+            else:
+                realized_gross += lot["remaining"] * (terminal_close_price - lot["unit_price"])
+            realized_quote_fees += lot["remaining"] * lot["quote_fee_per_unit"]
+            lot["remaining"] = 0.0
+        remaining_quantity = 0.0
     remaining_opening_quote = sum(lot["remaining"] * lot["unit_price"] for lot in opening_lots)
     remaining_open_quote_fees = sum(lot["remaining"] * lot["quote_fee_per_unit"] for lot in opening_lots)
     unrealized_gross: float | None = None
@@ -171,6 +194,9 @@ def calculate_swing_economics(
         "closing_quantity": closing_quantity,
         "closing_quote_quantity": closing_quote,
         "remaining_quantity": remaining_quantity,
+        "terminal_residual_quantity": terminal_residual_quantity,
+        "unrecovered_quantity": unrecovered_quantity,
+        "retained_quantity": retained_quantity,
         "remaining_opening_quote_quantity": remaining_opening_quote,
         "weighted_opening_price": opening_quote / opening_quantity if opening_quantity > epsilon else None,
         "weighted_closing_price": closing_quote / closing_quantity if closing_quantity > epsilon else None,
@@ -188,6 +214,26 @@ def calculate_swing_economics(
             asset: amount for asset, amount in fees_by_asset.items() if asset != quote_symbol
         },
     }
+
+
+def calculate_sell_origin_committed_quote(
+    swing: dict[str, Any],
+    economics: dict[str, Any],
+) -> float:
+    """Return the quote proceeds still reserved to settle one open SELL Swing."""
+    if (
+        str(swing.get("origin_side") or "").strip().lower() != "sell"
+        or str(economics.get("status") or "").strip().lower() == "closed"
+    ):
+        return 0.0
+    quote_symbol = str(swing.get("quote_symbol") or "USDT").strip().upper() or "USDT"
+    quote_fees = float((economics.get("fees_by_asset") or {}).get(quote_symbol, 0.0) or 0.0)
+    return max(
+        0.0,
+        float(economics.get("opening_quote_quantity") or 0.0)
+        - float(economics.get("closing_quote_quantity") or 0.0)
+        - quote_fees,
+    )
 
 
 def calculate_target_ratchet(

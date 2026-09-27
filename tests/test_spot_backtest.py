@@ -161,6 +161,19 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
     def run_scenario(self, config, prices, **dataset_kwargs):
         return SpotPortfolioBacktester(config, dataset(config, prices, **dataset_kwargs)).run()
 
+    def test_replay_progress_reports_start_and_completion(self):
+        config = scenario((asset("AAA"),))
+        updates = []
+
+        SpotPortfolioBacktester(
+            config,
+            dataset(config, lambda _symbol, _index: 100),
+        ).run(progress=lambda completed, total: updates.append((completed, total)))
+
+        self.assertEqual(updates[0][0], 0)
+        self.assertGreater(updates[0][1], 0)
+        self.assertEqual(updates[-1], (updates[0][1], updates[0][1]))
+
     def test_live_and_backtest_reference_the_same_decision_function(self):
         self.assertIs(
             ProgressiveSpotSwingExecutor.handle_signal.__globals__["plan_spot_strategy_action"],
@@ -314,7 +327,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             estimated_fee_rate=0.001,
         )
 
-    def test_partial_close_that_would_leave_dust_is_deferred(self):
+    def test_atomic_close_allows_a_normalized_quantity_that_leaves_dust(self):
         config = scenario((asset("AAA"),), starting_usdt=100)
         replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 1.4))
         replay.dataset.symbol_info["AAA"] = {
@@ -363,7 +376,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             available_quote=100,
         )
 
-        self.assertIn("untradeable remainder", error)
+        self.assertIsNone(error)
         self.assertFalse(permanent)
 
     def test_cash_limited_asset_accumulation_close_is_rechecked_later(self):

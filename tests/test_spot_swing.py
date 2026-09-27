@@ -67,6 +67,7 @@ class SpotSwingDomainTests(unittest.TestCase):
         fee_amount: float | None = None,
         fee_asset: str | None = None,
         exchange_execution_key: str | None = None,
+        reason: dict | None = None,
     ) -> dict:
         return append_spot_swing_execution(
             {
@@ -83,6 +84,7 @@ class SpotSwingDomainTests(unittest.TestCase):
                 "exchange_order_id": execution_id,
                 "exchange_execution_key": exchange_execution_key,
                 "source": "strategy",
+                "reason": reason or {},
                 "executed_at_ms": executed_at_ms,
             },
             path=self.db_path,
@@ -126,6 +128,67 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertEqual(closed["remaining_quantity"], 0)
         self.assertAlmostEqual(closed["realized_pnl_quote"], 28)
         self.assertEqual(load_spot_swing("swing-partial", path=self.db_path)["closed_at_ms"], 5_000)
+
+    def test_terminal_sell_close_crystallizes_unrecovered_inventory_without_a_tail(self):
+        self.create_swing("swing-atomic-close")
+        self.add_execution(
+            "swing-atomic-close",
+            "sell-open",
+            "sell",
+            10,
+            100,
+            executed_at_ms=2_000,
+        )
+        self.add_execution(
+            "swing-atomic-close",
+            "buy-close",
+            "buy",
+            8,
+            120,
+            executed_at_ms=3_000,
+            reason={"action_type": "close", "close_reason": "deep_loss_cleanup"},
+        )
+
+        result = self.economics("swing-atomic-close", current_price=120)
+
+        self.assertEqual(result["status"], "closed")
+        self.assertEqual(result["remaining_quantity"], 0)
+        self.assertEqual(result["terminal_residual_quantity"], 2)
+        self.assertEqual(result["unrecovered_quantity"], 2)
+        self.assertEqual(result["retained_quantity"], 0)
+        self.assertAlmostEqual(result["realized_pnl_quote"], -200)
+        self.assertAlmostEqual(result["realized_cash_gain_quote"], 40)
+        self.assertAlmostEqual(result["realized_net_asset_change"], -2)
+        self.assertEqual(load_spot_swing("swing-atomic-close", path=self.db_path)["status"], "closed")
+
+    def test_terminal_buy_close_folds_untradeable_asset_dust_into_treasury(self):
+        self.create_swing("swing-atomic-dust", side="buy")
+        self.add_execution(
+            "swing-atomic-dust",
+            "buy-open",
+            "buy",
+            0.25,
+            90,
+            executed_at_ms=2_000,
+        )
+        self.add_execution(
+            "swing-atomic-dust",
+            "sell-close",
+            "sell",
+            0.249,
+            100,
+            executed_at_ms=3_000,
+            reason={"action_type": "close", "close_reason": "profit_target"},
+        )
+
+        result = self.economics("swing-atomic-dust", current_price=100)
+
+        self.assertEqual(result["status"], "closed")
+        self.assertEqual(result["remaining_quantity"], 0)
+        self.assertAlmostEqual(result["terminal_residual_quantity"], 0.001)
+        self.assertEqual(result["unrecovered_quantity"], 0)
+        self.assertAlmostEqual(result["retained_quantity"], 0.001)
+        self.assertAlmostEqual(result["realized_pnl_quote"], 2.5)
 
     def test_sell_origin_profit_and_quote_fees(self):
         self.create_swing("swing-sell")
