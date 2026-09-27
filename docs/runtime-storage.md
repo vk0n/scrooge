@@ -122,8 +122,10 @@ only in reviewed research scenarios. There is no UI or per-asset automation togg
 - When Spot execution is enabled, the bot samples Binance rolling 24-hour tickers on a configurable interval and
   persists the latest explainable signal per managed asset in `spot_signal_snapshots`.
 - The primary signal is `current price / approximately-24h reference price - 1`. It is independent of UTC midnight.
-- Default absolute movement levels are `5,8,12,18%`, with base tranches `10,20,30,40%`. They can be overridden through
-  `SCROOGE_SPOT_SIGNAL_LEVELS_PCT` and `SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT`; both lists must remain aligned.
+- Default absolute movement levels are `5,8,12,18%`. SELL openings use base tranches `10,20,30,40%`, configured
+  through `SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT`. `ACCUMULATE_ASSET + BUY` uses separate Free Vault Reserve
+  tranches `1,3,5,10%`, configured through `SCROOGE_SPOT_SIGNAL_ACCUMULATION_TRANCHES_PCT`. All three lists must
+  remain aligned by signal level.
 - A move below Level 1 is `HOLD`; positive qualifying moves are `SELL` opportunities and negative qualifying moves are
   `BUY` opportunities.
 - Market opportunity and strategy eligibility are stored separately. Missing Trading Objective, a fully protected

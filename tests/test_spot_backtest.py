@@ -656,12 +656,12 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(len(result.accumulations), 2)
         first, second = result.accumulations
         self.assertEqual([first["asset_symbol"], second["asset_symbol"]], ["AAA", "BBB"])
-        self.assertAlmostEqual(first["deployed_quote_quantity"], 20, places=4)
-        self.assertAlmostEqual(second["deployed_quote_quantity"], 16, places=3)
-        self.assertAlmostEqual(result.final_usdt, 64, places=3)
+        self.assertAlmostEqual(first["deployed_quote_quantity"], 3, places=4)
+        self.assertAlmostEqual(second["deployed_quote_quantity"], 2.91, places=3)
+        self.assertAlmostEqual(result.final_usdt, 94.09, places=3)
         self.assertAlmostEqual(
             sum(item["deployed_quote_quantity"] for item in result.accumulations),
-            36,
+            5.91,
             places=3,
         )
         self.assertTrue(all(item["origin_side"] == "sell" for item in result.swings))
@@ -801,6 +801,47 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(replay.campaigns["AAA"]["highest_completed_level"], 0)
         self.assertTrue(result.rejections)
         self.assertTrue(all("minimum $5" in item["reason"] for item in result.rejections))
+
+    def test_all_accumulation_tranches_use_the_same_exchange_order_filters(self):
+        config = scenario(
+            (asset("AAA", quantity=10, target=10, objective="accumulate_asset"),),
+            starting_usdt=100,
+            treasury_accumulation_enabled=True,
+        )
+        historical = dataset(config, lambda _symbol, _index: 1)
+        historical.symbol_info["AAA"] = {
+            "filters": [
+                {
+                    "filterType": "MARKET_LOT_SIZE",
+                    "minQty": "0.001",
+                    "maxQty": "100000000",
+                    "stepSize": "0.001",
+                },
+                {"filterType": "MIN_NOTIONAL", "minNotional": "20"},
+            ]
+        }
+
+        replay = SpotPortfolioBacktester(config, historical)
+        for level, tranche_pct in enumerate((1, 3, 5, 10), start=1):
+            quantity = (100 * tranche_pct / 100) / 1.001
+            replay._execute_action(
+                "AAA",
+                {
+                    "action_type": "accumulate_asset",
+                    "side": "buy",
+                    "requested_quantity": quantity,
+                    "action_key": f"accumulate:{level}",
+                    "signal": {"level": level},
+                },
+                observed_price=1,
+                timestamp_ms=replay.start_ms,
+            )
+
+        self.assertEqual(replay.usdt, 100)
+        self.assertEqual(replay.assets["AAA"].target_quantity, 10)
+        self.assertEqual(replay.accumulations, [])
+        self.assertEqual(len(replay.rejections), 4)
+        self.assertTrue(all("minimum $20" in item["reason"] for item in replay.rejections))
 
     def test_cold_storage_and_full_floor_cannot_be_sold(self):
         config = scenario(

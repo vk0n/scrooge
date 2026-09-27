@@ -199,6 +199,26 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         self.assertEqual(plan["quote_to_spend"], 10)
         self.assertEqual(plan["quantity"], 2)
 
+    def test_accumulate_asset_buy_uses_the_level_specific_reserve_tranche(self):
+        plan = plan_treasury_accumulation(
+            {
+                "opportunity": "buy",
+                "level": 4,
+                "accumulation_tranches_pct": [1, 3, 5, 10],
+            },
+            free_reserve_quote=100,
+            current_price=10,
+            config=ProgressiveSwingConfig(
+                treasury_accumulation_enabled=True,
+                estimated_fee_rate=0,
+            ),
+        )
+
+        self.assertTrue(plan["eligible"])
+        self.assertEqual(plan["tranche_pct"], 10)
+        self.assertEqual(plan["quote_to_spend"], 10)
+        self.assertEqual(plan["quantity"], 1)
+
     def test_accumulate_asset_buy_is_a_standalone_treasury_action(self):
         decision = plan_spot_strategy_action(
             {

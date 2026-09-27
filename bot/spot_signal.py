@@ -52,11 +52,20 @@ def spot_signal_config_from_env() -> SpotSignalConfig:
         "SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT",
         ",".join(str(value) for value in DEFAULT_BASE_TRANCHES_PCT),
     )
+    accumulation_raw = os.getenv("SCROOGE_SPOT_SIGNAL_ACCUMULATION_TRANCHES_PCT")
     return SpotSignalConfig(
         levels_pct=parse_percentage_series(levels_raw, field_name="SCROOGE_SPOT_SIGNAL_LEVELS_PCT"),
         base_tranches_pct=parse_percentage_series(
             tranches_raw,
             field_name="SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT",
+        ),
+        accumulation_tranches_pct=(
+            parse_percentage_series(
+                accumulation_raw,
+                field_name="SCROOGE_SPOT_SIGNAL_ACCUMULATION_TRANCHES_PCT",
+            )
+            if accumulation_raw is not None
+            else None
         ),
     )
 
@@ -347,19 +356,22 @@ class RollingSpotSignalMonitor:
             saved["strategy_eligible"],
             saved["eligibility_reason"],
             saved.get("indicator_assessment", {}).get("tier"),
+            saved.get("accumulation_tranche_pct"),
         )
         if self._last_errors.pop(key, None) is not None:
             self.logger.info("spot_signal_evaluation_restored symbol=%s", market_symbol)
         if self._last_states.get(key) != state:
             self.logger.info(
                 "spot_signal_changed symbol=%s opportunity=%s level=%s change_pct=%.4f "
-                "base_tranche_pct=%.2f sizing_modifier=%.2f final_tranche_pct=%.2f "
+                "base_tranche_pct=%.2f accumulation_tranche_pct=%.2f "
+                "sizing_modifier=%.2f final_tranche_pct=%.2f "
                 "strategy_eligible=%s eligibility_reason=%s",
                 market_symbol,
                 saved["opportunity"],
                 saved["level"],
                 saved["rolling_change_pct"],
                 saved["base_tranche_pct"],
+                saved.get("accumulation_tranche_pct") or 0.0,
                 saved["sizing_modifier"],
                 saved["final_tranche_pct"],
                 saved["strategy_eligible"],

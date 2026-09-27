@@ -127,7 +127,22 @@ def plan_treasury_accumulation(
     resolved = config or ProgressiveSwingConfig()
     if not resolved.treasury_accumulation_enabled:
         return {"eligible": False, "reason": "treasury_accumulation_disabled", "quantity": 0.0}
-    tranche_pct = float(signal.get("base_tranche_pct") or signal.get("final_tranche_pct") or 0.0)
+    # BUY accumulation has its own reserve allocation. SELL opening tranches are
+    # intentionally kept in base_tranche_pct and must not be reused here.
+    accumulation_tranche = signal.get("accumulation_tranche_pct")
+    if accumulation_tranche is None:
+        accumulation_tranches = signal.get("accumulation_tranches_pct")
+        level = int(signal.get("level") or 0)
+        if (
+            isinstance(accumulation_tranches, (list, tuple))
+            and 1 <= level <= len(accumulation_tranches)
+        ):
+            accumulation_tranche = accumulation_tranches[level - 1]
+    if accumulation_tranche is None:
+        # Keep direct callers with legacy hand-built signals compatible. Live and
+        # backtest signals always carry accumulation_tranche_pct explicitly.
+        accumulation_tranche = signal.get("final_tranche_pct") or signal.get("base_tranche_pct")
+    tranche_pct = float(accumulation_tranche or 0.0)
     reserve = max(0.0, float(free_reserve_quote))
     price = float(current_price)
     if tranche_pct <= 0 or reserve <= 0:

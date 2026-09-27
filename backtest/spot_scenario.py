@@ -288,6 +288,11 @@ def load_spot_backtest_scenario(
         signal=SpotSignalConfig(
             levels_pct=levels_pct_override or tuple(signal_payload.get("levels_pct", (5, 8, 12, 18))),
             base_tranches_pct=tuple(signal_payload.get("base_tranches_pct", (10, 20, 30, 40))),
+            accumulation_tranches_pct=(
+                tuple(signal_payload["accumulation_tranches_pct"])
+                if signal_payload.get("accumulation_tranches_pct") is not None
+                else None
+            ),
         ),
         sizing=IndicatorSizingConfig(
             weak_modifier=float(sizing_payload.get("weak_modifier", 0.5)),
@@ -428,7 +433,11 @@ def export_current_treasury_scenario(
             "assets": assets,
             "execution": {"fee_rate": 0.001, "slippage_bps": 0, "force_close_at_end": False},
             "strategy": {
-                "signal": {"levels_pct": [5, 8, 12, 18], "base_tranches_pct": [10, 20, 30, 40]},
+                "signal": {
+                    "levels_pct": [5, 8, 12, 18],
+                    "base_tranches_pct": [10, 20, 30, 40],
+                    "accumulation_tranches_pct": [1, 3, 5, 10],
+                },
                 "indicator_sizing": {
                     "weak_modifier": 0.5,
                     "neutral_modifier": 1.0,

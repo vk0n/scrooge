@@ -228,6 +228,7 @@ def plan_spot_strategy_action(
                         "signal_level": level,
                         "rolling_change_pct": signal.get("rolling_change_pct"),
                         "base_tranche_pct": signal.get("base_tranche_pct"),
+                        "accumulation_tranche_pct": signal.get("accumulation_tranche_pct"),
                         "sizing_modifier": signal.get("sizing_modifier"),
                         "final_tranche_pct": signal.get("final_tranche_pct"),
                         "indicator_assessment": signal.get("indicator_assessment"),

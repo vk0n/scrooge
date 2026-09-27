@@ -79,20 +79,28 @@ class SpotSignalDomainTests(unittest.TestCase):
         )
 
     def test_default_levels_create_progressive_sell_opportunities(self):
-        expectations = [(104.9, 0, 0), (105, 1, 10), (108, 2, 20), (112, 3, 30), (118, 4, 40)]
+        expectations = [
+            (104.9, 0, 0, 0),
+            (105, 1, 10, 1),
+            (108, 2, 20, 3),
+            (112, 3, 30, 5),
+            (118, 4, 40, 10),
+        ]
 
-        for price, level, tranche in expectations:
+        for price, level, tranche, accumulation_tranche in expectations:
             with self.subTest(price=price):
                 result = self.evaluate(price)
                 self.assertEqual(result["opportunity"], "hold" if level == 0 else "sell")
                 self.assertEqual(result["level"], level)
                 self.assertEqual(result["base_tranche_pct"], tranche)
+                self.assertEqual(result["accumulation_tranche_pct"], accumulation_tranche)
 
     def test_negative_move_creates_buy_opportunity(self):
         result = self.evaluate(88)
 
         self.assertEqual(result["opportunity"], "buy")
         self.assertEqual(result["level"], 3)
+        self.assertEqual(result["accumulation_tranche_pct"], 5)
         self.assertEqual(result["base_tranche_pct"], 30)
         self.assertAlmostEqual(result["rolling_change_pct"], -12)
 
@@ -117,12 +125,14 @@ class SpotSignalDomainTests(unittest.TestCase):
             {
                 "SCROOGE_SPOT_SIGNAL_LEVELS_PCT": "4,7",
                 "SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT": "15,35",
+                "SCROOGE_SPOT_SIGNAL_ACCUMULATION_TRANCHES_PCT": "1.5,4.5",
             },
         ):
             config = spot_signal_config_from_env()
 
         self.assertEqual(config.levels_pct, (4.0, 7.0))
         self.assertEqual(config.base_tranches_pct, (15.0, 35.0))
+        self.assertEqual(config.accumulation_tranches_pct, (1.5, 4.5))
 
 
 class SpotIndicatorSizingTests(unittest.TestCase):

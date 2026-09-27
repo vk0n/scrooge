@@ -34,6 +34,7 @@ spot_backtest:
     signal:
       levels_pct: [5, 8, 12, 18]
       base_tranches_pct: [10, 20, 30, 40]
+      accumulation_tranches_pct: [1, 3, 5, 10]
     indicator_sizing:
       weak_modifier: 0.5
       neutral_modifier: 1.0
