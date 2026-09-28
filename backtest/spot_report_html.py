@@ -51,6 +51,17 @@ def _free_reserve(row: dict[str, Any]) -> float:
     )
 
 
+def _retained_reserve(row: dict[str, Any]) -> float:
+    return min(_free_reserve(row), max(0.0, _number(row.get("shared_usdt_retained"))))
+
+
+def _spendable_reserve(row: dict[str, Any]) -> float:
+    explicit = row.get("shared_usdt_spendable")
+    if explicit is not None:
+        return min(_free_reserve(row), max(0.0, _number(explicit)))
+    return max(0.0, _free_reserve(row) - _retained_reserve(row))
+
+
 def display_spot_report_title(name: str, start: str | None = None, end: str | None = None) -> str:
     normalized = name.strip().lower().replace("_", "-")
     if normalized == "scrooge-treasury-portfolio-replay" or normalized.startswith(
@@ -239,6 +250,8 @@ def _report_payload(
                 "treasury": _number(item.get("treasury_value")),
                 "hodl": _number(item.get("hodl_value")),
                 "freeReserve": _free_reserve(item),
+                "protectedReserve": _retained_reserve(item),
+                "spendableReserve": _spendable_reserve(item),
                 "openBargains": int(_number(item.get("open_swings"))),
             }
             for item in sampled_equity
@@ -631,7 +644,7 @@ _HTML = r'''<!doctype html>
       </article>
 
       <article class="card">
-        <div class="card-head"><div><h2>Free Reserve</h2><div class="subtitle">USDT available after reserving cash to restore open SELL Bargains.</div></div><div class="legend"><span class="legend-item" style="--series:var(--mint)">Available USDT</span></div></div>
+        <div class="card-head"><div><h2>Free Reserve Split</h2><div class="subtitle">Protected and spendable USDT after open SELL commitments.</div></div><div class="legend"><span class="legend-item" style="--series:var(--mint)">Spendable</span><span class="legend-item" style="--series:var(--gold)">Protected</span></div></div>
         <div class="chart-wrap compact"><canvas id="reserveChart"></canvas><div class="tooltip"></div></div>
       </article>
 
@@ -727,7 +740,6 @@ _HTML = r'''<!doctype html>
     const money = (value, digits = 2) => `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString("en-US", {minimumFractionDigits: digits, maximumFractionDigits: digits})}`;
     const pct = value => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
     const qty = value => value.toLocaleString("en-US", {maximumFractionDigits: 4});
-    const signedQty = value => `${value > 0 ? "+" : ""}${qty(value)}`;
     const tone = value => value > 0 ? "positive" : value < 0 ? "negative" : "";
     const optionalMoney = (value, digits = 2) => value === null || value === undefined ? "N/A" : money(value, digits);
     const shortDate = value => new Date(value).toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"2-digit"});
@@ -824,7 +836,8 @@ _HTML = r'''<!doctype html>
       {name:"HODL",color:"#83a8e8",value:p=>p.hodlDd,format:pct},
     ], {zeroTop:true});
     drawLineChart(document.getElementById("reserveChart"), data.equity, [
-      {name:"Free Reserve",color:"#43d6a0",value:p=>p.freeReserve,format:v=>money(v)},
+      {name:"Spendable",color:"#43d6a0",value:p=>p.spendableReserve,format:v=>money(v)},
+      {name:"Protected",color:"#e9b949",value:p=>p.protectedReserve,format:v=>money(v)},
     ], {money:true});
 
     const allocations = Object.entries(data.portfolio.final_allocation_pct).sort((a,b)=>b[1]-a[1]);
@@ -932,8 +945,10 @@ _HTML = r'''<!doctype html>
     const cleanupKpis=[
       ["Cleanup Closes",cleanup.cleanup_closes_total||0,`${cleanup.cleanup_attempts_total||0} closing executions`,""],
       ["Cleanup Net PnL",money(cleanupAccounting.economic_pnl_quote||0),`Loss ${money(cleanupAccounting.economic_loss_quote||0)} · gain ${money(cleanupAccounting.economic_profit_quote||0)}`,tone(cleanupAccounting.economic_pnl_quote||0)],
-      ["Cash Change",money(cleanupAccounting.cash_change_quote||0),`Loss ${money(cleanupAccounting.cash_loss_quote||0)} · gain ${money(cleanupAccounting.cash_gain_quote||0)}`,tone(cleanupAccounting.cash_change_quote||0)],
-      ["Coin Change",money(cleanupAccounting.asset_value_change_quote||0),`Loss ${money(cleanupAccounting.asset_value_loss_quote||0)} · gain ${money(cleanupAccounting.asset_value_gain_quote||0)}`,tone(cleanupAccounting.asset_value_change_quote||0)],
+      ["Restored Inventory PnL",money(cleanupAccounting.restored_inventory_pnl_quote||0),`Sell/buy spread and fees on restored units`,tone(cleanupAccounting.restored_inventory_pnl_quote||0)],
+      ["Unrestored Inventory PnL",money(cleanupAccounting.inventory_residual_pnl_quote||0),`Deficit value ${money(cleanupAccounting.inventory_deficit_market_value_quote||0)}`,tone(cleanupAccounting.inventory_residual_pnl_quote||0)],
+      ["Cleanup BUY Volume",money(cleanupAccounting.repurchase_spend_quote||0),`${cleanupAccounting.repurchase_count||0} buys · avg ${money(cleanupAccounting.average_repurchase_spend_quote||0)} · cumulative turnover`,""],
+      ["Reserve Deployed",money(cleanupAccounting.net_reserve_deployed_quote||0),`Additional USDT beyond committed proceeds`,""],
       ["Cap Prevented",cleanupCapacity.open_bargains_prevented_by_cap||0,`${cleanupCapacity.capacity_forced_hold_cycles||0} forced HOLD cycles`,""],
       ["Open at End",cleanupOpen.at_end||0,`${cleanupOpen.underwater_at_end||0} underwater`,cleanupOpen.underwater_at_end?"negative":"positive"],
       ["90+ Days",cleanupOpen.age_90_plus||0,`${cleanupOpen.age_180_plus||0} at 180d+`,cleanupOpen.age_90_plus?"negative":"positive"],
@@ -941,7 +956,7 @@ _HTML = r'''<!doctype html>
     ];
     document.getElementById("cleanupKpis").innerHTML=cleanupKpis.map(item=>`<div class="analysis-kpi"><span>${item[0]}</span><strong class="${item[3]}">${item[1]}</strong><small>${item[2]}</small></div>`).join("");
     const cleanupReasonLabel=value=>value.replace("_cleanup","").replaceAll("_"," ").replace(/\b\w/g,letter=>letter.toUpperCase());
-    document.getElementById("cleanupReasons").innerHTML=Object.entries(cleanup.by_reason||{}).map(([reason,item])=>`<div class="cleanup-reason"><strong>${cleanupReasonLabel(reason)}</strong><span>${item.closes} closes<br>Cash ${money(item.cash_change_quote||0)} · coins ${money(item.asset_value_change_quote||0)}</span><strong class="${tone(item.economic_pnl_quote||0)}">${money(item.economic_pnl_quote||0)}</strong></div>`).join("");
+    document.getElementById("cleanupReasons").innerHTML=Object.entries(cleanup.by_reason||{}).map(([reason,item])=>`<div class="cleanup-reason"><strong>${cleanupReasonLabel(reason)}</strong><span>${item.closes} closes<br>Restored ${money(item.restored_inventory_pnl_quote||0)} · unrestored ${money(item.inventory_residual_pnl_quote||0)}</span><strong class="${tone(item.economic_pnl_quote||0)}">${money(item.economic_pnl_quote||0)}</strong></div>`).join("");
     const cleanupFees=Object.entries(cleanup.cleanup_fees_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"None";
     const cleanupCapital=[
       ["BUY Capital Tied",money(cleanupLock.open_buy_origin_quote||0)],
@@ -949,7 +964,12 @@ _HTML = r'''<!doctype html>
       ["Restore Cost",money(cleanupLock.value_required_to_restore_sell_inventory||0)],
       ["Final Reserve",money(cleanupLock.final_shared_usdt||0)],
       ["Minimum Reserve",money(cleanupLock.minimum_shared_usdt||0)],
-      ["Cleanup Coin Delta",Object.entries(cleanupAccounting.asset_quantity_change_by_asset||{}).map(([asset,value])=>`${signedQty(value)} ${asset}`).join(" · ")||"None"],
+      ["Cumulative Committed Proceeds",money(cleanupAccounting.committed_proceeds_quote||0)],
+      ["Cumulative Cleanup BUY Volume",money(cleanupAccounting.repurchase_spend_quote||0)],
+      ["Largest Cleanup BUY",money(cleanupAccounting.maximum_repurchase_spend_quote||0)],
+      ["Net Reserve Deployed",money(cleanupAccounting.net_reserve_deployed_quote||0)],
+      ["Inventory Deficit Value",money(cleanupAccounting.inventory_deficit_market_value_quote||0)],
+      ["Inventory Deficit",Object.entries(cleanupAccounting.inventory_deficit_quantity_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" · ")||"None"],
       ["Cleanup Fees",cleanupFees],
     ];
     document.getElementById("cleanupCapital").innerHTML=cleanupCapital.map(item=>`<div class="score"><span>${item[0]}</span><strong>${item[1]}</strong></div>`).join("");

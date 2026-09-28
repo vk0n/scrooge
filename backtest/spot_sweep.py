@@ -6,6 +6,7 @@ import csv
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import json
+from itertools import product
 import multiprocessing
 import os
 from pathlib import Path
@@ -32,6 +33,9 @@ from shared.spot_signal import SpotSignalConfig
 class SpotSweepVariant:
     name: str
     levels_pct: tuple[float, ...]
+    close_profit_pct: float
+    free_cash_retention_pct: float
+    unrealized_pnl_pct: float
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,19 @@ def _format_level(value: float) -> str:
 
 def _variant_name(levels_pct: tuple[float, ...]) -> str:
     return "-".join(_format_level(value) for value in levels_pct)
+
+
+def _parameter_variant_name(
+    *,
+    close_profit_pct: float,
+    free_cash_retention_pct: float,
+    unrealized_pnl_pct: float,
+) -> str:
+    return (
+        f"tp-{_format_level(close_profit_pct)}"
+        f"-ret-{_format_level(free_cash_retention_pct)}"
+        f"-loss-{_format_level(unrealized_pnl_pct)}"
+    )
 
 
 def _required_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
@@ -100,25 +117,105 @@ def load_spot_sweep_config(
         end_override=end,
     )
 
-    raw_variants = payload.get("levels_pct")
-    if not isinstance(raw_variants, list) or not raw_variants:
-        raise ValueError("spot_sweep.levels_pct must contain at least one level combination.")
     variants: list[SpotSweepVariant] = []
-    seen: set[tuple[float, ...]] = set()
-    for index, raw_levels in enumerate(raw_variants):
-        if not isinstance(raw_levels, list):
-            raise ValueError(f"spot_sweep.levels_pct[{index}] must be a list.")
-        levels = tuple(float(value) for value in raw_levels)
-        # Constructing the strategy config applies the same validation as a real replay.
-        SpotSignalConfig(
-            levels_pct=levels,
-            base_tranches_pct=scenario.signal.base_tranches_pct,
-            accumulation_tranches_pct=scenario.signal.accumulation_tranches_pct,
+    raw_levels_variants = payload.get("levels_pct")
+    parameter_grid_raw = payload.get("parameter_grid")
+    if parameter_grid_raw is None:
+        if not isinstance(raw_levels_variants, list) or not raw_levels_variants:
+            raise ValueError("spot_sweep.levels_pct must contain at least one level combination.")
+        parameter_grid: dict[str, Any] = {}
+    else:
+        parameter_grid = _required_mapping(
+            parameter_grid_raw,
+            field_name="spot_sweep.parameter_grid",
         )
-        if levels in seen:
-            raise ValueError(f"Duplicate Spot sweep combination: {levels}.")
-        seen.add(levels)
-        variants.append(SpotSweepVariant(name=_variant_name(levels), levels_pct=levels))
+        supported = {
+            "close_profit_pct",
+            "free_cash_retention_pct",
+            "unrealized_pnl_pct",
+        }
+        unknown = sorted(set(parameter_grid) - supported)
+        if unknown:
+            raise ValueError(f"Unsupported Spot sweep parameters: {', '.join(unknown)}.")
+
+    level_options: list[tuple[float, ...]] = []
+    if raw_levels_variants is None:
+        level_options.append(tuple(scenario.signal.levels_pct))
+    else:
+        if not isinstance(raw_levels_variants, list) or not raw_levels_variants:
+            raise ValueError("spot_sweep.levels_pct must contain at least one level combination.")
+        for index, raw_levels in enumerate(raw_levels_variants):
+            if not isinstance(raw_levels, list):
+                raise ValueError(f"spot_sweep.levels_pct[{index}] must be a list.")
+            levels = tuple(float(value) for value in raw_levels)
+            SpotSignalConfig(
+                levels_pct=levels,
+                base_tranches_pct=scenario.signal.base_tranches_pct,
+                accumulation_tranches_pct=scenario.signal.accumulation_tranches_pct,
+            )
+            level_options.append(levels)
+
+    def grid_values(key: str, baseline: float) -> list[float]:
+        raw_values = parameter_grid.get(key)
+        if raw_values is None:
+            return [baseline]
+        if not isinstance(raw_values, list) or not raw_values:
+            raise ValueError(f"spot_sweep.parameter_grid.{key} must be a non-empty list.")
+        return [float(value) for value in raw_values]
+
+    close_profit_options = grid_values(
+        "close_profit_pct",
+        scenario.progression.close_profit_pct,
+    )
+    retention_options = grid_values(
+        "free_cash_retention_pct",
+        scenario.free_cash_retention_pct,
+    )
+    unrealized_pnl_options = grid_values(
+        "unrealized_pnl_pct",
+        scenario.waiter_cleanup.deep_loss_unrealized_pnl_pct,
+    )
+    seen: set[tuple[tuple[float, ...], float, float, float]] = set()
+    parameter_sweep = parameter_grid_raw is not None
+    for levels, close_profit, retention, unrealized_pnl in product(
+        level_options,
+        close_profit_options,
+        retention_options,
+        unrealized_pnl_options,
+    ):
+        replace(scenario.progression, close_profit_pct=close_profit)
+        replace(
+            scenario.waiter_cleanup,
+            deep_loss_unrealized_pnl_pct=unrealized_pnl,
+        )
+        if not 0 <= retention <= 100:
+            raise ValueError("Spot free cash retention must be in the range [0, 100].")
+        key = (levels, close_profit, retention, unrealized_pnl)
+        if key in seen:
+            raise ValueError(f"Duplicate Spot sweep combination: {key}.")
+        seen.add(key)
+        parameter_name = _parameter_variant_name(
+            close_profit_pct=close_profit,
+            free_cash_retention_pct=retention,
+            unrealized_pnl_pct=unrealized_pnl,
+        )
+        if parameter_sweep:
+            name = (
+                parameter_name
+                if len(level_options) == 1
+                else f"{_variant_name(levels)}-{parameter_name}"
+            )
+        else:
+            name = _variant_name(levels)
+        variants.append(
+            SpotSweepVariant(
+                name=name,
+                levels_pct=levels,
+                close_profit_pct=close_profit,
+                free_cash_retention_pct=retention,
+                unrealized_pnl_pct=unrealized_pnl,
+            )
+        )
 
     default_replay_workers = min(
         max(1, os.cpu_count() or 1),
@@ -152,16 +249,30 @@ def load_spot_sweep_config(
 
 def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) -> SpotBacktestScenario:
     signal = replace(config.scenario.signal, levels_pct=variant.levels_pct)
+    progression = replace(
+        config.scenario.progression,
+        close_profit_pct=variant.close_profit_pct,
+    )
+    waiter_cleanup = replace(
+        config.scenario.waiter_cleanup,
+        deep_loss_unrealized_pnl_pct=variant.unrealized_pnl_pct,
+    )
     metadata = {
         **config.scenario.metadata,
         "sweep_name": config.name,
         "sweep_config": str(config.config_path),
         "sweep_levels_pct": list(variant.levels_pct),
+        "sweep_close_profit_pct": variant.close_profit_pct,
+        "sweep_free_cash_retention_pct": variant.free_cash_retention_pct,
+        "sweep_unrealized_pnl_pct": variant.unrealized_pnl_pct,
     }
     return replace(
         config.scenario,
         name=f"{config.name}-{variant.name}",
         signal=signal,
+        progression=progression,
+        waiter_cleanup=waiter_cleanup,
+        free_cash_retention_pct=variant.free_cash_retention_pct,
         output_dir=config.output_dir / "runs" / variant.name,
         metadata=metadata,
     )
@@ -207,10 +318,15 @@ def _summary_row(
     recovery = success["asset_recovery"]
     swings = report["swings"]
     accumulation = report["treasury_accumulation"]
+    cleanup = report["waiter_cleanup"]
+    cleanup_accounting = cleanup.get("accounting") or {}
     return {
         "rank": None,
         "name": variant.name,
         "levels_pct": list(variant.levels_pct),
+        "close_profit_pct": variant.close_profit_pct,
+        "free_cash_retention_pct": variant.free_cash_retention_pct,
+        "unrealized_pnl_pct": variant.unrealized_pnl_pct,
         "status": "ok",
         "resumed": resumed,
         "duration_seconds": duration_seconds,
@@ -233,6 +349,17 @@ def _summary_row(
         "oldest_open_days": float(swings["oldest_open_days"] or 0.0),
         "realized_bargain_pnl": float(swings["realized_pnl_quote"]),
         "unrealized_open_pnl": float(swings["unrealized_open_pnl_quote"]),
+        "cleanup_closes": int(cleanup["cleanup_closes_total"]),
+        "cleanup_net_pnl": float(cleanup_accounting.get("economic_pnl_quote") or 0.0),
+        "cleanup_restored_pnl": float(
+            cleanup_accounting.get("restored_inventory_pnl_quote") or 0.0
+        ),
+        "cleanup_unrestored_pnl": float(
+            cleanup_accounting.get("inventory_residual_pnl_quote") or 0.0
+        ),
+        "cleanup_inventory_deficit_value": float(
+            cleanup_accounting.get("inventory_deficit_market_value_quote") or 0.0
+        ),
         "earned_cash_generated": float(accumulation["earned_cash_generated_quote"]),
         "earned_cash_allocated": float(accumulation["earned_cash_allocated_quote"]),
     }
@@ -279,11 +406,11 @@ def _comparison_html(payload: dict[str, Any]) -> str:
 :root{{--bg:#080c11;--panel:#111821;--line:#293647;--ink:#edf2f7;--muted:#8d9bad;--gold:#e8b84a;--green:#48d6a2;--red:#ff647f}}
 *{{box-sizing:border-box}}body{{margin:0;background:repeating-linear-gradient(135deg,#080c11,#080c11 12px,#0a0f15 12px,#0a0f15 24px);color:var(--ink);font:13px ui-monospace,SFMono-Regular,Menlo,monospace}}
 main{{width:min(1500px,calc(100% - 28px));margin:28px auto 60px}}header,.panel{{border:1px solid var(--line);border-radius:18px;background:rgba(17,24,33,.97)}}header{{padding:28px;background:linear-gradient(125deg,#351020,#111923);margin-bottom:18px}}h1{{margin:8px 0;font-size:34px}}p{{color:var(--muted)}}.eyebrow{{color:var(--gold);letter-spacing:.14em;text-transform:uppercase}}.panel{{padding:18px;overflow:auto}}table{{width:100%;border-collapse:collapse;min-width:1120px}}th,td{{padding:11px 10px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}}th{{color:var(--muted);font-weight:400;position:sticky;top:0;background:var(--panel)}}th:nth-child(2),td:nth-child(2){{text-align:left}}tr:first-child td{{color:var(--green);font-weight:700}}.positive{{color:var(--green)}}.negative{{color:var(--red)}}@media(max-width:700px){{h1{{font-size:26px}}}}
-</style></head><body><main><header><span class="eyebrow">Scrooge Research / Spot Parameter Sweep</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><table><thead><tr><th>Rank</th><th>Levels</th><th>Edge</th><th>Edge pp</th><th>Final</th><th>Free Reserve</th><th>Weighted Assets</th><th>Average Assets</th><th>Open</th><th>Oldest</th><th>Drawdown</th><th>Runtime</th></tr></thead><tbody id="rows"></tbody></table></section></main>
+</style></head><body><main><header><span class="eyebrow">Scrooge Research / Spot Parameter Sweep</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><table><thead><tr><th>Rank</th><th>Levels</th><th>Take Profit</th><th>Retention</th><th>Deep Loss</th><th>Edge</th><th>Edge pp</th><th>Final</th><th>Free Reserve</th><th>Weighted Assets</th><th>Average Assets</th><th>Cleanup PnL</th><th>Inventory Deficit</th><th>Open</th><th>Oldest</th><th>Drawdown</th><th>Runtime</th></tr></thead><tbody id="rows"></tbody></table></section></main>
 <script id="data" type="application/json">{data}</script><script>
 const d=JSON.parse(document.getElementById('data').textContent),money=v=>`${{v<0?'-':''}}$${{Math.abs(v).toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}})}}`,pct=v=>`${{v>=0?'+':''}}${{v.toFixed(2)}}%`,tone=v=>v>0?'positive':v<0?'negative':'';
 document.getElementById('title').textContent=d.name;document.getElementById('meta').textContent=`${{d.start}} to ${{d.end}} | ${{d.completed}}/${{d.total}} completed`;
-document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · retained ${{money(r.retained_reserve_quote||0)}}</td><td>${{pct(r.weighted_effective_assets_pct)}}</td><td>${{pct(r.average_effective_assets_pct)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
+document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td>${{pct(r.close_profit_pct)}}</td><td>${{pct(r.free_cash_retention_pct)}}</td><td>${{pct(r.unrealized_pnl_pct)}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · protected ${{money(r.retained_reserve_quote||0)}} · spendable ${{money(r.spendable_reserve_quote||0)}}</td><td>${{pct(r.weighted_effective_assets_pct)}}</td><td>${{pct(r.average_effective_assets_pct)}}</td><td class="${{tone(r.cleanup_net_pnl)}}">${{money(r.cleanup_net_pnl)}}</td><td>${{money(r.cleanup_inventory_deficit_value)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
 </script></body></html>"""
 
 
@@ -566,7 +693,13 @@ def main(argv: list[str] | None = None) -> int:
             f"{config.scenario.start.isoformat()} to {config.scenario.end.isoformat()}"
         )
         for variant in config.variants:
-            print(f"  {variant.name}: {', '.join(f'{value:g}' for value in variant.levels_pct)}")
+            print(
+                f"  {variant.name}: levels "
+                f"{', '.join(f'{value:g}' for value in variant.levels_pct)}; "
+                f"take profit {variant.close_profit_pct:g}%; "
+                f"retention {variant.free_cash_retention_pct:g}%; "
+                f"deep loss {variant.unrealized_pnl_pct:g}%"
+            )
         return 0
 
     payload = run_spot_sweep(config, force=args.force)
@@ -576,6 +709,9 @@ def main(argv: list[str] | None = None) -> int:
         if winner is not None:
             print(
                 f"Winner: {'/'.join(f'{value:g}' for value in winner['levels_pct'])} | "
+                f"TP {winner['close_profit_pct']:g}% | "
+                f"retention {winner['free_cash_retention_pct']:g}% | "
+                f"deep loss {winner['unrealized_pnl_pct']:g}% | "
                 f"Edge vs HODL {winner['edge_vs_hodl_pct_points']:+.2f} pp "
                 f"(${winner['difference_vs_hodl']:+,.2f})"
             )

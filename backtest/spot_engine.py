@@ -51,7 +51,8 @@ class SimulatedAssetState:
             unassigned_quantity=asset.unassigned_quantity,
             target_quantity=asset.target_holding,
             known_cost_quantity=known_quantity,
-            known_cost_basis=known_quantity * float(asset.entry_cost or 0.0),
+            # Backtests establish their cost basis from the replay's first candle.
+            known_cost_basis=0.0,
         )
 
     @property
@@ -93,7 +94,7 @@ class SimulatedAssetState:
         return self.known_cost_quantity * market_price - self.known_cost_basis
 
     def rebase_cost_basis(self, initial_price: float) -> None:
-        """Use the first replay price as the portfolio's backtest entry basis."""
+        """Use the first replay candle open as the portfolio's entry basis."""
         normalized_price = float(initial_price)
         self.known_cost_basis = self.known_cost_quantity * normalized_price
 

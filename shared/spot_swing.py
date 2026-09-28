@@ -64,6 +64,8 @@ def calculate_swing_economics(
     closing_quote = 0.0
     realized_gross = 0.0
     realized_quote_fees = 0.0
+    terminal_residual_gross = 0.0
+    terminal_residual_quote_fees = 0.0
     net_quote_cash_flow = 0.0
     net_asset_flow = 0.0
     opening_inventory_quantity = 0.0
@@ -149,10 +151,18 @@ def calculate_swing_economics(
             if lot["remaining"] <= epsilon:
                 continue
             if origin_side == "sell":
-                realized_gross += lot["remaining"] * (lot["unit_price"] - terminal_close_price)
+                residual_gross = lot["remaining"] * (
+                    lot["unit_price"] - terminal_close_price
+                )
             else:
-                realized_gross += lot["remaining"] * (terminal_close_price - lot["unit_price"])
-            realized_quote_fees += lot["remaining"] * lot["quote_fee_per_unit"]
+                residual_gross = lot["remaining"] * (
+                    terminal_close_price - lot["unit_price"]
+                )
+            residual_fee = lot["remaining"] * lot["quote_fee_per_unit"]
+            realized_gross += residual_gross
+            realized_quote_fees += residual_fee
+            terminal_residual_gross += residual_gross
+            terminal_residual_quote_fees += residual_fee
             lot["remaining"] = 0.0
         remaining_quantity = 0.0
     remaining_opening_quote = sum(lot["remaining"] * lot["unit_price"] for lot in opening_lots)
@@ -193,8 +203,15 @@ def calculate_swing_economics(
         "opening_quote_quantity": opening_quote,
         "closing_quantity": closing_quantity,
         "closing_quote_quantity": closing_quote,
+        "opening_inventory_quantity": opening_inventory_quantity,
+        "closing_inventory_quantity": closing_inventory_quantity,
         "remaining_quantity": remaining_quantity,
         "terminal_residual_quantity": terminal_residual_quantity,
+        "terminal_residual_gross_pnl_quote": terminal_residual_gross,
+        "terminal_residual_fee_quote": terminal_residual_quote_fees,
+        "terminal_residual_pnl_quote": (
+            terminal_residual_gross - terminal_residual_quote_fees
+        ),
         "unrecovered_quantity": unrecovered_quantity,
         "retained_quantity": retained_quantity,
         "remaining_opening_quote_quantity": remaining_opening_quote,

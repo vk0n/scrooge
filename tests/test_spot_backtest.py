@@ -21,7 +21,12 @@ from backtest.spot_reporting import (
     build_spot_backtest_report,
     write_spot_backtest_artifacts,
 )
-from backtest.spot_report_html import _free_reserve, display_spot_report_title
+from backtest.spot_report_html import (
+    _free_reserve,
+    _retained_reserve,
+    _spendable_reserve,
+    display_spot_report_title,
+)
 from backtest.spot_scenario import (
     SpotBacktestAsset,
     SpotBacktestExecutionConfig,
@@ -175,20 +180,37 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertGreater(updates[0][1], 0)
         self.assertEqual(updates[-1], (updates[0][1], updates[0][1]))
 
-    def test_cleanup_report_separates_cash_and_coin_losses(self):
+    def test_cleanup_report_separates_restored_and_unrestored_inventory_pnl(self):
         rows = _cleanup_accounting_rows(
             [
                 {
                     "asset_symbol": "AAA",
+                    "quote_symbol": "USDT",
+                    "origin_side": "sell",
                     "close_reason": "deep_loss_cleanup",
                     "economics": {
                         "realized_cash_gain_quote": 40,
                         "realized_net_asset_change": -2,
                         "realized_pnl_quote": -200,
+                        "terminal_residual_pnl_quote": -40,
+                        "unrecovered_quantity": 2,
                     },
                     "executions": [
                         {
+                            "side": "sell",
+                            "quantity": 10,
+                            "price": 100,
+                            "quote_quantity": 1000,
+                            "fee_amount": 0,
+                            "fee_asset": "USDT",
+                        },
+                        {
+                            "side": "buy",
+                            "quantity": 8,
                             "price": 120,
+                            "quote_quantity": 960,
+                            "fee_amount": 0,
+                            "fee_asset": "USDT",
                             "reason": {
                                 "action_type": "close",
                                 "close_reason": "deep_loss_cleanup",
@@ -198,15 +220,32 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
                 },
                 {
                     "asset_symbol": "BBB",
+                    "quote_symbol": "USDT",
+                    "origin_side": "sell",
                     "close_reason": "age_l3_cleanup",
                     "economics": {
                         "realized_cash_gain_quote": -50,
                         "realized_net_asset_change": 0,
                         "realized_pnl_quote": -50,
+                        "terminal_residual_pnl_quote": 0,
+                        "unrecovered_quantity": 0,
                     },
                     "executions": [
                         {
+                            "side": "sell",
+                            "quantity": 10,
                             "price": 10,
+                            "quote_quantity": 100,
+                            "fee_amount": 0,
+                            "fee_asset": "USDT",
+                        },
+                        {
+                            "side": "buy",
+                            "quantity": 10,
+                            "price": 15,
+                            "quote_quantity": 150,
+                            "fee_amount": 0,
+                            "fee_asset": "USDT",
                             "reason": {
                                 "action_type": "close",
                                 "close_reason": "age_l3_cleanup",
@@ -223,6 +262,17 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(accounting["cash_gain_quote"], 40)
         self.assertEqual(accounting["asset_value_change_quote"], -240)
         self.assertEqual(accounting["asset_quantity_change_by_asset"], {"AAA": -2})
+        self.assertEqual(accounting["committed_proceeds_quote"], 1100)
+        self.assertEqual(accounting["repurchase_spend_quote"], 1110)
+        self.assertEqual(accounting["repurchase_count"], 2)
+        self.assertEqual(accounting["average_repurchase_spend_quote"], 555)
+        self.assertEqual(accounting["median_repurchase_spend_quote"], 555)
+        self.assertEqual(accounting["maximum_repurchase_spend_quote"], 960)
+        self.assertEqual(accounting["net_reserve_deployed_quote"], 10)
+        self.assertEqual(accounting["restored_inventory_pnl_quote"], -210)
+        self.assertEqual(accounting["inventory_residual_pnl_quote"], -40)
+        self.assertEqual(accounting["inventory_deficit_quantity_by_asset"], {"AAA": 2})
+        self.assertEqual(accounting["inventory_deficit_market_value_quote"], 240)
         self.assertEqual(accounting["economic_pnl_quote"], -250)
         self.assertEqual(accounting["reconciliation_delta_quote"], 0)
 
@@ -1240,6 +1290,11 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(performance["open_bargain_pnl"], 0)
         self.assertEqual(performance["total_gain"], 0)
         self.assertEqual(performance["initial_price"], 120)
+        starting = report["per_asset"]["AAA"]["starting"]
+        self.assertEqual(starting["entry_cost"], 120)
+        self.assertEqual(starting["entry_cost_source"], "start_candle_open")
+        self.assertNotIn("configured_entry_cost", starting)
+        self.assertEqual(result.assets["AAA"].average_cost, 120)
         self.assertEqual(report["portfolio"]["initial_invested_capital"], 12500)
         self.assertEqual(report["portfolio"]["total_gain_on_initial_capital"], 0)
         self.assertEqual(report["portfolio"]["edge_vs_hodl_pct_points"], 0)
@@ -1258,6 +1313,8 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             "shared_usdt": 757.56,
             "shared_usdt_reserved": 743.55,
             "shared_usdt_available": 14.01,
+            "shared_usdt_retained": 8.0,
+            "shared_usdt_spendable": 6.01,
         }
         legacy_row = {
             "shared_usdt": "757.56",
@@ -1265,7 +1322,11 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         }
 
         self.assertEqual(_free_reserve(current_row), 14.01)
+        self.assertEqual(_retained_reserve(current_row), 8.0)
+        self.assertEqual(_spendable_reserve(current_row), 6.01)
         self.assertAlmostEqual(_free_reserve(legacy_row), 14.01)
+        self.assertEqual(_retained_reserve(legacy_row), 0)
+        self.assertAlmostEqual(_spendable_reserve(legacy_row), 14.01)
 
     def test_fee_slippage_and_artifacts_are_explicit(self):
         config = scenario(
@@ -1293,7 +1354,10 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertIn("Vault Value", report_html)
             self.assertIn("Final Allocation", report_html)
             self.assertIn("Free Reserve", report_html)
+            self.assertIn("Free Reserve Split", report_html)
             self.assertIn('"freeReserve"', report_html)
+            self.assertIn('"protectedReserve"', report_html)
+            self.assertIn('"spendableReserve"', report_html)
             self.assertIn("Bargain History", report_html)
             self.assertIn("Bargain Analytics", report_html)
             self.assertIn("Waiter Cleanup", report_html)

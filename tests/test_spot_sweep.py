@@ -70,6 +70,15 @@ def report(edge: float) -> dict:
             "earned_cash_generated_quote": 8,
             "earned_cash_allocated_quote": 3,
         },
+        "waiter_cleanup": {
+            "cleanup_closes_total": 1,
+            "accounting": {
+                "economic_pnl_quote": -5,
+                "restored_inventory_pnl_quote": -4,
+                "inventory_residual_pnl_quote": -1,
+                "inventory_deficit_market_value_quote": 3,
+            },
+        },
     }
 
 
@@ -117,6 +126,42 @@ spot_sweep:
             root = Path(tmp)
             with self.assertRaisesRegex(ValueError, "strictly increasing"):
                 load_spot_sweep_config(self.write_configs(root, "[[2, 5, 4, 7]]"))
+
+    def test_parameter_grid_builds_cartesian_strategy_variants(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "base.yaml").write_text(BASE_SCENARIO, encoding="utf-8")
+            sweep = root / "parameters.yaml"
+            sweep.write_text(
+                """
+spot_sweep:
+  name: parameter-sweep
+  base_config: base.yaml
+  output_dir: output
+  parameter_grid:
+    close_profit_pct: [2, 3]
+    free_cash_retention_pct: [10, 20]
+    unrealized_pnl_pct: [-15, -20]
+""",
+                encoding="utf-8",
+            )
+
+            config = load_spot_sweep_config(sweep)
+            baseline = next(
+                item
+                for item in config.variants
+                if item.close_profit_pct == 3
+                and item.free_cash_retention_pct == 20
+                and item.unrealized_pnl_pct == -20
+            )
+            resolved = _scenario_for_variant(config, baseline)
+
+        self.assertEqual(len(config.variants), 8)
+        self.assertEqual(config.variants[0].name, "tp-2-ret-10-loss-neg15")
+        self.assertEqual(resolved.signal.levels_pct, (2.0, 3.0, 5.0, 7.0))
+        self.assertEqual(resolved.progression.close_profit_pct, 3)
+        self.assertEqual(resolved.free_cash_retention_pct, 20)
+        self.assertEqual(resolved.waiter_cleanup.deep_loss_unrealized_pnl_pct, -20)
 
     def test_ranking_prioritizes_edge_then_effective_assets(self):
         rows = [

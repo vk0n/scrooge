@@ -243,6 +243,8 @@ class SpotSwingDomainTests(unittest.TestCase):
             10,
             100,
             executed_at_ms=2_000,
+            fee_amount=10,
+            fee_asset="USDT",
         )
         self.add_execution(
             "swing-atomic-close",
@@ -261,8 +263,9 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertEqual(result["terminal_residual_quantity"], 2)
         self.assertEqual(result["unrecovered_quantity"], 2)
         self.assertEqual(result["retained_quantity"], 0)
-        self.assertAlmostEqual(result["realized_pnl_quote"], -200)
-        self.assertAlmostEqual(result["realized_cash_gain_quote"], 40)
+        self.assertAlmostEqual(result["terminal_residual_pnl_quote"], -42)
+        self.assertAlmostEqual(result["realized_pnl_quote"], -210)
+        self.assertAlmostEqual(result["realized_cash_gain_quote"], 30)
         self.assertAlmostEqual(result["realized_net_asset_change"], -2)
         self.assertEqual(load_spot_swing("swing-atomic-close", path=self.db_path)["status"], "closed")
 

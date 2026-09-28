@@ -21,6 +21,8 @@ The replay replaces only the market source, clock, executor, state store, and re
 - Cache: deterministic CSV files under `data/spot_backtest/klines`; current exchange filters are cached as JSON.
 - Timezone: all scenario and candle timestamps are UTC.
 - Default interval: one minute, matching the live signal poll cadence.
+- Entry cost: the open of the first candle at the scenario start. Any legacy `entry_cost` value in a scenario is
+  ignored by the backtest cost basis and performance calculations.
 - Warm-up: at least 24 hours (`1440` candles at `1m`) before the requested start. Warm-up cannot generate signals,
   orders, Bargains, or balance changes.
 - Decision: candle N closes, then Scrooge evaluates only data whose close timestamp is at or before candle N close.
@@ -106,7 +108,8 @@ One-year preset:
 ## Parameter Sweeps
 
 Use the dedicated sweep runner instead of shell loops. A sweep YAML references one base Spot scenario and declares
-the tested `levels_pct` combinations. Market data is loaded once and shared by every replay, while each variant gets
+either tested `levels_pct` combinations or a `parameter_grid` for `close_profit_pct`,
+`free_cash_retention_pct`, and deep-loss `unrealized_pnl_pct`. The grid expands to the Cartesian product. Market data is loaded once and shared by every replay, while each variant gets
 its own complete artifact directory. The runner updates `manifest.json` after every variant and writes a ranked
 `comparison.json`, `comparison.csv`, and `comparison.html`, ordered by Edge vs HODL.
 Independent asset histories are loaded concurrently using `market_data_workers` (three by default); this parallelizes
@@ -141,7 +144,7 @@ Each run writes:
 - `inventory.csv` and `target_history.csv`
 - `final_state.json` and `rejections.csv`
 
-The report separates realized and unrealized Bargain economics, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. Waiter Cleanup splits every completed lifecycle into net quote cash flow and net coin inventory change valued at its cleanup price; those two components reconcile to cleanup economic PnL, while coin quantities remain visible by asset. Bargain Analytics adds lifecycle PnL, closure and expectancy metrics, duration percentiles, fee drag, outcome and risk categories, an interactive cohort breakdown, and a duration-versus-return view. Each Portfolio Ledger asset row expands into filterable Bargain history, and each Bargain expands into its execution fills. The V1 simulator itself charges its configured fee in USDT.
+The report separates realized and unrealized Bargain economics, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. Waiter Cleanup separates PnL on inventory that was restored from PnL on inventory left unrestored; those two economic components reconcile to Cleanup Net PnL. Cleanup BUY volume is explicitly cumulative turnover across every cleanup execution, with count, average, median, and maximum order size; it is capital deployment, not a loss or simultaneous capital requirement. Additional reserve deployment is also shown separately as a capital flow. The remaining coin deficit is reported both by quantity and by market value at each cleanup price. Bargain Analytics adds lifecycle PnL, closure and expectancy metrics, duration percentiles, fee drag, outcome and risk categories, an interactive cohort breakdown, and a duration-versus-return view. Each Portfolio Ledger asset row expands into filterable Bargain history, and each Bargain expands into its execution fills. The V1 simulator itself charges its configured fee in USDT.
 
 To produce controlled six-month and one-year baseline comparisons from one scenario:
 

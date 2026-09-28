@@ -27,8 +27,10 @@ METRICS = (
     ("open_bargains", "Open Bargains", "number"),
     ("underwater_open_bargains", "Underwater Bargains", "number"),
     ("open_90_plus", "90+ Day Bargains", "number"),
-    ("cleanup_cash_change_quote", "Cleanup Cash Change", "money"),
-    ("cleanup_asset_value_change_quote", "Cleanup Coin Value Change", "money"),
+    ("cleanup_restored_pnl_quote", "Cleanup Restored Inventory PnL", "money"),
+    ("cleanup_unrestored_pnl_quote", "Cleanup Unrestored Inventory PnL", "money"),
+    ("cleanup_repurchase_spend_quote", "Cumulative Cleanup BUY Volume", "money"),
+    ("cleanup_reserve_deployed_quote", "Cleanup Reserve Deployed", "money"),
     ("realized_cleanup_loss_quote", "Gross Cleanup Losses", "money"),
     ("open_buy_capital_tied_quote", "BUY Capital Tied", "money"),
     ("restore_cost", "SELL Inventory Restore Cost", "money"),
@@ -57,9 +59,17 @@ def _summary_metrics(report: dict[str, Any]) -> dict[str, float]:
         "open_bargains": float(open_metrics["at_end"]),
         "underwater_open_bargains": float(open_metrics["underwater_at_end"]),
         "open_90_plus": float(open_metrics["age_90_plus"]),
-        "cleanup_cash_change_quote": float(cleanup_accounting.get("cash_change_quote") or 0.0),
-        "cleanup_asset_value_change_quote": float(
-            cleanup_accounting.get("asset_value_change_quote") or 0.0
+        "cleanup_restored_pnl_quote": float(
+            cleanup_accounting.get("restored_inventory_pnl_quote") or 0.0
+        ),
+        "cleanup_unrestored_pnl_quote": float(
+            cleanup_accounting.get("inventory_residual_pnl_quote") or 0.0
+        ),
+        "cleanup_repurchase_spend_quote": float(
+            cleanup_accounting.get("repurchase_spend_quote") or 0.0
+        ),
+        "cleanup_reserve_deployed_quote": float(
+            cleanup_accounting.get("net_reserve_deployed_quote") or 0.0
         ),
         "realized_cleanup_loss_quote": float(cleanup["realized_cleanup_loss_quote"]),
         "open_buy_capital_tied_quote": float(lock["open_buy_origin_quote"]),

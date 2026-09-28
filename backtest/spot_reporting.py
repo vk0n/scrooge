@@ -537,22 +537,59 @@ def _cleanup_accounting_rows(cleanup_swings: list[dict[str, Any]]) -> list[dict[
         )
         if cleanup_execution is None:
             continue
-        economics = swing.get("economics") or {}
+        economics = calculate_swing_economics(
+            swing,
+            swing.get("executions") or [],
+            current_price=swing.get("current_market_price"),
+        )
+        origin_side = str(swing.get("origin_side") or "").lower()
+        quote_symbol = str(swing.get("quote_symbol") or "USDT").upper()
+        opening_cash_flow = 0.0
+        closing_cash_flow = 0.0
+        for execution in swing.get("executions") or []:
+            side = str(execution.get("side") or "").lower()
+            quote_quantity = float(
+                execution.get("quote_quantity")
+                or float(execution.get("quantity") or 0.0)
+                * float(execution.get("price") or 0.0)
+            )
+            quote_flow = quote_quantity if side == "sell" else -quote_quantity
+            if str(execution.get("fee_asset") or "").upper() == quote_symbol:
+                quote_flow -= float(execution.get("fee_amount") or 0.0)
+            if side == origin_side:
+                opening_cash_flow += quote_flow
+            else:
+                closing_cash_flow += quote_flow
         cash_change = float(economics.get("realized_cash_gain_quote") or 0.0)
         asset_quantity_change = float(economics.get("realized_net_asset_change") or 0.0)
         close_price = float(cleanup_execution.get("price") or 0.0)
         asset_value_change = asset_quantity_change * close_price
+        realized_pnl = float(economics.get("realized_pnl_quote") or 0.0)
+        inventory_residual_pnl = float(
+            economics.get("terminal_residual_pnl_quote") or 0.0
+        )
+        unrecovered_quantity = float(economics.get("unrecovered_quantity") or 0.0)
         cleanup_accounting_rows.append(
             {
                 "asset_symbol": str(swing["asset_symbol"]),
                 "reason": str(swing.get("close_reason") or "unknown"),
                 "cash_change_quote": cash_change,
+                "committed_proceeds_quote": (
+                    max(0.0, opening_cash_flow) if origin_side == "sell" else 0.0
+                ),
+                "repurchase_spend_quote": (
+                    max(0.0, -closing_cash_flow) if origin_side == "sell" else 0.0
+                ),
+                "reserve_deployed_quote": max(0.0, -cash_change),
+                "cash_released_quote": max(0.0, cash_change),
                 "asset_quantity_change": asset_quantity_change,
                 "asset_value_change_quote": asset_value_change,
-                "economic_pnl_quote": cash_change + asset_value_change,
-                "reported_realized_pnl_quote": float(
-                    economics.get("realized_pnl_quote") or 0.0
-                ),
+                "unrecovered_quantity": unrecovered_quantity,
+                "unrecovered_market_value_quote": unrecovered_quantity * close_price,
+                "restored_inventory_pnl_quote": realized_pnl - inventory_residual_pnl,
+                "inventory_residual_pnl_quote": inventory_residual_pnl,
+                "economic_pnl_quote": realized_pnl,
+                "reported_realized_pnl_quote": realized_pnl,
             }
         )
     return cleanup_accounting_rows
@@ -562,6 +599,13 @@ def _cleanup_accounting_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     cash_changes = [float(row["cash_change_quote"]) for row in rows]
     asset_changes = [float(row["asset_value_change_quote"]) for row in rows]
     economic_results = [float(row["economic_pnl_quote"]) for row in rows]
+    restored_results = [float(row["restored_inventory_pnl_quote"]) for row in rows]
+    residual_results = [float(row["inventory_residual_pnl_quote"]) for row in rows]
+    repurchase_spends = [
+        float(row["repurchase_spend_quote"])
+        for row in rows
+        if float(row["repurchase_spend_quote"]) > 0
+    ]
     all_quantities = {
         symbol: sum(
             float(row["asset_quantity_change"])
@@ -575,6 +619,19 @@ def _cleanup_accounting_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for symbol, quantity in all_quantities.items()
         if abs(quantity) > 1e-12
     }
+    inventory_deficits = {
+        symbol: sum(
+            float(row["unrecovered_quantity"])
+            for row in rows
+            if row["asset_symbol"] == symbol
+        )
+        for symbol in sorted({str(row["asset_symbol"]) for row in rows})
+    }
+    inventory_deficits = {
+        symbol: quantity
+        for symbol, quantity in inventory_deficits.items()
+        if quantity > 1e-12
+    }
     return {
         "economic_pnl_quote": sum(economic_results),
         "economic_loss_quote": sum(value for value in economic_results if value < 0),
@@ -582,13 +639,48 @@ def _cleanup_accounting_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "cash_change_quote": sum(cash_changes),
         "cash_loss_quote": sum(value for value in cash_changes if value < 0),
         "cash_gain_quote": sum(value for value in cash_changes if value > 0),
+        "committed_proceeds_quote": sum(
+            float(row["committed_proceeds_quote"]) for row in rows
+        ),
+        "repurchase_spend_quote": sum(float(row["repurchase_spend_quote"]) for row in rows),
+        "repurchase_count": len(repurchase_spends),
+        "average_repurchase_spend_quote": (
+            mean(repurchase_spends) if repurchase_spends else None
+        ),
+        "median_repurchase_spend_quote": (
+            median(repurchase_spends) if repurchase_spends else None
+        ),
+        "maximum_repurchase_spend_quote": max(repurchase_spends, default=None),
+        "reserve_deployed_quote": sum(float(row["reserve_deployed_quote"]) for row in rows),
+        "cash_released_quote": sum(float(row["cash_released_quote"]) for row in rows),
+        "net_reserve_deployed_quote": max(0.0, -sum(cash_changes)),
+        "net_cash_released_quote": max(0.0, sum(cash_changes)),
         "asset_value_change_quote": sum(asset_changes),
         "asset_value_loss_quote": sum(value for value in asset_changes if value < 0),
         "asset_value_gain_quote": sum(value for value in asset_changes if value > 0),
         "asset_quantity_change_by_asset": quantities,
+        "restored_inventory_pnl_quote": sum(restored_results),
+        "restored_inventory_loss_quote": sum(
+            value for value in restored_results if value < 0
+        ),
+        "restored_inventory_profit_quote": sum(
+            value for value in restored_results if value > 0
+        ),
+        "inventory_residual_pnl_quote": sum(residual_results),
+        "inventory_residual_loss_quote": sum(
+            value for value in residual_results if value < 0
+        ),
+        "inventory_residual_profit_quote": sum(
+            value for value in residual_results if value > 0
+        ),
+        "inventory_deficit_quantity_by_asset": inventory_deficits,
+        "inventory_deficit_market_value_quote": sum(
+            float(row["unrecovered_market_value_quote"]) for row in rows
+        ),
         "reconciliation_delta_quote": sum(
-            float(row["economic_pnl_quote"])
-            - float(row["reported_realized_pnl_quote"])
+            float(row["restored_inventory_pnl_quote"])
+            + float(row["inventory_residual_pnl_quote"])
+            - float(row["economic_pnl_quote"])
             for row in rows
         ),
     }
@@ -899,7 +991,7 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             "starting": {
                 "quantity": asset_config.quantity,
                 "entry_cost": result.initial_prices[symbol],
-                "configured_entry_cost": asset_config.entry_cost,
+                "entry_cost_source": "start_candle_open",
                 "binance_quantity": asset_config.binance_quantity,
                 "cold_storage_quantity": asset_config.cold_storage_quantity,
                 "target_holding": asset_config.target_holding,
@@ -1363,17 +1455,38 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         f"- Enabled: {'yes' if cleanup_metrics['enabled'] else 'no'}",
         f"- Cleanup closes: {cleanup_metrics['cleanup_closes_total']}",
         f"- Cleanup net PnL: ${cleanup_metrics['accounting']['economic_pnl_quote']:,.2f}",
-        f"- Cleanup cash change: ${cleanup_metrics['accounting']['cash_change_quote']:,.2f}",
         (
-            "- Cleanup coin value change at close: "
-            f"${cleanup_metrics['accounting']['asset_value_change_quote']:,.2f}"
+            "- Restored inventory PnL: "
+            f"${cleanup_metrics['accounting']['restored_inventory_pnl_quote']:,.2f}"
         ),
         (
-            "- Cleanup coin quantity change: "
+            "- Unrestored inventory PnL: "
+            f"${cleanup_metrics['accounting']['inventory_residual_pnl_quote']:,.2f}"
+        ),
+        (
+            "- Cumulative cleanup BUY volume (turnover, not capital at once): "
+            f"${cleanup_metrics['accounting']['repurchase_spend_quote']:,.2f}"
+        ),
+        (
+            "- Cleanup BUY count / average / maximum: "
+            f"{cleanup_metrics['accounting']['repurchase_count']} / "
+            f"${cleanup_metrics['accounting']['average_repurchase_spend_quote'] or 0:,.2f} / "
+            f"${cleanup_metrics['accounting']['maximum_repurchase_spend_quote'] or 0:,.2f}"
+        ),
+        (
+            "- Net reserve deployed: "
+            f"${cleanup_metrics['accounting']['net_reserve_deployed_quote']:,.2f}"
+        ),
+        (
+            "- Inventory deficit market value at close: "
+            f"${cleanup_metrics['accounting']['inventory_deficit_market_value_quote']:,.2f}"
+        ),
+        (
+            "- Inventory deficit quantity: "
             + ", ".join(
-                f"{symbol} {quantity:+,.8f}"
+                f"{symbol} {quantity:,.8f}"
                 for symbol, quantity in cleanup_metrics["accounting"][
-                    "asset_quantity_change_by_asset"
+                    "inventory_deficit_quantity_by_asset"
                 ].items()
             )
         ),
