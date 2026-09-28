@@ -8,9 +8,11 @@ from unittest.mock import patch
 
 from backtest.spot_sweep import (
     _rank_rows,
+    _scenario_for_variant,
     load_spot_sweep_config,
     run_spot_sweep,
 )
+from backtest.spot_scenario import scenario_as_dict
 
 
 BASE_SCENARIO = """
@@ -84,6 +86,7 @@ spot_sweep:
   start: '2025-12-01T00:00:00+00:00'
   end: '2026-01-01T00:00:00+00:00'
   output_dir: output
+  replay_parallel: false
   levels_pct: {levels}
 """,
             encoding="utf-8",
@@ -99,6 +102,8 @@ spot_sweep:
         self.assertEqual(config.scenario.start.isoformat(), "2025-12-01T00:00:00+00:00")
         self.assertEqual([item.name for item in config.variants], ["2-3-5-7", "3-5-8-11"])
         self.assertEqual(config.output_dir, root / "output")
+        self.assertFalse(config.replay_parallel)
+        self.assertEqual(config.replay_max_workers, 2)
 
     def test_rejects_duplicate_or_invalid_level_combinations(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -167,6 +172,32 @@ spot_sweep:
             self.assertTrue((config.output_dir / "comparison.csv").exists())
             self.assertTrue((config.output_dir / "comparison.html").exists())
             self.assertTrue((config.output_dir / "manifest.json").exists())
+
+    def test_runner_resumes_json_serialized_scenario_with_tuple_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_spot_sweep_config(self.write_configs(root, "[[2, 3, 5, 7]]"))
+            variant = config.variants[0]
+            scenario = _scenario_for_variant(config, variant)
+            scenario.output_dir.mkdir(parents=True)
+            (scenario.output_dir / "scenario.resolved.json").write_text(
+                json.dumps({"scenario": scenario_as_dict(scenario)}),
+                encoding="utf-8",
+            )
+            (scenario.output_dir / "summary.json").write_text(
+                json.dumps(report(10.0)),
+                encoding="utf-8",
+            )
+
+            with (
+                patch("backtest.spot_sweep.BinanceSpotHistoricalAdapter.load", return_value=object()),
+                patch("backtest.spot_sweep.SpotPortfolioBacktester") as backtester,
+            ):
+                payload = run_spot_sweep(config)
+
+            backtester.assert_not_called()
+            self.assertEqual(payload["completed"], 1)
+            self.assertTrue(payload["rows"][0]["resumed"])
 
 
 if __name__ == "__main__":

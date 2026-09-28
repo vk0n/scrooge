@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 import csv
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import json
+import multiprocessing
+import os
 from pathlib import Path
 import sys
 import time
@@ -14,7 +17,7 @@ from tqdm import tqdm
 import yaml
 
 from backtest.spot_engine import SpotPortfolioBacktester
-from backtest.spot_market_data import BinanceSpotHistoricalAdapter
+from backtest.spot_market_data import BinanceSpotHistoricalAdapter, SpotHistoricalDataset
 from backtest.spot_reporting import write_spot_backtest_artifacts
 from backtest.spot_runner import SpotMarketDataProgressBars, SpotReplayProgress
 from backtest.spot_scenario import (
@@ -39,8 +42,15 @@ class SpotSweepConfig:
     output_dir: Path
     scenario: SpotBacktestScenario
     variants: tuple[SpotSweepVariant, ...]
+    market_data_workers: int = 3
+    replay_parallel: bool = True
+    replay_max_workers: int = 2
     resume: bool = True
     continue_on_error: bool = True
+
+
+_SWEEP_WORKER_CONFIG: SpotSweepConfig | None = None
+_SWEEP_WORKER_DATASET: SpotHistoricalDataset | None = None
 
 
 def _format_level(value: float) -> str:
@@ -110,6 +120,21 @@ def load_spot_sweep_config(
         seen.add(levels)
         variants.append(SpotSweepVariant(name=_variant_name(levels), levels_pct=levels))
 
+    default_replay_workers = min(
+        max(1, os.cpu_count() or 1),
+        max(1, len(variants)),
+        2,
+    )
+    raw_replay_workers = payload.get("replay_max_workers")
+    try:
+        replay_max_workers = (
+            int(raw_replay_workers)
+            if raw_replay_workers is not None
+            else default_replay_workers
+        )
+    except (TypeError, ValueError):
+        replay_max_workers = default_replay_workers
+
     return SpotSweepConfig(
         name=str(payload.get("name") or config_path.stem),
         config_path=config_path,
@@ -117,6 +142,9 @@ def load_spot_sweep_config(
         output_dir=output_dir,
         scenario=scenario,
         variants=tuple(variants),
+        market_data_workers=max(1, int(payload.get("market_data_workers", 3))),
+        replay_parallel=bool(payload.get("replay_parallel", True)),
+        replay_max_workers=max(1, replay_max_workers),
         resume=bool(payload.get("resume", True)),
         continue_on_error=bool(payload.get("continue_on_error", True)),
     )
@@ -160,7 +188,9 @@ def _resolved_scenario_matches(run_dir: Path, scenario: SpotBacktestScenario) ->
         payload = _read_json(resolved_path)
     except (OSError, ValueError, TypeError):
         return False
-    return payload.get("scenario") == scenario_as_dict(scenario)
+    stored = json.dumps(payload.get("scenario"), separators=(",", ":"), sort_keys=True)
+    expected = json.dumps(scenario_as_dict(scenario), separators=(",", ":"), sort_keys=True)
+    return stored == expected
 
 
 def _summary_row(
@@ -274,6 +304,87 @@ def _write_comparison(config: SpotSweepConfig, rows: list[dict[str, Any]]) -> di
     return payload
 
 
+def _write_sweep_state(
+    config: SpotSweepConfig,
+    manifest_path: Path,
+    rows_by_name: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    manifest = {
+        "name": config.name,
+        "config": str(config.config_path),
+        "updated_at": datetime.now(UTC).isoformat(),
+        "rows": list(rows_by_name.values()),
+    }
+    _write_json(manifest_path, manifest)
+    return _write_comparison(config, list(rows_by_name.values()))
+
+
+def _run_sweep_variant(
+    config: SpotSweepConfig,
+    variant: SpotSweepVariant,
+    dataset: SpotHistoricalDataset,
+    *,
+    progress_position: int,
+) -> dict[str, Any]:
+    scenario = _scenario_for_variant(config, variant)
+    started_at = time.monotonic()
+    progress = SpotReplayProgress(
+        asset_count=len(scenario.asset_order),
+        description=f"[{variant.name}] Replay",
+        position=progress_position,
+        leave=False,
+    )
+    try:
+        result = SpotPortfolioBacktester(scenario, dataset).run(progress=progress)
+        artifacts = write_spot_backtest_artifacts(result, scenario.output_dir)
+        return _summary_row(
+            variant=variant,
+            scenario=scenario,
+            report=artifacts["report"],
+            duration_seconds=time.monotonic() - started_at,
+            resumed=False,
+        )
+    finally:
+        if progress.bar is not None:
+            progress.bar.close()
+
+
+def _initialize_sweep_worker(progress_lock: Any | None = None) -> None:
+    if progress_lock is not None:
+        tqdm.set_lock(progress_lock)
+
+
+def _run_sweep_worker_task(
+    variant: SpotSweepVariant,
+    progress_position: int,
+) -> dict[str, Any]:
+    if _SWEEP_WORKER_CONFIG is None or _SWEEP_WORKER_DATASET is None:
+        raise RuntimeError("Spot sweep worker did not inherit the shared replay context.")
+    return _run_sweep_variant(
+        _SWEEP_WORKER_CONFIG,
+        variant,
+        _SWEEP_WORKER_DATASET,
+        progress_position=progress_position,
+    )
+
+
+def _failed_row(
+    variant: SpotSweepVariant,
+    scenario: SpotBacktestScenario,
+    exc: BaseException,
+) -> dict[str, Any]:
+    return {
+        "rank": None,
+        "name": variant.name,
+        "levels_pct": list(variant.levels_pct),
+        "status": "failed",
+        "resumed": False,
+        "duration_seconds": 0.0,
+        "output_dir": str(scenario.output_dir),
+        "error": f"{type(exc).__name__}: {exc}",
+    }
+
+
 def run_spot_sweep(
     config: SpotSweepConfig,
     *,
@@ -303,6 +414,7 @@ def run_spot_sweep(
         dataset = BinanceSpotHistoricalAdapter(config.scenario.data_cache_dir).load(
             config.scenario,
             progress=market_progress,
+            max_workers=config.market_data_workers,
         )
     finally:
         market_progress.close()
@@ -313,6 +425,7 @@ def run_spot_sweep(
         dynamic_ncols=True,
         position=0,
     )
+    pending: list[SpotSweepVariant] = []
     try:
         for variant in config.variants:
             scenario = _scenario_for_variant(config, variant)
@@ -330,59 +443,102 @@ def run_spot_sweep(
                 )
                 outer.set_postfix_str(f"{variant.name} resumed", refresh=False)
                 outer.update(1)
+                _write_sweep_state(config, manifest_path, rows_by_name)
                 continue
             if run_dir.exists() and (run_dir / "summary.json").exists() and not force:
                 raise RuntimeError(
                     f"Existing run {run_dir} was produced by a different scenario; use --force to replace it."
                 )
+            pending.append(variant)
 
-            started_at = time.monotonic()
-            progress = SpotReplayProgress(
-                asset_count=len(scenario.asset_order),
-                description=f"[{variant.name}] Replay",
-                position=1,
-                leave=False,
+        parallel_enabled = config.replay_parallel and len(pending) > 1
+        max_workers = max(1, min(config.replay_max_workers, len(pending)))
+        if parallel_enabled and "fork" not in multiprocessing.get_all_start_methods():
+            print(
+                "Spot replay parallelism requires the fork start method; falling back to one worker.",
+                file=sys.stderr,
+                flush=True,
             )
+            parallel_enabled = False
+
+        if parallel_enabled:
+            print(
+                f"Replaying {len(pending)} Spot variants with {max_workers} workers...",
+                file=sys.stderr,
+                flush=True,
+            )
+            fork_context = multiprocessing.get_context("fork")
+            progress_lock = fork_context.RLock()
+            tqdm.set_lock(progress_lock)
+            global _SWEEP_WORKER_CONFIG, _SWEEP_WORKER_DATASET
+            _SWEEP_WORKER_CONFIG = config
+            _SWEEP_WORKER_DATASET = dataset
+            futures: dict[Future[dict[str, Any]], tuple[SpotSweepVariant, int]] = {}
+            variant_iterator = iter(pending)
             try:
-                result = SpotPortfolioBacktester(scenario, dataset).run(progress=progress)
-                artifacts = write_spot_backtest_artifacts(result, run_dir)
-                elapsed = time.monotonic() - started_at
-                rows_by_name[variant.name] = _summary_row(
-                    variant=variant,
-                    scenario=scenario,
-                    report=artifacts["report"],
-                    duration_seconds=elapsed,
-                    resumed=False,
-                )
-                outer.set_postfix_str(
-                    f"{variant.name} edge={rows_by_name[variant.name]['edge_vs_hodl_pct_points']:+.2f}pp",
-                    refresh=False,
-                )
-            except Exception as exc:
-                rows_by_name[variant.name] = {
-                    "rank": None,
-                    "name": variant.name,
-                    "levels_pct": list(variant.levels_pct),
-                    "status": "failed",
-                    "resumed": False,
-                    "duration_seconds": time.monotonic() - started_at,
-                    "output_dir": str(run_dir),
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-                if not config.continue_on_error:
-                    raise
+                with ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    mp_context=fork_context,
+                    initializer=_initialize_sweep_worker,
+                    initargs=(progress_lock,),
+                ) as executor:
+                    for slot in range(max_workers):
+                        variant = next(variant_iterator, None)
+                        if variant is None:
+                            break
+                        future = executor.submit(_run_sweep_worker_task, variant, slot + 1)
+                        futures[future] = (variant, slot)
+
+                    while futures:
+                        completed_future = next(as_completed(tuple(futures)))
+                        variant, slot = futures.pop(completed_future)
+                        scenario = _scenario_for_variant(config, variant)
+                        try:
+                            rows_by_name[variant.name] = completed_future.result()
+                            outer.set_postfix_str(
+                                f"{variant.name} edge={rows_by_name[variant.name]['edge_vs_hodl_pct_points']:+.2f}pp",
+                                refresh=False,
+                            )
+                        except Exception as exc:
+                            rows_by_name[variant.name] = _failed_row(variant, scenario, exc)
+                            if not config.continue_on_error:
+                                raise
+                        finally:
+                            outer.update(1)
+                            _write_sweep_state(config, manifest_path, rows_by_name)
+
+                        next_variant = next(variant_iterator, None)
+                        if next_variant is not None:
+                            future = executor.submit(
+                                _run_sweep_worker_task,
+                                next_variant,
+                                slot + 1,
+                            )
+                            futures[future] = (next_variant, slot)
             finally:
-                if progress.bar is not None:
-                    progress.bar.close()
-                outer.update(1)
-                manifest = {
-                    "name": config.name,
-                    "config": str(config.config_path),
-                    "updated_at": datetime.now(UTC).isoformat(),
-                    "rows": list(rows_by_name.values()),
-                }
-                _write_json(manifest_path, manifest)
-                _write_comparison(config, list(rows_by_name.values()))
+                _SWEEP_WORKER_CONFIG = None
+                _SWEEP_WORKER_DATASET = None
+        else:
+            for variant in pending:
+                scenario = _scenario_for_variant(config, variant)
+                try:
+                    rows_by_name[variant.name] = _run_sweep_variant(
+                        config,
+                        variant,
+                        dataset,
+                        progress_position=1,
+                    )
+                    outer.set_postfix_str(
+                        f"{variant.name} edge={rows_by_name[variant.name]['edge_vs_hodl_pct_points']:+.2f}pp",
+                        refresh=False,
+                    )
+                except Exception as exc:
+                    rows_by_name[variant.name] = _failed_row(variant, scenario, exc)
+                    if not config.continue_on_error:
+                        raise
+                finally:
+                    outer.update(1)
+                    _write_sweep_state(config, manifest_path, rows_by_name)
     finally:
         outer.close()
     return _write_comparison(config, list(rows_by_name.values()))

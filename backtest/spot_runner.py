@@ -4,6 +4,7 @@ import argparse
 from datetime import UTC, datetime
 from pathlib import Path
 import sys
+from threading import RLock
 
 from tqdm import tqdm
 
@@ -19,52 +20,59 @@ class SpotMarketDataProgressBars:
         self.position = position
         self.stream = stream
         self.asset_bar: tqdm | None = None
-        self.phase_bar: tqdm | None = None
-        self.current_symbol = ""
+        self.phase_bars: dict[str, tqdm] = {}
+        self.asset_positions: dict[str, int] = {}
+        self.lock = RLock()
 
     def start_asset(self, symbol: str, *, index: int, total: int) -> None:
-        if self.asset_bar is None:
-            self.asset_bar = tqdm(
+        with self.lock:
+            if self.asset_bar is None:
+                self.asset_bar = tqdm(
+                    total=total,
+                    desc="Market Data",
+                    unit="asset",
+                    dynamic_ncols=True,
+                    position=self.position,
+                    leave=True,
+                    file=self.stream,
+                )
+            self.asset_positions[symbol] = index
+            self.asset_bar.set_postfix_str(f"started {index}/{total} {symbol}", refresh=True)
+
+    def start_phase(self, symbol: str, label: str, *, total: int | None = None) -> None:
+        with self.lock:
+            existing = self.phase_bars.pop(symbol, None)
+            if existing is not None:
+                existing.close()
+            self.phase_bars[symbol] = tqdm(
                 total=total,
-                desc="Market Data",
-                unit="asset",
+                desc=f"[{symbol}] {label}",
+                unit="row",
+                unit_scale=True,
                 dynamic_ncols=True,
-                position=self.position,
-                leave=True,
+                mininterval=0.25,
+                position=self.position + self.asset_positions.get(symbol, 1),
+                leave=False,
                 file=self.stream,
             )
-        self.current_symbol = symbol
-        self.asset_bar.set_postfix_str(f"{index}/{total} {symbol}", refresh=True)
 
-    def start_phase(self, label: str, *, total: int | None = None) -> None:
-        if self.phase_bar is not None:
-            self.phase_bar.close()
-        self.phase_bar = tqdm(
-            total=total,
-            desc=f"[{self.current_symbol}] {label}",
-            unit="row",
-            unit_scale=True,
-            dynamic_ncols=True,
-            mininterval=0.25,
-            position=self.position + 1,
-            leave=False,
-            file=self.stream,
-        )
+    def advance(self, symbol: str, amount: int = 1) -> None:
+        with self.lock:
+            phase_bar = self.phase_bars.get(symbol)
+            if phase_bar is not None and amount > 0:
+                phase_bar.update(amount)
 
-    def advance(self, amount: int = 1) -> None:
-        if self.phase_bar is not None and amount > 0:
-            self.phase_bar.update(amount)
-
-    def complete_asset(self, *, source: str, rows: int) -> None:
-        if self.phase_bar is not None:
-            self.phase_bar.close()
-            self.phase_bar = None
-        if self.asset_bar is not None:
-            self.asset_bar.update(1)
-            self.asset_bar.set_postfix_str(
-                f"{self.current_symbol} {source} {self._compact_count(rows)} rows",
-                refresh=True,
-            )
+    def complete_asset(self, symbol: str, *, source: str, rows: int) -> None:
+        with self.lock:
+            phase_bar = self.phase_bars.pop(symbol, None)
+            if phase_bar is not None:
+                phase_bar.close()
+            if self.asset_bar is not None:
+                self.asset_bar.update(1)
+                self.asset_bar.set_postfix_str(
+                    f"{symbol} {source} {self._compact_count(rows)} rows",
+                    refresh=True,
+                )
 
     @staticmethod
     def _compact_count(value: int) -> str:
@@ -75,12 +83,13 @@ class SpotMarketDataProgressBars:
         return str(value)
 
     def close(self) -> None:
-        if self.phase_bar is not None:
-            self.phase_bar.close()
-            self.phase_bar = None
-        if self.asset_bar is not None:
-            self.asset_bar.close()
-            self.asset_bar = None
+        with self.lock:
+            for phase_bar in self.phase_bars.values():
+                phase_bar.close()
+            self.phase_bars.clear()
+            if self.asset_bar is not None:
+                self.asset_bar.close()
+                self.asset_bar = None
 
 
 class SpotReplayProgress:
@@ -156,6 +165,12 @@ def _parser() -> argparse.ArgumentParser:
         "--levels-pct",
         help="Override rolling 24H signal thresholds as comma-separated percentages, e.g. 5,8,12,18.",
     )
+    parser.add_argument(
+        "--market-data-workers",
+        type=int,
+        default=1,
+        help="Load independent asset histories concurrently (default: 1).",
+    )
     parser.add_argument("--export-current", metavar="PATH", help="Export current Treasury into a reviewable scenario.")
     parser.add_argument("--name", default="current-treasury-counterfactual", help="Exported scenario name.")
     return parser
@@ -211,7 +226,11 @@ def main(argv: list[str] | None = None) -> int:
     print("Loading Spot market data...", file=sys.stderr, flush=True)
     market_progress = SpotMarketDataProgressBars()
     try:
-        dataset = adapter.load(scenario, progress=market_progress)
+        dataset = adapter.load(
+            scenario,
+            progress=market_progress,
+            max_workers=max(1, args.market_data_workers),
+        )
     finally:
         market_progress.close()
     print("Replaying Spot strategy...", file=sys.stderr, flush=True)

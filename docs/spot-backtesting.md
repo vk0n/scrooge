@@ -99,6 +99,12 @@ Use the dedicated sweep runner instead of shell loops. A sweep YAML references o
 the tested `levels_pct` combinations. Market data is loaded once and shared by every replay, while each variant gets
 its own complete artifact directory. The runner updates `manifest.json` after every variant and writes a ranked
 `comparison.json`, `comparison.csv`, and `comparison.html`, ordered by Edge vs HODL.
+Independent asset histories are loaded concurrently using `market_data_workers` (three by default); this parallelizes
+cache parsing and Binance REST pagination without duplicating the full dataset across replay processes.
+Independent sweep variants run in separate processes when `replay_parallel` is enabled. `replay_max_workers`
+defaults to at most two, matching the Futures comparison runner; large grids can raise it explicitly (the three-year
+treasury-level sweep uses 12). A single replay remains sequential because all assets share reserve and execution
+ordering. On Linux, `fork` lets the workers reuse the already-loaded candle dataset.
 
 ```bash
 ./scrooge-env/bin/python -m backtest.spot_sweep \

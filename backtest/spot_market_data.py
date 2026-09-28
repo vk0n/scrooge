@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
+from threading import local
 import time
 import urllib.error
 import urllib.parse
@@ -36,13 +38,13 @@ class SpotMarketDataProgress(Protocol):
     def start_asset(self, symbol: str, *, index: int, total: int) -> None:
         ...
 
-    def start_phase(self, label: str, *, total: int | None = None) -> None:
+    def start_phase(self, symbol: str, label: str, *, total: int | None = None) -> None:
         ...
 
-    def advance(self, amount: int = 1) -> None:
+    def advance(self, symbol: str, amount: int = 1) -> None:
         ...
 
-    def complete_asset(self, *, source: str, rows: int) -> None:
+    def complete_asset(self, symbol: str, *, source: str, rows: int) -> None:
         ...
 
 
@@ -99,74 +101,129 @@ class BinanceSpotHistoricalAdapter:
         self.base_url = str(base_url).rstrip("/")
         self.timeout_seconds = float(timeout_seconds)
         self._progress: SpotMarketDataProgress | None = None
+        self._progress_context = local()
 
     def load(
         self,
         scenario: SpotBacktestScenario,
         *,
         progress: SpotMarketDataProgress | None = None,
+        max_workers: int = 1,
     ) -> SpotHistoricalDataset:
         self._progress = progress
         interval_ms = interval_milliseconds(scenario.interval)
         warmup_start = scenario.start - timedelta(
             milliseconds=interval_ms * scenario.warmup_candles
         )
-        candles: dict[str, tuple[SpotCandle, ...]] = {}
-        symbol_info: dict[str, dict[str, Any]] = {}
-        unavailable_open_times: dict[str, frozenset[int]] = {}
-        source_parts: list[str] = []
-        for index, asset in enumerate(scenario.assets, start=1):
-            if self._progress is not None:
-                self._progress.start_asset(
-                    asset.market_symbol,
-                    index=index,
-                    total=len(scenario.assets),
-                )
-            if asset.history_segments:
-                rows, source, unavailable = self._load_stitched_candles(
-                    asset,
-                    interval=scenario.interval,
-                    start=warmup_start,
-                    end=scenario.end,
-                )
-                unavailable_open_times[asset.symbol] = frozenset(unavailable)
+        worker_count = max(1, min(int(max_workers), len(scenario.assets)))
+        try:
+            if worker_count == 1:
+                loaded_assets = [
+                    self._load_asset(
+                        asset,
+                        index=index,
+                        total=len(scenario.assets),
+                        interval=scenario.interval,
+                        interval_ms=interval_ms,
+                        start=warmup_start,
+                        end=scenario.end,
+                    )
+                    for index, asset in enumerate(scenario.assets, start=1)
+                ]
             else:
-                rows, source = self.load_candles(
-                    asset.market_symbol,
-                    interval=scenario.interval,
-                    start=warmup_start,
-                    end=scenario.end,
-                )
-            self._start_progress_phase(f"Validating {asset.market_symbol}", total=len(rows))
-            self._validate_candles(rows, interval_ms=interval_ms, symbol=asset.market_symbol)
-            candles[asset.symbol] = tuple(rows)
-            self._start_progress_phase(f"Loading {asset.market_symbol} rules", total=1)
-            symbol_info[asset.symbol] = asset.symbol_info or self.load_symbol_info(asset.market_symbol)
-            self._advance_progress(1)
-            source_parts.append(source)
-            if self._progress is not None:
-                self._progress.complete_asset(source=source, rows=len(rows))
-        self._progress = None
+                with ThreadPoolExecutor(
+                    max_workers=worker_count,
+                    thread_name_prefix="spot-market-data",
+                ) as executor:
+                    futures = [
+                        executor.submit(
+                            self._load_asset,
+                            asset,
+                            index=index,
+                            total=len(scenario.assets),
+                            interval=scenario.interval,
+                            interval_ms=interval_ms,
+                            start=warmup_start,
+                            end=scenario.end,
+                        )
+                        for index, asset in enumerate(scenario.assets, start=1)
+                    ]
+                    loaded_assets = [future.result() for future in futures]
+        finally:
+            self._progress = None
+
         return SpotHistoricalDataset(
-            candles=candles,
-            symbol_info=symbol_info,
+            candles={item["symbol"]: item["candles"] for item in loaded_assets},
+            symbol_info={item["symbol"]: item["symbol_info"] for item in loaded_assets},
             interval=scenario.interval,
             interval_ms=interval_ms,
             source=(
                 "cache"
-                if all(item == "cache" for item in source_parts)
+                if all(item["source"] == "cache" for item in loaded_assets)
                 else "binance_spot_rest"
             ),
-            unavailable_open_times=unavailable_open_times,
+            unavailable_open_times={
+                item["symbol"]: item["unavailable"]
+                for item in loaded_assets
+                if item["unavailable"]
+            },
         )
+
+    def _load_asset(
+        self,
+        asset: SpotBacktestAsset,
+        *,
+        index: int,
+        total: int,
+        interval: str,
+        interval_ms: int,
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, Any]:
+        progress_symbol = asset.market_symbol
+        self._progress_context.symbol = progress_symbol
+        if self._progress is not None:
+            self._progress.start_asset(progress_symbol, index=index, total=total)
+        if asset.history_segments:
+            rows, source, unavailable = self._load_stitched_candles(
+                asset,
+                interval=interval,
+                start=start,
+                end=end,
+            )
+        else:
+            rows, source = self.load_candles(
+                asset.market_symbol,
+                interval=interval,
+                start=start,
+                end=end,
+            )
+            unavailable = set()
+        self._start_progress_phase(f"Validating {asset.market_symbol}", total=len(rows))
+        self._validate_candles(rows, interval_ms=interval_ms, symbol=asset.market_symbol)
+        self._start_progress_phase(f"Loading {asset.market_symbol} rules", total=1)
+        symbol_info = asset.symbol_info or self.load_symbol_info(asset.market_symbol)
+        self._advance_progress(1)
+        if self._progress is not None:
+            self._progress.complete_asset(progress_symbol, source=source, rows=len(rows))
+        return {
+            "symbol": asset.symbol,
+            "candles": tuple(rows),
+            "symbol_info": symbol_info,
+            "source": source,
+            "unavailable": frozenset(unavailable),
+        }
 
     def _start_progress_phase(self, label: str, *, total: int | None = None) -> None:
         if self._progress is not None:
-            self._progress.start_phase(label, total=total)
+            self._progress.start_phase(self._progress_symbol(), label, total=total)
 
     def _advance_progress(self, amount: int = 1) -> None:
         if self._progress is not None and amount > 0:
-            self._progress.advance(amount)
+            self._progress.advance(self._progress_symbol(), amount)
+
+    def _progress_symbol(self) -> str:
+        return str(getattr(self._progress_context, "symbol", "Spot"))
 
     def _load_stitched_candles(
         self,
