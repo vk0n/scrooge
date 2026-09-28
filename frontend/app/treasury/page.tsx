@@ -298,6 +298,8 @@ type AssetLedgerPayload = {
   asset_symbol: string;
   quote_symbol: string;
   filter: AssetLedgerFilter;
+  sort: BargainLedgerSort;
+  direction: BargainLedgerDirection;
   entries: AssetLedgerEntry[];
   entry_count: number;
   entry_limit: number;
@@ -1696,6 +1698,51 @@ function SwingLedgerRow({
   );
 }
 
+function LedgerSortControls({
+  sortBy,
+  sortDirection,
+  onSortChange,
+  onDirectionToggle,
+  ariaLabel,
+}: {
+  sortBy: BargainLedgerSort;
+  sortDirection: BargainLedgerDirection;
+  onSortChange: (sort: BargainLedgerSort) => void;
+  onDirectionToggle: () => void;
+  ariaLabel: string;
+}): JSX.Element {
+  return (
+    <div className="treasury-bargain-sort">
+      <span>Sort by</span>
+      <div className="treasury-bargain-sort-options" aria-label={`${ariaLabel} sort field`}>
+        {(["date", "pnl"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={sortBy === value ? "treasury-bargain-sort-active" : undefined}
+            aria-pressed={sortBy === value}
+            onClick={() => onSortChange(value)}
+          >
+            {value === "pnl" ? "PnL" : "Date"}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="treasury-bargain-sort-direction"
+        aria-label={`Sort ${sortDirection === "desc" ? "ascending" : "descending"}`}
+        onClick={onDirectionToggle}
+      >
+        {sortDirection === "desc" ? "Desc" : "Asc"}
+        <span
+          className={`treasury-bargain-sort-arrow treasury-bargain-sort-arrow-${sortDirection}`}
+          aria-hidden="true"
+        />
+      </button>
+    </div>
+  );
+}
+
 function PortfolioBargainLedger({
   refreshKey,
   onBargainClosed,
@@ -1781,31 +1828,13 @@ function PortfolioBargainLedger({
             </button>
           ))}
         </div>
-        <div className="treasury-bargain-sort">
-          <span>Sort by</span>
-          <div className="treasury-bargain-sort-options" aria-label="Bargains Ledger sort field">
-            {(["date", "pnl"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={sortBy === value ? "treasury-bargain-sort-active" : undefined}
-                aria-pressed={sortBy === value}
-                onClick={() => changeSort(value)}
-              >
-                {value === "pnl" ? "PnL" : "Date"}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            className="treasury-bargain-sort-direction"
-            aria-label={`Sort ${sortDirection === "desc" ? "ascending" : "descending"}`}
-            onClick={toggleSortDirection}
-          >
-            {sortDirection === "desc" ? "Desc" : "Asc"}
-            <span className={`treasury-bargain-sort-arrow treasury-bargain-sort-arrow-${sortDirection}`} aria-hidden="true" />
-          </button>
-        </div>
+        <LedgerSortControls
+          sortBy={sortBy}
+          sortDirection={sortDirection}
+          onSortChange={changeSort}
+          onDirectionToggle={toggleSortDirection}
+          ariaLabel="Bargains Ledger"
+        />
       </div>
       {loading && !ledger ? <p className="status-performance-note">Opening the Bargains Ledger...</p> : null}
       {error ? <p className="form-error">{error}</p> : null}
@@ -1879,6 +1908,8 @@ function AssetLedger({
 }): JSX.Element {
   const [ledger, setLedger] = useState<AssetLedgerPayload | null>(null);
   const [filter, setFilter] = useState<AssetLedgerFilter>("all");
+  const [sortBy, setSortBy] = useState<BargainLedgerSort>("date");
+  const [sortDirection, setSortDirection] = useState<BargainLedgerDirection>("desc");
   const [loading, setLoading] = useState<boolean>(true);
   const [updatingTransactionId, setUpdatingTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1891,7 +1922,10 @@ function AssetLedger({
       const payload = await fetchApi<AssetLedgerPayload>(
         `/api/portfolio/assets/${encodeURIComponent(holding.asset_symbol)}/ledger` +
         `?quote_symbol=${encodeURIComponent(holding.quote_symbol)}` +
-        `&filter=${encodeURIComponent(filter)}&entry_offset=${offset}`
+        `&filter=${encodeURIComponent(filter)}` +
+        `&sort=${encodeURIComponent(sortBy)}` +
+        `&direction=${encodeURIComponent(sortDirection)}` +
+        `&entry_offset=${offset}`
       );
       setLedger(payload);
     } catch (loadError) {
@@ -1899,7 +1933,7 @@ function AssetLedger({
     } finally {
       setLoading(false);
     }
-  }, [filter, holding.asset_symbol, holding.quote_symbol]);
+  }, [filter, holding.asset_symbol, holding.quote_symbol, sortBy, sortDirection]);
 
   useEffect(() => {
     if (expanded) void loadEntries(0);
@@ -1907,7 +1941,21 @@ function AssetLedger({
 
   function changeFilter(nextFilter: AssetLedgerFilter): void {
     if (nextFilter === filter) return;
+    setLoading(true);
     setFilter(nextFilter);
+    setLedger(null);
+  }
+
+  function changeSort(nextSort: BargainLedgerSort): void {
+    if (nextSort === sortBy) return;
+    setLoading(true);
+    setSortBy(nextSort);
+    setLedger(null);
+  }
+
+  function toggleSortDirection(): void {
+    setLoading(true);
+    setSortDirection((current) => current === "desc" ? "asc" : "desc");
     setLedger(null);
   }
 
@@ -1959,18 +2007,27 @@ function AssetLedger({
         </button>
       </header>
       {expanded && !holding.is_dry_powder ? (
-        <div className="treasury-ledger-filter" aria-label="Asset Ledger filter">
-          {(["all", "open", "closed"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              className={filter === value ? "treasury-ledger-filter-active" : undefined}
-              aria-pressed={filter === value}
-              onClick={() => changeFilter(value)}
-            >
-              {value[0].toUpperCase() + value.slice(1)}
-            </button>
-          ))}
+        <div className="treasury-bargain-ledger-controls treasury-asset-ledger-controls">
+          <div className="treasury-ledger-filter" aria-label="Asset Ledger filter">
+            {(["all", "open", "closed"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={filter === value ? "treasury-ledger-filter-active" : undefined}
+                aria-pressed={filter === value}
+                onClick={() => changeFilter(value)}
+              >
+                {value[0].toUpperCase() + value.slice(1)}
+              </button>
+            ))}
+          </div>
+          <LedgerSortControls
+            sortBy={sortBy}
+            sortDirection={sortDirection}
+            onSortChange={changeSort}
+            onDirectionToggle={toggleSortDirection}
+            ariaLabel="Asset Ledger"
+          />
         </div>
       ) : null}
       {expanded && loading && !ledger ? <p className="status-performance-note">Opening the ledger...</p> : null}
@@ -2229,7 +2286,7 @@ function HoldingCard({
               ) : (
                 <>
                   <strong className={signedToneClass(holding.total_gain, "treasury-inline-value")}>
-                    {formatSignedCurrency(holding.total_gain)} · {formatPercent(holding.total_gain_pct)}
+                    {formatSignedCurrency(holding.total_gain)} · {formatSignedPercent(holding.total_gain_pct)}
                   </strong>
                   <small className="treasury-gain-breakdown">
                     <span>

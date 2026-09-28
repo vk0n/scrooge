@@ -942,15 +942,40 @@ def load_portfolio_asset_ledger(
     quote_symbol: str = DEFAULT_QUOTE,
     entry_filter: str = "all",
     entry_offset: int = 0,
+    sort_by: str = "date",
+    sort_direction: str = "desc",
 ) -> dict[str, Any]:
     normalized_asset = _clean_symbol(asset_symbol)
     normalized_quote = _clean_symbol(quote_symbol, default=DEFAULT_QUOTE) or DEFAULT_QUOTE
     normalized_filter = str(entry_filter or "all").strip().lower()
     normalized_offset = max(0, int(entry_offset))
+    normalized_sort = str(sort_by or "date").strip().lower()
+    normalized_direction = str(sort_direction or "desc").strip().lower()
     if not normalized_asset:
         raise ValueError("Asset symbol is required.")
     if normalized_filter not in ASSET_LEDGER_FILTERS:
         raise ValueError("Asset Ledger filter must be all, open, or closed.")
+    if normalized_sort not in BARGAIN_LEDGER_SORTS:
+        raise ValueError("Asset Ledger sort must be date or pnl.")
+    if normalized_direction not in BARGAIN_LEDGER_DIRECTIONS:
+        raise ValueError("Asset Ledger direction must be asc or desc.")
+
+    def sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
+        occurred_at_ms = int(item["occurred_at_ms"])
+        if normalized_sort == "pnl":
+            if item["entry_type"] == "swing":
+                economics = item["swing"]["economics"]
+                pnl = (
+                    economics["realized_pnl_quote"]
+                    if economics["status"] == "closed"
+                    else economics["unrealized_pnl_quote"]
+                )
+            elif item["entry_type"] == "cash":
+                pnl = item["cash_event"]["amount_quote"]
+            else:
+                pnl = item.get("free_cash_delta")
+            return float(pnl or 0.0), occurred_at_ms, str(item["entry_id"])
+        return float(occurred_at_ms), occurred_at_ms, str(item["entry_id"])
 
     entries: list[dict[str, Any]] = []
     if normalized_asset in STABLE_ASSETS:
@@ -1021,15 +1046,14 @@ def load_portfolio_asset_ledger(
                 }
             )
 
-        entries.sort(
-            key=lambda item: (int(item["occurred_at_ms"]), str(item["entry_id"])),
-            reverse=True,
-        )
+        entries.sort(key=sort_key, reverse=normalized_direction == "desc")
         paged_entries = entries[normalized_offset:normalized_offset + ASSET_LEDGER_PAGE_SIZE]
         return {
             "asset_symbol": normalized_asset,
             "quote_symbol": normalized_quote,
             "filter": "all",
+            "sort": normalized_sort,
+            "direction": normalized_direction,
             "entries": paged_entries,
             "entry_count": len(entries),
             "entry_limit": ASSET_LEDGER_PAGE_SIZE,
@@ -1095,15 +1119,14 @@ def load_portfolio_asset_ledger(
             }
         )
 
-    entries.sort(
-        key=lambda item: (int(item["occurred_at_ms"]), str(item["entry_id"])),
-        reverse=True,
-    )
+    entries.sort(key=sort_key, reverse=normalized_direction == "desc")
     paged_entries = entries[normalized_offset:normalized_offset + ASSET_LEDGER_PAGE_SIZE]
     return {
         "asset_symbol": normalized_asset,
         "quote_symbol": normalized_quote,
         "filter": normalized_filter,
+        "sort": normalized_sort,
+        "direction": normalized_direction,
         "entries": paged_entries,
         "entry_count": len(entries),
         "entry_limit": ASSET_LEDGER_PAGE_SIZE,

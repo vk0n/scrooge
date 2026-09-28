@@ -711,11 +711,32 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         closed_swing = ledger["entries"][1]["swing"]
         self.assertEqual(closed_swing["economics"]["realized_pnl_quote"], 20)
         self.assertEqual(len(closed_swing["executions"]), 2)
+        self.assertEqual(ledger["sort"], "date")
+        self.assertEqual(ledger["direction"], "desc")
 
         open_ledger = portfolio_service.load_portfolio_asset_ledger("BTC", entry_filter="open")
         closed_ledger = portfolio_service.load_portfolio_asset_ledger("BTC", entry_filter="closed")
         self.assertEqual([entry["swing"]["swing_id"] for entry in open_ledger["entries"]], ["open-swing"])
         self.assertEqual([entry["swing"]["swing_id"] for entry in closed_ledger["entries"]], ["closed-swing"])
+
+        pnl_ascending = portfolio_service.load_portfolio_asset_ledger(
+            "BTC",
+            sort_by="pnl",
+            sort_direction="asc",
+        )
+        self.assertEqual(pnl_ascending["sort"], "pnl")
+        self.assertEqual(pnl_ascending["direction"], "asc")
+        self.assertEqual(
+            [entry["entry_type"] for entry in pnl_ascending["entries"]],
+            ["transaction", "swing", "swing"],
+        )
+        self.assertEqual(pnl_ascending["entries"][1]["swing"]["swing_id"], "open-swing")
+        self.assertEqual(pnl_ascending["entries"][2]["swing"]["swing_id"], "closed-swing")
+
+        with self.assertRaisesRegex(ValueError, "sort must be date or pnl"):
+            portfolio_service.load_portfolio_asset_ledger("BTC", sort_by="profit")
+        with self.assertRaisesRegex(ValueError, "direction must be asc or desc"):
+            portfolio_service.load_portfolio_asset_ledger("BTC", sort_direction="sideways")
 
     def test_asset_ledger_is_filtered_and_paginated(self):
         btc_ids = [self.add("BTC", 1, 90)["transaction_id"] for _ in range(7)]
