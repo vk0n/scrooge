@@ -60,7 +60,7 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
                 self.assertEqual(campaign["campaign_capacity_quantity"], capacity)
                 self.assertEqual(campaign["campaign_capacity_mode"], mode)
 
-    def test_fixed_level_allocations_ignore_conviction(self):
+    def test_fixed_level_allocations_follow_signal_tranches(self):
         campaign = initialize_sell_campaign_capacity(
             {"active_side": "sell", "campaign_id": "sell-fixed"},
             {
@@ -71,19 +71,16 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         )
         expected = {1: 20, 2: 40, 3: 60, 4: 80}
         for level, quantity in expected.items():
-            for tier, modifier in (("weak", 0.5), ("very_strong", 1.5)):
-                with self.subTest(level=level, tier=tier):
-                    plan = plan_opening_quantity(
-                        {
-                            "opportunity": "sell",
-                            "base_tranche_pct": level * 10,
-                            "sizing_modifier": modifier,
-                            "indicator_assessment": {"tier": tier},
-                        },
-                        {"immediately_sellable_quantity": 400},
-                        campaign,
-                    )
-                    self.assertEqual(plan["quantity"], quantity)
+            with self.subTest(level=level):
+                plan = plan_opening_quantity(
+                    {
+                        "opportunity": "sell",
+                        "base_tranche_pct": level * 10,
+                    },
+                    {"immediately_sellable_quantity": 400},
+                    campaign,
+                )
+                self.assertEqual(plan["quantity"], quantity)
 
     def test_active_campaign_snapshot_does_not_resize_after_target_change(self):
         started = initialize_sell_campaign_capacity(
@@ -756,7 +753,6 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             "reference_price": 4.5,
             "rolling_change_pct": 11.1,
             "base_tranche_pct": tranche,
-            "sizing_modifier": 1,
             "final_tranche_pct": tranche,
             "evaluated_at_ms": 1_800_000_000_000,
         }

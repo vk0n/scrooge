@@ -171,7 +171,6 @@ def _notable_swing(swing: dict[str, Any]) -> dict[str, Any]:
         "objective": swing.get("trading_objective"),
         "origin_side": swing.get("origin_side"),
         "signal_level": reason.get("signal_level"),
-        "signal_tier": (reason.get("indicator_assessment") or {}).get("tier"),
         "age_days": _number(swing.get("age_seconds")) / 86400.0,
         "pnl_quote": _lifecycle_pnl(swing),
         "return_pct": _return_pct(swing),
@@ -218,26 +217,6 @@ def build_bargain_analysis(swings: list[dict[str, Any]]) -> dict[str, Any]:
                     f"Level {(swing.get('strategy_reason') or {}).get('signal_level') or 'Unknown'}",
                 ),
                 ordered_keys=("level_1", "level_2", "level_3", "level_4", "level_unknown"),
-            ),
-            "conviction": _grouped_metrics(
-                swings,
-                lambda swing: (
-                    str(
-                        ((swing.get("strategy_reason") or {}).get("indicator_assessment") or {}).get(
-                            "tier"
-                        )
-                        or "unknown"
-                    ),
-                    str(
-                        ((swing.get("strategy_reason") or {}).get("indicator_assessment") or {}).get(
-                            "tier"
-                        )
-                        or "unknown"
-                    )
-                    .replace("_", " ")
-                    .title(),
-                ),
-                ordered_keys=("very_strong", "strong", "neutral", "weak", "unknown"),
             ),
             "duration": _grouped_metrics(
                 swings,

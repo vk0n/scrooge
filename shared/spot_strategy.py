@@ -10,7 +10,6 @@ from shared.spot_progression import (
     plan_profitable_close,
     plan_treasury_accumulation,
 )
-from shared.spot_sizing import IndicatorSizingConfig, apply_indicator_sizing
 from shared.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics
 from shared.spot_waiter_cleanup import (
     WaiterCleanupConfig,
@@ -90,30 +89,26 @@ def transition_spot_strategy_campaign(
 
 def finalize_spot_strategy_signal(
     signal: dict[str, Any],
-    indicator_context: dict[str, Any] | None,
     policy: dict[str, Any],
     *,
     execution_enabled: bool,
-    sizing_config: IndicatorSizingConfig | None = None,
-    indicator_error: str | None = None,
 ) -> dict[str, Any]:
-    """Apply the production sizing and policy gate to an economic Spot signal."""
-    sized = apply_indicator_sizing(
-        signal,
-        indicator_context,
-        config=sizing_config,
-        indicator_error=indicator_error,
-    )
+    """Apply the production policy gate to a fixed-allocation Spot signal."""
     eligible, eligibility_reason = spot_policy_eligibility(
         policy,
         execution_enabled=execution_enabled,
     )
     return {
-        **sized,
+        **signal,
+        "final_tranche_pct": (
+            float(signal.get("base_tranche_pct") or 0.0)
+            if signal.get("opportunity") != "hold"
+            else 0.0
+        ),
         "trading_objective": policy.get("trading_objective"),
         "strategy_eligible": eligible,
         "eligibility_reason": eligibility_reason,
-        "evaluated_at_ms": int(sized["current_at_ms"]),
+        "evaluated_at_ms": int(signal["current_at_ms"]),
     }
 
 
@@ -144,7 +139,12 @@ def plan_spot_strategy_action(
         executions = item.get("executions") if isinstance(item.get("executions"), list) else []
         if swing.get("source") != "strategy" or swing.get("status") not in {"open", "partially_closed"}:
             continue
-        economics = calculate_swing_economics(swing, executions, current_price=current_price)
+        supplied_economics = item.get("economics") if isinstance(item, dict) else None
+        economics = (
+            supplied_economics
+            if isinstance(supplied_economics, dict)
+            else calculate_swing_economics(swing, executions, current_price=current_price)
+        )
         active_swings.append((swing, economics))
         if str(swing.get("swing_id") or "") in excluded_closes:
             continue
@@ -236,10 +236,7 @@ def plan_spot_strategy_action(
                         "rolling_change_pct": signal.get("rolling_change_pct"),
                         "base_tranche_pct": signal.get("base_tranche_pct"),
                         "accumulation_tranche_pct": signal.get("accumulation_tranche_pct"),
-                        "sizing_modifier": signal.get("sizing_modifier"),
                         "final_tranche_pct": signal.get("final_tranche_pct"),
-                        "indicator_assessment": signal.get("indicator_assessment"),
-                        "indicator_context": signal.get("indicator_context"),
                         "campaign_id": campaign.get("campaign_id"),
                         "free_reserve_quote": accumulation.get("free_reserve_quote"),
                         "planned_quote_to_spend": accumulation.get("quote_to_spend"),
@@ -267,10 +264,7 @@ def plan_spot_strategy_action(
                         "signal_level": level,
                         "rolling_change_pct": signal.get("rolling_change_pct"),
                         "base_tranche_pct": signal.get("base_tranche_pct"),
-                        "sizing_modifier": signal.get("sizing_modifier"),
                         "final_tranche_pct": signal.get("base_tranche_pct"),
-                        "indicator_assessment": signal.get("indicator_assessment"),
-                        "indicator_context": signal.get("indicator_context"),
                         "campaign_id": campaign.get("campaign_id"),
                         "campaign_start_target_quantity": campaign_snapshot.get("campaign_start_target_quantity"),
                         "campaign_start_minimum_holding_pct": campaign_snapshot.get("campaign_start_minimum_holding_pct"),

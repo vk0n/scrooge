@@ -34,7 +34,6 @@ from shared.spot_execution_rules import (
     validate_sell_opening_round_trip,
 )
 from shared.spot_signal import SpotSignalConfig, evaluate_rolling_24h_opportunity
-from shared.spot_sizing import IndicatorSizingConfig
 from shared.spot_strategy import plan_spot_strategy_action
 
 
@@ -100,7 +99,6 @@ def scenario(
             force_close_at_end=False,
         ),
         signal=SpotSignalConfig(),
-        sizing=IndicatorSizingConfig(),
         progression=ProgressiveSwingConfig(
             close_profit_pct=5,
             estimated_fee_rate=fee_rate,
@@ -528,7 +526,6 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             "evaluated_at_ms": candle.close_time_ms,
             "base_tranche_pct": 10,
             "final_tranche_pct": 10,
-            "sizing_modifier": 1,
         }
         campaign = initialize_sell_campaign_capacity(
             {"campaign_id": "sell-campaign", "active_side": "sell", "highest_completed_level": 0},
@@ -584,10 +581,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
                 "trading_objective": "accumulate_cash",
                 "quote_symbol": "USDT",
                 "age_seconds": 48 * 3600,
-                "strategy_reason": {
-                    "signal_level": 2,
-                    "indicator_assessment": {"tier": "strong"},
-                },
+                "strategy_reason": {"signal_level": 2},
                 "executions": [{}, {}],
                 "economics": {
                     "opening_quote_quantity": 100,
@@ -604,10 +598,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
                 "trading_objective": "accumulate_asset",
                 "quote_symbol": "USDT",
                 "age_seconds": 10 * 86400,
-                "strategy_reason": {
-                    "signal_level": 1,
-                    "indicator_assessment": {"tier": "neutral"},
-                },
+                "strategy_reason": {"signal_level": 1},
                 "executions": [{}],
                 "economics": {
                     "opening_quote_quantity": 50,
@@ -694,6 +685,47 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
                 end_ms=int(end.timestamp() * 1000),
             )
 
+    def test_covering_candle_cache_is_reused_without_network(self):
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        start_ms = int(start.timestamp() * 1000)
+
+        def candle(index: int) -> SpotCandle:
+            open_ms = start_ms + index * HOUR_MS
+            return SpotCandle(
+                open_time_ms=open_ms,
+                close_time_ms=open_ms + HOUR_MS - 1,
+                open=100 + index,
+                high=101 + index,
+                low=99 + index,
+                close=100 + index,
+                volume=10,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = BinanceSpotHistoricalAdapter(tmp)
+            cache_path = (
+                Path(tmp)
+                / "klines"
+                / f"AAAUSDT-1h-{start_ms}-{start_ms + 5 * HOUR_MS}.csv"
+            )
+            cache_path.parent.mkdir(parents=True)
+            adapter._write_candles(cache_path, [candle(index) for index in range(5)])
+
+            with patch.object(adapter, "_download_candles") as download:
+                rows, source = adapter.load_candles(
+                    "AAAUSDT",
+                    interval="1h",
+                    start=start + timedelta(hours=1),
+                    end=start + timedelta(hours=4),
+                )
+
+        self.assertEqual(source, "cache")
+        self.assertEqual(
+            [row.open_time_ms for row in rows],
+            [candle(index).open_time_ms for index in range(1, 4)],
+        )
+        download.assert_not_called()
+
     def test_future_candle_extremes_do_not_change_decisions(self):
         config = scenario((asset("AAA"),))
         prices = lambda _symbol, index: 111 if 0 <= index < 3 else 100
@@ -729,12 +761,12 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(actual["level"], expected["level"])
         self.assertEqual(actual["base_tranche_pct"], expected["base_tranche_pct"])
 
-    def test_minute_replay_builds_indicator_context_from_closed_hourly_candles(self):
+    def test_minute_replay_uses_fixed_signal_allocation_without_indicators(self):
         base = scenario((asset("AAA"),), hours=1)
         config = replace(
             base,
             interval="1m",
-            warmup_candles=3600,
+            warmup_candles=1440,
             end=base.start + timedelta(minutes=2),
         )
         first_open = config.start - timedelta(minutes=config.warmup_candles)
@@ -764,9 +796,10 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
 
         signal = replay._signal_for("AAA", replay._replay_rows()["AAA"][0])
 
-        self.assertEqual(signal["indicator_context"]["interval"], "1h")
-        self.assertEqual(signal["indicator_context"]["candle_count"], 60)
-        self.assertLess(signal["indicator_context"]["latest_closed_at_ms"], config.start.timestamp() * 1000)
+        self.assertEqual(signal["opportunity"], "sell")
+        self.assertEqual(signal["final_tranche_pct"], signal["base_tranche_pct"])
+        self.assertNotIn("indicator_context", signal)
+        self.assertNotIn("sizing_modifier", signal)
 
     def test_buy_signal_does_not_open_buy_origin_bargains(self):
         config = scenario(
@@ -1242,7 +1275,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertTrue(template.waiter_cleanup.enabled)
         self.assertEqual(template.progression.close_profit_pct, 3)
         self.assertEqual(template.interval, "1m")
-        self.assertEqual(template.warmup_candles, 3600)
+        self.assertEqual(template.warmup_candles, 1440)
 
         snapshot = {
             "holdings": [
@@ -1290,7 +1323,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(exported.assets[0].cold_storage_quantity, 250)
         self.assertEqual(exported.progression.close_profit_pct, 3)
         self.assertEqual(exported.interval, "1m")
-        self.assertEqual(exported.warmup_candles, 3600)
+        self.assertEqual(exported.warmup_candles, 1440)
         self.assertEqual(exported.metadata["export_warnings"][0], "review me")
         self.assertIn("Excluded USDC", exported.metadata["export_warnings"][1])
 

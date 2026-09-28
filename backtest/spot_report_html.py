@@ -185,9 +185,6 @@ def _report_payload(
             "fees": economics.get("fees_by_asset") or {},
             "signalLevel": strategy_reason.get("signal_level"),
             "rollingChangePct": strategy_reason.get("rolling_change_pct"),
-            "sizingModifier": strategy_reason.get("sizing_modifier"),
-            "signalTier": (strategy_reason.get("indicator_assessment") or {}).get("tier"),
-            "indicatorContext": strategy_reason.get("indicator_context") or {},
             "returnPct": (
                 (
                     _number(economics.get("realized_pnl_quote"))
@@ -655,10 +652,6 @@ _HTML = r'''<!doctype html>
             <div class="analysis-panel-head"><div><strong>By Signal Level</strong><br><span>Attribution preserved for L1 through L4.</span></div></div>
             <div class="cleanup-reasons" id="accumulationLevels"></div>
           </section>
-          <section class="analysis-panel">
-            <div class="analysis-panel-head"><div><strong>By Conviction</strong><br><span>Observational telemetry only; indicators do not change execution size.</span></div></div>
-            <div class="cleanup-reasons" id="accumulationConviction"></div>
-          </section>
         </div>
       </article>
 
@@ -864,7 +857,6 @@ _HTML = r'''<!doctype html>
     const accumulationRows=(rows,labeler)=>Object.entries(rows||{}).map(([key,item])=>`<div class="cleanup-reason"><strong>${labeler(key)}</strong><span>${item.count} buys / ${qty(item.net_asset_acquired)} units</span><strong>${money(item.usdt_deployed)}</strong></div>`).join("")||`<div class="ledger-empty">No Treasury accumulation purchases.</div>`;
     document.getElementById("accumulationAssets").innerHTML=accumulationRows(accumulation.per_asset,key=>key);
     document.getElementById("accumulationLevels").innerHTML=accumulationRows(accumulation.per_level,key=>`Level ${key}`);
-    document.getElementById("accumulationConviction").innerHTML=accumulationRows(accumulation.per_conviction,key=>key.replaceAll("_"," ").replace(/\b\w/g,letter=>letter.toUpperCase()));
 
     const sellCampaigns=data.sellCampaigns||{};
     document.getElementById("sellCampaignCount").textContent=`${sellCampaigns.count||0} CAMPAIGNS`;
@@ -902,7 +894,7 @@ _HTML = r'''<!doctype html>
       ["Open Risk",money(analysis.risk.underwater_open_pnl_quote),`${analysis.risk.underwater_open_count} underwater`,"negative"],
     ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
 
-    const dimensions={asset:"Asset",objective:"Objective",origin:"Origin",signal_level:"Signal Level",conviction:"Conviction",duration:"Duration"};
+    const dimensions={asset:"Asset",objective:"Objective",origin:"Origin",signal_level:"Signal Level",duration:"Duration"};
     const analysisTabs=document.getElementById("analysisTabs");
     let activeDimension="asset";
     analysisTabs.innerHTML=Object.entries(dimensions).map(([key,label])=>`<button type="button" class="analysis-tab ${key===activeDimension?"active":""}" data-dimension="${key}">${label}</button>`).join("");

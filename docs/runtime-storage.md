@@ -139,21 +139,11 @@ toggle. The asset objective, spendable reserve, current exchange balance, and ex
   each terminal fill. A non-terminal, retryable, or uncertain order stops the batch instead of risking duplicate
   spending.
 
-## Spot Indicator Sizing Boundaries
+## Spot Signal Boundaries
 
-- Indicators are evaluated only after rolling 24-hour movement has produced `BUY` or `SELL`. `HOLD` does not fetch
-  indicator candles and always keeps a zero final tranche.
-- Spot uses its own strictly closed-candle context instead of coupling to Futures execution: RSI 11, EMA 50,
-  Bollinger 20/2, and ATR 14 on Binance Spot candles configured by `SCROOGE_SPOT_INDICATOR_INTERVAL` (`1h` by default).
-- RSI, Bollinger, EMA, and ATR are retained as observational research telemetry. They cannot create or reverse an
-  opportunity and no longer change execution quantity.
-- Initial sizing tiers are weak `0.5x`, neutral `1.0x`, strong `1.25x`, and very strong `1.5x`; the ordered modifiers
-  are configurable with `SCROOGE_SPOT_INDICATOR_SIZING_MODIFIERS`.
-- Three confirmations without conflicts are very strong; at least two are strong; conflicting evidence that dominates
-  confirmations is weak; remaining mixed or partial context is neutral.
-- Missing indicator data still records the legacy weak tier while preserving the rolling signal. Context,
-  confirmations, conflicts, tier, and legacy modifier remain in the persisted signal snapshot for research only;
-  `final_tranche_pct` equals the fixed level allocation.
+- Treasury signals use only Binance's rolling 24-hour price change and fixed level allocations.
+- `HOLD` keeps a zero final tranche; actionable `BUY` and `SELL` signals use the allocation assigned to their level.
+- Technical indicators belong to the Futures strategy and are neither fetched nor evaluated by Treasury.
 
 ## Progressive Spot Swing Execution
 

@@ -213,6 +213,25 @@ class BinanceSpotHistoricalAdapter:
         cache_path = self.cache_dir / "klines" / (
             f"{symbol.upper()}-{interval}-{start_ms}-{end_ms}.csv"
         )
+        covering_cache = self._covering_cache_path(
+            symbol,
+            interval=interval,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+        if not cache_path.exists() and covering_cache is not None:
+            rows = [
+                row
+                for row in self._read_candles(covering_cache)
+                if start_ms <= row.open_time_ms < end_ms
+            ]
+            interval_ms = interval_milliseconds(interval)
+            if (
+                rows
+                and rows[0].open_time_ms == start_ms
+                and rows[-1].open_time_ms == end_ms - interval_ms
+            ):
+                return rows, "cache"
         if cache_path.exists():
             rows = self._read_candles(cache_path)
             interval_ms = interval_milliseconds(interval)
@@ -259,6 +278,31 @@ class BinanceSpotHistoricalAdapter:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._write_candles(cache_path, rows)
         return rows, "binance_spot_rest"
+
+    def _covering_cache_path(
+        self,
+        symbol: str,
+        *,
+        interval: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> Path | None:
+        directory = self.cache_dir / "klines"
+        prefix = f"{symbol.upper()}-{interval}-"
+        candidates: list[tuple[int, Path]] = []
+        for path in directory.glob(f"{prefix}*.csv"):
+            bounds = path.stem[len(prefix):].split("-", 1)
+            if len(bounds) != 2:
+                continue
+            try:
+                cached_start, cached_end = (int(value) for value in bounds)
+            except ValueError:
+                continue
+            if cached_start <= start_ms and cached_end >= end_ms:
+                candidates.append((cached_end - cached_start, path))
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: item[0])[1]
 
     def load_symbol_info(self, symbol: str) -> dict[str, Any]:
         normalized = symbol.upper()

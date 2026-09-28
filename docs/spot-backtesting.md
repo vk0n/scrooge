@@ -7,7 +7,7 @@ Phase H replays the production Spot strategy over an isolated historical Treasur
 Live and research both call the same implementations for:
 
 - rolling 24-hour opportunity levels in `shared/spot_signal.py`
-- indicator telemetry and HOLD invariants in `shared/spot_sizing.py`
+- fixed signal-level allocations and HOLD invariants in `shared/spot_signal.py`
 - policy eligibility and action selection in `shared/spot_strategy.py`
 - progressive opening and profitable close economics in `shared/spot_progression.py`
 - Bargain accounting and Target ratchet proposals in `shared/spot_swing.py`
@@ -21,7 +21,7 @@ The replay replaces only the market source, clock, executor, state store, and re
 - Cache: deterministic CSV files under `data/spot_backtest/klines`; current exchange filters are cached as JSON.
 - Timezone: all scenario and candle timestamps are UTC.
 - Default interval: one minute, matching the live signal poll cadence.
-- Warm-up: at least 60 hours (`3600` candles at `1m`) before the requested start. Warm-up cannot generate signals,
+- Warm-up: at least 24 hours (`1440` candles at `1m`) before the requested start. Warm-up cannot generate signals,
   orders, Bargains, or balance changes.
 - Decision: candle N closes, then Scrooge evaluates only data whose close timestamp is at or before candle N close.
 - Fill: every action that remains eligible is executed sequentially at candle N close, adjusted by configured slippage
@@ -30,6 +30,8 @@ The replay replaces only the market source, clock, executor, state store, and re
 - Rolling reference: the candle close exactly 24 hours before candle N close.
 - Missing candles: the run fails. There is no interpolation or forward fill.
 - End of run: open Bargains remain open and are marked to market unless the analysis-only `force_close_at_end` flag is enabled.
+- Reporting: decisions still run on every `1m` candle. Equity and inventory are sampled hourly plus the exact final state,
+  signal-level observation counts are aggregated exactly, and `signals.csv` records signal-state transitions.
 
 This is a strategy backtest, not a Binance order-book or market-impact simulation. Current cached Binance symbol filters are used because historical filter versions are not generally available.
 
@@ -130,9 +132,8 @@ The generated page embeds its sampled chart data and has no CDN, API, or fronten
 
 ## Known V1 Limits
 
-- Live signals poll Binance's rolling ticker every minute by default; exported replay scenarios now evaluate `1m`
-  candle closes and use the close exactly 24 hours earlier. Replay indicator telemetry is independently aggregated into
-  strictly closed `1h` candles, matching live RSI/EMA/Bollinger inputs.
+- Live signals poll Binance's rolling ticker every minute by default; exported replay scenarios evaluate `1m` candle
+  closes and use the close exactly 24 hours earlier. Treasury does not fetch or evaluate technical indicators.
 - Live orders face the real order book, latency, and changing exchange balances. Replay approximates immediate market
   execution at the observed candle close plus configured slippage, with the same sequential action ordering and
   state refresh after each fill.

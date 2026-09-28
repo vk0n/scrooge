@@ -201,12 +201,10 @@ def _accumulation_metrics(
         ),
         "per_asset": grouped("asset_symbol"),
         "per_level": grouped("signal_level"),
-        "per_conviction": grouped("conviction"),
     }
 
 
 def _level_metrics(result: SpotBacktestResult, symbol: str) -> dict[str, Any]:
-    signals = [item for item in result.signals if item["asset_symbol"] == symbol]
     actions = [
         item
         for item in result.actions
@@ -224,7 +222,7 @@ def _level_metrics(result: SpotBacktestResult, symbol: str) -> dict[str, Any]:
                 pnl += float(economics.get("realized_pnl_quote") or 0.0)
                 pnl += float(economics.get("unrealized_pnl_quote") or 0.0)
         output[f"level_{level}"] = {
-            "signals": sum(1 for item in signals if int(item["level"]) == level),
+            "signals": int(result.signal_level_counts.get(symbol, {}).get(level, 0)),
             "swing_opens": len(level_actions),
             "executed_quantity": sum(float(item.get("executed_quantity") or 0.0) for item in level_actions),
             "executed_notional": sum(float(item.get("executed_value") or 0.0) for item in level_actions),
@@ -301,47 +299,6 @@ def _campaign_metrics(result: SpotBacktestResult) -> dict[str, Any]:
             for item in campaigns
         ],
     }
-
-
-def _modifier_metrics(result: SpotBacktestResult) -> dict[str, Any]:
-    output: dict[str, dict[str, float | int]] = {}
-    swing_map = {item["swing_id"]: item for item in result.swings}
-    for signal in result.signals:
-        if signal["opportunity"] == "hold":
-            continue
-        key = f"{float(signal['sizing_modifier']):g}x"
-        output.setdefault(
-            key,
-            {
-                "applications": 0,
-                "requested_trade_value": 0.0,
-                "executed_trade_value": 0.0,
-                "closed_swing_result_quote": 0.0,
-            },
-        )["applications"] += 1
-    for action in result.actions:
-        modifier = action.get("sizing_modifier")
-        if modifier is None:
-            continue
-        key = f"{float(modifier):g}x"
-        bucket = output.setdefault(
-            key,
-            {
-                "applications": 0,
-                "requested_trade_value": 0.0,
-                "executed_trade_value": 0.0,
-                "closed_swing_result_quote": 0.0,
-            },
-        )
-        bucket["requested_trade_value"] += float(action.get("requested_value") or 0)
-        bucket["executed_trade_value"] += float(action.get("executed_value") or 0)
-        if action["action_type"] == "open":
-            swing = swing_map.get(action["swing_id"])
-            if swing is not None and swing["status"] == "closed":
-                bucket["closed_swing_result_quote"] += float(
-                    swing["economics"].get("realized_pnl_quote") or 0
-                )
-    return output
 
 
 def _inventory_metrics(result: SpotBacktestResult, symbol: str) -> dict[str, Any]:
@@ -1068,7 +1025,6 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 "open_buy_capital_tied_quote",
             ),
         },
-        "indicator_modifiers": _modifier_metrics(result),
         "per_asset": per_asset,
         "rejected_orders": len(result.rejections),
     }

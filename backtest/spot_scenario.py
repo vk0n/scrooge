@@ -9,7 +9,6 @@ import yaml
 
 from shared.spot_progression import ProgressiveSwingConfig
 from shared.spot_signal import SpotSignalConfig
-from shared.spot_sizing import IndicatorSizingConfig
 from shared.spot_waiter_cleanup import WaiterCleanupConfig, waiter_cleanup_config_from_mapping
 
 
@@ -28,14 +27,14 @@ INTERVAL_SECONDS = {
     "12h": 43200,
     "1d": 86400,
 }
-INDICATOR_WARMUP_SECONDS = 60 * 60 * 60
+ROLLING_SIGNAL_WARMUP_SECONDS = 24 * 60 * 60
 
 
 def _minimum_warmup_candles(interval: str) -> int:
     interval_seconds = INTERVAL_SECONDS.get(interval)
     if interval_seconds is None:
         raise ValueError(f"Unsupported Spot backtest interval: {interval}")
-    return max(60, (INDICATOR_WARMUP_SECONDS + interval_seconds - 1) // interval_seconds)
+    return max(1, (ROLLING_SIGNAL_WARMUP_SECONDS + interval_seconds - 1) // interval_seconds)
 
 
 def _utc_datetime(value: Any, *, field_name: str) -> datetime:
@@ -109,7 +108,6 @@ class SpotBacktestScenario:
     assets: tuple[SpotBacktestAsset, ...]
     execution: SpotBacktestExecutionConfig
     signal: SpotSignalConfig
-    sizing: IndicatorSizingConfig
     progression: ProgressiveSwingConfig
     data_cache_dir: Path
     output_dir: Path
@@ -269,11 +267,6 @@ def load_spot_backtest_scenario(
         if isinstance(strategy.get("signal"), dict)
         else payload.get("signal") if isinstance(payload.get("signal"), dict) else {}
     )
-    sizing_payload = (
-        strategy.get("indicator_sizing")
-        if isinstance(strategy.get("indicator_sizing"), dict)
-        else payload.get("sizing") if isinstance(payload.get("sizing"), dict) else {}
-    )
     progression_payload = (
         strategy.get("progression")
         if isinstance(strategy.get("progression"), dict)
@@ -328,14 +321,6 @@ def load_spot_backtest_scenario(
                 else None
             ),
         ),
-        sizing=IndicatorSizingConfig(
-            weak_modifier=float(sizing_payload.get("weak_modifier", 0.5)),
-            neutral_modifier=float(sizing_payload.get("neutral_modifier", 1.0)),
-            strong_modifier=float(sizing_payload.get("strong_modifier", 1.25)),
-            very_strong_modifier=float(sizing_payload.get("very_strong_modifier", 1.5)),
-            rsi_oversold=float(sizing_payload.get("rsi_oversold", 30)),
-            rsi_overbought=float(sizing_payload.get("rsi_overbought", 70)),
-        ),
         progression=ProgressiveSwingConfig(
             close_profit_pct=(
                 float(progression_payload.get("close_profit_pct", 3))
@@ -373,7 +358,6 @@ def scenario_as_dict(scenario: SpotBacktestScenario) -> dict[str, Any]:
     payload["output_dir"] = str(scenario.output_dir)
     payload["strategy"] = {
         "signal": payload.pop("signal"),
-        "indicator_sizing": payload.pop("sizing"),
         "progression": payload.pop("progression"),
         "waiter_cleanup": payload.pop("waiter_cleanup"),
     }
@@ -466,7 +450,7 @@ def export_current_treasury_scenario(
             "start": _utc_datetime(start, field_name="start").isoformat(),
             "end": _utc_datetime(end, field_name="end").isoformat(),
             "interval": "1m",
-            "warmup_candles": 3600,
+            "warmup_candles": 1440,
             "starting_usdt": starting_usdt,
             "assets": assets,
             "execution": {"fee_rate": 0.001, "slippage_bps": 0, "force_close_at_end": False},
@@ -475,12 +459,6 @@ def export_current_treasury_scenario(
                     "levels_pct": [5, 8, 12, 18],
                     "base_tranches_pct": [10, 20, 30, 40],
                     "accumulation_tranches_pct": [1, 3, 5, 10],
-                },
-                "indicator_sizing": {
-                    "weak_modifier": 0.5,
-                    "neutral_modifier": 1.0,
-                    "strong_modifier": 1.25,
-                    "very_strong_modifier": 1.5,
                 },
                 "progression": {
                     "close_profit_pct": 3,
