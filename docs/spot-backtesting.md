@@ -93,6 +93,22 @@ One-year preset:
   --preset 1y --end 2026-09-23
 ```
 
+## Parameter Sweeps
+
+Use the dedicated sweep runner instead of shell loops. A sweep YAML references one base Spot scenario and declares
+the tested `levels_pct` combinations. Market data is loaded once and shared by every replay, while each variant gets
+its own complete artifact directory. The runner updates `manifest.json` after every variant and writes a ranked
+`comparison.json`, `comparison.csv`, and `comparison.html`, ordered by Edge vs HODL.
+
+```bash
+./scrooge-env/bin/python -m backtest.spot_sweep \
+  --config runtime/spot_backtests/sweeps/treasury-levels-3y.yaml
+```
+
+Completed matching variants are resumed automatically. Use `--dry-run` to validate and list the matrix without
+loading candles, or `--force` to deliberately rerun completed variants. A run directory produced by a different
+resolved scenario is never silently reused.
+
 ## Artifacts
 
 Each run writes:

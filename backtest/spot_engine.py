@@ -195,36 +195,52 @@ class SpotPortfolioBacktester:
         self.realized_swing_pnl = 0.0
         self.start_ms = int(scenario.start.timestamp() * 1000)
         self.end_ms = int(scenario.end.timestamp() * 1000)
+        self._replay_start_indices: dict[str, int] = {}
         self._validate_dataset()
-        self._candle_by_close = {
-            symbol: {row.close_time_ms: row for row in rows}
-            for symbol, rows in self.dataset.candles.items()
-        }
 
     def run(
         self,
         *,
         progress: Callable[[int, int], None] | None = None,
     ) -> SpotBacktestResult:
-        replay_rows = self._replay_rows()
-        initial_prices = {symbol: rows[0].open for symbol, rows in replay_rows.items()}
+        replay_count = (self.end_ms - self.start_ms) // self.dataset.interval_ms
+        rolling_offset = ROLLING_WINDOW_MS // self.dataset.interval_ms
+        rows_by_symbol = self.dataset.candles
+        initial_prices = {
+            symbol: rows_by_symbol[symbol][self._replay_start_indices[symbol]].open
+            for symbol in self.scenario.asset_order
+        }
         for symbol, state in self.assets.items():
             state.rebase_cost_basis(initial_prices[symbol])
-        final_prices = {symbol: rows[-1].close for symbol, rows in replay_rows.items()}
+        final_prices = {
+            symbol: rows_by_symbol[symbol][
+                self._replay_start_indices[symbol] + replay_count - 1
+            ].close
+            for symbol in self.scenario.asset_order
+        }
         starting_value = self.usdt + sum(
             self.assets[symbol].quantity * initial_prices[symbol]
             for symbol in self.scenario.asset_order
         )
         equity = [self._equity_point(self.start_ms, initial_prices, starting_value)]
 
-        step_count = len(next(iter(replay_rows.values())))
+        step_count = replay_count
         if progress is not None:
             progress(0, step_count)
         for step in range(step_count):
             self._economics_cache.clear()
-            candles = {symbol: replay_rows[symbol][step] for symbol in self.scenario.asset_order}
+            candles = {
+                symbol: rows_by_symbol[symbol][self._replay_start_indices[symbol] + step]
+                for symbol in self.scenario.asset_order
+            }
+            references = {
+                symbol: rows_by_symbol[symbol][
+                    self._replay_start_indices[symbol] + step - rolling_offset
+                ]
+                for symbol in self.scenario.asset_order
+            }
             prices = {symbol: candle.close for symbol, candle in candles.items()}
-            self._evaluate_cycle(candles)
+            self._evaluate_cycle(candles, references=references)
             timestamp_ms = candles[self.scenario.asset_order[0]].close_time_ms
             if (timestamp_ms + 1) % HOUR_MS == 0 or step + 1 == step_count:
                 equity.append(self._equity_point(timestamp_ms, prices, starting_value))
@@ -275,47 +291,59 @@ class SpotPortfolioBacktester:
         if duration_ms % self.dataset.interval_ms != 0:
             raise ValueError("Spot backtest start and end must align to complete candle intervals.")
         expected_replay_count = duration_ms // self.dataset.interval_ms
+        if ROLLING_WINDOW_MS % self.dataset.interval_ms != 0:
+            raise ValueError("Spot backtest interval must divide the rolling 24-hour signal window.")
+        rolling_offset = ROLLING_WINDOW_MS // self.dataset.interval_ms
         for symbol in expected:
             rows = self.dataset.candles[symbol]
-            warmup = [row for row in rows if row.close_time_ms < self.start_ms]
-            replay = [row for row in rows if row.open_time_ms >= self.start_ms and row.close_time_ms <= self.end_ms]
-            if len(warmup) < self.scenario.warmup_candles:
+            if not rows:
+                raise ValueError(f"{symbol} has no historical candles.")
+            offset_ms = self.start_ms - rows[0].open_time_ms
+            if offset_ms < 0 or offset_ms % self.dataset.interval_ms != 0:
+                raise ValueError(f"{symbol} candles are not aligned with the replay start.")
+            replay_start = offset_ms // self.dataset.interval_ms
+            replay_end = replay_start + expected_replay_count
+            required_warmup = max(self.scenario.warmup_candles, rolling_offset)
+            if replay_start < required_warmup:
                 raise ValueError(
-                    f"{symbol} has {len(warmup)} warm-up candles; {self.scenario.warmup_candles} are required."
+                    f"{symbol} has {replay_start} warm-up candles; {required_warmup} are required."
                 )
-            if len(replay) < 2:
+            if expected_replay_count < 2:
                 raise ValueError(f"{symbol} requires at least two replay candles.")
             if (
-                len(replay) != expected_replay_count
-                or replay[0].open_time_ms != self.start_ms
-                or replay[-1].open_time_ms != self.end_ms - self.dataset.interval_ms
+                replay_end > len(rows)
+                or rows[replay_start].open_time_ms != self.start_ms
+                or rows[replay_end - 1].open_time_ms != self.end_ms - self.dataset.interval_ms
             ):
                 raise ValueError(
                     f"{symbol} does not cover the complete requested replay range."
                 )
+            self._replay_start_indices[symbol] = replay_start
 
     def _replay_rows(self) -> dict[str, list[SpotCandle]]:
-        output = {
-            symbol: [
-                row
-                for row in self.dataset.candles[symbol]
-                if row.open_time_ms >= self.start_ms and row.close_time_ms <= self.end_ms
-            ]
+        replay_count = (self.end_ms - self.start_ms) // self.dataset.interval_ms
+        return {
+            symbol: list(
+                self.dataset.candles[symbol][
+                    self._replay_start_indices[symbol] :
+                    self._replay_start_indices[symbol] + replay_count
+                ]
+            )
             for symbol in self.scenario.asset_order
         }
-        reference_times = [row.open_time_ms for row in output[self.scenario.asset_order[0]]]
-        for symbol, rows in output.items():
-            if [row.open_time_ms for row in rows] != reference_times:
-                raise ValueError(f"{symbol} replay candles are not aligned with the portfolio timeline.")
-        return output
 
-    def _evaluate_cycle(self, candles: dict[str, SpotCandle]) -> None:
+    def _evaluate_cycle(
+        self,
+        candles: dict[str, SpotCandle],
+        *,
+        references: dict[str, SpotCandle],
+    ) -> None:
         contexts: list[tuple[str, SpotCandle, dict[str, Any], dict[str, Any]]] = []
         for symbol in self.scenario.asset_order:
             candle = candles[symbol]
             if not self._is_market_available(symbol, candle.open_time_ms):
                 continue
-            signal = self._signal_for(symbol, candle)
+            signal = self._signal_for(symbol, candle, reference=references[symbol])
             if signal is None:
                 continue
             level = int(signal["level"])
@@ -649,11 +677,22 @@ class SpotPortfolioBacktester:
     def _is_market_available(self, symbol: str, open_time_ms: int) -> bool:
         return open_time_ms not in self.dataset.unavailable_open_times.get(symbol, frozenset())
 
-    def _signal_for(self, symbol: str, candle: SpotCandle) -> dict[str, Any] | None:
-        desired_reference_ms = candle.close_time_ms - ROLLING_WINDOW_MS
-        reference = self._candle_by_close[symbol].get(desired_reference_ms)
+    def _signal_for(
+        self,
+        symbol: str,
+        candle: SpotCandle,
+        *,
+        reference: SpotCandle | None = None,
+    ) -> dict[str, Any] | None:
         if reference is None:
-            return None
+            rows = self.dataset.candles[symbol]
+            offset_ms = candle.open_time_ms - rows[0].open_time_ms
+            if offset_ms < ROLLING_WINDOW_MS or offset_ms % self.dataset.interval_ms != 0:
+                return None
+            reference_index = (
+                offset_ms - ROLLING_WINDOW_MS
+            ) // self.dataset.interval_ms
+            reference = rows[reference_index]
         signal = evaluate_rolling_24h_opportunity(
             current_price=candle.close,
             reference_price=reference.close,

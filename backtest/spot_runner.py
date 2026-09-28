@@ -14,9 +14,20 @@ from backtest.spot_scenario import export_current_treasury_scenario, load_spot_b
 from shared.spot_signal import parse_percentage_series
 
 
-class _ReplayProgress:
-    def __init__(self, *, asset_count: int, stream: object = sys.stderr) -> None:
+class SpotReplayProgress:
+    def __init__(
+        self,
+        *,
+        asset_count: int,
+        description: str = "Spot Replay",
+        position: int | None = None,
+        leave: bool = True,
+        stream: object = sys.stderr,
+    ) -> None:
         self.asset_count = asset_count
+        self.description = description
+        self.position = position
+        self.leave = leave
         self.stream = stream
         self.bar: tqdm | None = None
         self.completed = 0
@@ -31,14 +42,19 @@ class _ReplayProgress:
 
     def __call__(self, completed: int, total: int) -> None:
         if self.bar is None:
+            kwargs: dict[str, object] = {
+                "total": total,
+                "desc": self.description,
+                "unit": "cycle",
+                "dynamic_ncols": True,
+                "mininterval": 0.25,
+                "leave": self.leave,
+                "file": self.stream,
+            }
+            if self.position is not None:
+                kwargs["position"] = self.position
             self.bar = tqdm(
-                total=total,
-                desc="Spot Replay",
-                unit="cycle",
-                dynamic_ncols=True,
-                mininterval=0.25,
-                leave=True,
-                file=self.stream,
+                **kwargs,
             )
         delta = max(0, completed - self.completed)
         if delta:
@@ -126,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Loading Spot market data...", file=sys.stderr, flush=True)
     dataset = adapter.load(scenario)
     print("Replaying Spot strategy...", file=sys.stderr, flush=True)
-    progress = _ReplayProgress(asset_count=len(scenario.asset_order))
+    progress = SpotReplayProgress(asset_count=len(scenario.asset_order))
     result = SpotPortfolioBacktester(scenario, dataset).run(progress=progress)
     print("Writing Spot research artifacts...", file=sys.stderr, flush=True)
     artifacts = write_spot_backtest_artifacts(result, output_dir)
