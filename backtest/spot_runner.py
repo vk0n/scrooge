@@ -14,6 +14,75 @@ from backtest.spot_scenario import export_current_treasury_scenario, load_spot_b
 from shared.spot_signal import parse_percentage_series
 
 
+class SpotMarketDataProgressBars:
+    def __init__(self, *, position: int = 0, stream: object = sys.stderr) -> None:
+        self.position = position
+        self.stream = stream
+        self.asset_bar: tqdm | None = None
+        self.phase_bar: tqdm | None = None
+        self.current_symbol = ""
+
+    def start_asset(self, symbol: str, *, index: int, total: int) -> None:
+        if self.asset_bar is None:
+            self.asset_bar = tqdm(
+                total=total,
+                desc="Market Data",
+                unit="asset",
+                dynamic_ncols=True,
+                position=self.position,
+                leave=True,
+                file=self.stream,
+            )
+        self.current_symbol = symbol
+        self.asset_bar.set_postfix_str(f"{index}/{total} {symbol}", refresh=True)
+
+    def start_phase(self, label: str, *, total: int | None = None) -> None:
+        if self.phase_bar is not None:
+            self.phase_bar.close()
+        self.phase_bar = tqdm(
+            total=total,
+            desc=f"[{self.current_symbol}] {label}",
+            unit="row",
+            unit_scale=True,
+            dynamic_ncols=True,
+            mininterval=0.25,
+            position=self.position + 1,
+            leave=False,
+            file=self.stream,
+        )
+
+    def advance(self, amount: int = 1) -> None:
+        if self.phase_bar is not None and amount > 0:
+            self.phase_bar.update(amount)
+
+    def complete_asset(self, *, source: str, rows: int) -> None:
+        if self.phase_bar is not None:
+            self.phase_bar.close()
+            self.phase_bar = None
+        if self.asset_bar is not None:
+            self.asset_bar.update(1)
+            self.asset_bar.set_postfix_str(
+                f"{self.current_symbol} {source} {self._compact_count(rows)} rows",
+                refresh=True,
+            )
+
+    @staticmethod
+    def _compact_count(value: int) -> str:
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.2f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}K"
+        return str(value)
+
+    def close(self) -> None:
+        if self.phase_bar is not None:
+            self.phase_bar.close()
+            self.phase_bar = None
+        if self.asset_bar is not None:
+            self.asset_bar.close()
+            self.asset_bar = None
+
+
 class SpotReplayProgress:
     def __init__(
         self,
@@ -140,7 +209,11 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = _resolve_output(scenario.output_dir)
     adapter = BinanceSpotHistoricalAdapter(scenario.data_cache_dir)
     print("Loading Spot market data...", file=sys.stderr, flush=True)
-    dataset = adapter.load(scenario)
+    market_progress = SpotMarketDataProgressBars()
+    try:
+        dataset = adapter.load(scenario, progress=market_progress)
+    finally:
+        market_progress.close()
     print("Replaying Spot strategy...", file=sys.stderr, flush=True)
     progress = SpotReplayProgress(asset_count=len(scenario.asset_order))
     result = SpotPortfolioBacktester(scenario, dataset).run(progress=progress)

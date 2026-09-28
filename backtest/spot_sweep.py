@@ -16,7 +16,7 @@ import yaml
 from backtest.spot_engine import SpotPortfolioBacktester
 from backtest.spot_market_data import BinanceSpotHistoricalAdapter
 from backtest.spot_reporting import write_spot_backtest_artifacts
-from backtest.spot_runner import SpotReplayProgress
+from backtest.spot_runner import SpotMarketDataProgressBars, SpotReplayProgress
 from backtest.spot_scenario import (
     SpotBacktestScenario,
     load_spot_backtest_scenario,
@@ -298,7 +298,14 @@ def run_spot_sweep(
     }
 
     print("Loading shared Spot market data...", file=sys.stderr, flush=True)
-    dataset = BinanceSpotHistoricalAdapter(config.scenario.data_cache_dir).load(config.scenario)
+    market_progress = SpotMarketDataProgressBars()
+    try:
+        dataset = BinanceSpotHistoricalAdapter(config.scenario.data_cache_dir).load(
+            config.scenario,
+            progress=market_progress,
+        )
+    finally:
+        market_progress.close()
     outer = tqdm(
         total=len(config.variants),
         desc="Spot Sweep",

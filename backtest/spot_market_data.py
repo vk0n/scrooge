@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Protocol
 
 from backtest.spot_scenario import SpotBacktestAsset, SpotBacktestScenario
 
@@ -30,6 +30,20 @@ INTERVAL_SECONDS = {
     "12h": 43200,
     "1d": 86400,
 }
+
+
+class SpotMarketDataProgress(Protocol):
+    def start_asset(self, symbol: str, *, index: int, total: int) -> None:
+        ...
+
+    def start_phase(self, label: str, *, total: int | None = None) -> None:
+        ...
+
+    def advance(self, amount: int = 1) -> None:
+        ...
+
+    def complete_asset(self, *, source: str, rows: int) -> None:
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,8 +98,15 @@ class BinanceSpotHistoricalAdapter:
         self.cache_dir = Path(cache_dir).expanduser().resolve()
         self.base_url = str(base_url).rstrip("/")
         self.timeout_seconds = float(timeout_seconds)
+        self._progress: SpotMarketDataProgress | None = None
 
-    def load(self, scenario: SpotBacktestScenario) -> SpotHistoricalDataset:
+    def load(
+        self,
+        scenario: SpotBacktestScenario,
+        *,
+        progress: SpotMarketDataProgress | None = None,
+    ) -> SpotHistoricalDataset:
+        self._progress = progress
         interval_ms = interval_milliseconds(scenario.interval)
         warmup_start = scenario.start - timedelta(
             milliseconds=interval_ms * scenario.warmup_candles
@@ -94,7 +115,13 @@ class BinanceSpotHistoricalAdapter:
         symbol_info: dict[str, dict[str, Any]] = {}
         unavailable_open_times: dict[str, frozenset[int]] = {}
         source_parts: list[str] = []
-        for asset in scenario.assets:
+        for index, asset in enumerate(scenario.assets, start=1):
+            if self._progress is not None:
+                self._progress.start_asset(
+                    asset.market_symbol,
+                    index=index,
+                    total=len(scenario.assets),
+                )
             if asset.history_segments:
                 rows, source, unavailable = self._load_stitched_candles(
                     asset,
@@ -110,10 +137,16 @@ class BinanceSpotHistoricalAdapter:
                     start=warmup_start,
                     end=scenario.end,
                 )
+            self._start_progress_phase(f"Validating {asset.market_symbol}", total=len(rows))
             self._validate_candles(rows, interval_ms=interval_ms, symbol=asset.market_symbol)
             candles[asset.symbol] = tuple(rows)
+            self._start_progress_phase(f"Loading {asset.market_symbol} rules", total=1)
             symbol_info[asset.symbol] = asset.symbol_info or self.load_symbol_info(asset.market_symbol)
+            self._advance_progress(1)
             source_parts.append(source)
+            if self._progress is not None:
+                self._progress.complete_asset(source=source, rows=len(rows))
+        self._progress = None
         return SpotHistoricalDataset(
             candles=candles,
             symbol_info=symbol_info,
@@ -126,6 +159,14 @@ class BinanceSpotHistoricalAdapter:
             ),
             unavailable_open_times=unavailable_open_times,
         )
+
+    def _start_progress_phase(self, label: str, *, total: int | None = None) -> None:
+        if self._progress is not None:
+            self._progress.start_phase(label, total=total)
+
+    def _advance_progress(self, amount: int = 1) -> None:
+        if self._progress is not None and amount > 0:
+            self._progress.advance(amount)
 
     def _load_stitched_candles(
         self,
@@ -173,7 +214,14 @@ class BinanceSpotHistoricalAdapter:
         output: list[SpotCandle] = []
         unavailable: set[int] = set()
         previous_close: float | None = None
+        expected_rows = max(0, (end_ms - start_ms) // interval_ms)
+        self._start_progress_phase(f"Stitching {asset.symbol} history", total=expected_rows)
+        progress_chunk = 0
         for open_time_ms in range(start_ms, end_ms, interval_ms):
+            progress_chunk += 1
+            if progress_chunk >= 10_000:
+                self._advance_progress(progress_chunk)
+                progress_chunk = 0
             row = combined.get(open_time_ms)
             if row is not None:
                 output.append(row)
@@ -195,6 +243,7 @@ class BinanceSpotHistoricalAdapter:
                     volume=0.0,
                 )
             )
+        self._advance_progress(progress_chunk)
         if not output or output[-1].open_time_ms != end_ms - interval_ms:
             raise ValueError(f"Stitched history for {asset.symbol} does not cover the requested end.")
         source = "cache" if sources and all(item == "cache" for item in sources) else "binance_spot_rest"
@@ -220,6 +269,10 @@ class BinanceSpotHistoricalAdapter:
             end_ms=end_ms,
         )
         if not cache_path.exists() and covering_cache is not None:
+            self._start_progress_phase(
+                f"Reading {symbol.upper()} cache",
+                total=self._cached_row_capacity(covering_cache, interval_ms=interval_milliseconds(interval)),
+            )
             rows = [
                 row
                 for row in self._read_candles(covering_cache)
@@ -233,6 +286,10 @@ class BinanceSpotHistoricalAdapter:
             ):
                 return rows, "cache"
         if cache_path.exists():
+            self._start_progress_phase(
+                f"Reading {symbol.upper()} cache",
+                total=self._cached_row_capacity(cache_path, interval_ms=interval_milliseconds(interval)),
+            )
             rows = self._read_candles(cache_path)
             interval_ms = interval_milliseconds(interval)
             downloaded: list[SpotCandle] = []
@@ -266,6 +323,7 @@ class BinanceSpotHistoricalAdapter:
             if downloaded:
                 merged = {row.open_time_ms: row for row in (*rows, *downloaded)}
                 rows = [merged[key] for key in sorted(merged)]
+                self._start_progress_phase(f"Writing {symbol.upper()} cache", total=len(rows))
                 self._write_candles(cache_path, rows)
                 return rows, "binance_spot_rest"
             return rows, "cache"
@@ -276,8 +334,21 @@ class BinanceSpotHistoricalAdapter:
             end_ms=end_ms,
         )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._start_progress_phase(f"Writing {symbol.upper()} cache", total=len(rows))
         self._write_candles(cache_path, rows)
         return rows, "binance_spot_rest"
+
+    @staticmethod
+    def _cached_row_capacity(path: Path, *, interval_ms: int) -> int | None:
+        bounds = path.stem.rsplit("-", 2)
+        if len(bounds) != 3:
+            return None
+        try:
+            start_ms = int(bounds[-2])
+            end_ms = int(bounds[-1])
+        except ValueError:
+            return None
+        return max(0, (end_ms - start_ms) // interval_ms)
 
     def _covering_cache_path(
         self,
@@ -332,6 +403,11 @@ class BinanceSpotHistoricalAdapter:
     ) -> list[SpotCandle]:
         output: list[SpotCandle] = []
         cursor = start_ms
+        interval_ms = interval_milliseconds(interval)
+        self._start_progress_phase(
+            f"Downloading {symbol.upper()}",
+            total=max(0, (end_ms - start_ms) // interval_ms),
+        )
         while cursor < end_ms:
             payload = self._request_json(
                 "/api/v3/klines",
@@ -346,8 +422,10 @@ class BinanceSpotHistoricalAdapter:
             if not isinstance(payload, list) or not payload:
                 break
             page = [self._parse_kline(item) for item in payload]
-            output.extend(candle for candle in page if candle.open_time_ms < end_ms)
-            next_cursor = int(page[-1].open_time_ms) + interval_milliseconds(interval)
+            accepted = [candle for candle in page if candle.open_time_ms < end_ms]
+            output.extend(accepted)
+            self._advance_progress(len(accepted))
+            next_cursor = int(page[-1].open_time_ms) + interval_ms
             if next_cursor <= cursor:
                 raise RuntimeError(f"Binance Spot candle pagination stalled for {symbol}.")
             cursor = next_cursor
@@ -388,10 +466,10 @@ class BinanceSpotHistoricalAdapter:
             raise ValueError("Binance Spot candle OHLC values are inconsistent.")
         return candle
 
-    @staticmethod
-    def _validate_candles(rows: list[SpotCandle], *, interval_ms: int, symbol: str) -> None:
+    def _validate_candles(self, rows: list[SpotCandle], *, interval_ms: int, symbol: str) -> None:
         if not rows:
             raise ValueError(f"No historical Spot candles are available for {symbol}.")
+        progress_chunk = 1
         for previous, current in zip(rows, rows[1:]):
             if current.open_time_ms - previous.open_time_ms != interval_ms:
                 previous_time = datetime.fromtimestamp(previous.open_time_ms / 1000, tz=UTC).isoformat()
@@ -399,12 +477,18 @@ class BinanceSpotHistoricalAdapter:
                 raise ValueError(
                     f"Missing {symbol} candle between {previous_time} and {current_time}; replay aborted."
                 )
+            progress_chunk += 1
+            if progress_chunk >= 10_000:
+                self._advance_progress(progress_chunk)
+                progress_chunk = 0
+        self._advance_progress(progress_chunk)
 
-    @staticmethod
-    def _read_candles(path: Path) -> list[SpotCandle]:
+    def _read_candles(self, path: Path) -> list[SpotCandle]:
+        rows: list[SpotCandle] = []
+        progress_chunk = 0
         with path.open("r", encoding="utf-8", newline="") as file_obj:
-            return [
-                SpotCandle(
+            for row in csv.DictReader(file_obj):
+                rows.append(SpotCandle(
                     open_time_ms=int(row["open_time_ms"]),
                     close_time_ms=int(row["close_time_ms"]),
                     open=float(row["open"]),
@@ -412,18 +496,22 @@ class BinanceSpotHistoricalAdapter:
                     low=float(row["low"]),
                     close=float(row["close"]),
                     volume=float(row["volume"]),
-                )
-                for row in csv.DictReader(file_obj)
-            ]
+                ))
+                progress_chunk += 1
+                if progress_chunk >= 10_000:
+                    self._advance_progress(progress_chunk)
+                    progress_chunk = 0
+        self._advance_progress(progress_chunk)
+        return rows
 
-    @staticmethod
-    def _write_candles(path: Path, rows: list[SpotCandle]) -> None:
+    def _write_candles(self, path: Path, rows: list[SpotCandle]) -> None:
         with path.open("w", encoding="utf-8", newline="") as file_obj:
             writer = csv.DictWriter(
                 file_obj,
                 fieldnames=["open_time_ms", "close_time_ms", "open", "high", "low", "close", "volume"],
             )
             writer.writeheader()
+            progress_chunk = 0
             for candle in rows:
                 writer.writerow(
                     {
@@ -436,3 +524,8 @@ class BinanceSpotHistoricalAdapter:
                         "volume": candle.volume,
                     }
                 )
+                progress_chunk += 1
+                if progress_chunk >= 10_000:
+                    self._advance_progress(progress_chunk)
+                    progress_chunk = 0
+            self._advance_progress(progress_chunk)
