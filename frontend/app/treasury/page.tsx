@@ -2170,14 +2170,15 @@ export default function TreasuryPage(): JSX.Element {
               </strong>
               {typeof summary?.total_value_24h_change === "number" ? (
                 <span className="treasury-total-change">
-                  <strong
+                  <span
                     className={signedToneClass(
                       summary.total_value_24h_change,
                       "treasury-total-change-value"
                     )}
                   >
                     {formatSignedCurrency(summary.total_value_24h_change)}
-                  </strong>
+                  </span>
+                  <span className="treasury-total-change-separator" aria-hidden="true">·</span>
                   <span
                     className={signedToneClass(
                       summary.total_value_24h_change_pct,

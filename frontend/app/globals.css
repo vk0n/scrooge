@@ -2402,17 +2402,21 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-total-change {
-  display: grid;
-  justify-items: start;
-  gap: 0.06rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.38rem;
 }
 
-.treasury-summary-card strong.treasury-total-change-value {
-  font-size: 0.9rem;
-}
-
+.treasury-total-change-value,
 .treasury-total-change-pct {
-  font-size: 0.72rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.22;
+}
+
+.treasury-total-change-separator {
+  color: #7f8a9d;
+  font-size: 0.9rem;
   line-height: 1.22;
 }
 
@@ -4964,11 +4968,8 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-summary-card-hero > .treasury-total-change {
-    display: flex;
-    align-items: baseline;
     grid-column: 2;
     grid-row: 2;
-    gap: 0.38rem;
     justify-self: end;
   }
 
