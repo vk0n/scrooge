@@ -380,6 +380,16 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
         );
 
+        CREATE TABLE IF NOT EXISTS portfolio_cash_policies (
+            account_key TEXT PRIMARY KEY,
+            free_cash_retention_pct REAL NOT NULL DEFAULT 0 CHECK (
+                free_cash_retention_pct >= 0 AND free_cash_retention_pct <= 100
+            ),
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
         CREATE TABLE IF NOT EXISTS spot_swings (
             swing_id TEXT PRIMARY KEY,
             account_key TEXT NOT NULL,
@@ -1762,6 +1772,77 @@ def list_portfolio_asset_policies(
         }
         for row in rows
     ]
+
+
+def load_portfolio_cash_policy(
+    *,
+    account_key: str = "manual_spot",
+    path: Path | None = None,
+) -> dict[str, Any]:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    ensure_portfolio_account(account_key=normalized_account, path=path)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO portfolio_cash_policies (
+                account_key,
+                free_cash_retention_pct,
+                created_at_ms,
+                updated_at_ms
+            )
+            VALUES (?, 0, ?, ?)
+            """,
+            (normalized_account, now_ms, now_ms),
+        )
+        row = connection.execute(
+            """
+            SELECT account_key, free_cash_retention_pct, created_at_ms, updated_at_ms
+            FROM portfolio_cash_policies
+            WHERE account_key = ?
+            LIMIT 1
+            """,
+            (normalized_account,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("Portfolio cash policy could not be initialized.")
+    return {
+        "account_key": str(row["account_key"]),
+        "free_cash_retention_pct": float(row["free_cash_retention_pct"]),
+        "created_at_ms": int(row["created_at_ms"]),
+        "updated_at_ms": int(row["updated_at_ms"]),
+    }
+
+
+def upsert_portfolio_cash_policy(
+    free_cash_retention_pct: float,
+    *,
+    account_key: str = "manual_spot",
+    path: Path | None = None,
+) -> dict[str, Any]:
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_pct = _as_float_or_none(free_cash_retention_pct)
+    if normalized_pct is None or not 0 <= normalized_pct <= 100:
+        raise ValueError("Free Cash Retention must be between 0% and 100%.")
+    ensure_portfolio_account(account_key=normalized_account, path=path)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO portfolio_cash_policies (
+                account_key,
+                free_cash_retention_pct,
+                created_at_ms,
+                updated_at_ms
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(account_key) DO UPDATE SET
+                free_cash_retention_pct = excluded.free_cash_retention_pct,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (normalized_account, normalized_pct, now_ms, now_ms),
+        )
+    return load_portfolio_cash_policy(account_key=normalized_account, path=path)
 
 
 def ensure_portfolio_asset_policies(

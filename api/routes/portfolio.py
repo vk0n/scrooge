@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -15,10 +16,13 @@ from services.portfolio_service import (
     load_portfolio_asset_ledger,
     load_portfolio_bargain_ledger,
     load_portfolio_snapshot,
+    treasury_transfer_enabled,
     set_portfolio_transaction_status,
     update_portfolio_asset_policy,
+    update_portfolio_cash_policy,
 )
 from services.spot_order_service import queue_spot_order_intent
+from services.command_service import enqueue_control_command
 from services.system_service import get_service_status
 
 router = APIRouter()
@@ -58,6 +62,10 @@ class PortfolioAssetPolicyRequest(BaseModel):
     trading_objective: Literal["accumulate_cash", "accumulate_asset"] = "accumulate_cash"
 
 
+class PortfolioCashPolicyRequest(BaseModel):
+    free_cash_retention_pct: float = Field(..., ge=0, le=100)
+
+
 class SpotOrderPreviewRequest(BaseModel):
     asset_symbol: str = Field(..., min_length=1, max_length=24)
     quote_symbol: str = Field(default="USDT", min_length=1, max_length=24)
@@ -68,6 +76,12 @@ class SpotOrderPreviewRequest(BaseModel):
 
 class SpotOrderExecuteRequest(BaseModel):
     confirmation: Literal["CONFIRM_SPOT_ORDER"]
+
+
+class TreasuryTransferRequest(BaseModel):
+    direction: Literal["to_office", "from_office"]
+    quantity: float = Field(..., gt=0)
+    confirmation: Literal["CONFIRM_TREASURY_TRANSFER"]
 
 
 @router.get("")
@@ -109,6 +123,17 @@ def update_asset_policy(asset_symbol: str, data: PortfolioAssetPolicyRequest) ->
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {**payload, "warnings": warnings}
+
+
+@router.post("/cash-policy")
+def update_cash_policy(data: PortfolioCashPolicyRequest) -> dict[str, object]:
+    try:
+        payload, warnings = update_portfolio_cash_policy(data.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {**payload, "warnings": warnings}
@@ -249,3 +274,52 @@ def execute_spot_order(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+@router.post("/office-transfers")
+def execute_office_transfer(
+    data: TreasuryTransferRequest,
+    request: Request,
+) -> dict[str, object]:
+    if not treasury_transfer_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Treasury Office transfers are disabled by the safety switch.",
+        )
+    try:
+        service_status = get_service_status()
+    except RuntimeError:
+        service_status = None
+    if service_status is not None and not service_status.running:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Scrooge runtime is offline. A real Treasury transfer cannot be delivered safely.",
+        )
+    if data.direction == "to_office":
+        try:
+            snapshot, _ = load_portfolio_snapshot()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        available = min(
+            float(snapshot["summary"].get("vault_reserve_available") or 0.0),
+            float(snapshot["exchange"].get("usdt_free") or 0.0),
+        )
+        if data.quantity > available + 0.00000001:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Only ${available:,.2f} USDT is currently transferable from Treasury.",
+            )
+    transfer_ref = uuid.uuid4().hex
+    requested_by = "basic-user" if request.headers.get("Authorization", "").startswith("Basic ") else "unknown"
+    try:
+        return enqueue_control_command(
+            action="treasury_transfer",
+            requested_by=requested_by,
+            payload={
+                "direction": data.direction,
+                "quantity": data.quantity,
+                "transfer_ref": transfer_ref,
+            },
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc

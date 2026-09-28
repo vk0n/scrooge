@@ -21,6 +21,9 @@ type PortfolioSummary = {
   dry_powder_pct: number | null;
   vault_reserve_available: number;
   vault_reserve_committed: number;
+  vault_reserve_retained: number;
+  vault_reserve_spendable: number;
+  free_cash_retention_pct: number;
   largest_position: PortfolioHolding | null;
   holding_count: number;
   open_swing_count: number;
@@ -53,6 +56,7 @@ type PortfolioExchange = {
   usdt_free: number | null;
   usdt_locked: number | null;
   spot_execution_enabled: boolean;
+  treasury_transfer_enabled: boolean;
 };
 
 type SpotOrderIntent = {
@@ -165,6 +169,9 @@ type PortfolioTransaction = {
   custody_location: CustodyLocation;
   source_custody: CustodyLocation | null;
   destination_custody: CustodyLocation | null;
+  spot_quote_leg?: boolean;
+  swing_id?: string | null;
+  office_transfer_direction?: "to_office" | "from_office" | null;
 };
 
 type PortfolioTimelinePoint = {
@@ -258,7 +265,22 @@ type AssetLedgerEntry =
       entry_id: string;
       occurred_at_ms: number;
       occurred_at: string;
+      free_cash_delta?: number;
       transaction: PortfolioTransaction;
+    }
+  | {
+      entry_type: "cash";
+      entry_id: string;
+      occurred_at_ms: number;
+      occurred_at: string;
+      cash_event: {
+        event_type: "bargain_settlement";
+        amount_quote: number;
+        asset_symbol: string;
+        quote_symbol: string;
+        swing_id: string;
+        label: string;
+      };
     }
   | {
       entry_type: "swing";
@@ -305,6 +327,21 @@ type UpdatePortfolioPolicyResponse = {
   };
   portfolio: Omit<PortfolioPayload, "warnings">;
   warnings: string[];
+};
+
+type UpdateCashPolicyResponse = {
+  policy: {
+    account_key: string;
+    free_cash_retention_pct: number;
+  };
+  portfolio: Omit<PortfolioPayload, "warnings">;
+  warnings: string[];
+};
+
+type TreasuryTransferQueueResponse = {
+  command_id: string;
+  status: string;
+  action: string;
 };
 
 type PortfolioTransactionType = "buy" | "sell" | "deposit" | "withdraw" | "adjustment" | "custody_transfer";
@@ -613,11 +650,13 @@ function TimelineSeries({
 function CustodyPanel({
   holding,
   exchange,
+  summary,
   onPortfolioUpdated,
   onExecuted,
 }: {
   holding: PortfolioHolding;
   exchange: PortfolioExchange | null;
+  summary: PortfolioSummary;
   onPortfolioUpdated: (response: CreatePortfolioTransactionResponse) => void;
   onExecuted: () => Promise<void>;
 }): JSX.Element {
@@ -639,6 +678,10 @@ function CustodyPanel({
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
   const [tradeExpanded, setTradeExpanded] = useState<boolean>(false);
+  const [officeDirection, setOfficeDirection] = useState<"to_office" | "from_office">("to_office");
+  const [officeQuantity, setOfficeQuantity] = useState<string>("");
+  const [officeBusy, setOfficeBusy] = useState<boolean>(false);
+  const [officeStage, setOfficeStage] = useState<string | null>(null);
   const available = custodyQuantity(holding, source);
   const releasable = custodyQuantity(holding, boundaryCustody);
   const tradeAvailable = Boolean(
@@ -646,6 +689,42 @@ function CustodyPanel({
     exchange?.spot_execution_enabled &&
     holding.binance_quantity > 0.00000001
   );
+  const officeTransferAvailable = holding.is_dry_powder && holding.asset_symbol === "USDT";
+
+  async function submitOfficeTransfer(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const amount = asNumber(officeQuantity);
+    if (amount === null || amount <= 0) return;
+    const directionLabel = officeDirection === "to_office" ? "Treasury to Futures Office" : "Futures Office to Treasury";
+    if (!window.confirm(
+      `Transfer ${formatCurrency(amount)} USDT from ${directionLabel}?\n\nThis is a REAL Binance account transfer and changes Treasury invested capital.`
+    )) return;
+    setOfficeBusy(true);
+    setError(null);
+    setOfficeStage("Transfer queued. Scrooge is revalidating both accounts...");
+    try {
+      const queued = await fetchApi<TreasuryTransferQueueResponse>("/api/portfolio/office-transfers", {
+        method: "POST",
+        body: {
+          direction: officeDirection,
+          quantity: amount,
+          confirmation: "CONFIRM_TREASURY_TRANSFER",
+        },
+      });
+      const command = await waitForControlCommand(queued.command_id);
+      if (command.status !== "completed") {
+        throw new Error(command.message || "Treasury Office transfer failed.");
+      }
+      setOfficeStage(command.message || "Transfer confirmed. Treasury accounting updated.");
+      setOfficeQuantity("");
+      await onExecuted();
+    } catch (transferError) {
+      setError(transferError instanceof Error ? transferError.message : "Could not complete the Office transfer.");
+      setOfficeStage("Transfer did not complete cleanly. Check the Treasury Ledger before retrying.");
+    } finally {
+      setOfficeBusy(false);
+    }
+  }
 
   function changeSource(nextSource: CustodyLocation): void {
     setSource(nextSource);
@@ -784,6 +863,59 @@ function CustodyPanel({
             exchange={exchange}
             onExecuted={onExecuted}
           />
+        ) : null}
+        {officeTransferAvailable ? (
+          <section className="treasury-office-transfer" aria-label="Treasury and Futures Office transfer">
+            <header>
+              <span>Futures Office</span>
+              <strong>Real Binance Transfer</strong>
+            </header>
+            <form className="treasury-custody-form" onSubmit={(event) => void submitOfficeTransfer(event)}>
+              <label className="dialog-user-field">
+                Direction
+                <select
+                  value={officeDirection}
+                  onChange={(event) => {
+                    setOfficeDirection(event.target.value as "to_office" | "from_office");
+                    setOfficeStage(null);
+                  }}
+                  disabled={officeBusy}
+                >
+                  <option value="to_office">Treasury → Office</option>
+                  <option value="from_office">Office → Treasury</option>
+                </select>
+              </label>
+              <label className="dialog-user-field">
+                Amount (USDT)
+                <input
+                  type="number"
+                  min="0.01"
+                  max={officeDirection === "to_office" ? summary.vault_reserve_available : undefined}
+                  step="0.01"
+                  value={officeQuantity}
+                  placeholder={officeDirection === "to_office"
+                    ? formatNumber(summary.vault_reserve_available, 2)
+                    : "0.00"}
+                  onChange={(event) => setOfficeQuantity(event.target.value)}
+                  disabled={officeBusy}
+                  required
+                />
+              </label>
+              <button
+                type="submit"
+                className="dialog-user-btn"
+                disabled={officeBusy || !exchange?.treasury_transfer_enabled}
+              >
+                {officeBusy ? "Transferring..." : "Transfer USDT"}
+              </button>
+            </form>
+            <p className="treasury-custody-disclaimer">
+              {exchange?.treasury_transfer_enabled
+                ? `Available Treasury cash: ${formatCurrency(summary.vault_reserve_available)}. Retained policy cash may be moved only by this explicit owner action.`
+                : "Real Office transfers are locked by the Treasury transfer safety switch."}
+            </p>
+            {officeStage ? <p className="treasury-spot-order-stage">{officeStage}</p> : null}
+          </section>
         ) : null}
         <div className="treasury-custody-action-bar" aria-label="Treasury custody action">
           {([
@@ -957,7 +1089,7 @@ function CustodyPanel({
   );
 }
 
-async function waitForSpotOrder(commandId: string): Promise<ControlCommandStatus> {
+async function waitForControlCommand(commandId: string): Promise<ControlCommandStatus> {
   for (let attempt = 0; attempt < 180; attempt += 1) {
     const command = await fetchApi<ControlCommandStatus>(`/api/control/commands/${encodeURIComponent(commandId)}`);
     if (command.status === "completed" || command.status === "failed") {
@@ -965,7 +1097,7 @@ async function waitForSpotOrder(commandId: string): Promise<ControlCommandStatus
     }
     await new Promise((resolve) => window.setTimeout(resolve, 500));
   }
-  throw new Error("Spot order is still awaiting confirmation. Check the Treasury Ledger before retrying.");
+  throw new Error("The command is still awaiting confirmation. Check the Treasury Ledger before retrying.");
 }
 
 function SpotOrderPanel({
@@ -1048,7 +1180,7 @@ function SpotOrderPanel({
         { method: "POST", body: { confirmation: "CONFIRM_SPOT_ORDER" } }
       );
       setStage("Scrooge is validating fresh balances and submitting the order...");
-      const command = await waitForSpotOrder(queued.command_id);
+      const command = await waitForControlCommand(queued.command_id);
       if (command.status !== "completed") {
         throw new Error(command.message || "Binance Spot order failed.");
       }
@@ -1328,6 +1460,90 @@ function AssetPolicyPanel({
   );
 }
 
+function CashPolicyPanel({
+  summary,
+  onUpdated,
+}: {
+  summary: PortfolioSummary;
+  onUpdated: (response: UpdateCashPolicyResponse) => void;
+}): JSX.Element {
+  const [retentionPct, setRetentionPct] = useState<string>(String(summary.free_cash_retention_pct));
+  const [saving, setSaving] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<boolean>(false);
+
+  useEffect(() => {
+    setRetentionPct(String(summary.free_cash_retention_pct));
+  }, [summary.free_cash_retention_pct]);
+
+  async function submitPolicy(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetchApi<UpdateCashPolicyResponse>("/api/portfolio/cash-policy", {
+        method: "POST",
+        body: { free_cash_retention_pct: asNumber(retentionPct) },
+      });
+      onUpdated(response);
+    } catch (policyError) {
+      setError(policyError instanceof Error ? policyError.message : "Could not update the cash policy.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="treasury-policy-panel treasury-cash-policy-panel">
+      <header className="treasury-asset-panel-head">
+        <button
+          type="button"
+          className="treasury-asset-panel-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span>Policy</span>
+          <span className="treasury-policy-summary">
+            Retain {formatPercent(summary.free_cash_retention_pct)}
+            <span>Protected {formatCurrency(summary.vault_reserve_retained)}</span>
+            <strong className="value-positive">Spendable {formatCurrency(summary.vault_reserve_spendable)}</strong>
+          </span>
+          <span className="treasury-asset-panel-chevron" aria-hidden="true" />
+        </button>
+      </header>
+      {expanded ? <div className="treasury-policy-content">
+        <div className="treasury-policy-metrics treasury-cash-policy-metrics">
+          <div><span>Free Cash</span><strong>{formatCurrency(summary.vault_reserve_available)}</strong></div>
+          <div><span>Retained</span><strong>{formatCurrency(summary.vault_reserve_retained)}</strong></div>
+          <div><span>Spendable</span><strong>{formatCurrency(summary.vault_reserve_spendable)}</strong></div>
+          <div><span>Committed</span><strong>{formatCurrency(summary.vault_reserve_committed)}</strong></div>
+        </div>
+        <form className="treasury-policy-form treasury-cash-policy-form" onSubmit={(event) => void submitPolicy(event)}>
+          <label className="dialog-user-field">
+            Free Cash Retention %
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="any"
+              value={retentionPct}
+              onChange={(event) => setRetentionPct(event.target.value)}
+              required
+            />
+          </label>
+          <button type="submit" className="dialog-user-btn" disabled={saving}>
+            {saving ? "Saving..." : "Update Policy"}
+          </button>
+        </form>
+        <p className="treasury-policy-note">
+          Scrooge cannot spend retained cash on accumulation buys or loss coverage. Committed Bargain cash is unaffected.
+        </p>
+        {error ? <p className="form-error">{error}</p> : null}
+      </div> : null}
+    </section>
+  );
+}
+
 function SwingLedgerRow({
   swing,
   occurredAt,
@@ -1375,7 +1591,7 @@ function SwingLedgerRow({
         `/api/portfolio/spot-orders/${encodeURIComponent(preview.intent_id)}/execute`,
         { method: "POST", body: { confirmation: "CONFIRM_SPOT_ORDER" } }
       );
-      const command = await waitForSpotOrder(queued.command_id);
+      const command = await waitForControlCommand(queued.command_id);
       if (command.status !== "completed") {
         throw new Error(command.message || "Bargain closing order failed.");
       }
@@ -1742,7 +1958,7 @@ function AssetLedger({
           <span className="treasury-asset-panel-chevron" aria-hidden="true" />
         </button>
       </header>
-      {expanded ? (
+      {expanded && !holding.is_dry_powder ? (
         <div className="treasury-ledger-filter" aria-label="Asset Ledger filter">
           {(["all", "open", "closed"] as const).map((value) => (
             <button
@@ -1770,6 +1986,22 @@ function AssetLedger({
         <>
           <div className="treasury-ledger-stack">
             {entries.map((entry) => {
+              if (entry.entry_type === "cash") {
+                return (
+                  <article key={entry.entry_id} className="treasury-ledger-row treasury-cash-ledger-row">
+                    <span className={signedToneClass(entry.cash_event.amount_quote, "treasury-ledger-cash-delta")}>
+                      {formatSignedCurrency(entry.cash_event.amount_quote)}
+                    </span>
+                    <span className="treasury-ledger-main">
+                      <span className="treasury-ledger-entry">
+                        {entry.cash_event.label} · {entry.cash_event.asset_symbol}
+                      </span>
+                      <small>Bargain #{entry.cash_event.swing_id.slice(-6).toUpperCase()}</small>
+                    </span>
+                    <span className="treasury-ledger-meta">{formatDateTimeEu(entry.occurred_at)}</span>
+                  </article>
+                );
+              }
               if (entry.entry_type === "swing") {
                 return (
                   <SwingLedgerRow
@@ -1784,25 +2016,43 @@ function AssetLedger({
                 );
               }
               const transaction = entry.transaction;
+              const isCashEntry = typeof entry.free_cash_delta === "number";
+              const cashLabel = transaction.office_transfer_direction === "to_office"
+                ? "Transferred to Futures Office"
+                : transaction.office_transfer_direction === "from_office"
+                  ? "Received from Futures Office"
+                  : transaction.spot_quote_leg && transaction.swing_id
+                    ? "Bargain cash flow"
+                    : transaction.spot_quote_leg
+                      ? "Asset accumulation"
+                      : transactionLabel(transaction.tx_type);
+              const canVoid = transaction.source === "manual";
               return (
                 <article
                   key={entry.entry_id}
                   className={`treasury-ledger-row${transaction.status === "voided" ? " treasury-ledger-row-voided" : ""}`}
                 >
-                  <span className={transactionToneClass(transaction.tx_type)}>{transactionLabel(transaction.tx_type)}</span>
+                  <span className={isCashEntry
+                    ? signedToneClass(entry.free_cash_delta, "treasury-ledger-cash-delta")
+                    : transactionToneClass(transaction.tx_type)}>
+                    {isCashEntry ? formatSignedCurrency(entry.free_cash_delta) : transactionLabel(transaction.tx_type)}
+                  </span>
                   <span className="treasury-ledger-main">
                     <span className="treasury-ledger-entry">
-                      {formatNumber(transaction.quantity, 8)} {transaction.asset_symbol}
-                      {transaction.tx_type === "custody_transfer" && transaction.source_custody && transaction.destination_custody
+                      {isCashEntry ? cashLabel : `${formatNumber(transaction.quantity, 8)} ${transaction.asset_symbol}`}
+                      {isCashEntry
+                        ? transaction.note ? ` · ${transaction.note}` : ""
+                        : ""}
+                      {!isCashEntry && transaction.tx_type === "custody_transfer" && transaction.source_custody && transaction.destination_custody
                         ? ` from ${CUSTODY_LABELS[transaction.source_custody]} to ${CUSTODY_LABELS[transaction.destination_custody]}`
-                        : transaction.price
+                        : !isCashEntry && transaction.price
                           ? ` at ${formatCurrency(transaction.price, 6)}`
-                          : ` in ${CUSTODY_LABELS[transaction.custody_location]}`}
+                          : !isCashEntry ? ` in ${CUSTODY_LABELS[transaction.custody_location]}` : ""}
                     </span>
                     {transaction.status === "voided" ? <small>Voided</small> : null}
                   </span>
                   <span className="treasury-ledger-meta">{formatDateTimeEu(transaction.executed_at)}</span>
-                  <button
+                  {canVoid ? <button
                     type="button"
                     className="treasury-ledger-action"
                     disabled={updatingTransactionId === transaction.transaction_id}
@@ -1813,7 +2063,7 @@ function AssetLedger({
                       : transaction.status === "voided"
                         ? "Restore"
                         : "Void"}
-                  </button>
+                  </button> : <span />}
                 </article>
               );
             })}
@@ -1858,14 +2108,16 @@ function AssetLedger({
 function HoldingCard({
   holding,
   exchange,
+  summary,
   realizedAccumulatedCash,
   onPortfolioUpdated,
   onReload,
 }: {
   holding: PortfolioHolding;
   exchange: PortfolioExchange | null;
+  summary: PortfolioSummary;
   realizedAccumulatedCash: number;
-  onPortfolioUpdated: (response: CreatePortfolioTransactionResponse | UpdatePortfolioPolicyResponse) => void;
+  onPortfolioUpdated: (response: CreatePortfolioTransactionResponse | UpdatePortfolioPolicyResponse | UpdateCashPolicyResponse) => void;
   onReload: () => Promise<void>;
 }): JSX.Element {
   const [expanded, setExpanded] = useState<boolean>(false);
@@ -2000,10 +2252,13 @@ function HoldingCard({
             key={`${holding.binance_quantity}:${exchange?.spot_execution_enabled ? 1 : 0}`}
             holding={holding}
             exchange={exchange}
+            summary={summary}
             onPortfolioUpdated={onPortfolioUpdated}
             onExecuted={onReload}
           />
-          {executionEnabled && !holding.is_dry_powder ? (
+          {holding.is_dry_powder ? (
+            <CashPolicyPanel summary={summary} onUpdated={onPortfolioUpdated} />
+          ) : executionEnabled ? (
             <AssetPolicyPanel holding={holding} exchange={exchange} onUpdated={onPortfolioUpdated} />
           ) : null}
           <AssetLedger
@@ -2513,6 +2768,7 @@ export default function TreasuryPage(): JSX.Element {
                   key={`${holding.asset_symbol}-${holding.quote_symbol}`}
                   holding={holding}
                   exchange={exchange}
+                  summary={summary!}
                   realizedAccumulatedCash={summary?.realized_accumulated_cash ?? 0}
                   onPortfolioUpdated={(response) => {
                     setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));

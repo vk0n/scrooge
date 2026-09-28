@@ -49,6 +49,7 @@ The API is DB-first:
 - `SCROOGE_DB_PATH`
 - `SCROOGE_SPOT_BALANCE_STALE_AFTER_SECONDS` (freshness window for the bot-written Binance Spot snapshot)
 - `SCROOGE_SPOT_EXECUTION_ENABLED` (`0` by default; both API and bot must receive `1` before real Spot orders are accepted)
+- `SCROOGE_TREASURY_TRANSFER_ENABLED` (`0` by default; enables confirmed Treasury USDT transfers to and from Binance USD-M Futures)
 - `SCROOGE_SPOT_ORDER_PREVIEW_TTL_SECONDS`
 - `SCROOGE_SPOT_ORDER_COMMAND_STALE_AFTER_SECONDS`
 
@@ -57,6 +58,8 @@ The API is DB-first:
 Real Spot execution is disabled by default. Use a Binance API key with Spot trading permission and without withdrawal permission, then set `SCROOGE_SPOT_EXECUTION_ENABLED=1` for both the API and bot containers. Every order follows preview, explicit confirmation, bot-side balance/policy revalidation, idempotent submission, confirmed fill, and Treasury Ledger recording.
 
 An `uncertain` or `accounting_error` intent must be reconciled by its Binance client order ID before any replacement order is attempted.
+
+Treasury Office transfers use Binance universal transfers (`MAIN_UMFUTURE` / `UMFUTURE_MAIN`). They are initiated from the USDT Custody panel, revalidated by the runtime, and recorded as Treasury withdrawals or contributions only after Binance confirms the transfer.
 
 Chart-specific env:
 - `SCROOGE_CHART_SOURCE` (`auto`, `dataset`, `binance`)

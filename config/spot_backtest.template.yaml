@@ -46,6 +46,7 @@ spot_backtest:
       close_profit_pct: 3
       estimated_fee_rate: 0.001
       treasury_accumulation_enabled: true
+      free_cash_retention_pct: 0
       campaign_capacity_pct: 50
       full_deploy_threshold_pct: 25
     waiter_cleanup:

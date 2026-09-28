@@ -433,6 +433,10 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(closed_btc["floating_gain"], 12.5)
         self.assertEqual(closed_btc["open_bargain_pnl"], 0)
         self.assertEqual(closed_btc["total_gain"], 12.5)
+        cash_ledger = portfolio_service.load_portfolio_asset_ledger("USDT")
+        self.assertEqual(cash_ledger["entry_count"], 1)
+        self.assertEqual(cash_ledger["entries"][0]["entry_type"], "cash")
+        self.assertEqual(cash_ledger["entries"][0]["cash_event"]["amount_quote"], 2.5)
         self.assertEqual(replayed["summary"], closed["summary"])
         self.assertEqual(
             len([item for item in list_portfolio_transactions() if item.get("spot_quote_leg")]),
@@ -1342,6 +1346,83 @@ class PortfolioPhaseOneTests(unittest.TestCase):
                 "USDT",
                 {"target_quantity": 500, "minimum_holding_pct": 100},
             )
+
+    def test_cash_policy_projects_retained_and_spendable_free_reserve(self):
+        self.add("USDT", 100, 1, "binance")
+
+        result, _ = portfolio_service.update_portfolio_cash_policy(
+            {"free_cash_retention_pct": 25}
+        )
+
+        summary = result["portfolio"]["summary"]
+        self.assertEqual(result["policy"]["free_cash_retention_pct"], 25)
+        self.assertEqual(summary["vault_reserve_available"], 100)
+        self.assertEqual(summary["vault_reserve_retained"], 25)
+        self.assertEqual(summary["vault_reserve_spendable"], 75)
+
+    def test_office_transfer_changes_treasury_value_and_invested_capital_together(self):
+        self.add("USDT", 100, 1, "binance")
+
+        withdrawn, _ = portfolio_service.record_confirmed_office_transfer(
+            transfer_ref="to-office-1",
+            direction="to_office",
+            quantity=30,
+            external_transfer_id="101",
+        )
+        outgoing_summary = withdrawn["portfolio"]["summary"]
+        self.assertEqual(outgoing_summary["total_value"], 70)
+        self.assertEqual(outgoing_summary["invested_capital"], 70)
+        self.assertEqual(outgoing_summary["total_gain"], 0)
+
+        deposited, _ = portfolio_service.record_confirmed_office_transfer(
+            transfer_ref="from-office-1",
+            direction="from_office",
+            quantity=10,
+            external_transfer_id="102",
+        )
+        incoming_summary = deposited["portfolio"]["summary"]
+        self.assertEqual(incoming_summary["total_value"], 80)
+        self.assertEqual(incoming_summary["invested_capital"], 80)
+        self.assertEqual(incoming_summary["total_gain"], 0)
+
+        ledger = portfolio_service.load_portfolio_asset_ledger("USDT")
+        deltas = [
+            entry.get("free_cash_delta")
+            for entry in ledger["entries"]
+            if entry["entry_type"] == "transaction"
+        ]
+        self.assertCountEqual(deltas[:2], [10, -30])
+
+    def test_office_transfer_reduces_capital_even_when_cash_was_strategy_generated(self):
+        self.add("BTC", 1, 100, "binance")
+        append_portfolio_transaction(
+            {
+                "transaction_id": "generated-usdt",
+                "account_key": "manual_spot",
+                "executed_at": "2026-09-28 12:00:00",
+                "tx_type": "deposit",
+                "asset_symbol": "USDT",
+                "quote_symbol": "USDT",
+                "quantity": 50,
+                "price": 1,
+                "source": "binance_strategy",
+                "status": "settled",
+                "custody_location": "binance",
+                "capital_effect": "none",
+            }
+        )
+
+        transferred, _ = portfolio_service.record_confirmed_office_transfer(
+            transfer_ref="generated-to-office",
+            direction="to_office",
+            quantity=30,
+            external_transfer_id="103",
+        )
+
+        summary = transferred["portfolio"]["summary"]
+        self.assertEqual(summary["total_value"], 120)
+        self.assertEqual(summary["invested_capital"], 70)
+        self.assertEqual(summary["total_gain"], 50)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ SUPPORTED_ACTIONS = {
     "update_sl",
     "update_tp",
     "spot_order",
+    "treasury_transfer",
 }
 
 
@@ -142,7 +143,7 @@ def get_command_status(command_id: str) -> dict[str, Any] | None:
             age_seconds = (datetime.now(UTC) - reference_ts.astimezone(UTC)).total_seconds()
             stale_after_seconds = (
                 SPOT_ORDER_COMMAND_STALE_AFTER_SECONDS
-                if payload.get("action") == "spot_order"
+                if payload.get("action") in {"spot_order", "treasury_transfer"}
                 else COMMAND_STALE_AFTER_SECONDS
             )
             if age_seconds >= stale_after_seconds:

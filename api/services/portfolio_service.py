@@ -35,8 +35,10 @@ from shared.runtime_db import (  # noqa: E402
     list_spot_swings,
     list_portfolio_daily_snapshots,
     list_portfolio_transactions,
+    load_portfolio_cash_policy,
     load_runtime_state_snapshot,
     runtime_db_path,
+    upsert_portfolio_cash_policy,
     upsert_portfolio_asset_policy,
     upsert_portfolio_daily_snapshot,
     update_portfolio_transaction_status,
@@ -107,6 +109,15 @@ def _spot_execution_enabled() -> bool:
         "false",
         "no",
         "off",
+    }
+
+
+def treasury_transfer_enabled() -> bool:
+    return str(os.getenv("SCROOGE_TREASURY_TRANSFER_ENABLED", "0") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
@@ -358,6 +369,16 @@ def _derive_owner_positions(
         tx_type = str(transaction.get("tx_type") or "").strip().lower()
         if tx_type == "custody_transfer":
             continue
+        office_direction = str(transaction.get("office_transfer_direction") or "").strip().lower()
+        if office_direction in {"to_office", "from_office"}:
+            quote = _clean_symbol(transaction.get("quote_symbol"), default=DEFAULT_QUOTE) or DEFAULT_QUOTE
+            quantity = _as_float(transaction.get("quantity")) or 0.0
+            capital_flow = positions.setdefault(
+                ("__TREASURY_CAPITAL__", quote),
+                {"quantity": 0.0, "basis": 0.0},
+            )
+            capital_flow["basis"] += quantity if office_direction == "from_office" else -quantity
+            continue
         capital_effect = str(transaction.get("capital_effect") or "").strip().lower()
         source = str(transaction.get("source") or "manual").strip().lower()
         if capital_effect == "none" or source == "binance_strategy" or transaction.get("swing_id"):
@@ -553,6 +574,10 @@ def _summary_from_holdings(
         _reserved_quote_for_open_swings(open_swings, economics_by_swing),
     )
     available_reserve = max(0.0, dry_powder - committed_reserve)
+    cash_policy = load_portfolio_cash_policy(account_key=DEFAULT_ACCOUNT_KEY)
+    retention_pct = min(100.0, max(0.0, _as_float(cash_policy.get("free_cash_retention_pct")) or 0.0))
+    retained_reserve = available_reserve * retention_pct / 100.0
+    spendable_reserve = max(0.0, available_reserve - retained_reserve)
     largest = max(holdings, key=lambda item: _as_float(item.get("market_value")) or 0.0, default=None)
     price_timestamps = [
         str(holding["market_price_updated_at"])
@@ -574,6 +599,9 @@ def _summary_from_holdings(
         "dry_powder_pct": (dry_powder / total_value) * 100 if total_value > 0 else None,
         "vault_reserve_available": available_reserve,
         "vault_reserve_committed": committed_reserve,
+        "vault_reserve_retained": retained_reserve,
+        "vault_reserve_spendable": spendable_reserve,
+        "free_cash_retention_pct": retention_pct,
         "largest_position": largest,
         "holding_count": len(holdings),
         "prices_updated_at": min(price_timestamps) if price_timestamps else None,
@@ -671,6 +699,7 @@ def _load_spot_exchange_state() -> dict[str, Any]:
             "usdt_free": None,
             "usdt_locked": None,
             "spot_execution_enabled": _spot_execution_enabled(),
+            "treasury_transfer_enabled": treasury_transfer_enabled(),
         }
 
     captured_at_ms = _as_float(snapshot.get("captured_at_ms"))
@@ -712,6 +741,7 @@ def _load_spot_exchange_state() -> dict[str, Any]:
         "usdt_free": _as_float(usdt.get("free")) if isinstance(usdt, dict) else 0.0,
         "usdt_locked": _as_float(usdt.get("locked")) if isinstance(usdt, dict) else 0.0,
         "spot_execution_enabled": _spot_execution_enabled(),
+        "treasury_transfer_enabled": treasury_transfer_enabled(),
     }
 
 
@@ -837,7 +867,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     ]
     summary = _summary_from_holdings(
         holdings,
-        invested_capital=sum(position["basis"] for position in owner_positions.values()),
+        invested_capital=max(0.0, sum(position["basis"] for position in owner_positions.values())),
         open_swings=open_swings,
         economics_by_swing=economics_by_swing,
     )
@@ -923,6 +953,89 @@ def load_portfolio_asset_ledger(
         raise ValueError("Asset Ledger filter must be all, open, or closed.")
 
     entries: list[dict[str, Any]] = []
+    if normalized_asset in STABLE_ASSETS:
+        transactions = list_portfolio_transactions(
+            newest_first=False,
+            account_key=DEFAULT_ACCOUNT_KEY,
+        )
+        swings = list_spot_swings(
+            account_key=DEFAULT_ACCOUNT_KEY,
+            materialized_only=True,
+        )
+        swing_by_id = {str(swing["swing_id"]): swing for swing in swings}
+        for transaction in transactions:
+            if _clean_symbol(transaction.get("asset_symbol")) != normalized_asset:
+                continue
+            if str(transaction.get("tx_type") or "").lower() == "custody_transfer":
+                continue
+            is_quote_leg = bool(transaction.get("spot_quote_leg"))
+            swing_id = str(transaction.get("swing_id") or "").strip()
+            swing = swing_by_id.get(swing_id)
+            if is_quote_leg and swing is not None and swing.get("origin_side") == "sell":
+                continue
+            tx_type = str(transaction.get("tx_type") or "").lower()
+            quantity = _as_float(transaction.get("quantity")) or 0.0
+            free_cash_delta = quantity if tx_type in {"buy", "deposit", "adjustment"} else -quantity
+            entries.append(
+                {
+                    "entry_type": "transaction",
+                    "entry_id": f"transaction:{transaction['transaction_id']}",
+                    "occurred_at_ms": int(transaction["executed_at_ms"]),
+                    "occurred_at": transaction["executed_at"],
+                    "free_cash_delta": free_cash_delta,
+                    "transaction": transaction,
+                }
+            )
+
+        for swing in swings:
+            if swing.get("origin_side") != "sell":
+                continue
+            executions = list_spot_swing_executions(str(swing["swing_id"]))
+            economics = calculate_swing_economics(swing, executions)
+            if economics.get("status") != "closed":
+                continue
+            cash_delta = _as_float(economics.get("realized_cash_gain_quote"))
+            if cash_delta is None:
+                continue
+            occurred_at_ms = int(
+                swing.get("closed_at_ms")
+                or max((item.get("executed_at_ms") or 0 for item in executions), default=swing["opened_at_ms"])
+            )
+            entries.append(
+                {
+                    "entry_type": "cash",
+                    "entry_id": f"cash:swing:{swing['swing_id']}",
+                    "occurred_at_ms": occurred_at_ms,
+                    "occurred_at": datetime.fromtimestamp(
+                        occurred_at_ms / 1000,
+                        tz=timezone.utc,
+                    ).strftime("%Y-%m-%d %H:%M:%S"),
+                    "cash_event": {
+                        "event_type": "bargain_settlement",
+                        "amount_quote": cash_delta,
+                        "asset_symbol": str(swing["asset_symbol"]),
+                        "quote_symbol": str(swing["quote_symbol"]),
+                        "swing_id": str(swing["swing_id"]),
+                        "label": "Bargain settled",
+                    },
+                }
+            )
+
+        entries.sort(
+            key=lambda item: (int(item["occurred_at_ms"]), str(item["entry_id"])),
+            reverse=True,
+        )
+        paged_entries = entries[normalized_offset:normalized_offset + ASSET_LEDGER_PAGE_SIZE]
+        return {
+            "asset_symbol": normalized_asset,
+            "quote_symbol": normalized_quote,
+            "filter": "all",
+            "entries": paged_entries,
+            "entry_count": len(entries),
+            "entry_limit": ASSET_LEDGER_PAGE_SIZE,
+            "entry_offset": normalized_offset,
+        }
+
     if normalized_filter == "all":
         transactions = list_portfolio_transactions(
             newest_first=False,
@@ -1193,7 +1306,12 @@ def _create_spot_order_intent_preview(
             if normalized_swing_id is not None
             else []
         )
-        free_reserve = _as_float(snapshot["summary"].get("vault_reserve_available")) or 0.0
+        free_reserve = _as_float(
+            snapshot["summary"].get(
+                "vault_reserve_spendable",
+                snapshot["summary"].get("vault_reserve_available"),
+            )
+        ) or 0.0
         if standalone_accumulation or not swing_executions:
             managed_quote = free_reserve
         else:
@@ -1372,7 +1490,7 @@ def create_portfolio_transaction(payload: dict[str, Any]) -> tuple[dict[str, Any
         raise ValueError("Fee cannot be negative.")
 
     transaction = {
-        "transaction_id": str(uuid.uuid4()),
+        "transaction_id": str(payload.get("transaction_id") or uuid.uuid4()),
         "account_key": DEFAULT_ACCOUNT_KEY,
         "executed_at": str(payload.get("executed_at") or "").strip() or _now_text(),
         "tx_type": tx_type,
@@ -1389,6 +1507,10 @@ def create_portfolio_transaction(payload: dict[str, Any]) -> tuple[dict[str, Any
         "custody_location": custody_location,
         "source_custody": None,
         "destination_custody": None,
+        "capital_effect": str(payload.get("capital_effect") or "").strip().lower() or None,
+        "office_transfer_direction": (
+            str(payload.get("office_transfer_direction") or "").strip().lower() or None
+        ),
     }
     transactions = list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY, newest_first=False)
     _validate_nonnegative_stacks([*transactions, transaction])
@@ -1396,6 +1518,54 @@ def create_portfolio_transaction(payload: dict[str, Any]) -> tuple[dict[str, Any
     project_portfolio_transaction(appended)
     snapshot, warnings = load_portfolio_snapshot()
     return {"transaction": appended, "portfolio": snapshot}, warnings
+
+
+def record_confirmed_office_transfer(
+    *,
+    transfer_ref: str,
+    direction: str,
+    quantity: float,
+    external_transfer_id: str | None,
+) -> tuple[dict[str, Any], list[str]]:
+    normalized_ref = str(transfer_ref or "").strip()
+    normalized_direction = str(direction or "").strip().lower()
+    if not normalized_ref:
+        raise ValueError("Office transfer reference is required.")
+    if normalized_direction not in {"to_office", "from_office"}:
+        raise ValueError("Office transfer direction is invalid.")
+    existing_id = f"office-transfer:{normalized_ref}"
+    existing = next(
+        (
+            item
+            for item in list_portfolio_transactions(account_key=DEFAULT_ACCOUNT_KEY)
+            if item.get("transaction_id") == existing_id
+        ),
+        None,
+    )
+    if existing is not None:
+        snapshot, warnings = load_portfolio_snapshot()
+        return {"transaction": existing, "portfolio": snapshot}, warnings
+    is_incoming = normalized_direction == "from_office"
+    return create_portfolio_transaction(
+        {
+            "transaction_id": existing_id,
+            "tx_type": "deposit" if is_incoming else "withdraw",
+            "asset_symbol": DEFAULT_QUOTE,
+            "quote_symbol": DEFAULT_QUOTE,
+            "quantity": quantity,
+            "price": 1.0,
+            "source": "binance_office_transfer",
+            "capital_effect": "contribution" if is_incoming else "withdrawal",
+            "custody_location": "binance",
+            "external_order_id": external_transfer_id,
+            "office_transfer_direction": normalized_direction,
+            "note": (
+                "Transferred USDT from Binance USD-M Futures Office to Treasury."
+                if is_incoming
+                else "Transferred USDT from Treasury to Binance USD-M Futures Office."
+            ),
+        }
+    )
 
 
 def create_custody_transfer(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -1487,6 +1657,23 @@ def update_portfolio_asset_policy(
         ),
         source_ref=f"portfolio_policy_update:{uuid.uuid4()}",
         context=dict(policy),
+    )
+    snapshot, warnings = load_portfolio_snapshot()
+    return {"policy": policy, "portfolio": snapshot}, warnings
+
+
+def update_portfolio_cash_policy(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    retention_pct = _as_float(payload.get("free_cash_retention_pct"))
+    if retention_pct is None or not 0 <= retention_pct <= 100:
+        raise ValueError("Free Cash Retention must be between 0% and 100%.")
+    policy = upsert_portfolio_cash_policy(
+        retention_pct,
+        account_key=DEFAULT_ACCOUNT_KEY,
+    )
+    append_treasury_event(
+        code="treasury_cash_policy_updated",
+        message=f"Updated Free Cash Retention to {_format_quantity(retention_pct)}%.",
+        context=policy,
     )
     snapshot, warnings = load_portfolio_snapshot()
     return {"policy": policy, "portfolio": snapshot}, warnings

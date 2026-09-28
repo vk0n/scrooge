@@ -24,6 +24,7 @@ from bot.spot_signal import RollingSpotSignalMonitor
 from bot.spot_strategy import ProgressiveSpotSwingExecutor
 from bot.state import add_closed_trade, load_state, save_state, update_balance, update_position
 from bot.strategy_chart import StrategyChartRecorder
+from bot.treasury_transfer import TreasuryTransferExecutor
 from bot.trade import (
     close_position,
     get_balance,
@@ -484,6 +485,7 @@ def _build_command_kwargs(
     leverage: float,
     fee_rate: float,
     spot_order_executor: SpotOrderExecutor | None = None,
+    treasury_transfer_executor: TreasuryTransferExecutor | None = None,
 ) -> dict[str, Any]:
     return {
         "symbol": symbol,
@@ -497,6 +499,9 @@ def _build_command_kwargs(
         "leverage": leverage,
         "fee_rate": fee_rate,
         "execute_spot_order_fn": spot_order_executor.execute if spot_order_executor is not None else None,
+        "execute_treasury_transfer_fn": (
+            treasury_transfer_executor.execute if treasury_transfer_executor is not None else None
+        ),
     }
 
 
@@ -583,6 +588,7 @@ if __name__ == "__main__":
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
         chart_recorder = StrategyChartRecorder(symbol)
         spot_order_executor = SpotOrderExecutor(spot_client, logger=technical_logger, db_path=db_path)
+        treasury_transfer_executor = TreasuryTransferExecutor(spot_client, logger=technical_logger)
         recovered_spot_orders = spot_order_executor.recover_pending()
         if recovered_spot_orders:
             technical_logger.info("spot_order_recovery_complete outcomes=%s", recovered_spot_orders)
@@ -596,6 +602,7 @@ if __name__ == "__main__":
             leverage=lvrg,
             fee_rate=0.0005,
             spot_order_executor=spot_order_executor,
+            treasury_transfer_executor=treasury_transfer_executor,
         )
         runtime_context: dict[str, Any] = {"state": state}
 
@@ -814,6 +821,7 @@ if __name__ == "__main__":
                             leverage=lvrg,
                             fee_rate=0.0005,
                             spot_order_executor=spot_order_executor,
+                            treasury_transfer_executor=treasury_transfer_executor,
                         )
                         if live_market_stream is not None:
                             live_market_stream.update_config(

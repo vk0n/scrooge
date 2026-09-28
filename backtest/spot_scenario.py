@@ -58,6 +58,13 @@ def _number(value: Any, *, field_name: str, minimum: float | None = None) -> flo
     return numeric
 
 
+def _percentage(value: Any, *, field_name: str) -> float:
+    numeric = _number(value, field_name=field_name, minimum=0)
+    if numeric > 100:
+        raise ValueError(f"{field_name} cannot exceed 100.")
+    return numeric
+
+
 @dataclass(frozen=True)
 class SpotHistorySegment:
     market_symbol: str
@@ -109,6 +116,7 @@ class SpotBacktestScenario:
     waiter_cleanup: WaiterCleanupConfig = field(default_factory=WaiterCleanupConfig)
     near_floor_pct: float = 1.0
     strong_cash_utilization_pct: float = 80.0
+    free_cash_retention_pct: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -352,6 +360,10 @@ def load_spot_backtest_scenario(
             field_name="strong_cash_utilization_pct",
             minimum=0,
         ),
+        free_cash_retention_pct=_percentage(
+            progression_payload.get("free_cash_retention_pct", 0),
+            field_name="strategy.progression.free_cash_retention_pct",
+        ),
         metadata=dict(payload.get("metadata") or {}),
     )
 
@@ -368,6 +380,9 @@ def scenario_as_dict(scenario: SpotBacktestScenario) -> dict[str, Any]:
         "progression": payload.pop("progression"),
         "waiter_cleanup": payload.pop("waiter_cleanup"),
     }
+    payload["strategy"]["progression"]["free_cash_retention_pct"] = payload.pop(
+        "free_cash_retention_pct"
+    )
     payload["assets"] = {
         asset.symbol: {
             "quantity": asset.quantity,

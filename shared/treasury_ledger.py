@@ -37,6 +37,15 @@ def treasury_transaction_presentation(transaction: dict[str, Any]) -> tuple[str,
     source = str(transaction.get("source") or "manual").strip().lower()
     venue_prefix = "Binance Spot " if source.startswith("binance_") else ""
 
+    office_direction = str(transaction.get("office_transfer_direction") or "").strip().lower()
+    if office_direction in {"to_office", "from_office"}:
+        direction_text = "Treasury to Futures Office" if office_direction == "to_office" else "Futures Office to Treasury"
+        return (
+            "treasury_office_transfer",
+            "negative" if office_direction == "to_office" else "positive",
+            f"Transferred {quantity} {asset} from {direction_text}.",
+        )
+
     if tx_type == "custody_transfer":
         source_name = _custody_name(transaction.get("source_custody"))
         destination_name = _custody_name(transaction.get("destination_custody"))

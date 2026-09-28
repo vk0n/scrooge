@@ -374,7 +374,12 @@ class SpotOrderExecutor:
             if required_quote > quote_free + 0.00000001:
                 raise ValueError("Buy rejected because Binance USDT balance changed after preview.")
             if treasury_accumulation:
-                free_reserve = _as_float(portfolio["summary"].get("vault_reserve_available")) or 0.0
+                free_reserve = _as_float(
+                    portfolio["summary"].get(
+                        "vault_reserve_spendable",
+                        portfolio["summary"].get("vault_reserve_available"),
+                    )
+                ) or 0.0
                 if required_quote > free_reserve + 0.00000001:
                     raise ValueError(
                         "Treasury accumulation rejected because Free Vault Reserve changed after preview."
@@ -384,7 +389,12 @@ class SpotOrderExecutor:
                     swing,
                     list_spot_swing_executions(swing["swing_id"], path=self.db_path),
                 )
-                free_reserve = _as_float(portfolio["summary"].get("vault_reserve_available")) or 0.0
+                free_reserve = _as_float(
+                    portfolio["summary"].get(
+                        "vault_reserve_spendable",
+                        portfolio["summary"].get("vault_reserve_available"),
+                    )
+                ) or 0.0
                 close_budget = free_reserve + calculate_sell_origin_committed_quote(swing, economics)
                 if required_quote > close_budget + 0.00000001:
                     raise ValueError(

@@ -3379,6 +3379,30 @@ button.treasury-summary-card-swings:focus-visible,
   margin: 0;
 }
 
+.treasury-office-transfer {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid rgba(217, 174, 69, 0.32);
+  border-radius: 0.7rem;
+  padding: 0.7rem;
+  background: rgba(63, 47, 14, 0.14);
+}
+
+.treasury-office-transfer > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #eef3fb;
+  font-size: 0.78rem;
+}
+
+.treasury-office-transfer > header strong {
+  color: #d9ae45;
+  font-size: 0.68rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
 .treasury-policy-summary > span {
   color: #d9ae45;
 }
@@ -3470,6 +3494,25 @@ button.treasury-summary-card-swings:focus-visible,
 .treasury-policy-form .dialog-user-btn {
   justify-self: end;
   min-width: 9rem;
+}
+
+.treasury-cash-policy-form {
+  grid-template-columns: minmax(10rem, 16rem) auto;
+  justify-content: start;
+}
+
+.treasury-cash-policy-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.treasury-ledger-cash-delta {
+  min-width: 6.8rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.treasury-cash-ledger-row {
+  grid-template-columns: minmax(6.8rem, auto) minmax(0, 1fr) auto 2.5rem;
 }
 
 .treasury-policy-note {

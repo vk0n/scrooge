@@ -386,7 +386,7 @@ class SpotPortfolioBacktester:
     ) -> tuple[int, int, float, int]:
         symbol, candle, signal, campaign = context
         committed_quote = self._committed_quote_reserve()
-        free_quote = max(0.0, self.usdt - committed_quote)
+        free_quote = self._spendable_free_reserve_quote(committed_quote=committed_quote)
         decision = plan_spot_strategy_action(
             signal,
             self.assets[symbol].holding(candle.close),
@@ -415,7 +415,7 @@ class SpotPortfolioBacktester:
         excluded_close_swing_ids = set(self.permanently_blocked_close_swings)
         while True:
             committed_quote = self._committed_quote_reserve()
-            free_quote = max(0.0, self.usdt - committed_quote)
+            free_quote = self._spendable_free_reserve_quote(committed_quote=committed_quote)
             decision = self._plan_executable_action(
                 symbol,
                 signal=signal,
@@ -759,7 +759,7 @@ class SpotPortfolioBacktester:
                     raise ValueError("Buy rejected because simulated USDT balance changed after planning.")
                 if (
                     action["action_type"] == "accumulate_asset"
-                    and required_quote > self._free_reserve_quote() + 1e-9
+                    and required_quote > self._spendable_free_reserve_quote() + 1e-9
                 ):
                     raise ValueError(
                         "Treasury accumulation rejected because Free Vault Reserve changed after planning."
@@ -1152,6 +1152,12 @@ class SpotPortfolioBacktester:
     def _free_reserve_quote(self) -> float:
         return max(0.0, self.usdt - self._committed_quote_reserve())
 
+    def _spendable_free_reserve_quote(self, *, committed_quote: float | None = None) -> float:
+        committed = self._committed_quote_reserve() if committed_quote is None else committed_quote
+        free_quote = max(0.0, self.usdt - committed)
+        retention_pct = min(100.0, max(0.0, self.scenario.free_cash_retention_pct))
+        return free_quote * (1.0 - retention_pct / 100.0)
+
     def _close_quote_budget(
         self,
         decision: dict[str, Any],
@@ -1163,7 +1169,11 @@ class SpotPortfolioBacktester:
         swing = self.swings.get(str(decision.get("swing_id") or ""))
         if swing is None or swing.get("origin_side") != "sell":
             return self.usdt
-        free_quote = self._free_reserve_quote() if free_quote_reserve is None else free_quote_reserve
+        free_quote = (
+            self._spendable_free_reserve_quote()
+            if free_quote_reserve is None
+            else free_quote_reserve
+        )
         return min(self.usdt, max(0.0, free_quote) + self._swing_committed_quote(swing))
 
     def _record_inventory(self, timestamp_ms: int, prices: dict[str, float]) -> None:

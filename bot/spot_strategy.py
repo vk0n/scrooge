@@ -113,7 +113,16 @@ class ProgressiveSpotSwingExecutor:
         )
         free_quote_reserve = min(
             max(0.0, float(exchange.get("usdt_free") or 0.0)),
-            max(0.0, float(summary.get("vault_reserve_available") or 0.0)),
+            max(
+                0.0,
+                float(
+                    summary.get(
+                        "vault_reserve_spendable",
+                        summary.get("vault_reserve_available"),
+                    )
+                    or 0.0
+                ),
+            ),
         )
         prioritized: list[tuple[tuple[int, int, float, int], dict[str, Any]]] = []
         for index, signal in enumerate(signals):
@@ -343,7 +352,16 @@ class ProgressiveSpotSwingExecutor:
             0.0,
             float(summary.get("vault_reserve") or summary.get("dry_powder") or 0.0),
         )
-        free_quote = max(0.0, float(summary.get("vault_reserve_available") or 0.0))
+        free_quote = max(
+            0.0,
+            float(
+                summary.get(
+                    "vault_reserve_spendable",
+                    summary.get("vault_reserve_available"),
+                )
+                or 0.0
+            ),
+        )
         return (
             holding,
             min(exchange_quote, managed_quote),

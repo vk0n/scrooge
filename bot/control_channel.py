@@ -31,6 +31,7 @@ SUPPORTED_ACTIONS = {
     "update_sl",
     "update_tp",
     "spot_order",
+    "treasury_transfer",
 }
 TRADE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 technical_logger = get_technical_logger()
@@ -242,6 +243,7 @@ def process_pending_commands(
     leverage: float | None = None,
     fee_rate: float | None = None,
     execute_spot_order_fn: Callable[[str], dict[str, Any]] | None = None,
+    execute_treasury_transfer_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """
     Consume queued control commands and apply them to bot runtime state.
@@ -612,6 +614,29 @@ def process_pending_commands(
                     swing_id=command_result.get("swing_id"),
                     ledger_transaction_id=command_result.get("ledger_transaction_id"),
                 )
+            elif action == "treasury_transfer":
+                if execute_treasury_transfer_fn is None:
+                    raise ValueError("Treasury-transfer executor is not configured")
+                command_result = execute_treasury_transfer_fn(command_payload)
+                direction = str(command_result.get("direction") or "")
+                quantity = _as_float(command_result.get("quantity"))
+                message = (
+                    f"Transferred {quantity if quantity is not None else 'confirmed'} USDT "
+                    f"{'to' if direction == 'to_office' else 'from'} the Futures Office."
+                )
+                emit_event(
+                    code="treasury_office_transfer_executed",
+                    category="command",
+                    ts=event_ts,
+                    persist_ui=True,
+                    ledger_scope="treasury",
+                    ledger_source_ref=(
+                        f"portfolio_transaction:{command_result.get('ledger_transaction_id')}"
+                        if command_result.get("ledger_transaction_id")
+                        else None
+                    ),
+                    **command_result,
+                )
             else:
                 raise ValueError(f"Unsupported action: {action}")
 
@@ -624,7 +649,7 @@ def process_pending_commands(
                 ts=utc_now_text(TRADE_TIMESTAMP_FORMAT),
                 level="warning",
                 persist_ui=True,
-                ledger_scope="treasury" if action == "spot_order" else "trades",
+                ledger_scope="treasury" if action in {"spot_order", "treasury_transfer"} else "trades",
                 ledger_source_ref=(
                     f"spot_order:{command_payload.get('intent_id')}:failed" if action == "spot_order" else None
                 ),
