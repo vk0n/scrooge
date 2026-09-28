@@ -8,6 +8,7 @@ from api.services.portfolio_service import (
     record_confirmed_office_transfer,
     treasury_transfer_enabled,
 )
+from shared.runtime_db import consume_portfolio_retained_cash
 
 
 def _number(value: Any) -> float:
@@ -37,15 +38,31 @@ class TreasuryTransferExecutor:
             raise ValueError("Office transfer direction must be to_office or from_office.")
         quantity = _number(payload.get("quantity"))
         transfer_ref = str(payload.get("transfer_ref") or "").strip()
+        use_protected_cash = bool(payload.get("use_protected_cash"))
         if not transfer_ref:
             raise ValueError("Office transfer reference is required.")
+        if direction != "to_office" and use_protected_cash:
+            raise ValueError("Protected Cash applies only to Treasury-to-Office transfers.")
 
         portfolio, _ = load_portfolio_snapshot()
+        protected_required = 0.0
         if direction == "to_office":
             available = float(portfolio["summary"].get("vault_reserve_available") or 0.0)
+            retained = float(portfolio["summary"].get("vault_reserve_retained") or 0.0)
+            spendable_value = portfolio["summary"].get("vault_reserve_spendable")
+            spendable = (
+                float(spendable_value)
+                if spendable_value is not None
+                else max(0.0, available - retained)
+            )
             exchange_free = float(portfolio["exchange"].get("usdt_free") or 0.0)
-            if quantity > min(available, exchange_free) + 1e-8:
+            permitted_reserve = spendable + (retained if use_protected_cash else 0.0)
+            if quantity > min(permitted_reserve, exchange_free) + 1e-8:
+                hint = " Enable Protected Cash for this transfer." if not use_protected_cash and retained > 0 else ""
+                raise ValueError(f"Office transfer exceeds currently spendable Treasury USDT.{hint}")
+            if quantity > available + 1e-8:
                 raise ValueError("Office transfer exceeds currently available Treasury USDT.")
+            protected_required = max(0.0, quantity - spendable)
             transfer_type = "MAIN_UMFUTURE"
         else:
             balances = self.client.futures_account_balance()
@@ -80,8 +97,26 @@ class TreasuryTransferExecutor:
             direction=direction,
             quantity=quantity,
             external_transfer_id=external_id,
+            protected_cash_required=protected_required,
         )
         transaction = recorded["transaction"]
+        protected_required = float(
+            transaction.get("protected_cash_required")
+            if transaction.get("protected_cash_required") is not None
+            else protected_required
+        )
+        protected_use = None
+        if protected_required > 0:
+            protected_use = consume_portfolio_retained_cash(
+                protected_required,
+                reference_id=f"office-transfer:{transfer_ref}:protected-cash",
+                use_type="office_transfer",
+                context={
+                    "transfer_ref": transfer_ref,
+                    "quantity": quantity,
+                    "direction": direction,
+                },
+            )
         self.logger.info(
             "treasury_office_transfer_completed direction=%s quantity=%s transfer_ref=%s exchange_id=%s",
             direction,
@@ -96,4 +131,9 @@ class TreasuryTransferExecutor:
             "transfer_ref": transfer_ref,
             "exchange_transfer_id": external_id,
             "ledger_transaction_id": transaction["transaction_id"],
+            "protected_cash_used": (
+                float(protected_use["consumed_quote"])
+                if protected_use is not None
+                else 0.0
+            ),
         }

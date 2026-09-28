@@ -505,7 +505,7 @@ _HTML = r'''<!doctype html>
     .objective { color: var(--gold); text-transform: capitalize; }
     .gain-breakdown { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; white-space: nowrap; }
     .cleanup-reasons { display: grid; gap: 8px; }
-    .cleanup-reason { display: grid; grid-template-columns: minmax(150px,1fr) 70px 120px; gap: 12px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 9px; background: #0a0f16; font-size: 11px; }
+    .cleanup-reason { display: grid; grid-template-columns: minmax(130px,.7fr) minmax(230px,1fr) 120px; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 9px; background: #0a0f16; font-size: 11px; }
     .cleanup-reason > :not(:first-child) { text-align: right; }
     .asset-detail > td { padding: 0; border-top: 0; text-align: left; background: #080c12; }
     .asset-ledger { padding: 15px; border-top: 1px solid #344158; border-bottom: 1px solid var(--line); }
@@ -574,6 +574,8 @@ _HTML = r'''<!doctype html>
       .bargain-score { grid-template-columns: 1fr 1fr; }
       .analysis-kpis { grid-template-columns: repeat(3, 1fr); }
       .analysis-grid { grid-template-columns: 1fr; }
+      .cleanup-reason { grid-template-columns: minmax(130px,1fr) auto; }
+      .cleanup-reason > span:not(:first-child) { grid-column: 1 / -1; grid-row: 2; text-align: left; }
       .bar-row { grid-template-columns: 45px 1fr 68px; }
       .metric:last-child { grid-column: 1 / -1; }
       .ledger-head { align-items: flex-start; flex-direction: column; }
@@ -691,7 +693,7 @@ _HTML = r'''<!doctype html>
       </article>
 
       <article class="card full" id="waiterCleanup">
-        <div class="card-head"><div><h2>Waiter Cleanup</h2><div class="subtitle">Loss realization, capacity relief, and capital still tied in unfinished Bargains.</div></div><span class="tag" id="cleanupMode"></span></div>
+        <div class="card-head"><div><h2>Waiter Cleanup</h2><div class="subtitle">Cash flow, coin inventory, capacity relief, and capital still tied in unfinished Bargains.</div></div><span class="tag" id="cleanupMode"></span></div>
         <div class="analysis-kpis" id="cleanupKpis"></div>
         <div class="analysis-grid">
           <section class="analysis-panel">
@@ -725,6 +727,7 @@ _HTML = r'''<!doctype html>
     const money = (value, digits = 2) => `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString("en-US", {minimumFractionDigits: digits, maximumFractionDigits: digits})}`;
     const pct = value => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
     const qty = value => value.toLocaleString("en-US", {maximumFractionDigits: 4});
+    const signedQty = value => `${value > 0 ? "+" : ""}${qty(value)}`;
     const tone = value => value > 0 ? "positive" : value < 0 ? "negative" : "";
     const optionalMoney = (value, digits = 2) => value === null || value === undefined ? "N/A" : money(value, digits);
     const shortDate = value => new Date(value).toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"2-digit"});
@@ -742,7 +745,7 @@ _HTML = r'''<!doctype html>
     const metrics = [
       ["Final Treasury", money(data.portfolio.final_treasury_value), `Started at ${money(data.portfolio.starting_treasury_value)}`, "primary gold"],
       ["Edge vs HODL", pct(edgeMetrics.difference_pct_points || 0), `${money(edgeMetrics.quote || edge)} / HODL ${pct(edgeMetrics.hodl_return_pct || 0)}`, tone(edgeMetrics.difference_pct_points || 0)],
-      ["Free Reserve", money(reserveMetrics.quote || 0), `${pct(reserveMetrics.pct_of_initial_invested_capital || 0)} of initial capital`, ""],
+      ["Free Reserve", money(reserveMetrics.quote || 0), `Retained ${money(reserveMetrics.retained_quote || 0)} / Spendable ${money(reserveMetrics.spendable_quote || 0)}`, ""],
       ["Asset Recovery", pct(recoveryMetrics.average_effective_quantity_pct || 0), `Weighted ${pct(recoveryMetrics.weighted_effective_quantity_pct || 0)}`, tone((recoveryMetrics.average_effective_quantity_pct || 0) - 100)],
       ["Max Drawdown", pct(data.portfolio.maximum_treasury_drawdown_pct), `HODL ${pct(data.hodlDrawdownPct)}`, "negative"],
       ["Execution Fees", money(data.fees), `${data.rejectedOrders.toLocaleString()} filtered attempts`, ""],
@@ -924,10 +927,13 @@ _HTML = r'''<!doctype html>
     const cleanupOpen=cleanup.open_bargains||{};
     const cleanupCapacity=cleanup.capacity||{};
     const cleanupLock=cleanup.capital_lock||{};
+    const cleanupAccounting=cleanup.accounting||{};
     document.getElementById("cleanupMode").textContent=cleanup.enabled?"AUTOMATIC":"BASELINE / DISABLED";
     const cleanupKpis=[
       ["Cleanup Closes",cleanup.cleanup_closes_total||0,`${cleanup.cleanup_attempts_total||0} closing executions`,""],
-      ["Realized Cleanup Loss",money(cleanup.realized_cleanup_loss_quote||0),`Profit ${money(cleanup.realized_cleanup_profit_quote||0)}`,tone(cleanup.realized_cleanup_loss_quote||0)],
+      ["Cleanup Net PnL",money(cleanupAccounting.economic_pnl_quote||0),`Loss ${money(cleanupAccounting.economic_loss_quote||0)} · gain ${money(cleanupAccounting.economic_profit_quote||0)}`,tone(cleanupAccounting.economic_pnl_quote||0)],
+      ["Cash Change",money(cleanupAccounting.cash_change_quote||0),`Loss ${money(cleanupAccounting.cash_loss_quote||0)} · gain ${money(cleanupAccounting.cash_gain_quote||0)}`,tone(cleanupAccounting.cash_change_quote||0)],
+      ["Coin Change",money(cleanupAccounting.asset_value_change_quote||0),`Loss ${money(cleanupAccounting.asset_value_loss_quote||0)} · gain ${money(cleanupAccounting.asset_value_gain_quote||0)}`,tone(cleanupAccounting.asset_value_change_quote||0)],
       ["Cap Prevented",cleanupCapacity.open_bargains_prevented_by_cap||0,`${cleanupCapacity.capacity_forced_hold_cycles||0} forced HOLD cycles`,""],
       ["Open at End",cleanupOpen.at_end||0,`${cleanupOpen.underwater_at_end||0} underwater`,cleanupOpen.underwater_at_end?"negative":"positive"],
       ["90+ Days",cleanupOpen.age_90_plus||0,`${cleanupOpen.age_180_plus||0} at 180d+`,cleanupOpen.age_90_plus?"negative":"positive"],
@@ -935,7 +941,7 @@ _HTML = r'''<!doctype html>
     ];
     document.getElementById("cleanupKpis").innerHTML=cleanupKpis.map(item=>`<div class="analysis-kpi"><span>${item[0]}</span><strong class="${item[3]}">${item[1]}</strong><small>${item[2]}</small></div>`).join("");
     const cleanupReasonLabel=value=>value.replace("_cleanup","").replaceAll("_"," ").replace(/\b\w/g,letter=>letter.toUpperCase());
-    document.getElementById("cleanupReasons").innerHTML=Object.entries(cleanup.by_reason||{}).map(([reason,item])=>`<div class="cleanup-reason"><strong>${cleanupReasonLabel(reason)}</strong><span>${item.closes} closes</span><strong class="${tone(item.realized_pnl_quote)}">${money(item.realized_pnl_quote)}</strong></div>`).join("");
+    document.getElementById("cleanupReasons").innerHTML=Object.entries(cleanup.by_reason||{}).map(([reason,item])=>`<div class="cleanup-reason"><strong>${cleanupReasonLabel(reason)}</strong><span>${item.closes} closes<br>Cash ${money(item.cash_change_quote||0)} · coins ${money(item.asset_value_change_quote||0)}</span><strong class="${tone(item.economic_pnl_quote||0)}">${money(item.economic_pnl_quote||0)}</strong></div>`).join("");
     const cleanupFees=Object.entries(cleanup.cleanup_fees_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"None";
     const cleanupCapital=[
       ["BUY Capital Tied",money(cleanupLock.open_buy_origin_quote||0)],
@@ -943,6 +949,7 @@ _HTML = r'''<!doctype html>
       ["Restore Cost",money(cleanupLock.value_required_to_restore_sell_inventory||0)],
       ["Final Reserve",money(cleanupLock.final_shared_usdt||0)],
       ["Minimum Reserve",money(cleanupLock.minimum_shared_usdt||0)],
+      ["Cleanup Coin Delta",Object.entries(cleanupAccounting.asset_quantity_change_by_asset||{}).map(([asset,value])=>`${signedQty(value)} ${asset}`).join(" · ")||"None"],
       ["Cleanup Fees",cleanupFees],
     ];
     document.getElementById("cleanupCapital").innerHTML=cleanupCapital.map(item=>`<div class="score"><span>${item[0]}</span><strong>${item[1]}</strong></div>`).join("");

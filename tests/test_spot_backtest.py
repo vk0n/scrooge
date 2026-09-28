@@ -16,6 +16,8 @@ from backtest.spot_market_data import (
 )
 from backtest.spot_reporting import (
     _accumulation_metrics,
+    _cleanup_accounting_rows,
+    _cleanup_accounting_summary,
     build_spot_backtest_report,
     write_spot_backtest_artifacts,
 )
@@ -83,6 +85,7 @@ def scenario(
     starting_usdt: float = 1000,
     fee_rate: float = 0,
     slippage_bps: float = 0,
+    retention_pct: float = 0,
 ) -> SpotBacktestScenario:
     start = datetime(2026, 1, 10, tzinfo=UTC)
     return SpotBacktestScenario(
@@ -105,6 +108,7 @@ def scenario(
         ),
         data_cache_dir=Path("/tmp/spot-data"),
         output_dir=Path("/tmp/spot-output"),
+        free_cash_retention_pct=retention_pct,
     )
 
 
@@ -170,6 +174,57 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(updates[0][0], 0)
         self.assertGreater(updates[0][1], 0)
         self.assertEqual(updates[-1], (updates[0][1], updates[0][1]))
+
+    def test_cleanup_report_separates_cash_and_coin_losses(self):
+        rows = _cleanup_accounting_rows(
+            [
+                {
+                    "asset_symbol": "AAA",
+                    "close_reason": "deep_loss_cleanup",
+                    "economics": {
+                        "realized_cash_gain_quote": 40,
+                        "realized_net_asset_change": -2,
+                        "realized_pnl_quote": -200,
+                    },
+                    "executions": [
+                        {
+                            "price": 120,
+                            "reason": {
+                                "action_type": "close",
+                                "close_reason": "deep_loss_cleanup",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "asset_symbol": "BBB",
+                    "close_reason": "age_l3_cleanup",
+                    "economics": {
+                        "realized_cash_gain_quote": -50,
+                        "realized_net_asset_change": 0,
+                        "realized_pnl_quote": -50,
+                    },
+                    "executions": [
+                        {
+                            "price": 10,
+                            "reason": {
+                                "action_type": "close",
+                                "close_reason": "age_l3_cleanup",
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        accounting = _cleanup_accounting_summary(rows)
+
+        self.assertEqual(accounting["cash_change_quote"], -10)
+        self.assertEqual(accounting["cash_loss_quote"], -50)
+        self.assertEqual(accounting["cash_gain_quote"], 40)
+        self.assertEqual(accounting["asset_value_change_quote"], -240)
+        self.assertEqual(accounting["asset_quantity_change_by_asset"], {"AAA": -2})
+        self.assertEqual(accounting["economic_pnl_quote"], -250)
+        self.assertEqual(accounting["reconciliation_delta_quote"], 0)
 
     def test_live_and_backtest_reference_the_same_decision_function(self):
         self.assertIs(
@@ -841,6 +896,55 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             places=3,
         )
         self.assertTrue(all(item["origin_side"] == "sell" for item in result.swings))
+
+    def test_cash_retention_accrues_from_profit_and_remains_a_fixed_floor(self):
+        config = scenario(
+            (asset("AAA"),),
+            starting_usdt=1000,
+            retention_pct=20,
+        )
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 90))
+        replay.swings["cash-profit"] = {
+            "swing_id": "cash-profit",
+            "asset_symbol": "AAA",
+            "quote_symbol": "USDT",
+            "origin_side": "sell",
+            "trading_objective": "accumulate_cash",
+            "status": "open",
+            "source": "strategy",
+            "opened_at_ms": replay.start_ms,
+            "executions": [
+                {
+                    "execution_id": "cash-profit-open",
+                    "side": "sell",
+                    "quantity": 10,
+                    "price": 100,
+                    "quote_quantity": 1000,
+                    "fee_amount": 0,
+                    "fee_asset": "USDT",
+                }
+            ],
+        }
+
+        replay._execute_action(
+            "AAA",
+            {
+                "action_type": "close",
+                "side": "buy",
+                "swing_id": "cash-profit",
+                "requested_quantity": 10,
+                "reason": {"action_type": "close", "close_reason": "profit_target"},
+            },
+            observed_price=90,
+            timestamp_ms=replay.start_ms,
+        )
+
+        self.assertEqual(replay._free_reserve_quote(), 100)
+        self.assertEqual(replay._retained_free_reserve_quote(), 20)
+        self.assertEqual(replay._spendable_free_reserve_quote(), 80)
+        replay.usdt -= 70
+        self.assertEqual(replay._retained_free_reserve_quote(), 20)
+        self.assertEqual(replay._spendable_free_reserve_quote(), 10)
 
     def test_accumulation_report_attributes_earned_cash_to_asset_buys(self):
         metrics = _accumulation_metrics(

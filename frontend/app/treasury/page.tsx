@@ -22,6 +22,7 @@ type PortfolioSummary = {
   vault_reserve_available: number;
   vault_reserve_committed: number;
   vault_reserve_retained: number;
+  vault_reserve_retained_accrued: number;
   vault_reserve_spendable: number;
   free_cash_retention_pct: number;
   largest_position: PortfolioHolding | null;
@@ -75,6 +76,10 @@ type SpotOrderIntent = {
   policy_sellable_quantity: number | null;
   projected_holding_quantity: number | null;
   status: string;
+  request?: {
+    use_protected_cash?: boolean;
+    estimated_protected_cash_required?: number;
+  };
   preview_expires_at_ms?: number;
 };
 
@@ -335,6 +340,7 @@ type UpdateCashPolicyResponse = {
   policy: {
     account_key: string;
     free_cash_retention_pct: number;
+    retained_quote_balance: number;
   };
   portfolio: Omit<PortfolioPayload, "warnings">;
   warnings: string[];
@@ -684,6 +690,7 @@ function CustodyPanel({
   const [officeQuantity, setOfficeQuantity] = useState<string>("");
   const [officeBusy, setOfficeBusy] = useState<boolean>(false);
   const [officeStage, setOfficeStage] = useState<string | null>(null);
+  const [officeUseProtected, setOfficeUseProtected] = useState<boolean>(false);
   const available = custodyQuantity(holding, source);
   const releasable = custodyQuantity(holding, boundaryCustody);
   const tradeAvailable = Boolean(
@@ -711,6 +718,7 @@ function CustodyPanel({
           direction: officeDirection,
           quantity: amount,
           confirmation: "CONFIRM_TREASURY_TRANSFER",
+          use_protected_cash: officeDirection === "to_office" && officeUseProtected,
         },
       });
       const command = await waitForControlCommand(queued.command_id);
@@ -863,6 +871,7 @@ function CustodyPanel({
             ].join(":")}
             holding={holding}
             exchange={exchange}
+            summary={summary}
             onExecuted={onExecuted}
           />
         ) : null}
@@ -879,6 +888,7 @@ function CustodyPanel({
                   value={officeDirection}
                   onChange={(event) => {
                     setOfficeDirection(event.target.value as "to_office" | "from_office");
+                    setOfficeUseProtected(false);
                     setOfficeStage(null);
                   }}
                   disabled={officeBusy}
@@ -892,7 +902,11 @@ function CustodyPanel({
                 <input
                   type="number"
                   min="0.01"
-                  max={officeDirection === "to_office" ? summary.vault_reserve_available : undefined}
+                  max={officeDirection === "to_office"
+                    ? officeUseProtected
+                      ? summary.vault_reserve_available
+                      : summary.vault_reserve_spendable
+                    : undefined}
                   step="0.01"
                   value={officeQuantity}
                   placeholder={officeDirection === "to_office"
@@ -903,6 +917,17 @@ function CustodyPanel({
                   required
                 />
               </label>
+              {officeDirection === "to_office" && summary.vault_reserve_retained > 0 ? (
+                <label className="treasury-protected-cash-option">
+                  <input
+                    type="checkbox"
+                    checked={officeUseProtected}
+                    onChange={(event) => setOfficeUseProtected(event.target.checked)}
+                    disabled={officeBusy}
+                  />
+                  <span>Allow up to {formatCurrency(summary.vault_reserve_retained)} Protected Cash</span>
+                </label>
+              ) : null}
               <button
                 type="submit"
                 className="dialog-user-btn"
@@ -913,7 +938,7 @@ function CustodyPanel({
             </form>
             <p className="treasury-custody-disclaimer">
               {exchange?.treasury_transfer_enabled
-                ? `Available Treasury cash: ${formatCurrency(summary.vault_reserve_available)}. Retained policy cash may be moved only by this explicit owner action.`
+                ? `Spendable ${formatCurrency(summary.vault_reserve_spendable)} · Protected ${formatCurrency(summary.vault_reserve_retained)}. Protected cash requires explicit authorization.`
                 : "Real Office transfers are locked by the Treasury transfer safety switch."}
             </p>
             {officeStage ? <p className="treasury-spot-order-stage">{officeStage}</p> : null}
@@ -1108,6 +1133,7 @@ function SpotOrderPanel({
   quoteSymbol = "USDT",
   treasuryIntake = false,
   exchange,
+  summary,
   onExecuted,
 }: {
   holding?: PortfolioHolding;
@@ -1115,6 +1141,7 @@ function SpotOrderPanel({
   quoteSymbol?: string;
   treasuryIntake?: boolean;
   exchange: PortfolioExchange | null;
+  summary: PortfolioSummary;
   onExecuted: () => Promise<void>;
 }): JSX.Element {
   const resolvedAsset = holding?.asset_symbol ?? assetSymbol?.trim().toUpperCase() ?? "";
@@ -1125,6 +1152,7 @@ function SpotOrderPanel({
   const [stage, setStage] = useState<string | null>(null);
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [useProtectedCash, setUseProtectedCash] = useState<boolean>(false);
   const executionReady = Boolean(exchange?.spot_execution_enabled && exchange?.is_balance_verified && exchange?.can_trade);
 
   function resetPreview(nextSide?: "buy" | "sell"): void {
@@ -1134,6 +1162,7 @@ function SpotOrderPanel({
     setPreview(null);
     setStage(null);
     setError(null);
+    if (nextSide === "sell") setUseProtectedCash(false);
   }
 
   async function requestPreview(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -1150,6 +1179,7 @@ function SpotOrderPanel({
           side,
           quantity: asNumber(quantity),
           treasury_intake: treasuryIntake,
+          use_protected_cash: side === "buy" && useProtectedCash,
         },
       });
       setPreview(result);
@@ -1242,12 +1272,29 @@ function SpotOrderPanel({
               disabled={busy}
             />
           </label>
+          {side === "buy" && summary.vault_reserve_retained > 0 ? (
+            <label className="treasury-protected-cash-option treasury-spot-protected-option">
+              <input
+                type="checkbox"
+                checked={useProtectedCash}
+                onChange={(event) => {
+                  setUseProtectedCash(event.target.checked);
+                  setPreview(null);
+                  setStage(null);
+                }}
+                disabled={busy}
+              />
+              <span>Allow Protected Cash ({formatCurrency(summary.vault_reserve_retained)})</span>
+            </label>
+          ) : null}
           <button type="submit" className="dialog-user-btn" disabled={busy || !executionReady || !resolvedAsset}>
             {busy ? "Checking..." : treasuryIntake ? "Preview Real Buy" : "Preview Real Order"}
           </button>
         </form>
         <div className="treasury-spot-order-capacity">
           <span>Available USDT <strong>{formatCurrency(exchange?.usdt_free)}</strong></span>
+          <span>Spendable Reserve <strong>{formatCurrency(summary.vault_reserve_spendable)}</strong></span>
+          <span>Protected <strong>{formatCurrency(summary.vault_reserve_retained)}</strong></span>
           {holding ? (
             <>
               <span>Binance Free <strong>{formatNumber(holding.exchange_binance_free_quantity, 8)} {holding.asset_symbol}</strong></span>
@@ -1266,6 +1313,9 @@ function SpotOrderPanel({
             <div>
               <span>Estimated Price <strong>{formatCurrency(preview.estimated_price, 6)}</strong></span>
               <span>Estimated Value <strong>{formatCurrency(preview.estimated_quote_value)}</strong></span>
+              {(preview.request?.estimated_protected_cash_required ?? 0) > 0 ? (
+                <span>Protected Cash <strong>{formatCurrency(preview.request?.estimated_protected_cash_required)}</strong></span>
+              ) : null}
               <span>Projected Holding <strong>{formatNumber(preview.projected_holding_quantity, 8)} {preview.asset_symbol}</strong></span>
               {treasuryIntake ? (
                 <span>Initial Policy <strong>100% protected · Accumulate Cash</strong></span>
@@ -1470,6 +1520,7 @@ function CashPolicyPanel({
   onUpdated: (response: UpdateCashPolicyResponse) => void;
 }): JSX.Element {
   const [retentionPct, setRetentionPct] = useState<string>(String(summary.free_cash_retention_pct));
+  const [releaseQuantity, setReleaseQuantity] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
@@ -1490,6 +1541,29 @@ function CashPolicyPanel({
       onUpdated(response);
     } catch (policyError) {
       setError(policyError instanceof Error ? policyError.message : "Could not update the cash policy.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function releaseProtectedCash(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const quantity = asNumber(releaseQuantity);
+    if (quantity === null || quantity <= 0) return;
+    if (!window.confirm(
+      `Release ${formatCurrency(quantity)} from Protected Cash to ordinary Free Vault Reserve?\n\nScrooge may use released cash for automatic buys and loss coverage.`
+    )) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetchApi<UpdateCashPolicyResponse>("/api/portfolio/cash-policy/release", {
+        method: "POST",
+        body: { quantity },
+      });
+      setReleaseQuantity("");
+      onUpdated(response);
+    } catch (releaseError) {
+      setError(releaseError instanceof Error ? releaseError.message : "Could not release Protected Cash.");
     } finally {
       setSaving(false);
     }
@@ -1537,8 +1611,28 @@ function CashPolicyPanel({
             {saving ? "Saving..." : "Update Policy"}
           </button>
         </form>
+        <form className="treasury-policy-form treasury-cash-release-form" onSubmit={(event) => void releaseProtectedCash(event)}>
+          <label className="dialog-user-field">
+            Release to Free Reserve (USDT)
+            <input
+              type="number"
+              min="0.01"
+              max={summary.vault_reserve_retained}
+              step="0.01"
+              value={releaseQuantity}
+              placeholder={formatNumber(summary.vault_reserve_retained, 2)}
+              onChange={(event) => setReleaseQuantity(event.target.value)}
+              disabled={saving || summary.vault_reserve_retained <= 0}
+              required
+            />
+          </label>
+          <button type="submit" className="dialog-user-btn" disabled={saving || summary.vault_reserve_retained <= 0}>
+            Release Cash
+          </button>
+        </form>
         <p className="treasury-policy-note">
-          Scrooge cannot spend retained cash on accumulation buys or loss coverage. Committed Bargain cash is unaffected.
+          This percentage of every realized cash profit is added to protected reserve. Automatic actions cannot spend
+          it. You can explicitly release it, transfer it to Office, or authorize it for a manual buy or loss close.
         </p>
         {error ? <p className="form-error">{error}</p> : null}
       </div> : null}
@@ -1549,16 +1643,19 @@ function CashPolicyPanel({
 function SwingLedgerRow({
   swing,
   occurredAt,
+  summary,
   onBargainClosed,
 }: {
   swing: SpotSwing;
   occurredAt: string;
+  summary: PortfolioSummary;
   onBargainClosed: () => Promise<void>;
 }): JSX.Element {
   const [expanded, setExpanded] = useState<boolean>(false);
   const [closing, setClosing] = useState<boolean>(false);
   const [closeStatus, setCloseStatus] = useState<string | null>(null);
   const [closeError, setCloseError] = useState<string | null>(null);
+  const [useProtectedCash, setUseProtectedCash] = useState<boolean>(false);
   const economics = swing.economics;
   const pnl = economics.status === "closed"
     ? economics.realized_pnl_quote
@@ -1567,6 +1664,10 @@ function SwingLedgerRow({
   const fees = Object.entries(economics.fees_by_asset);
   const reason = swingReasonText(swing.strategy_reason);
   const canClose = economics.status !== "closed" && economics.opening_quantity > 0 && economics.remaining_quantity > 0;
+  const canAuthorizeProtectedClose = canClose
+    && swing.origin_side === "sell"
+    && (economics.unrealized_pnl_quote ?? 0) < 0
+    && summary.vault_reserve_retained > 0;
 
   async function closeBargain(): Promise<void> {
     setClosing(true);
@@ -1575,13 +1676,16 @@ function SwingLedgerRow({
     try {
       const preview = await fetchApi<SpotOrderIntent>(
         `/api/portfolio/bargains/${encodeURIComponent(swing.swing_id)}/close-preview`,
-        { method: "POST" }
+        { method: "POST", body: { use_protected_cash: useProtectedCash } }
       );
       const confirmed = window.confirm(
         `Close ${swingIdentity(swing.swing_id)} with a REAL Binance Spot ${preview.side.toUpperCase()} for ` +
         `${formatNumber(preview.requested_quantity, 8)} ${preview.asset_symbol}?\n\n` +
         `Estimated value: ${formatCurrency(preview.estimated_quote_value)}\n` +
         `Current open PnL: ${formatSignedCurrency(economics.unrealized_pnl_quote)}\n` +
+        ((preview.request?.estimated_protected_cash_required ?? 0) > 0
+          ? `Protected Cash required: ${formatCurrency(preview.request?.estimated_protected_cash_required)}\n`
+          : "") +
         "This action may execute immediately and cannot be undone."
       );
       if (!confirmed) {
@@ -1679,6 +1783,20 @@ function SwingLedgerRow({
           {canClose ? (
             <div className="treasury-swing-close">
               <div aria-live="polite">
+                {canAuthorizeProtectedClose ? (
+                  <label className="treasury-protected-cash-option treasury-close-protected-option">
+                    <input
+                      type="checkbox"
+                      checked={useProtectedCash}
+                      onChange={(event) => setUseProtectedCash(event.target.checked)}
+                      disabled={closing}
+                    />
+                    <span>
+                      Use Protected Cash if committed + spendable cash is insufficient
+                      ({formatCurrency(summary.vault_reserve_retained)} available)
+                    </span>
+                  </label>
+                ) : null}
                 {closeStatus ? <p>{closeStatus}</p> : null}
                 {closeError ? <p className="form-error">{closeError}</p> : null}
               </div>
@@ -1745,9 +1863,11 @@ function LedgerSortControls({
 
 function PortfolioBargainLedger({
   refreshKey,
+  summary,
   onBargainClosed,
 }: {
   refreshKey: string;
+  summary: PortfolioSummary;
   onBargainClosed: () => Promise<void>;
 }): JSX.Element {
   const [ledger, setLedger] = useState<BargainLedgerPayload | null>(null);
@@ -1851,6 +1971,7 @@ function PortfolioBargainLedger({
                 key={entry.entry_id}
                 swing={entry.swing}
                 occurredAt={entry.occurred_at}
+                summary={summary}
                 onBargainClosed={async () => {
                   await onBargainClosed();
                   await loadEntries(offset);
@@ -1897,11 +2018,13 @@ function PortfolioBargainLedger({
 
 function AssetLedger({
   holding,
+  summary,
   refreshKey,
   onPortfolioUpdated,
   onReload,
 }: {
   holding: PortfolioHolding;
+  summary: PortfolioSummary;
   refreshKey: string;
   onPortfolioUpdated: (response: CreatePortfolioTransactionResponse) => void;
   onReload: () => Promise<void>;
@@ -2065,6 +2188,7 @@ function AssetLedger({
                     key={entry.entry_id}
                     swing={entry.swing}
                     occurredAt={entry.occurred_at}
+                    summary={summary}
                     onBargainClosed={async () => {
                       await onReload();
                       await loadEntries(offset);
@@ -2320,6 +2444,7 @@ function HoldingCard({
           ) : null}
           <AssetLedger
             holding={holding}
+            summary={summary}
             refreshKey={refreshKey}
             onPortfolioUpdated={onPortfolioUpdated}
             onReload={onReload}
@@ -2561,6 +2686,7 @@ export default function TreasuryPage(): JSX.Element {
                 summary?.closed_swing_count ?? 0,
                 summary?.prices_updated_at ?? "",
               ].join(":")}
+              summary={summary!}
               onBargainClosed={() => loadPortfolio()}
             />
           ) : null}
@@ -2804,6 +2930,7 @@ export default function TreasuryPage(): JSX.Element {
                     quoteSymbol="USDT"
                     treasuryIntake
                     exchange={exchange}
+                    summary={summary!}
                     onExecuted={async () => {
                       setBuyAssetSymbol("");
                       setFormExpanded(false);

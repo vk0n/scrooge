@@ -21,6 +21,7 @@ from shared.spot_strategy import (
     transition_spot_strategy_campaign,
 )
 from shared.spot_swing import (
+    calculate_cash_retention,
     calculate_sell_origin_committed_quote,
     calculate_swing_economics,
     calculate_target_ratchet,
@@ -135,6 +136,7 @@ class SpotBacktestResult:
     initial_prices: dict[str, float]
     final_prices: dict[str, float]
     final_usdt: float
+    final_retained_usdt: float
     minimum_usdt: float
     maximum_usdt: float
     assets: dict[str, SimulatedAssetState]
@@ -145,6 +147,7 @@ class SpotBacktestResult:
     swings: list[dict[str, Any]]
     executions: list[dict[str, Any]]
     accumulations: list[dict[str, Any]]
+    cash_retentions: list[dict[str, Any]]
     target_history: list[dict[str, Any]]
     inventory_history: list[dict[str, Any]]
     rejections: list[dict[str, Any]]
@@ -178,6 +181,8 @@ class SpotPortfolioBacktester:
         self._committed_quote_reserve_cache: float | None = None
         self.executions: list[dict[str, Any]] = []
         self.accumulations: list[dict[str, Any]] = []
+        self.cash_retentions: list[dict[str, Any]] = []
+        self.retained_free_quote = 0.0
         self.actions: list[dict[str, Any]] = []
         self.signals: list[dict[str, Any]] = []
         self.signal_level_counts: dict[str, dict[int, int]] = {
@@ -262,6 +267,7 @@ class SpotPortfolioBacktester:
             initial_prices=initial_prices,
             final_prices=final_prices,
             final_usdt=self.usdt,
+            final_retained_usdt=self._retained_free_reserve_quote(),
             minimum_usdt=self.minimum_usdt,
             maximum_usdt=self.maximum_usdt,
             assets=self.assets,
@@ -275,6 +281,7 @@ class SpotPortfolioBacktester:
             swings=swings,
             executions=list(self.executions),
             accumulations=list(self.accumulations),
+            cash_retentions=list(self.cash_retentions),
             target_history=list(self.target_history),
             inventory_history=list(self.inventory_history),
             rejections=list(self.rejections),
@@ -949,6 +956,7 @@ class SpotPortfolioBacktester:
             swing["close_reason"] = (action.get("reason") or {}).get("close_reason")
             swing["close_context"] = dict(action.get("reason") or {})
             self.realized_swing_pnl += float(economics.get("realized_pnl_quote") or 0.0)
+            self._apply_cash_retention(swing, economics, timestamp_ms)
             self._deactivate_swing(swing_id, symbol)
             self._apply_target_ratchet(state, swing, economics, timestamp_ms)
         if action["action_type"] == "open":
@@ -1102,6 +1110,36 @@ class SpotPortfolioBacktester:
         self._committed_quote_by_swing.pop(swing_id, None)
         self._committed_quote_reserve_cache = None
 
+    def _apply_cash_retention(
+        self,
+        swing: dict[str, Any],
+        economics: dict[str, Any],
+        timestamp_ms: int,
+    ) -> None:
+        if swing.get("cash_retention") is not None:
+            return
+        retention = calculate_cash_retention(
+            swing,
+            economics,
+            retention_pct=self.scenario.free_cash_retention_pct,
+        )
+        if retention["eligible_cash_gain_quote"] <= 0:
+            return
+        retained_quote = float(retention["retained_quote"])
+        if retained_quote <= 0:
+            return
+        record = {
+            "swing_id": str(swing["swing_id"]),
+            "asset_symbol": str(swing["asset_symbol"]),
+            "quote_symbol": str(swing.get("quote_symbol") or "USDT"),
+            "timestamp_ms": timestamp_ms,
+            "timestamp": self._timestamp(timestamp_ms),
+            **retention,
+        }
+        swing["cash_retention"] = record
+        self.cash_retentions.append(record)
+        self.retained_free_quote += retained_quote
+
     def _equity_point(
         self,
         timestamp_ms: int,
@@ -1139,6 +1177,8 @@ class SpotPortfolioBacktester:
             self.usdt,
             self._committed_quote_reserve(),
         )
+        available_quote = max(0.0, self.usdt - reserved_quote)
+        retained_quote = min(available_quote, self.retained_free_quote)
         return {
             "timestamp_ms": timestamp_ms,
             "timestamp": self._timestamp(timestamp_ms),
@@ -1147,7 +1187,9 @@ class SpotPortfolioBacktester:
             "difference_vs_hodl": treasury_value - hodl_value,
             "shared_usdt": self.usdt,
             "shared_usdt_reserved": reserved_quote,
-            "shared_usdt_available": max(0.0, self.usdt - reserved_quote),
+            "shared_usdt_available": available_quote,
+            "shared_usdt_retained": retained_quote,
+            "shared_usdt_spendable": max(0.0, available_quote - retained_quote),
             "realized_swing_pnl": realized,
             "open_swing_unrealized_pnl": open_unrealized,
             "realized_portfolio_pnl_on_known_basis": realized_portfolio_pnl,
@@ -1182,11 +1224,14 @@ class SpotPortfolioBacktester:
     def _free_reserve_quote(self) -> float:
         return max(0.0, self.usdt - self._committed_quote_reserve())
 
+    def _retained_free_reserve_quote(self, *, free_quote: float | None = None) -> float:
+        available = self._free_reserve_quote() if free_quote is None else max(0.0, free_quote)
+        return min(available, max(0.0, self.retained_free_quote))
+
     def _spendable_free_reserve_quote(self, *, committed_quote: float | None = None) -> float:
         committed = self._committed_quote_reserve() if committed_quote is None else committed_quote
         free_quote = max(0.0, self.usdt - committed)
-        retention_pct = min(100.0, max(0.0, self.scenario.free_cash_retention_pct))
-        return free_quote * (1.0 - retention_pct / 100.0)
+        return max(0.0, free_quote - self._retained_free_reserve_quote(free_quote=free_quote))
 
     def _close_quote_budget(
         self,

@@ -15,6 +15,7 @@ from shared.spot_swing import (
     SWING_SIDES,
     SWING_SOURCES,
     SWING_STATUSES,
+    calculate_cash_retention,
     calculate_swing_economics,
     calculate_target_ratchet,
 )
@@ -23,8 +24,8 @@ from shared.spot_strategy import transition_spot_strategy_campaign
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 16
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Frozen SELL campaign capacity and idempotent consumption"
+RUNTIME_DB_SCHEMA_VERSION = 18
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Audited owner use and release of protected Treasury cash"
 
 
 class RuntimeDbError(OSError):
@@ -385,6 +386,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             free_cash_retention_pct REAL NOT NULL DEFAULT 0 CHECK (
                 free_cash_retention_pct >= 0 AND free_cash_retention_pct <= 100
             ),
+            retained_quote_balance REAL NOT NULL DEFAULT 0 CHECK (retained_quote_balance >= 0),
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
             FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
@@ -416,6 +418,35 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_spot_swings_asset_status
         ON spot_swings(account_key, asset_symbol, quote_symbol, status, opened_at_ms DESC);
+
+        CREATE TABLE IF NOT EXISTS spot_swing_cash_retentions (
+            swing_id TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            realized_cash_gain_quote REAL NOT NULL,
+            eligible_cash_gain_quote REAL NOT NULL,
+            retention_pct REAL NOT NULL,
+            retained_quote REAL NOT NULL CHECK (retained_quote >= 0),
+            applied_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key),
+            FOREIGN KEY(swing_id) REFERENCES spot_swings(swing_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS portfolio_cash_retention_uses (
+            reference_id TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL,
+            use_type TEXT NOT NULL CHECK (
+                use_type IN ('release', 'office_transfer', 'manual_buy', 'manual_bargain_close')
+            ),
+            requested_quote REAL NOT NULL CHECK (requested_quote >= 0),
+            consumed_quote REAL NOT NULL CHECK (consumed_quote >= 0),
+            context_json TEXT NOT NULL DEFAULT '{}',
+            applied_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_portfolio_cash_retention_uses_account
+        ON portfolio_cash_retention_uses(account_key, applied_at_ms DESC);
 
         CREATE TABLE IF NOT EXISTS exchange_account_snapshots (
             venue TEXT NOT NULL,
@@ -794,6 +825,15 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         "UPDATE portfolio_asset_policies SET trading_objective = 'accumulate_cash' "
         "WHERE trading_objective IS NULL"
     )
+    cash_policy_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(portfolio_cash_policies)").fetchall()
+    }
+    if "retained_quote_balance" not in cash_policy_columns:
+        connection.execute(
+            "ALTER TABLE portfolio_cash_policies ADD COLUMN "
+            "retained_quote_balance REAL NOT NULL DEFAULT 0 CHECK (retained_quote_balance >= 0)"
+        )
     campaign_columns = {
         str(row["name"])
         for row in connection.execute("PRAGMA table_info(spot_strategy_campaigns)").fetchall()
@@ -1797,7 +1837,12 @@ def load_portfolio_cash_policy(
         )
         row = connection.execute(
             """
-            SELECT account_key, free_cash_retention_pct, created_at_ms, updated_at_ms
+            SELECT
+                account_key,
+                free_cash_retention_pct,
+                retained_quote_balance,
+                created_at_ms,
+                updated_at_ms
             FROM portfolio_cash_policies
             WHERE account_key = ?
             LIMIT 1
@@ -1809,6 +1854,7 @@ def load_portfolio_cash_policy(
     return {
         "account_key": str(row["account_key"]),
         "free_cash_retention_pct": float(row["free_cash_retention_pct"]),
+        "retained_quote_balance": float(row["retained_quote_balance"]),
         "created_at_ms": int(row["created_at_ms"]),
         "updated_at_ms": int(row["updated_at_ms"]),
     }
@@ -1843,6 +1889,100 @@ def upsert_portfolio_cash_policy(
             (normalized_account, normalized_pct, now_ms, now_ms),
         )
     return load_portfolio_cash_policy(account_key=normalized_account, path=path)
+
+
+def consume_portfolio_retained_cash(
+    requested_quote: float,
+    *,
+    reference_id: str,
+    use_type: str,
+    account_key: str = "manual_spot",
+    context: dict[str, Any] | None = None,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Move an explicitly authorized amount out of the accumulated protected balance."""
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_reference = str(reference_id or "").strip()
+    normalized_type = str(use_type or "").strip().lower()
+    normalized_requested = _as_float_or_none(requested_quote)
+    if not normalized_reference:
+        raise ValueError("Protected Cash use requires a stable reference ID.")
+    if normalized_type not in {"release", "office_transfer", "manual_buy", "manual_bargain_close"}:
+        raise ValueError("Unsupported Protected Cash use type.")
+    if normalized_requested is None or normalized_requested < 0:
+        raise ValueError("Protected Cash amount must be zero or greater.")
+
+    load_portfolio_cash_policy(account_key=normalized_account, path=path)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        existing = connection.execute(
+            "SELECT * FROM portfolio_cash_retention_uses WHERE reference_id = ? LIMIT 1",
+            (normalized_reference,),
+        ).fetchone()
+        if existing is not None:
+            if str(existing["account_key"]) != normalized_account:
+                raise ValueError("Protected Cash reference belongs to another Treasury account.")
+            if (
+                str(existing["use_type"]) != normalized_type
+                or abs(float(existing["requested_quote"]) - normalized_requested) > 1e-8
+            ):
+                raise ValueError("Protected Cash reference was already used with different terms.")
+            return {
+                "reference_id": str(existing["reference_id"]),
+                "account_key": str(existing["account_key"]),
+                "use_type": str(existing["use_type"]),
+                "requested_quote": float(existing["requested_quote"]),
+                "consumed_quote": float(existing["consumed_quote"]),
+                "context": json.loads(existing["context_json"]),
+                "applied_at_ms": int(existing["applied_at_ms"]),
+                "idempotent_replay": True,
+            }
+
+        policy = connection.execute(
+            "SELECT retained_quote_balance FROM portfolio_cash_policies WHERE account_key = ? LIMIT 1",
+            (normalized_account,),
+        ).fetchone()
+        retained_balance = float(policy["retained_quote_balance"]) if policy is not None else 0.0
+        if normalized_requested > retained_balance + 1e-8:
+            raise ValueError(
+                f"Protected Cash use requires ${normalized_requested:,.2f}, but only ${retained_balance:,.2f} remains."
+            )
+        consumed = min(normalized_requested, retained_balance)
+        connection.execute(
+            """
+            UPDATE portfolio_cash_policies
+            SET retained_quote_balance = MAX(0, retained_quote_balance - ?), updated_at_ms = ?
+            WHERE account_key = ?
+            """,
+            (consumed, now_ms, normalized_account),
+        )
+        connection.execute(
+            """
+            INSERT INTO portfolio_cash_retention_uses (
+                reference_id, account_key, use_type, requested_quote,
+                consumed_quote, context_json, applied_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_reference,
+                normalized_account,
+                normalized_type,
+                normalized_requested,
+                consumed,
+                _json_text(context if isinstance(context, dict) else {}),
+                now_ms,
+            ),
+        )
+    return {
+        "reference_id": normalized_reference,
+        "account_key": normalized_account,
+        "use_type": normalized_type,
+        "requested_quote": normalized_requested,
+        "consumed_quote": consumed,
+        "context": context if isinstance(context, dict) else {},
+        "applied_at_ms": now_ms,
+        "idempotent_replay": False,
+    }
 
 
 def ensure_portfolio_asset_policies(
@@ -3392,6 +3532,134 @@ def append_spot_swing_execution(
         if any(persisted[key] != value for key, value in comparable.items()):
             raise ValueError("Duplicate Spot execution identity conflicts with the persisted execution.")
     return {**persisted, "idempotent_replay": replay}
+
+
+def apply_spot_swing_cash_retention(
+    swing_id: str,
+    *,
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Accrue protected cash from one finalized ACCUMULATE_CASH Swing exactly once."""
+    normalized_id = str(swing_id or "").strip()
+    if not normalized_id:
+        raise ValueError("Spot Swing ID is required for Cash Retention settlement.")
+    with _connection(path) as connection:
+        existing = connection.execute(
+            "SELECT * FROM spot_swing_cash_retentions WHERE swing_id = ?",
+            (normalized_id,),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "swing_id": str(existing["swing_id"]),
+                "account_key": str(existing["account_key"]),
+                "quote_symbol": str(existing["quote_symbol"]),
+                "realized_cash_gain_quote": float(existing["realized_cash_gain_quote"]),
+                "eligible_cash_gain_quote": float(existing["eligible_cash_gain_quote"]),
+                "retention_pct": float(existing["retention_pct"]),
+                "retained_quote": float(existing["retained_quote"]),
+                "applied_at_ms": int(existing["applied_at_ms"]),
+                "idempotent_replay": True,
+            }
+
+        swing_row = connection.execute(
+            "SELECT * FROM spot_swings WHERE swing_id = ?",
+            (normalized_id,),
+        ).fetchone()
+        if swing_row is None:
+            raise ValueError("Spot Swing was not found for Cash Retention settlement.")
+        swing = _spot_swing_from_row(swing_row)
+        if swing.get("trading_objective") != "accumulate_cash":
+            return None
+        execution_rows = connection.execute(
+            """
+            SELECT * FROM spot_swing_executions
+            WHERE swing_id = ? ORDER BY executed_at_ms ASC, execution_id ASC
+            """,
+            (normalized_id,),
+        ).fetchall()
+        executions = [_spot_swing_execution_from_row(row) for row in execution_rows]
+        economics = calculate_swing_economics(swing, executions)
+        if economics.get("status") != "closed":
+            return None
+
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO portfolio_cash_policies (
+                account_key,
+                free_cash_retention_pct,
+                retained_quote_balance,
+                created_at_ms,
+                updated_at_ms
+            ) VALUES (?, 0, 0, ?, ?)
+            """,
+            (swing["account_key"], now_ms, now_ms),
+        )
+        policy_row = connection.execute(
+            "SELECT * FROM portfolio_cash_policies WHERE account_key = ?",
+            (swing["account_key"],),
+        ).fetchone()
+        if policy_row is None:
+            raise RuntimeDbError("Portfolio cash policy could not be loaded for settlement.")
+        retention = calculate_cash_retention(
+            swing,
+            economics,
+            retention_pct=float(policy_row["free_cash_retention_pct"]),
+        )
+        applied_at_ms = max(
+            (int(item["executed_at_ms"]) for item in executions),
+            default=now_ms,
+        )
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO spot_swing_cash_retentions (
+                swing_id,
+                account_key,
+                quote_symbol,
+                realized_cash_gain_quote,
+                eligible_cash_gain_quote,
+                retention_pct,
+                retained_quote,
+                applied_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_id,
+                swing["account_key"],
+                swing["quote_symbol"],
+                retention["realized_cash_gain_quote"],
+                retention["eligible_cash_gain_quote"],
+                retention["retention_pct"],
+                retention["retained_quote"],
+                applied_at_ms,
+            ),
+        )
+        if cursor.rowcount == 1:
+            connection.execute(
+                """
+                UPDATE portfolio_cash_policies
+                SET retained_quote_balance = retained_quote_balance + ?, updated_at_ms = ?
+                WHERE account_key = ?
+                """,
+                (retention["retained_quote"], now_ms, swing["account_key"]),
+            )
+        row = connection.execute(
+            "SELECT * FROM spot_swing_cash_retentions WHERE swing_id = ?",
+            (normalized_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeDbError("Spot Cash Retention settlement could not be persisted.")
+    return {
+        "swing_id": str(row["swing_id"]),
+        "account_key": str(row["account_key"]),
+        "quote_symbol": str(row["quote_symbol"]),
+        "realized_cash_gain_quote": float(row["realized_cash_gain_quote"]),
+        "eligible_cash_gain_quote": float(row["eligible_cash_gain_quote"]),
+        "retention_pct": float(row["retention_pct"]),
+        "retained_quote": float(row["retained_quote"]),
+        "applied_at_ms": int(row["applied_at_ms"]),
+        "idempotent_replay": cursor.rowcount != 1,
+    }
 
 
 def apply_spot_swing_target_ratchet(

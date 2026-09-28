@@ -16,6 +16,7 @@ from services.portfolio_service import (
     load_portfolio_asset_ledger,
     load_portfolio_bargain_ledger,
     load_portfolio_snapshot,
+    release_portfolio_retained_cash,
     treasury_transfer_enabled,
     set_portfolio_transaction_status,
     update_portfolio_asset_policy,
@@ -66,12 +67,21 @@ class PortfolioCashPolicyRequest(BaseModel):
     free_cash_retention_pct: float = Field(..., ge=0, le=100)
 
 
+class ProtectedCashReleaseRequest(BaseModel):
+    quantity: float = Field(..., gt=0)
+
+
 class SpotOrderPreviewRequest(BaseModel):
     asset_symbol: str = Field(..., min_length=1, max_length=24)
     quote_symbol: str = Field(default="USDT", min_length=1, max_length=24)
     side: Literal["buy", "sell"]
     quantity: float = Field(..., gt=0)
     treasury_intake: bool = False
+    use_protected_cash: bool = False
+
+
+class BargainClosePreviewRequest(BaseModel):
+    use_protected_cash: bool = False
 
 
 class SpotOrderExecuteRequest(BaseModel):
@@ -82,6 +92,7 @@ class TreasuryTransferRequest(BaseModel):
     direction: Literal["to_office", "from_office"]
     quantity: float = Field(..., gt=0)
     confirmation: Literal["CONFIRM_TREASURY_TRANSFER"]
+    use_protected_cash: bool = False
 
 
 @router.get("")
@@ -132,6 +143,17 @@ def update_asset_policy(asset_symbol: str, data: PortfolioAssetPolicyRequest) ->
 def update_cash_policy(data: PortfolioCashPolicyRequest) -> dict[str, object]:
     try:
         payload, warnings = update_portfolio_cash_policy(data.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {**payload, "warnings": warnings}
+
+
+@router.post("/cash-policy/release")
+def release_protected_cash(data: ProtectedCashReleaseRequest) -> dict[str, object]:
+    try:
+        payload, warnings = release_portfolio_retained_cash(data.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:
@@ -202,9 +224,15 @@ def get_bargain_ledger(
 
 
 @router.post("/bargains/{swing_id}/close-preview")
-def preview_bargain_close(swing_id: str) -> dict[str, object]:
+def preview_bargain_close(
+    swing_id: str,
+    data: BargainClosePreviewRequest,
+) -> dict[str, object]:
     try:
-        return create_bargain_close_preview(swing_id)
+        return create_bargain_close_preview(
+            swing_id,
+            use_protected_cash=data.use_protected_cash,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except LookupError as exc:
@@ -304,8 +332,13 @@ def execute_office_transfer(
             snapshot, _ = load_portfolio_snapshot()
         except OSError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        reserve_limit = float(
+            snapshot["summary"].get(
+                "vault_reserve_available" if data.use_protected_cash else "vault_reserve_spendable"
+            ) or 0.0
+        )
         available = min(
-            float(snapshot["summary"].get("vault_reserve_available") or 0.0),
+            reserve_limit,
             float(snapshot["exchange"].get("usdt_free") or 0.0),
         )
         if data.quantity > available + 0.00000001:
@@ -323,6 +356,7 @@ def execute_office_transfer(
                 "direction": data.direction,
                 "quantity": data.quantity,
                 "transfer_ref": transfer_ref,
+                "use_protected_cash": data.use_protected_cash,
             },
         )
     except RuntimeError as exc:

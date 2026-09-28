@@ -15,6 +15,7 @@ from bot.spot_execution import (
     SpotOrderValidationError,
 )
 from shared.runtime_db import (
+    apply_spot_swing_cash_retention,
     append_spot_swing_execution,
     create_spot_swing,
     ensure_spot_strategy_action,
@@ -25,11 +26,13 @@ from shared.runtime_db import (
     list_spot_swings,
     list_spot_swing_executions,
     load_spot_order_intent,
+    load_portfolio_cash_policy,
     load_spot_swing,
     reserve_spot_order_intent,
     save_exchange_account_snapshot,
     update_spot_order_intent,
     update_spot_strategy_action,
+    upsert_portfolio_cash_policy,
 )
 from shared.spot_swing import calculate_swing_economics
 
@@ -196,6 +199,38 @@ class SpotExecutionTests(unittest.TestCase):
             expected_statuses={"queueing"},
             path=self.db_path,
         )
+
+    def _accrue_retained_cash(self, *, retention_pct: float = 25) -> None:
+        upsert_portfolio_cash_policy(retention_pct, path=self.db_path)
+        create_spot_swing(
+            {
+                "swing_id": "retention-source",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        for execution_id, side, price in (
+            ("retention-source-open", "sell", 100),
+            ("retention-source-close", "buy", 50),
+        ):
+            append_spot_swing_execution(
+                {
+                    "execution_id": execution_id,
+                    "swing_id": "retention-source",
+                    "symbol": "BTCUSDT",
+                    "side": side,
+                    "quantity": 2,
+                    "price": price,
+                    "source": "strategy",
+                    "reason": ({"action_type": "close", "close_reason": "profit_target"} if side == "buy" else {}),
+                },
+                path=self.db_path,
+            )
+        apply_spot_swing_cash_retention("retention-source", path=self.db_path)
 
     def _accumulation_preview(self, *, quantity: float = 0.25) -> dict:
         portfolio_service.create_portfolio_transaction(
@@ -683,6 +718,57 @@ class SpotExecutionTests(unittest.TestCase):
 
         self.assertEqual(preview["source"], "manual")
         self.assertIsNone(preview["swing_id"])
+
+    def test_manual_buy_uses_only_authorized_protected_cash_and_debits_it_once(self):
+        portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "deposit",
+                "asset_symbol": "USDT",
+                "quantity": 100,
+                "quote_symbol": "USDT",
+                "custody_location": "binance",
+            }
+        )
+        self._accrue_retained_cash()
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "Authorize Protected Cash"):
+            portfolio_service.create_spot_order_preview(
+                {"asset_symbol": "BTC", "side": "buy", "quantity": 0.9}
+            )
+        preview = portfolio_service.create_spot_order_preview(
+            {
+                "asset_symbol": "BTC",
+                "side": "buy",
+                "quantity": 0.9,
+                "use_protected_cash": True,
+            }
+        )
+        self._queue_preview(preview)
+        executor = SpotOrderExecutor(
+            FakeSpotExecutionClient(commission_amount=0.05, commission_asset="USDT"),
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        result = executor.execute(preview["intent_id"])
+        replay = executor.execute(preview["intent_id"])
+
+        self.assertAlmostEqual(result["protected_cash_used"], 15.05)
+        self.assertEqual(replay["protected_cash_used"], result["protected_cash_used"])
+        self.assertAlmostEqual(
+            load_portfolio_cash_policy(path=self.db_path)["retained_quote_balance"],
+            9.95,
+        )
 
     def test_sell_is_revalidated_against_changed_exchange_balance(self):
         preview = self._preview_and_queue("sell", 0.25)

@@ -3149,13 +3149,30 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-spot-order-form {
   display: grid;
-  grid-template-columns: minmax(7.5rem, 0.7fr) minmax(10rem, 1.2fr) auto;
+  grid-template-columns: minmax(7.5rem, 0.7fr) minmax(10rem, 1.2fr) minmax(13rem, auto) auto;
   align-items: end;
   gap: 0.52rem;
 }
 
 .treasury-spot-order-panel-intake .treasury-spot-order-form {
-  grid-template-columns: minmax(10rem, 1fr) auto;
+  grid-template-columns: minmax(10rem, 1fr) minmax(13rem, auto) auto;
+}
+
+.treasury-protected-cash-option {
+  display: flex;
+  align-items: center;
+  gap: 0.48rem;
+  min-height: 2.35rem;
+  color: #d9bd79;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.treasury-protected-cash-option input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: #d9ae45;
 }
 
 .treasury-spot-order-form .dialog-user-btn {
@@ -3403,6 +3420,10 @@ button.treasury-summary-card-swings:focus-visible,
   text-transform: uppercase;
 }
 
+.treasury-office-transfer .treasury-custody-form {
+  grid-template-columns: minmax(10rem, 1fr) minmax(10rem, 1fr) minmax(14rem, 1.4fr) auto;
+}
+
 .treasury-policy-summary > span {
   color: #d9ae45;
 }
@@ -3499,6 +3520,13 @@ button.treasury-summary-card-swings:focus-visible,
 .treasury-cash-policy-form {
   grid-template-columns: minmax(10rem, 16rem) auto;
   justify-content: start;
+}
+
+.treasury-cash-release-form {
+  grid-template-columns: minmax(12rem, 16rem) auto;
+  justify-content: start;
+  border-top: 1px solid rgba(112, 130, 155, 0.18);
+  padding-top: 0.55rem;
 }
 
 .treasury-cash-policy-metrics {
@@ -3865,6 +3893,10 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-swing-close .form-error {
   color: var(--value-negative-surface);
+}
+
+.treasury-close-protected-option {
+  margin-bottom: 0.35rem;
 }
 
 .treasury-swing-close-button {

@@ -11,10 +11,12 @@ from typing import Any
 from bot.spot_account import normalize_spot_account_snapshot
 from shared.runtime_db import (
     apply_spot_accumulation_target_ratchet,
+    apply_spot_swing_cash_retention,
     apply_spot_swing_target_ratchet,
     append_portfolio_transaction,
     append_spot_swing_execution,
     ensure_portfolio_asset_policies,
+    consume_portfolio_retained_cash,
     list_portfolio_transactions,
     list_spot_order_intents,
     list_spot_swing_executions,
@@ -264,9 +266,10 @@ class SpotOrderExecutor:
             raise RuntimeError("Binance did not return an order response.")
         return response
 
-    def _validate_for_submission(self, intent: dict[str, Any]) -> Decimal:
+    def _validate_for_submission(self, intent: dict[str, Any]) -> tuple[Decimal, dict[str, Any] | None]:
         request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
         treasury_intake = bool(request.get("treasury_intake"))
+        use_protected_cash = bool(request.get("use_protected_cash"))
         strategy_action_type = str(request.get("strategy_action_type") or "").strip().lower()
         treasury_accumulation = (
             intent["source"] == "strategy"
@@ -368,13 +371,19 @@ class SpotOrderExecutor:
             required_quote = quantity_float * market_price * (1.0 + estimated_fee_rate)
             if required_quote > quote_free + 0.00000001:
                 raise ValueError("Buy rejected because Binance USDT balance changed after preview.")
+            free_reserve = _as_float(
+                portfolio["summary"].get(
+                    "vault_reserve_spendable",
+                    portfolio["summary"].get("vault_reserve_available"),
+                )
+            ) or 0.0
+            retained_reserve = _as_float(portfolio["summary"].get("vault_reserve_retained")) or 0.0
+            if intent["source"] == "manual":
+                committed_pool = _as_float(portfolio["summary"].get("vault_reserve_committed")) or 0.0
+                exchange_spendable = max(0.0, quote_free - retained_reserve - committed_pool)
+                free_reserve = exchange_spendable
+            nonprotected_budget = free_reserve
             if treasury_accumulation:
-                free_reserve = _as_float(
-                    portfolio["summary"].get(
-                        "vault_reserve_spendable",
-                        portfolio["summary"].get("vault_reserve_available"),
-                    )
-                ) or 0.0
                 if required_quote > free_reserve + 0.00000001:
                     raise ValueError(
                         "Treasury accumulation rejected because Free Vault Reserve changed after preview."
@@ -384,18 +393,38 @@ class SpotOrderExecutor:
                     swing,
                     list_spot_swing_executions(swing["swing_id"], path=self.db_path),
                 )
-                free_reserve = _as_float(
-                    portfolio["summary"].get(
-                        "vault_reserve_spendable",
-                        portfolio["summary"].get("vault_reserve_available"),
-                    )
-                ) or 0.0
-                close_budget = free_reserve + calculate_sell_origin_committed_quote(swing, economics)
+                nonprotected_budget += calculate_sell_origin_committed_quote(swing, economics)
+                close_budget = nonprotected_budget + (
+                    retained_reserve if intent["source"] == "manual" and use_protected_cash else 0.0
+                )
                 if required_quote > close_budget + 0.00000001:
+                    hint = (
+                        " Authorize Protected Cash for this manual close."
+                        if intent["source"] == "manual" and not use_protected_cash and retained_reserve > 0
+                        else ""
+                    )
                     raise ValueError(
                         "Buy close rejected because it would spend another Bargain's committed cash."
+                        f"{hint}"
                     )
-        return quantity
+            else:
+                buy_budget = nonprotected_budget + (
+                    retained_reserve if intent["source"] == "manual" and use_protected_cash else 0.0
+                )
+                if required_quote > buy_budget + 0.00000001:
+                    hint = (
+                        " Authorize Protected Cash for this manual buy."
+                        if intent["source"] == "manual" and not use_protected_cash and retained_reserve > 0
+                        else ""
+                    )
+                    raise ValueError(f"Buy exceeds spendable Free Vault Reserve.{hint}")
+            if intent["source"] == "manual" and use_protected_cash:
+                return quantity, {
+                    "nonprotected_budget_quote": nonprotected_budget,
+                    "retained_available_quote": retained_reserve,
+                    "required_quote": required_quote,
+                }
+        return quantity, None
 
     def _recover_order(self, intent: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -414,6 +443,11 @@ class SpotOrderExecutor:
 
     def _confirm_fill(self, intent: dict[str, Any], order: dict[str, Any]) -> dict[str, Any]:
         summary = _execution_summary(self.client, intent["symbol"], order)
+        validation = intent.get("protected_cash_validation")
+        if not isinstance(validation, dict) and isinstance(intent.get("result"), dict):
+            validation = intent["result"].get("protected_cash_validation")
+        if isinstance(validation, dict):
+            summary["protected_cash_validation"] = validation
         if summary["executed_quantity"] <= 0:
             if summary["status"] in {"CANCELED", "REJECTED", "EXPIRED"}:
                 terminal_status = "rejected" if summary["status"] == "REJECTED" else "failed"
@@ -527,6 +561,42 @@ class SpotOrderExecutor:
             project_portfolio_transaction(persisted_transaction, path=self.db_path)
 
             request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
+            protected_use = None
+            validation = summary.get("protected_cash_validation")
+            if (
+                intent["source"] == "manual"
+                and intent["side"] == "buy"
+                and bool(request.get("use_protected_cash"))
+                and isinstance(validation, dict)
+            ):
+                nonprotected_budget = _as_float(validation.get("nonprotected_budget_quote")) or 0.0
+                protected_required = max(0.0, executed_quote + quote_fee - nonprotected_budget)
+                if protected_required > 0:
+                    protected_use = consume_portfolio_retained_cash(
+                        protected_required,
+                        reference_id=f"spot-order:{intent['intent_id']}:protected-cash",
+                        use_type=("manual_bargain_close" if intent.get("swing_id") else "manual_buy"),
+                        account_key=intent["account_key"],
+                        context={
+                            "intent_id": intent["intent_id"],
+                            "swing_id": intent.get("swing_id"),
+                            "executed_quote_quantity": executed_quote,
+                            "quote_fee": quote_fee,
+                            "nonprotected_budget_quote": nonprotected_budget,
+                        },
+                        path=self.db_path,
+                    )
+                    append_treasury_event(
+                        code="treasury_protected_cash_used",
+                        tone="neutral",
+                        message=(
+                            f"Used ${protected_use['consumed_quote']:,.2f} of Protected Cash for "
+                            f"{'a manual Bargain close' if intent.get('swing_id') else 'a manual Spot buy'}."
+                        ),
+                        source_ref=protected_use["reference_id"],
+                        context=protected_use,
+                        path=self.db_path,
+                    )
             if bool(request.get("treasury_intake")):
                 initial_target = _as_float(request.get("initial_target_quantity"))
                 if initial_target is None or initial_target <= 0:
@@ -589,6 +659,22 @@ class SpotOrderExecutor:
                             "executed_at_ms": fill.get("executed_at_ms") or summary["executed_at_ms"],
                             "order_summary": summary,
                         },
+                        path=self.db_path,
+                    )
+                cash_retention = apply_spot_swing_cash_retention(
+                    intent["swing_id"],
+                    path=self.db_path,
+                )
+                if cash_retention is not None and cash_retention["retained_quote"] > 0:
+                    append_treasury_event(
+                        code="treasury_cash_retention_accrued",
+                        tone="positive",
+                        message=(
+                            f"I retained ${cash_retention['retained_quote']:,.2f} "
+                            f"from ${cash_retention['eligible_cash_gain_quote']:,.2f} of realized cash profit."
+                        ),
+                        source_ref=f"spot_swing_cash_retention:{intent['swing_id']}",
+                        context=cash_retention,
                         path=self.db_path,
                     )
                 ratchet = apply_spot_swing_target_ratchet(intent["swing_id"], path=self.db_path)
@@ -658,6 +744,11 @@ class SpotOrderExecutor:
             "quote_symbol": intent["quote_symbol"],
             "source": intent["source"],
             "swing_id": intent.get("swing_id"),
+            "protected_cash_used": (
+                float(protected_use["consumed_quote"])
+                if protected_use is not None
+                else 0.0
+            ),
         }
         updated = update_spot_order_intent(
             intent["intent_id"],
@@ -705,12 +796,22 @@ class SpotOrderExecutor:
                     path=self.db_path,
                 )
                 try:
-                    quantity = self._validate_for_submission(intent)
+                    quantity, protected_cash_validation = self._validate_for_submission(intent)
+                    if protected_cash_validation is not None:
+                        intent["protected_cash_validation"] = protected_cash_validation
                 except ValueError as exc:
                     raise SpotOrderValidationError(str(exc)) from exc
                 update_spot_order_intent(
                     intent_id,
-                    {"status": "validated", "error": None},
+                    {
+                        "status": "validated",
+                        "error": None,
+                        "result_json": (
+                            {"protected_cash_validation": protected_cash_validation}
+                            if protected_cash_validation is not None
+                            else None
+                        ),
+                    },
                     expected_statuses={"processing", "validated"},
                     path=self.db_path,
                 )
@@ -719,13 +820,35 @@ class SpotOrderExecutor:
                 exchange_order_id = str(order.get("orderId")) if order.get("orderId") is not None else None
                 update_spot_order_intent(
                     intent_id,
-                    {"status": "submitted", "exchange_order_id": exchange_order_id, "result_json": {"submitted_order": order}},
+                    {
+                        "status": "submitted",
+                        "exchange_order_id": exchange_order_id,
+                        "result_json": {
+                            "submitted_order": order,
+                            **(
+                                {"protected_cash_validation": protected_cash_validation}
+                                if protected_cash_validation is not None
+                                else {}
+                            ),
+                        },
+                    },
                     expected_statuses={"validated"},
                     path=self.db_path,
                 )
                 update_spot_order_intent(
                     intent_id,
-                    {"status": "accepted", "exchange_order_id": exchange_order_id, "result_json": {"submitted_order": order}},
+                    {
+                        "status": "accepted",
+                        "exchange_order_id": exchange_order_id,
+                        "result_json": {
+                            "submitted_order": order,
+                            **(
+                                {"protected_cash_validation": protected_cash_validation}
+                                if protected_cash_validation is not None
+                                else {}
+                            ),
+                        },
+                    },
                     expected_statuses={"submitted"},
                     path=self.db_path,
                 )

@@ -236,6 +236,29 @@ def calculate_sell_origin_committed_quote(
     )
 
 
+def calculate_cash_retention(
+    swing: dict[str, Any],
+    economics: dict[str, Any],
+    *,
+    retention_pct: float,
+) -> dict[str, float]:
+    """Allocate a percentage of one finalized cash profit to protected reserve."""
+    normalized_pct = min(100.0, max(0.0, _number(retention_pct, field="Cash retention percentage")))
+    realized_cash_gain = float(economics.get("realized_cash_gain_quote") or 0.0)
+    eligible_gain = (
+        max(0.0, realized_cash_gain)
+        if str(swing.get("trading_objective") or "").strip().lower() == "accumulate_cash"
+        and str(economics.get("status") or "").strip().lower() == "closed"
+        else 0.0
+    )
+    return {
+        "realized_cash_gain_quote": realized_cash_gain,
+        "eligible_cash_gain_quote": eligible_gain,
+        "retention_pct": normalized_pct,
+        "retained_quote": eligible_gain * normalized_pct / 100.0,
+    }
+
+
 def calculate_target_ratchet(
     swing: dict[str, Any],
     economics: dict[str, Any],

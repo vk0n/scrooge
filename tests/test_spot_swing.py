@@ -7,17 +7,21 @@ from pathlib import Path
 from unittest.mock import patch
 
 from shared.runtime_db import (
+    apply_spot_swing_cash_retention,
     append_spot_swing_execution,
     bootstrap_runtime_db,
     create_spot_order_intent,
     create_spot_swing,
+    consume_portfolio_retained_cash,
     list_portfolio_asset_policies,
     list_portfolio_transactions,
     list_spot_swing_executions,
     list_spot_swings,
+    load_portfolio_cash_policy,
     load_spot_order_intent,
     load_spot_swing,
     upsert_portfolio_asset_policy,
+    upsert_portfolio_cash_policy,
 )
 from shared.spot_swing import calculate_swing_economics, calculate_target_ratchet
 
@@ -109,6 +113,107 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertEqual(result["remaining_quantity"], 50)
         self.assertEqual(result["realized_pnl_quote"], 0)
         self.assertEqual(result["unrealized_pnl_quote"], 25)
+
+    def test_profitable_cash_swing_accrues_retention_exactly_once(self):
+        upsert_portfolio_cash_policy(20, path=self.db_path)
+        self.create_swing("cash-profit")
+        self.add_execution("cash-profit", "sell-profit", "sell", 50, 5, executed_at_ms=2_000)
+        self.add_execution(
+            "cash-profit",
+            "buy-profit",
+            "buy",
+            50,
+            4,
+            executed_at_ms=3_000,
+            reason={"action_type": "close", "close_reason": "profit_target"},
+        )
+
+        first = apply_spot_swing_cash_retention("cash-profit", path=self.db_path)
+        replay = apply_spot_swing_cash_retention("cash-profit", path=self.db_path)
+        policy = load_portfolio_cash_policy(path=self.db_path)
+
+        self.assertEqual(first["eligible_cash_gain_quote"], 50)
+        self.assertEqual(first["retained_quote"], 10)
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(policy["retained_quote_balance"], 10)
+
+    def test_retention_policy_change_does_not_retroactively_lock_old_profit(self):
+        self.create_swing("old-profit")
+        self.add_execution("old-profit", "old-sell", "sell", 10, 5, executed_at_ms=2_000)
+        self.add_execution(
+            "old-profit",
+            "old-buy",
+            "buy",
+            10,
+            4,
+            executed_at_ms=3_000,
+            reason={"action_type": "close", "close_reason": "profit_target"},
+        )
+
+        settled = apply_spot_swing_cash_retention("old-profit", path=self.db_path)
+        upsert_portfolio_cash_policy(20, path=self.db_path)
+        replay = apply_spot_swing_cash_retention("old-profit", path=self.db_path)
+
+        self.assertEqual(settled["retained_quote"], 0)
+        self.assertEqual(replay["retained_quote"], 0)
+        self.assertEqual(load_portfolio_cash_policy(path=self.db_path)["retained_quote_balance"], 0)
+
+    def test_owner_use_releases_retained_cash_exactly_once(self):
+        upsert_portfolio_cash_policy(20, path=self.db_path)
+        self.create_swing("cash-for-release")
+        self.add_execution("cash-for-release", "release-sell", "sell", 10, 5, executed_at_ms=2_000)
+        self.add_execution(
+            "cash-for-release",
+            "release-buy",
+            "buy",
+            10,
+            4,
+            executed_at_ms=3_000,
+            reason={"action_type": "close", "close_reason": "profit_target"},
+        )
+        apply_spot_swing_cash_retention("cash-for-release", path=self.db_path)
+
+        first = consume_portfolio_retained_cash(
+            1.25,
+            reference_id="manual-release-1",
+            use_type="release",
+            path=self.db_path,
+        )
+        replay = consume_portfolio_retained_cash(
+            1.25,
+            reference_id="manual-release-1",
+            use_type="release",
+            path=self.db_path,
+        )
+
+        self.assertEqual(first["consumed_quote"], 1.25)
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(load_portfolio_cash_policy(path=self.db_path)["retained_quote_balance"], 0.75)
+
+    def test_existing_cash_policy_schema_migrates_with_zero_accrued_balance(self):
+        legacy_path = Path(self.tmp.name) / "legacy.sqlite3"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE portfolio_cash_policies (
+                    account_key TEXT PRIMARY KEY,
+                    free_cash_retention_pct REAL NOT NULL DEFAULT 0,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO portfolio_cash_policies VALUES ('manual_spot', 20, 1, 1)"
+            )
+
+        bootstrap_runtime_db(legacy_path)
+        policy = load_portfolio_cash_policy(path=legacy_path)
+
+        self.assertEqual(policy["free_cash_retention_pct"], 20)
+        self.assertEqual(policy["retained_quote_balance"], 0)
 
     def test_multiple_executions_support_partial_and_full_close(self):
         self.create_swing("swing-partial")

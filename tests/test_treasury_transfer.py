@@ -18,7 +18,11 @@ class TreasuryTransferExecutorTests(unittest.TestCase):
     def test_transfer_to_office_revalidates_free_treasury_cash(self, load_snapshot, record_transfer):
         load_snapshot.return_value = (
             {
-                "summary": {"vault_reserve_available": 40},
+                "summary": {
+                    "vault_reserve_available": 40,
+                    "vault_reserve_spendable": 40,
+                    "vault_reserve_retained": 0,
+                },
                 "exchange": {"usdt_free": 35},
             },
             [],
@@ -40,6 +44,51 @@ class TreasuryTransferExecutorTests(unittest.TestCase):
             clientTranId="ref-1",
         )
         self.assertEqual(result["ledger_transaction_id"], "office-transfer:ref-1")
+
+    @patch("bot.treasury_transfer.consume_portfolio_retained_cash")
+    @patch("bot.treasury_transfer.record_confirmed_office_transfer")
+    @patch("bot.treasury_transfer.load_portfolio_snapshot")
+    def test_transfer_to_office_requires_opt_in_and_consumes_only_protected_remainder(
+        self,
+        load_snapshot,
+        record_transfer,
+        consume_retained,
+    ):
+        load_snapshot.return_value = (
+            {
+                "summary": {
+                    "vault_reserve_available": 40,
+                    "vault_reserve_spendable": 10,
+                    "vault_reserve_retained": 30,
+                },
+                "exchange": {"usdt_free": 40},
+            },
+            [],
+        )
+        self.client.universal_transfer.return_value = {"tranId": 456}
+        record_transfer.return_value = (
+            {"transaction": {"transaction_id": "office-transfer:protected-ref"}},
+            [],
+        )
+        consume_retained.return_value = {"consumed_quote": 10, "reference_id": "protected-use"}
+
+        with self.assertRaisesRegex(ValueError, "Enable Protected Cash"):
+            self.executor.execute(
+                {"direction": "to_office", "quantity": 20, "transfer_ref": "protected-ref"}
+            )
+
+        result = self.executor.execute(
+            {
+                "direction": "to_office",
+                "quantity": 20,
+                "transfer_ref": "protected-ref",
+                "use_protected_cash": True,
+            }
+        )
+
+        consume_retained.assert_called_once()
+        self.assertEqual(consume_retained.call_args.args[0], 10)
+        self.assertEqual(result["protected_cash_used"], 10)
 
     @patch("bot.treasury_transfer.record_confirmed_office_transfer")
     @patch("bot.treasury_transfer.load_portfolio_snapshot")

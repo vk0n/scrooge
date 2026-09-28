@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 from services import portfolio_service
 from shared.runtime_db import (
+    apply_spot_swing_cash_retention,
     append_portfolio_transaction,
     append_spot_swing_execution,
     create_spot_swing,
@@ -1368,7 +1369,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
                 {"target_quantity": 500, "minimum_holding_pct": 100},
             )
 
-    def test_cash_policy_projects_retained_and_spendable_free_reserve(self):
+    def test_cash_policy_projects_accrued_retention_without_retroactive_reserve_lock(self):
         self.add("USDT", 100, 1, "binance")
 
         result, _ = portfolio_service.update_portfolio_cash_policy(
@@ -1378,8 +1379,96 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         summary = result["portfolio"]["summary"]
         self.assertEqual(result["policy"]["free_cash_retention_pct"], 25)
         self.assertEqual(summary["vault_reserve_available"], 100)
-        self.assertEqual(summary["vault_reserve_retained"], 25)
-        self.assertEqual(summary["vault_reserve_spendable"], 75)
+        self.assertEqual(summary["vault_reserve_retained"], 0)
+        self.assertEqual(summary["vault_reserve_spendable"], 100)
+
+        create_spot_swing(
+            {
+                "swing_id": "retained-profit",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "planned_quantity": 2,
+                "source": "strategy",
+                "opened_at_ms": 1_000,
+            }
+        )
+        for execution_id, side, price, timestamp, reason in (
+            ("retained-open", "sell", 100, 2_000, {}),
+            (
+                "retained-close",
+                "buy",
+                50,
+                3_000,
+                {"action_type": "close", "close_reason": "profit_target"},
+            ),
+        ):
+            append_spot_swing_execution(
+                {
+                    "execution_id": execution_id,
+                    "swing_id": "retained-profit",
+                    "venue": "binance",
+                    "symbol": "BTCUSDT",
+                    "side": side,
+                    "quantity": 2,
+                    "price": price,
+                    "quote_quantity": 2 * price,
+                    "source": "strategy",
+                    "reason": reason,
+                    "executed_at_ms": timestamp,
+                }
+            )
+        apply_spot_swing_cash_retention("retained-profit")
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+        self.assertEqual(snapshot["summary"]["vault_reserve_retained"], 25)
+        self.assertEqual(snapshot["summary"]["vault_reserve_spendable"], 75)
+
+        self.add("BTC", 1, 90, "binance")
+        create_spot_swing(
+            {
+                "swing_id": "protected-loss-close",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_asset",
+                "source": "strategy",
+            }
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "protected-loss-open",
+                "swing_id": "protected-loss-close",
+                "symbol": "BTCUSDT",
+                "side": "sell",
+                "quantity": 0.9,
+                "price": 10,
+                "source": "strategy",
+            }
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "Authorize Protected Cash"):
+            portfolio_service.create_bargain_close_preview("protected-loss-close")
+        close_preview = portfolio_service.create_bargain_close_preview(
+            "protected-loss-close",
+            use_protected_cash=True,
+        )
+        self.assertTrue(close_preview["request"]["use_protected_cash"])
+        self.assertGreater(close_preview["request"]["estimated_protected_cash_required"], 0)
+
+        released, _ = portfolio_service.release_portfolio_retained_cash({"quantity": 10})
+        self.assertEqual(released["portfolio"]["summary"]["vault_reserve_retained"], 15)
+        self.assertEqual(released["portfolio"]["summary"]["vault_reserve_spendable"], 76)
 
     def test_office_transfer_changes_treasury_value_and_invested_capital_together(self):
         self.add("USDT", 100, 1, "binance")

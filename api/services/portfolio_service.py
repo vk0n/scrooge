@@ -23,6 +23,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from shared.runtime_db import (  # noqa: E402
     append_portfolio_transaction,
+    consume_portfolio_retained_cash,
     count_portfolio_transactions,
     create_spot_order_intent,
     ensure_portfolio_asset_policies,
@@ -576,7 +577,8 @@ def _summary_from_holdings(
     available_reserve = max(0.0, dry_powder - committed_reserve)
     cash_policy = load_portfolio_cash_policy(account_key=DEFAULT_ACCOUNT_KEY)
     retention_pct = min(100.0, max(0.0, _as_float(cash_policy.get("free_cash_retention_pct")) or 0.0))
-    retained_reserve = available_reserve * retention_pct / 100.0
+    accrued_retained = max(0.0, _as_float(cash_policy.get("retained_quote_balance")) or 0.0)
+    retained_reserve = min(available_reserve, accrued_retained)
     spendable_reserve = max(0.0, available_reserve - retained_reserve)
     largest = max(holdings, key=lambda item: _as_float(item.get("market_value")) or 0.0, default=None)
     price_timestamps = [
@@ -600,6 +602,7 @@ def _summary_from_holdings(
         "vault_reserve_available": available_reserve,
         "vault_reserve_committed": committed_reserve,
         "vault_reserve_retained": retained_reserve,
+        "vault_reserve_retained_accrued": accrued_retained,
         "vault_reserve_spendable": spendable_reserve,
         "free_cash_retention_pct": retention_pct,
         "largest_position": largest,
@@ -1249,6 +1252,7 @@ def _create_spot_order_intent_preview(
     side = str(payload.get("side") or "").strip().lower()
     requested_quantity = _as_float(payload.get("quantity"))
     treasury_intake = bool(payload.get("treasury_intake"))
+    use_protected_cash = bool(payload.get("use_protected_cash"))
     if not asset_symbol or asset_symbol in STABLE_ASSETS:
         raise ValueError("Choose a managed Treasury asset for Spot execution.")
     if quote_symbol != DEFAULT_QUOTE:
@@ -1259,6 +1263,8 @@ def _create_spot_order_intent_preview(
         raise ValueError("Spot order quantity must be greater than zero.")
     if treasury_intake and (normalized_source != "manual" or side != "buy"):
         raise ValueError("Treasury intake is available only for manual Binance Spot buys.")
+    if use_protected_cash and (normalized_source != "manual" or side != "buy"):
+        raise ValueError("Protected Cash may be authorized only for a manual Spot buy.")
 
     normalized_swing_id = str(swing_id or "").strip() or None
     normalized_reason_text = str(reason_text or "").strip() or None
@@ -1317,8 +1323,14 @@ def _create_spot_order_intent_preview(
         raise ValueError("A current market price is required before previewing a real order.")
 
     estimated_quote_value = requested_quantity * estimated_price
+    estimated_fee_rate = max(
+        0.0,
+        float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
+    )
+    estimated_required_quote = estimated_quote_value * (1.0 + estimated_fee_rate)
     available_quote = _as_float(exchange.get("usdt_free")) or 0.0
-    if side == "buy" and (normalized_swing_id is not None or standalone_accumulation):
+    protected_cash_required = 0.0
+    if side == "buy":
         swing_executions = (
             list_spot_swing_executions(normalized_swing_id)
             if normalized_swing_id is not None
@@ -1330,11 +1342,18 @@ def _create_spot_order_intent_preview(
                 snapshot["summary"].get("vault_reserve_available"),
             )
         ) or 0.0
-        if standalone_accumulation or not swing_executions:
-            managed_quote = free_reserve
-        else:
+        committed_quote = 0.0
+        if normalized_swing_id is not None and swing_executions:
             economics = calculate_swing_economics(swing, swing_executions)
-            managed_quote = free_reserve + calculate_sell_origin_committed_quote(swing, economics)
+            committed_quote = calculate_sell_origin_committed_quote(swing, economics)
+        retained_quote = _as_float(snapshot["summary"].get("vault_reserve_retained")) or 0.0
+        if normalized_source == "manual":
+            committed_pool = _as_float(snapshot["summary"].get("vault_reserve_committed")) or 0.0
+            exchange_spendable = max(0.0, available_quote - retained_quote - committed_pool)
+            free_reserve = exchange_spendable
+        nonprotected_budget = free_reserve + committed_quote
+        protected_cash_required = max(0.0, estimated_required_quote - nonprotected_budget)
+        managed_quote = nonprotected_budget + (retained_quote if use_protected_cash else 0.0)
         available_quote = min(available_quote, managed_quote)
     if holding is None:
         available_asset = protected_floor = policy_sellable = immediate_sellable = current_quantity = 0.0
@@ -1346,9 +1365,17 @@ def _create_spot_order_intent_preview(
         current_quantity = _as_float(holding.get("quantity")) or 0.0
     projected_holding = current_quantity + requested_quantity if side == "buy" else current_quantity - requested_quantity
 
-    if side == "buy" and estimated_quote_value > available_quote + 0.00000001:
+    if side == "buy" and estimated_required_quote > available_quote + 0.00000001:
+        protected_hint = (
+            " Authorize Protected Cash to cover the remainder."
+            if not use_protected_cash
+            and protected_cash_required > 0
+            and protected_cash_required <= (_as_float(snapshot["summary"].get("vault_reserve_retained")) or 0.0) + 1e-8
+            else ""
+        )
         raise ValueError(
-            f"Estimated order value is ${estimated_quote_value:,.2f}, but only ${available_quote:,.2f} USDT is available."
+            f"Estimated order cost is ${estimated_required_quote:,.2f}, but only ${available_quote:,.2f} USDT is available."
+            f"{protected_hint}"
         )
     if side == "sell":
         if requested_quantity > immediate_sellable + 0.00000001:
@@ -1386,6 +1413,8 @@ def _create_spot_order_intent_preview(
             "strategy_action_type": strategy_action_type or None,
             "strategy_action_key": str(payload.get("strategy_action_key") or "").strip() or None,
             "treasury_intake": treasury_intake,
+            "use_protected_cash": use_protected_cash,
+            "estimated_protected_cash_required": protected_cash_required,
             "initial_target_quantity": requested_quantity if treasury_intake else None,
             "preview_expires_at_ms": int((time.time() + SPOT_ORDER_PREVIEW_TTL_SECONDS) * 1000),
         }
@@ -1397,7 +1426,11 @@ def create_spot_order_preview(payload: dict[str, Any]) -> dict[str, Any]:
     return _create_spot_order_intent_preview(payload, source="manual")
 
 
-def create_bargain_close_preview(swing_id: str) -> dict[str, Any]:
+def create_bargain_close_preview(
+    swing_id: str,
+    *,
+    use_protected_cash: bool = False,
+) -> dict[str, Any]:
     """Prepare a user-confirmed closing order while preserving Bargain accounting."""
     normalized_swing_id = str(swing_id or "").strip()
     swing = load_spot_swing(normalized_swing_id)
@@ -1445,6 +1478,7 @@ def create_bargain_close_preview(swing_id: str) -> dict[str, Any]:
             "quote_symbol": swing["quote_symbol"],
             "side": economics["closing_side"],
             "quantity": quantity,
+            "use_protected_cash": use_protected_cash,
         },
         source="manual",
         swing_id=normalized_swing_id,
@@ -1544,6 +1578,7 @@ def record_confirmed_office_transfer(
     direction: str,
     quantity: float,
     external_transfer_id: str | None,
+    protected_cash_required: float = 0.0,
 ) -> tuple[dict[str, Any], list[str]]:
     normalized_ref = str(transfer_ref or "").strip()
     normalized_direction = str(direction or "").strip().lower()
@@ -1577,6 +1612,7 @@ def record_confirmed_office_transfer(
             "custody_location": "binance",
             "external_order_id": external_transfer_id,
             "office_transfer_direction": normalized_direction,
+            "protected_cash_required": max(0.0, float(protected_cash_required or 0.0)),
             "note": (
                 "Transferred USDT from Binance USD-M Futures Office to Treasury."
                 if is_incoming
@@ -1695,6 +1731,33 @@ def update_portfolio_cash_policy(payload: dict[str, Any]) -> tuple[dict[str, Any
     )
     snapshot, warnings = load_portfolio_snapshot()
     return {"policy": policy, "portfolio": snapshot}, warnings
+
+
+def release_portfolio_retained_cash(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    quantity = _as_float(payload.get("quantity"))
+    if quantity is None or quantity <= 0:
+        raise ValueError("Protected Cash release must be greater than zero.")
+    snapshot, _ = load_portfolio_snapshot()
+    retained = _as_float(snapshot["summary"].get("vault_reserve_retained")) or 0.0
+    if quantity > retained + 1e-8:
+        raise ValueError(f"Only ${retained:,.2f} of Protected Cash is currently available to release.")
+    release = consume_portfolio_retained_cash(
+        quantity,
+        reference_id=f"protected-cash-release:{uuid.uuid4().hex}",
+        use_type="release",
+        account_key=DEFAULT_ACCOUNT_KEY,
+        context={"requested_by": "treasury_control"},
+    )
+    append_treasury_event(
+        code="treasury_protected_cash_released",
+        tone="neutral",
+        message=f"Released ${release['consumed_quote']:,.2f} from Protected Cash to Free Vault Reserve.",
+        source_ref=release["reference_id"],
+        context=release,
+    )
+    refreshed, warnings = load_portfolio_snapshot()
+    policy = load_portfolio_cash_policy(account_key=DEFAULT_ACCOUNT_KEY)
+    return {"policy": policy, "portfolio": refreshed}, warnings
 
 
 def set_portfolio_transaction_status(

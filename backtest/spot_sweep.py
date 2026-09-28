@@ -221,6 +221,10 @@ def _summary_row(
         "edge_vs_hodl_pct_points": float(portfolio["edge_vs_hodl_pct_points"]),
         "free_reserve_quote": float(reserve["quote"]),
         "free_reserve_pct": float(reserve["pct_of_initial_invested_capital"]),
+        "retained_reserve_quote": float(reserve.get("retained_quote") or 0.0),
+        "spendable_reserve_quote": float(
+            reserve.get("spendable_quote", reserve["quote"])
+        ),
         "weighted_effective_assets_pct": float(recovery["weighted_effective_quantity_pct"]),
         "average_effective_assets_pct": float(recovery["average_effective_quantity_pct"]),
         "maximum_drawdown_pct": float(portfolio["maximum_treasury_drawdown_pct"]),
@@ -279,7 +283,7 @@ main{{width:min(1500px,calc(100% - 28px));margin:28px auto 60px}}header,.panel{{
 <script id="data" type="application/json">{data}</script><script>
 const d=JSON.parse(document.getElementById('data').textContent),money=v=>`${{v<0?'-':''}}$${{Math.abs(v).toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}})}}`,pct=v=>`${{v>=0?'+':''}}${{v.toFixed(2)}}%`,tone=v=>v>0?'positive':v<0?'negative':'';
 document.getElementById('title').textContent=d.name;document.getElementById('meta').textContent=`${{d.start}} to ${{d.end}} | ${{d.completed}}/${{d.total}} completed`;
-document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · ${{pct(r.free_reserve_pct)}}</td><td>${{pct(r.weighted_effective_assets_pct)}}</td><td>${{pct(r.average_effective_assets_pct)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
+document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · retained ${{money(r.retained_reserve_quote||0)}}</td><td>${{pct(r.weighted_effective_assets_pct)}}</td><td>${{pct(r.average_effective_assets_pct)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
 </script></body></html>"""
 
 

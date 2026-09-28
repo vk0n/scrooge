@@ -51,6 +51,16 @@ and the same executor, fees, quantization, and accounting path as every other cl
 
 Opening and closing market actions are lifecycle-atomic. A SELL-origin close may spend only that Bargain's committed quote plus Free Vault Reserve and buys the maximum exchange-valid quantity available from that budget. Once the terminal market order fills, the Bargain closes without a partial or dust tail; any quantity that could not be restored is recorded as realized inventory deficit rather than left waiting for future reserve.
 
+`free_cash_retention_pct` is an accrual policy, not a percentage of the current reserve snapshot. When an
+`ACCUMULATE_CASH` Bargain closes with a positive net cash gain, the configured percentage of that gain is added to a
+persistent retained balance. Retained cash is excluded from accumulation BUYs and loss coverage; changing the policy
+affects future profitable settlements only and does not retroactively lock existing reserve.
+
+In live Treasury, protected cash remains owner-controlled rather than permanently frozen. It can be explicitly
+released back to Free Vault Reserve, transferred to Futures Office, or authorized for a manual Spot buy or manual
+loss close. Those actions debit the accumulated balance exactly once; automatic strategy actions never receive that
+authorization.
+
 Strategy SELL openings also pass a round-trip exchange check. An opening is rejected when its projected profit-target BUY would fall below Binance minimum notional after the objective's quantity semantics and estimated fees; this prevents valid entries from becoming permanently uncloseable dust.
 
 Set `strategy.waiter_cleanup.enabled: false` only for a research baseline. There is no separate production or UI toggle.
@@ -131,7 +141,7 @@ Each run writes:
 - `inventory.csv` and `target_history.csv`
 - `final_state.json` and `rejections.csv`
 
-The report separates realized and unrealized Bargain economics, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. Bargain Analytics adds lifecycle PnL, closure and expectancy metrics, duration percentiles, fee drag, outcome and risk categories, an interactive cohort breakdown, and a duration-versus-return view. Each Portfolio Ledger asset row expands into filterable Bargain history, and each Bargain expands into its execution fills. The V1 simulator itself charges its configured fee in USDT.
+The report separates realized and unrealized Bargain economics, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. Waiter Cleanup splits every completed lifecycle into net quote cash flow and net coin inventory change valued at its cleanup price; those two components reconcile to cleanup economic PnL, while coin quantities remain visible by asset. Bargain Analytics adds lifecycle PnL, closure and expectancy metrics, duration percentiles, fee drag, outcome and risk categories, an interactive cohort breakdown, and a duration-versus-return view. Each Portfolio Ledger asset row expands into filterable Bargain history, and each Bargain expands into its execution fills. The V1 simulator itself charges its configured fee in USDT.
 
 To produce controlled six-month and one-year baseline comparisons from one scenario:
 

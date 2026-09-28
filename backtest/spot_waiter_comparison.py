@@ -27,7 +27,9 @@ METRICS = (
     ("open_bargains", "Open Bargains", "number"),
     ("underwater_open_bargains", "Underwater Bargains", "number"),
     ("open_90_plus", "90+ Day Bargains", "number"),
-    ("realized_cleanup_loss_quote", "Cleanup Losses Realized", "money"),
+    ("cleanup_cash_change_quote", "Cleanup Cash Change", "money"),
+    ("cleanup_asset_value_change_quote", "Cleanup Coin Value Change", "money"),
+    ("realized_cleanup_loss_quote", "Gross Cleanup Losses", "money"),
     ("open_buy_capital_tied_quote", "BUY Capital Tied", "money"),
     ("restore_cost", "SELL Inventory Restore Cost", "money"),
     ("oldest_open_days", "Oldest Open Bargain", "days"),
@@ -41,6 +43,7 @@ def _summary_metrics(report: dict[str, Any]) -> dict[str, float]:
     overview = report["bargain_analysis"]["overview"]
     lock = cleanup["capital_lock"]
     open_metrics = cleanup["open_bargains"]
+    cleanup_accounting = cleanup.get("accounting") or {}
     return {
         "final_treasury_value": float(portfolio["final_treasury_value"]),
         "total_return_pct": float(portfolio["total_return_pct"]),
@@ -54,6 +57,10 @@ def _summary_metrics(report: dict[str, Any]) -> dict[str, float]:
         "open_bargains": float(open_metrics["at_end"]),
         "underwater_open_bargains": float(open_metrics["underwater_at_end"]),
         "open_90_plus": float(open_metrics["age_90_plus"]),
+        "cleanup_cash_change_quote": float(cleanup_accounting.get("cash_change_quote") or 0.0),
+        "cleanup_asset_value_change_quote": float(
+            cleanup_accounting.get("asset_value_change_quote") or 0.0
+        ),
         "realized_cleanup_loss_quote": float(cleanup["realized_cleanup_loss_quote"]),
         "open_buy_capital_tied_quote": float(lock["open_buy_origin_quote"]),
         "restore_cost": float(lock["value_required_to_restore_sell_inventory"]),

@@ -524,10 +524,82 @@ def _asset_recovery_metrics(
     }
 
 
+def _cleanup_accounting_rows(cleanup_swings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cleanup_accounting_rows: list[dict[str, Any]] = []
+    for swing in cleanup_swings:
+        cleanup_execution = next(
+            (
+                execution
+                for execution in reversed(swing.get("executions") or [])
+                if is_cleanup_reason((execution.get("reason") or {}).get("close_reason"))
+            ),
+            None,
+        )
+        if cleanup_execution is None:
+            continue
+        economics = swing.get("economics") or {}
+        cash_change = float(economics.get("realized_cash_gain_quote") or 0.0)
+        asset_quantity_change = float(economics.get("realized_net_asset_change") or 0.0)
+        close_price = float(cleanup_execution.get("price") or 0.0)
+        asset_value_change = asset_quantity_change * close_price
+        cleanup_accounting_rows.append(
+            {
+                "asset_symbol": str(swing["asset_symbol"]),
+                "reason": str(swing.get("close_reason") or "unknown"),
+                "cash_change_quote": cash_change,
+                "asset_quantity_change": asset_quantity_change,
+                "asset_value_change_quote": asset_value_change,
+                "economic_pnl_quote": cash_change + asset_value_change,
+                "reported_realized_pnl_quote": float(
+                    economics.get("realized_pnl_quote") or 0.0
+                ),
+            }
+        )
+    return cleanup_accounting_rows
+
+
+def _cleanup_accounting_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    cash_changes = [float(row["cash_change_quote"]) for row in rows]
+    asset_changes = [float(row["asset_value_change_quote"]) for row in rows]
+    economic_results = [float(row["economic_pnl_quote"]) for row in rows]
+    all_quantities = {
+        symbol: sum(
+            float(row["asset_quantity_change"])
+            for row in rows
+            if row["asset_symbol"] == symbol
+        )
+        for symbol in sorted({str(row["asset_symbol"]) for row in rows})
+    }
+    quantities = {
+        symbol: quantity
+        for symbol, quantity in all_quantities.items()
+        if abs(quantity) > 1e-12
+    }
+    return {
+        "economic_pnl_quote": sum(economic_results),
+        "economic_loss_quote": sum(value for value in economic_results if value < 0),
+        "economic_profit_quote": sum(value for value in economic_results if value > 0),
+        "cash_change_quote": sum(cash_changes),
+        "cash_loss_quote": sum(value for value in cash_changes if value < 0),
+        "cash_gain_quote": sum(value for value in cash_changes if value > 0),
+        "asset_value_change_quote": sum(asset_changes),
+        "asset_value_loss_quote": sum(value for value in asset_changes if value < 0),
+        "asset_value_gain_quote": sum(value for value in asset_changes if value > 0),
+        "asset_quantity_change_by_asset": quantities,
+        "reconciliation_delta_quote": sum(
+            float(row["economic_pnl_quote"])
+            - float(row["reported_realized_pnl_quote"])
+            for row in rows
+        ),
+    }
+
+
 def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
     cleanup_swings = [
         swing for swing in result.swings if is_cleanup_reason(swing.get("close_reason"))
     ]
+    cleanup_accounting_rows = _cleanup_accounting_rows(cleanup_swings)
+    cleanup_accounting = _cleanup_accounting_summary(cleanup_accounting_rows)
     cleanup_outcomes: list[dict[str, Any]] = []
     for swing in result.swings:
         executions: list[dict[str, Any]] = []
@@ -569,12 +641,16 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
     for reason in sorted(CLEANUP_REASONS):
         reason_swings = [swing for swing in cleanup_swings if swing.get("close_reason") == reason]
         reason_outcomes = [item for item in cleanup_outcomes if item["reason"] == reason]
+        reason_accounting = _cleanup_accounting_summary(
+            [item for item in cleanup_accounting_rows if item["reason"] == reason]
+        )
         reason_breakdown[reason] = {
             "closes": len(reason_swings),
             "cleanup_executions": len(reason_outcomes),
             "realized_pnl_quote": sum(
                 float(item["realized_pnl_quote"]) for item in reason_outcomes
             ),
+            **reason_accounting,
             "closing_fees_by_asset": {
                 asset: sum(
                     float(item["fee_amount"])
@@ -642,6 +718,9 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
                 for item in cleanup_outcomes
                 if item["asset_symbol"] == symbol
             ),
+            "accounting": _cleanup_accounting_summary(
+                [item for item in cleanup_accounting_rows if item["asset_symbol"] == symbol]
+            ),
             "open_bargains_prevented_by_cap": sum(
                 1
                 for action in capacity_holds + pressure_cleanup_actions
@@ -694,6 +773,7 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
         "cleanup_attempts_total": len(cleanup_executions),
         "realized_cleanup_loss_quote": sum(value for value in cleanup_results if value < 0),
         "realized_cleanup_profit_quote": sum(value for value in cleanup_results if value > 0),
+        "accounting": cleanup_accounting,
         "average_cleanup_pnl_quote": mean(cleanup_results) if cleanup_results else None,
         "median_cleanup_pnl_quote": median(cleanup_results) if cleanup_results else None,
         "max_cleanup_loss_quote": min(cleanup_results, default=0.0),
@@ -743,6 +823,11 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
     cash_values = [float(item["shared_usdt"]) for item in result.equity]
     cash_reserved = [float(item["shared_usdt_reserved"]) for item in result.equity]
     cash_available = [float(item["shared_usdt_available"]) for item in result.equity]
+    cash_retained = [float(item.get("shared_usdt_retained") or 0.0) for item in result.equity]
+    cash_spendable = [
+        float(item.get("shared_usdt_spendable", item["shared_usdt_available"]))
+        for item in result.equity
+    ]
     strong_limit = result.scenario.starting_usdt * (
         1.0 - result.scenario.strong_cash_utilization_pct / 100.0
     )
@@ -947,6 +1032,10 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             "ending_available": cash_available[-1],
             "minimum_available": min(cash_available, default=0.0),
             "average_available": mean(cash_available),
+            "ending_retained": cash_retained[-1],
+            "maximum_retained": max(cash_retained, default=0.0),
+            "ending_spendable": cash_spendable[-1],
+            "minimum_spendable": min(cash_spendable, default=0.0),
             "strong_utilization_definition": (
                 f"Shared USDT at or below {100 - result.scenario.strong_cash_utilization_pct:g}% "
                 "of its starting balance."
@@ -989,6 +1078,10 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                     else None
                 ),
                 "committed_quote": cash_reserved[-1],
+                "retained_quote": cash_retained[-1],
+                "spendable_quote": cash_spendable[-1],
+                "retention_pct": result.scenario.free_cash_retention_pct,
+                "retention_accruals": len(result.cash_retentions),
                 "total_usdt": result.final_usdt,
             },
             "asset_recovery": {
@@ -1269,8 +1362,23 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         "",
         f"- Enabled: {'yes' if cleanup_metrics['enabled'] else 'no'}",
         f"- Cleanup closes: {cleanup_metrics['cleanup_closes_total']}",
-        f"- Realized cleanup loss: ${cleanup_metrics['realized_cleanup_loss_quote']:,.2f}",
-        f"- Realized cleanup profit: ${cleanup_metrics['realized_cleanup_profit_quote']:,.2f}",
+        f"- Cleanup net PnL: ${cleanup_metrics['accounting']['economic_pnl_quote']:,.2f}",
+        f"- Cleanup cash change: ${cleanup_metrics['accounting']['cash_change_quote']:,.2f}",
+        (
+            "- Cleanup coin value change at close: "
+            f"${cleanup_metrics['accounting']['asset_value_change_quote']:,.2f}"
+        ),
+        (
+            "- Cleanup coin quantity change: "
+            + ", ".join(
+                f"{symbol} {quantity:+,.8f}"
+                for symbol, quantity in cleanup_metrics["accounting"][
+                    "asset_quantity_change_by_asset"
+                ].items()
+            )
+        ),
+        f"- Gross cleanup losses: ${cleanup_metrics['realized_cleanup_loss_quote']:,.2f}",
+        f"- Gross cleanup gains: ${cleanup_metrics['realized_cleanup_profit_quote']:,.2f}",
         (
             "- Open Bargains prevented by cap: "
             f"{cleanup_metrics['capacity']['open_bargains_prevented_by_cap']}"
