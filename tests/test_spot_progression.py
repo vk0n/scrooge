@@ -190,7 +190,6 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
             free_reserve_quote=40,
             current_price=5,
             config=ProgressiveSwingConfig(
-                treasury_accumulation_enabled=True,
                 estimated_fee_rate=0,
             ),
         )
@@ -209,7 +208,6 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
             free_reserve_quote=100,
             current_price=10,
             config=ProgressiveSwingConfig(
-                treasury_accumulation_enabled=True,
                 estimated_fee_rate=0,
             ),
         )
@@ -235,7 +233,6 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
             available_quote=1000,
             available_accumulation_quote=40,
             config=ProgressiveSwingConfig(
-                treasury_accumulation_enabled=True,
                 estimated_fee_rate=0,
             ),
         )
@@ -258,7 +255,7 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
             {"active_side": "buy", "highest_completed_level": 0, "campaign_id": "buy-campaign"},
             [],
             available_quote=1000,
-            config=ProgressiveSwingConfig(treasury_accumulation_enabled=True),
+            config=ProgressiveSwingConfig(),
         )
 
         self.assertIsNone(decision)
@@ -957,7 +954,6 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             logger=logging.getLogger("test.spot-progression"),
             db_path=self.db_path,
             config=ProgressiveSwingConfig(
-                treasury_accumulation_enabled=True,
                 estimated_fee_rate=0,
             ),
         )

@@ -261,17 +261,16 @@ class SpotExecutionTests(unittest.TestCase):
         return preview
 
     def test_accumulation_fill_uses_net_asset_for_target_and_is_restart_safe(self):
-        with patch.dict(os.environ, {"SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED": "1"}):
-            preview = self._accumulation_preview()
-            client = FakeSpotExecutionClient(commission_amount=0.01, commission_asset="BTC")
-            executor = SpotOrderExecutor(
-                client,
-                logger=logging.getLogger("test.spot-execution"),
-                db_path=self.db_path,
-            )
+        preview = self._accumulation_preview()
+        client = FakeSpotExecutionClient(commission_amount=0.01, commission_asset="BTC")
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
 
-            executor.execute(preview["intent_id"])
-            executor.execute(preview["intent_id"])
+        executor.execute(preview["intent_id"])
+        executor.execute(preview["intent_id"])
 
         policy = next(
             item for item in list_portfolio_asset_policies(path=self.db_path)
@@ -288,9 +287,8 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(client.create_calls, 1)
         self.assertEqual(list_spot_swings(path=self.db_path), [])
 
-    def test_accumulation_execution_rechecks_feature_gate(self):
-        with patch.dict(os.environ, {"SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED": "1"}):
-            preview = self._accumulation_preview()
+    def test_accumulation_execution_requires_no_separate_feature_gate(self):
+        preview = self._accumulation_preview()
         client = FakeSpotExecutionClient()
         executor = SpotOrderExecutor(
             client,
@@ -298,24 +296,22 @@ class SpotExecutionTests(unittest.TestCase):
             db_path=self.db_path,
         )
 
-        with patch.dict(os.environ, {"SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED": "0"}):
-            with self.assertRaisesRegex(SpotOrderValidationError, "production safety gate"):
-                executor.execute(preview["intent_id"])
+        result = executor.execute(preview["intent_id"])
 
-        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual(client.create_calls, 1)
 
     def test_accumulation_execution_is_capped_by_actual_binance_usdt(self):
-        with patch.dict(os.environ, {"SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED": "1"}):
-            preview = self._accumulation_preview()
-            client = FakeSpotExecutionClient(usdt_free=20)
-            executor = SpotOrderExecutor(
-                client,
-                logger=logging.getLogger("test.spot-execution"),
-                db_path=self.db_path,
-            )
+        preview = self._accumulation_preview()
+        client = FakeSpotExecutionClient(usdt_free=20)
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
 
-            with self.assertRaisesRegex(SpotOrderValidationError, "Binance USDT balance"):
-                executor.execute(preview["intent_id"])
+        with self.assertRaisesRegex(SpotOrderValidationError, "Binance USDT balance"):
+            executor.execute(preview["intent_id"])
 
         self.assertEqual(client.create_calls, 0)
 

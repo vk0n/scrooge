@@ -61,9 +61,6 @@ def progressive_swing_config_from_env() -> ProgressiveSwingConfig:
     return ProgressiveSwingConfig(
         close_profit_pct=float(os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "3") or 3),
         estimated_fee_rate=float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
-        treasury_accumulation_enabled=str(
-            os.getenv("SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED", "0") or "0"
-        ).strip().lower() in {"1", "true", "yes", "on"},
         campaign_capacity_pct=float(
             os.getenv("SCROOGE_SPOT_CAMPAIGN_CAPACITY_PCT", "50") or 50
         ),

@@ -84,7 +84,6 @@ def scenario(
     starting_usdt: float = 1000,
     fee_rate: float = 0,
     slippage_bps: float = 0,
-    treasury_accumulation_enabled: bool = False,
 ) -> SpotBacktestScenario:
     start = datetime(2026, 1, 10, tzinfo=UTC)
     return SpotBacktestScenario(
@@ -105,7 +104,6 @@ def scenario(
         progression=ProgressiveSwingConfig(
             close_profit_pct=5,
             estimated_fee_rate=fee_rate,
-            treasury_accumulation_enabled=treasury_accumulation_enabled,
         ),
         data_cache_dir=Path("/tmp/spot-data"),
         output_dir=Path("/tmp/spot-output"),
@@ -793,7 +791,6 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             ),
             hours=6,
             starting_usdt=100,
-            treasury_accumulation_enabled=True,
         )
 
         result = self.run_scenario(config, lambda _symbol, index: 90 if index >= 0 else 100)
@@ -872,7 +869,6 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         config = scenario(
             (asset("AAA", quantity=10, target=10, objective="accumulate_asset"),),
             starting_usdt=100,
-            treasury_accumulation_enabled=True,
         )
         replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 100))
         replay.swings["committed-sell"] = {
@@ -924,7 +920,6 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             (asset("AAA", quantity=10, target=10, objective="accumulate_asset"),),
             hours=6,
             starting_usdt=1,
-            treasury_accumulation_enabled=True,
         )
         historical = dataset(config, lambda _symbol, index: 90 if index >= 0 else 100)
         historical.symbol_info["AAA"] = {
@@ -952,7 +947,6 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         config = scenario(
             (asset("AAA", quantity=10, target=10, objective="accumulate_asset"),),
             starting_usdt=100,
-            treasury_accumulation_enabled=True,
         )
         historical = dataset(config, lambda _symbol, _index: 1)
         historical.symbol_info["AAA"] = {
@@ -1246,7 +1240,6 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(len(template.assets), 10)
         self.assertTrue(all(item.quantity == 0 for item in template.assets))
         self.assertTrue(template.waiter_cleanup.enabled)
-        self.assertTrue(template.progression.treasury_accumulation_enabled)
         self.assertEqual(template.progression.close_profit_pct, 3)
         self.assertEqual(template.interval, "1m")
         self.assertEqual(template.warmup_candles, 3600)
@@ -1295,7 +1288,6 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(exported.assets[0].symbol, "NEAR")
         self.assertEqual(exported.assets[0].binance_quantity, 750)
         self.assertEqual(exported.assets[0].cold_storage_quantity, 250)
-        self.assertTrue(exported.progression.treasury_accumulation_enabled)
         self.assertEqual(exported.progression.close_profit_pct, 3)
         self.assertEqual(exported.interval, "1m")
         self.assertEqual(exported.warmup_candles, 3600)

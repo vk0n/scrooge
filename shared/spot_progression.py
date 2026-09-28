@@ -9,7 +9,6 @@ from typing import Any
 class ProgressiveSwingConfig:
     close_profit_pct: float = 3.0
     estimated_fee_rate: float = 0.001
-    treasury_accumulation_enabled: bool = False
     campaign_capacity_pct: float = 50.0
     full_deploy_threshold_pct: float = 25.0
 
@@ -125,8 +124,6 @@ def plan_treasury_accumulation(
 ) -> dict[str, Any]:
     """Size a standalone reserve deployment without creating Swing lifecycle state."""
     resolved = config or ProgressiveSwingConfig()
-    if not resolved.treasury_accumulation_enabled:
-        return {"eligible": False, "reason": "treasury_accumulation_disabled", "quantity": 0.0}
     # BUY accumulation has its own reserve allocation. SELL opening tranches are
     # intentionally kept in base_tranche_pct and must not be reused here.
     accumulation_tranche = signal.get("accumulation_tranche_pct")

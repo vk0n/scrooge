@@ -108,9 +108,9 @@ derive or rewrite Target Holding.
 
 ## Treasury Policy Mode
 
-`SCROOGE_SPOT_EXECUTION_ENABLED` remains the global Spot execution switch. The new reserve-deployment behavior also
-requires `SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED`; it defaults OFF in live deployments and is explicitly enabled
-only in reviewed research scenarios. There is no UI or per-asset automation toggle.
+`SCROOGE_SPOT_EXECUTION_ENABLED` remains the global Spot execution switch. Reserve deployment through
+`ACCUMULATE_ASSET + BUY` is baseline platform behavior and has no separate environment, UI, or per-asset automation
+toggle. The asset objective, spendable reserve, current exchange balance, and exchange order filters constrain it.
 
 - With execution disabled, every holding is `locked`, immediate sellable inventory is zero, and trading policy/order
   controls are omitted from the UI. Stored Target and Minimum Holding values remain unchanged.

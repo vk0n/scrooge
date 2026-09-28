@@ -1249,11 +1249,6 @@ def _create_spot_order_intent_preview(
         and strategy_action_type == "accumulate_asset"
         and side == "buy"
     )
-    accumulation_enabled = str(
-        os.getenv("SCROOGE_SPOT_TREASURY_ACCUMULATION_ENABLED", "0") or "0"
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    if standalone_accumulation and not accumulation_enabled:
-        raise ValueError("Treasury accumulation is disabled by the production safety gate.")
     if normalized_source == "strategy" and normalized_swing_id is None and not standalone_accumulation:
         raise ValueError("A standalone Strategy Spot order must be Treasury accumulation.")
     if normalized_source == "strategy":

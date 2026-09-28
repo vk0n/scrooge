@@ -343,9 +343,6 @@ def load_spot_backtest_scenario(
                 else float(close_profit_pct_override)
             ),
             estimated_fee_rate=float(progression_payload.get("estimated_fee_rate", fee_rate)),
-            treasury_accumulation_enabled=bool(
-                progression_payload.get("treasury_accumulation_enabled", False)
-            ),
             campaign_capacity_pct=float(progression_payload.get("campaign_capacity_pct", 50)),
             full_deploy_threshold_pct=float(
                 progression_payload.get("full_deploy_threshold_pct", 25)
@@ -488,7 +485,6 @@ def export_current_treasury_scenario(
                 "progression": {
                     "close_profit_pct": 3,
                     "estimated_fee_rate": 0.001,
-                    "treasury_accumulation_enabled": True,
                     "campaign_capacity_pct": 50,
                     "full_deploy_threshold_pct": 25,
                 },

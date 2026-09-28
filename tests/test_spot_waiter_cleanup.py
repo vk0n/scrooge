@@ -292,7 +292,6 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
             config=ProgressiveSwingConfig(
                 close_profit_pct=5,
                 estimated_fee_rate=0,
-                treasury_accumulation_enabled=True,
             ),
             cleanup_config=WaiterCleanupConfig(),
         )
