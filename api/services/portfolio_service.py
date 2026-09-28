@@ -509,7 +509,7 @@ def _attach_asset_performance(
     return portfolio_accumulated_cash
 
 
-def _portfolio_24h_change_pct(holdings: list[dict[str, Any]]) -> float | None:
+def _portfolio_24h_change(holdings: list[dict[str, Any]]) -> tuple[float | None, float | None]:
     current_total = 0.0
     previous_total = 0.0
     for holding in holdings:
@@ -522,14 +522,15 @@ def _portfolio_24h_change_pct(holdings: list[dict[str, Any]]) -> float | None:
             continue
         change_pct = _as_float(holding.get("rolling_24h_change_pct"))
         if change_pct is None:
-            return None
+            return None, None
         price_ratio = 1.0 + change_pct / 100.0
         if price_ratio <= 0:
-            return None
+            return None, None
         previous_total += market_value / price_ratio
     if current_total <= 0 or previous_total <= 0:
-        return None
-    return (current_total / previous_total - 1.0) * 100.0
+        return None, None
+    change_quote = current_total - previous_total
+    return change_quote, change_quote / previous_total * 100.0
 
 
 def _summary_from_holdings(
@@ -540,6 +541,7 @@ def _summary_from_holdings(
     economics_by_swing: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     total_value = sum(_as_float(holding.get("market_value")) or 0.0 for holding in holdings)
+    total_value_24h_change, total_value_24h_change_pct = _portfolio_24h_change(holdings)
     total_gain = total_value - invested_capital
     dry_powder = sum(
         _as_float(holding.get("market_value")) or 0.0
@@ -559,7 +561,8 @@ def _summary_from_holdings(
     ]
     return {
         "total_value": total_value,
-        "total_value_24h_change_pct": _portfolio_24h_change_pct(holdings),
+        "total_value_24h_change": total_value_24h_change,
+        "total_value_24h_change_pct": total_value_24h_change_pct,
         "invested_capital": invested_capital,
         "total_gain": total_gain,
         "total_gain_pct": (total_gain / invested_capital) * 100 if invested_capital > 0 else None,

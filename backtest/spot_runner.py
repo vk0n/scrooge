@@ -4,7 +4,8 @@ import argparse
 from datetime import UTC, datetime
 from pathlib import Path
 import sys
-import time
+
+from tqdm import tqdm
 
 from backtest.spot_engine import SpotPortfolioBacktester
 from backtest.spot_market_data import BinanceSpotHistoricalAdapter
@@ -17,47 +18,41 @@ class _ReplayProgress:
     def __init__(self, *, asset_count: int, stream: object = sys.stderr) -> None:
         self.asset_count = asset_count
         self.stream = stream
-        self.started_at = time.monotonic()
-        self.last_rendered_at = 0.0
-        self.last_percent = -1
-        self.tty = bool(getattr(stream, "isatty", lambda: False)())
+        self.bar: tqdm | None = None
+        self.completed = 0
 
     @staticmethod
-    def _duration(seconds: float) -> str:
-        total = max(0, int(seconds))
-        hours, remainder = divmod(total, 3600)
-        minutes, secs = divmod(remainder, 60)
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    def _compact_count(value: int) -> str:
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.2f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}K"
+        return str(value)
 
     def __call__(self, completed: int, total: int) -> None:
-        now = time.monotonic()
-        fraction = completed / total if total else 1.0
-        percent = min(100, int(fraction * 100))
-        if completed not in {0, total}:
-            if self.tty and now - self.last_rendered_at < 0.25:
-                return
-            if not self.tty and percent < self.last_percent + 5:
-                return
-
-        elapsed = now - self.started_at
-        eta = elapsed * (total - completed) / completed if completed else 0.0
-        width = 30
-        filled = min(width, int(fraction * width))
-        bar = "#" * filled + "-" * (width - filled)
+        if self.bar is None:
+            self.bar = tqdm(
+                total=total,
+                desc="Spot Replay",
+                unit="cycle",
+                dynamic_ncols=True,
+                mininterval=0.25,
+                leave=True,
+                file=self.stream,
+            )
+        delta = max(0, completed - self.completed)
+        if delta:
+            self.bar.update(delta)
+            self.completed = completed
         asset_candles = completed * self.asset_count
         total_asset_candles = total * self.asset_count
-        line = (
-            f"Replay [{bar}] {percent:3d}% "
-            f"{completed:,}/{total:,} cycles "
-            f"({asset_candles:,}/{total_asset_candles:,} asset-candles) "
-            f"elapsed {self._duration(elapsed)} ETA {self._duration(eta)}"
+        self.bar.set_postfix_str(
+            "asset-candles="
+            f"{self._compact_count(asset_candles)}/{self._compact_count(total_asset_candles)}",
+            refresh=False,
         )
-        prefix = "\r" if self.tty else ""
-        suffix = "\n" if not self.tty or completed == total else ""
-        self.stream.write(f"{prefix}{line}{suffix}")
-        self.stream.flush()
-        self.last_rendered_at = now
-        self.last_percent = percent
+        if completed >= total:
+            self.bar.close()
 
 
 def _parser() -> argparse.ArgumentParser:

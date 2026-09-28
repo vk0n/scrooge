@@ -2402,7 +2402,17 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-total-change {
-  font-size: 0.78rem;
+  display: grid;
+  justify-items: start;
+  gap: 0.06rem;
+}
+
+.treasury-summary-card strong.treasury-total-change-value {
+  font-size: 0.9rem;
+}
+
+.treasury-total-change-pct {
+  font-size: 0.72rem;
   line-height: 1.22;
 }
 
@@ -4941,6 +4951,25 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-summary-card-hero {
     grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .treasury-summary-card-hero > .treasury-summary-label {
+    grid-column: 1 / -1;
+  }
+
+  .treasury-summary-card-hero > .treasury-total-value {
+    grid-column: 1;
+  }
+
+  .treasury-summary-card-hero > .treasury-total-change {
+    display: flex;
+    align-items: baseline;
+    grid-column: 2;
+    grid-row: 2;
+    gap: 0.38rem;
+    justify-self: end;
   }
 
   .treasury-timeline-grid {
@@ -5678,22 +5707,6 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-summary-card-hero {
     grid-column: auto;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-  }
-
-  .treasury-summary-card-hero > .treasury-summary-label {
-    grid-column: 1 / -1;
-  }
-
-  .treasury-summary-card-hero > .treasury-total-value {
-    grid-column: 1;
-  }
-
-  .treasury-summary-card-hero > .treasury-total-change {
-    grid-column: 2;
-    grid-row: 2;
-    justify-self: end;
   }
 
   .treasury-holding-lines > span {

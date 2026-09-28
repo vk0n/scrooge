@@ -8,6 +8,7 @@ import { formatDateTimeEu } from "../../lib/datetime";
 
 type PortfolioSummary = {
   total_value: number;
+  total_value_24h_change: number | null;
   total_value_24h_change_pct: number | null;
   invested_capital: number;
   total_gain: number;
@@ -431,7 +432,7 @@ function formatPercent(value: number | null | undefined): string {
 
 function formatSignedPercent(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "";
+    return "Pending";
   }
   return `${value > 0 ? "+" : ""}${formatNumber(value, 2)}%`;
 }
@@ -2167,14 +2168,24 @@ export default function TreasuryPage(): JSX.Element {
                 </span>
                 <span>{formatNumber(summary?.total_value ?? 0)}</span>
               </strong>
-              {typeof summary?.total_value_24h_change_pct === "number" ? (
-                <span
-                  className={signedToneClass(
-                    summary.total_value_24h_change_pct,
-                    "treasury-total-change"
-                  )}
-                >
-                  24h {formatSignedPercent(summary.total_value_24h_change_pct)}
+              {typeof summary?.total_value_24h_change === "number" ? (
+                <span className="treasury-total-change">
+                  <strong
+                    className={signedToneClass(
+                      summary.total_value_24h_change,
+                      "treasury-total-change-value"
+                    )}
+                  >
+                    {formatSignedCurrency(summary.total_value_24h_change)}
+                  </strong>
+                  <span
+                    className={signedToneClass(
+                      summary.total_value_24h_change_pct,
+                      "treasury-total-change-pct"
+                    )}
+                  >
+                    {formatSignedPercent(summary.total_value_24h_change_pct)}
+                  </span>
                 </span>
               ) : null}
             </div>
@@ -2190,7 +2201,9 @@ export default function TreasuryPage(): JSX.Element {
               <strong className={signedToneClass(summary?.total_gain, "treasury-summary-value")}>
                 {formatSignedCurrency(summary?.total_gain ?? 0)}
               </strong>
-              <span className="treasury-summary-note">{formatPercent(summary?.total_gain_pct)}</span>
+              <span className={signedToneClass(summary?.total_gain_pct, "treasury-summary-note")}>
+                {formatSignedPercent(summary?.total_gain_pct)}
+              </span>
             </div>
             <div className="treasury-summary-card">
               <span className="treasury-summary-label">Vault Reserve</span>

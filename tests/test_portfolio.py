@@ -89,6 +89,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual([round(holding["allocation_pct"], 2) for holding in snapshot["holdings"]], [83.33, 16.67])
         self.assertEqual(snapshot["holdings"][0]["rolling_24h_change_pct"], 6.25)
         self.assertIsNone(snapshot["holdings"][1]["rolling_24h_change_pct"])
+        self.assertIsNone(snapshot["summary"]["total_value_24h_change"])
         self.assertIsNone(snapshot["summary"]["total_value_24h_change_pct"])
         self.assertEqual(snapshot["summary"]["prices_updated_at"], "2026-09-22 13:45:00")
         self.assertTrue(all(holding["market_price_updated_at"] for holding in snapshot["holdings"]))
@@ -122,6 +123,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             economics_by_swing={},
         )
 
+        self.assertAlmostEqual(summary["total_value_24h_change"], -40.0)
         self.assertAlmostEqual(summary["total_value_24h_change_pct"], -16.6666666667)
 
     def test_summary_counts_only_open_spot_swings(self):
