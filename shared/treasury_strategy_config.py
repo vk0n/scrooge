@@ -13,7 +13,6 @@ _TREASURY_KEYS = {"signal_refresh_seconds", "signal", "progression", "waiter_cle
 _SIGNAL_KEYS = {"levels_pct", "base_tranches_pct", "accumulation_tranches_pct"}
 _PROGRESSION_KEYS = {
     "close_profit_pct",
-    "estimated_fee_rate",
     "campaign_capacity_pct",
     "full_deploy_threshold_pct",
 }
@@ -93,7 +92,6 @@ class TreasuryStrategyConfig:
             },
             "progression": {
                 "close_profit_pct": self.progression.close_profit_pct,
-                "estimated_fee_rate": self.progression.estimated_fee_rate,
                 "campaign_capacity_pct": self.progression.campaign_capacity_pct,
                 "full_deploy_threshold_pct": self.progression.full_deploy_threshold_pct,
             },
@@ -180,10 +178,6 @@ def treasury_strategy_config_from_mapping(payload: Any) -> TreasuryStrategyConfi
             close_profit_pct=_number(
                 progression["close_profit_pct"],
                 field="treasury.progression.close_profit_pct",
-            ),
-            estimated_fee_rate=_number(
-                progression["estimated_fee_rate"],
-                field="treasury.progression.estimated_fee_rate",
             ),
             campaign_capacity_pct=_number(
                 progression["campaign_capacity_pct"],

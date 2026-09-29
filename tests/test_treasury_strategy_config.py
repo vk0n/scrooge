@@ -19,7 +19,6 @@ def treasury_rules() -> dict:
         },
         "progression": {
             "close_profit_pct": 4,
-            "estimated_fee_rate": 0.001,
             "campaign_capacity_pct": 50,
             "full_deploy_threshold_pct": 25,
         },
@@ -48,6 +47,7 @@ class TreasuryStrategyConfigTests(unittest.TestCase):
         self.assertEqual(config.signal.levels_pct, (2.0, 3.0, 4.0, 6.0))
         self.assertEqual(config.signal.accumulation_tranches_pct, (1.0, 3.0, 5.0, 10.0))
         self.assertEqual(config.progression.close_profit_pct, 4.0)
+        self.assertEqual(config.progression.estimated_fee_rate, 0.001)
         self.assertEqual(config.waiter_cleanup.deep_loss_unrealized_pnl_pct, -25.0)
 
     def test_rejects_unknown_and_misaligned_rules(self):
@@ -55,6 +55,11 @@ class TreasuryStrategyConfigTests(unittest.TestCase):
         unknown["mystery"] = True
         with self.assertRaisesRegex(ValueError, "unsupported field"):
             treasury_strategy_config_from_mapping(unknown)
+
+        technical_fee = treasury_rules()
+        technical_fee["progression"]["estimated_fee_rate"] = 0.002
+        with self.assertRaisesRegex(ValueError, "unsupported field"):
+            treasury_strategy_config_from_mapping(technical_fee)
 
         misaligned = treasury_rules()
         misaligned["signal"]["base_tranches_pct"] = [10, 20]
@@ -112,6 +117,7 @@ class TreasuryRulesPersistenceTests(unittest.TestCase):
         self.assertTrue(result["updated"])
         self.assertNotIn("progression", saved)
         self.assertEqual(saved["treasury"]["progression"]["close_profit_pct"], 5.0)
+        self.assertNotIn("estimated_fee_rate", saved["treasury"]["progression"])
         self.assertEqual(saved["params"], self.original["params"])
         self.assertTrue(Path(result["backup_path"]).exists())
 

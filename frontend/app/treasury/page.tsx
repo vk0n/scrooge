@@ -112,7 +112,6 @@ type TreasuryRules = {
   };
   progression: {
     close_profit_pct: number;
-    estimated_fee_rate: number;
     campaign_capacity_pct: number;
     full_deploy_threshold_pct: number;
   };
@@ -1235,13 +1234,9 @@ function TreasuryRulesPanel(): JSX.Element {
 
   return (
     <section className="section-block treasury-rules-section">
-      <header className="treasury-section-head">
-        <div>
-          <h2>Treasury Rules</h2>
-          <p className="muted">The standing orders I follow for every Spot signal.</p>
-        </div>
+      <div className="treasury-rules-badge-row">
         <span className="treasury-insight-count">LIVE CONFIG</span>
-      </header>
+      </div>
       {loading ? <p className="dialog-scrooge">Reviewing the rules...</p> : editing ? (
         <div className="contract-editor">
           <p className="contract-editor-note">Only the Treasury strategy section is editable here. The Futures contract remains untouched.</p>
@@ -1264,7 +1259,7 @@ function TreasuryRulesPanel(): JSX.Element {
               <div className="contract-sheet" aria-label="Treasury Rules">
                 <p><span className="contract-term">Market Bell</span> Every <span className="contract-value">{rules.signal_refresh_seconds}s</span>, measure the 24-hour move. Levels are <span className="contract-value">{levelText}</span>.</p>
                 <p><span className="contract-term">Campaign Stakes</span> Cash-accumulation tranches are <span className="contract-value">{sellText}</span>; asset-accumulation tranches are <span className="contract-value">{buyText}</span>.</p>
-                <p><span className="contract-term">Bargain Goal</span> Close profitable Bargains at gross <span className="contract-value">{rules.progression.close_profit_pct}%</span>, using a fee estimate of <span className="contract-value">{rules.progression.estimated_fee_rate * 100}%</span>.</p>
+                <p><span className="contract-term">Bargain Goal</span> Close profitable Bargains at gross <span className="contract-value">{rules.progression.close_profit_pct}%</span>.</p>
                 <p><span className="contract-term">Inventory Discipline</span> A campaign may use <span className="contract-value">{rules.progression.campaign_capacity_pct}%</span> of sellable inventory, then deploy fully below <span className="contract-value">{rules.progression.full_deploy_threshold_pct}%</span> remaining.</p>
                 <p><span className="contract-term">Waiter Cleanup</span> Cleanup is <span className="contract-value">{rules.waiter_cleanup.enabled ? "active" : "paused"}</span>. Keep at most <span className="contract-value">{rules.waiter_cleanup.max_open_bargains_per_asset}</span> open Bargains per asset. Aging gates: <span className="contract-value">{agingText}</span>.</p>
                 <p><span className="contract-term">Deep Loss</span> After <span className="contract-value">{rules.waiter_cleanup.deep_loss.min_age_days}d</span> at or below <span className="contract-value">{rules.waiter_cleanup.deep_loss.unrealized_pnl_pct}%</span>, an L<span className="contract-value">{rules.waiter_cleanup.deep_loss.required_reverse_level}</span> reverse signal may clean the position.</p>
@@ -3087,9 +3082,6 @@ export default function TreasuryPage(): JSX.Element {
         <p className="dialog-scrooge treasury-role-divider">My treasury holdings:</p>
 
         <section className="section-block treasury-holdings-section">
-          <header className="treasury-section-head">
-            <h2>Vault Holdings</h2>
-          </header>
           {formExpanded ? (
             <div className="treasury-intake-panel">
               {spotExecutionEnabled ? (

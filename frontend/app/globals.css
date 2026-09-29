@@ -2736,8 +2736,9 @@ button.treasury-summary-card-swings:focus-visible,
   margin-top: 0.15rem;
 }
 
-.treasury-holdings-section > .treasury-section-head {
-  order: 1;
+.treasury-rules-badge-row {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .treasury-holdings-section > .treasury-holdings-list {

@@ -5,10 +5,13 @@ from dataclasses import dataclass
 from typing import Any
 
 
+DEFAULT_SPOT_ESTIMATED_FEE_RATE = 0.001
+
+
 @dataclass(frozen=True)
 class ProgressiveSwingConfig:
     close_profit_pct: float = 4.0
-    estimated_fee_rate: float = 0.001
+    estimated_fee_rate: float = DEFAULT_SPOT_ESTIMATED_FEE_RATE
     campaign_capacity_pct: float = 50.0
     full_deploy_threshold_pct: float = 25.0
 
