@@ -58,8 +58,10 @@ jobs:
               - 'shared/**'
             api:
               - '.dockerignore'
+              - '.github/workflows/docker-publish.yml'
               - 'docker/api.Dockerfile'
               - 'api/**'
+              - 'shared/**'
             frontend:
               - '.dockerignore'
               - 'docker/frontend.Dockerfile'
