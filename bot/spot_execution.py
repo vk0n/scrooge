@@ -32,6 +32,7 @@ from shared.spot_execution_rules import (
     validate_market_notional as _validate_notional,
     validate_sell_opening_round_trip as _validate_sell_opening_round_trip,
 )
+from shared.spot_progression import ProgressiveSwingConfig
 from shared.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics
 from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction
 
@@ -169,10 +170,21 @@ def _execution_summary(client: Any, symbol: str, order: dict[str, Any]) -> dict[
 
 
 class SpotOrderExecutor:
-    def __init__(self, client: Any, *, logger: Any, db_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        logger: Any,
+        db_path: Path | None = None,
+        strategy_config: ProgressiveSwingConfig | None = None,
+    ) -> None:
         self.client = client
         self.logger = logger
         self.db_path = db_path
+        self.strategy_config = strategy_config or ProgressiveSwingConfig()
+
+    def update_strategy_config(self, strategy_config: ProgressiveSwingConfig) -> None:
+        self.strategy_config = strategy_config
 
     def _refresh_account(self) -> dict[str, Any]:
         account = self.client.get_account(recvWindow=5000)
@@ -318,13 +330,8 @@ class SpotOrderExecutor:
                 quantity=quantity,
                 price=market_price,
                 trading_objective=str(swing.get("trading_objective") or ""),
-                close_profit_pct=float(
-                    os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "4") or 4
-                ),
-                estimated_fee_rate=max(
-                    0.0,
-                    float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
-                ),
+                close_profit_pct=self.strategy_config.close_profit_pct,
+                estimated_fee_rate=self.strategy_config.estimated_fee_rate,
             )
         from api.services.portfolio_service import load_portfolio_snapshot
 
@@ -364,10 +371,7 @@ class SpotOrderExecutor:
                 raise ValueError("Sell rejected because Binance free balance changed after preview.")
         else:
             quote_free = balances.get(intent["quote_symbol"], {}).get("free", 0.0)
-            estimated_fee_rate = max(
-                0.0,
-                float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
-            )
+            estimated_fee_rate = self.strategy_config.estimated_fee_rate
             required_quote = quantity_float * market_price * (1.0 + estimated_fee_rate)
             if required_quote > quote_free + 0.00000001:
                 raise ValueError("Buy rejected because Binance USDT balance changed after preview.")

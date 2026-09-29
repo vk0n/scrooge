@@ -127,6 +127,8 @@ Supports:
 - `POST /api/config/editable`
 - `GET /api/config/raw`
 - `POST /api/config/raw`
+- `GET /api/config/treasury-rules`
+- `POST /api/config/treasury-rules`
 
 Editable config includes:
 - top-level runtime fields such as `strategy_mode`, `symbol`, `leverage`, `qty`
@@ -138,6 +140,7 @@ Important:
 - editable writes create a config backup first
 - responses return `backup_path`
 - responses also indicate whether `restart_required`
+- Treasury Rules writes validate and replace only the `treasury` subtree in `config/live.yaml`
 
 `indicator_inputs` supported values:
 - `closed`

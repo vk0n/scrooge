@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .config_service import load_treasury_strategy_config
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -1324,10 +1326,7 @@ def _create_spot_order_intent_preview(
         raise ValueError("A current market price is required before previewing a real order.")
 
     estimated_quote_value = requested_quantity * estimated_price
-    estimated_fee_rate = max(
-        0.0,
-        float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
-    )
+    estimated_fee_rate = load_treasury_strategy_config().progression.estimated_fee_rate
     estimated_required_quote = estimated_quote_value * (1.0 + estimated_fee_rate)
     available_quote = _as_float(exchange.get("usdt_free")) or 0.0
     protected_cash_required = 0.0
@@ -1453,7 +1452,7 @@ def create_bargain_close_preview(
     quantity = remaining_quantity
     quantity_basis = "remaining_asset"
     if swing["origin_side"] == "sell" and swing.get("trading_objective") == "accumulate_asset":
-        estimated_fee_rate = float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001)
+        estimated_fee_rate = load_treasury_strategy_config().progression.estimated_fee_rate
         opening_quote = float(economics.get("opening_quote_quantity") or 0.0)
         closing_quote = float(economics.get("closing_quote_quantity") or 0.0)
         opening_quote_fee = float(

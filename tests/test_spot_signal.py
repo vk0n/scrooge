@@ -1,14 +1,10 @@
 import logging
-import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bot.spot_signal import (
-    RollingSpotSignalMonitor,
-    spot_signal_config_from_env,
-)
+from bot.spot_signal import RollingSpotSignalMonitor
 from shared.runtime_db import (
     bootstrap_runtime_db,
     load_spot_signal_snapshot,
@@ -84,22 +80,6 @@ class SpotSignalDomainTests(unittest.TestCase):
             SpotSignalConfig(levels_pct=(5, 8), base_tranches_pct=(10,))
         with self.assertRaisesRegex(ValueError, "strictly increasing"):
             SpotSignalConfig(levels_pct=(8, 5), base_tranches_pct=(10, 20))
-
-    def test_config_is_loaded_from_environment(self):
-        with patch.dict(
-            os.environ,
-            {
-                "SCROOGE_SPOT_SIGNAL_LEVELS_PCT": "4,7",
-                "SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT": "15,35",
-                "SCROOGE_SPOT_SIGNAL_ACCUMULATION_TRANCHES_PCT": "1.5,4.5",
-            },
-        ):
-            config = spot_signal_config_from_env()
-
-        self.assertEqual(config.levels_pct, (4.0, 7.0))
-        self.assertEqual(config.base_tranches_pct, (15.0, 35.0))
-        self.assertEqual(config.accumulation_tranches_pct, (1.5, 4.5))
-
 
 class RollingSpotSignalMonitorTests(unittest.TestCase):
     def setUp(self):

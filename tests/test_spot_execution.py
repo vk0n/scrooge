@@ -213,9 +213,9 @@ class SpotExecutionTests(unittest.TestCase):
             },
             path=self.db_path,
         )
-        for execution_id, side, price in (
-            ("retention-source-open", "sell", 100),
-            ("retention-source-close", "buy", 50),
+        for execution_id, side, price, executed_at_ms in (
+            ("retention-source-open", "sell", 100, 1_000),
+            ("retention-source-close", "buy", 50, 2_000),
         ):
             append_spot_swing_execution(
                 {
@@ -225,6 +225,7 @@ class SpotExecutionTests(unittest.TestCase):
                     "side": side,
                     "quantity": 2,
                     "price": price,
+                    "executed_at_ms": executed_at_ms,
                     "source": "strategy",
                     "reason": ({"action_type": "close", "close_reason": "profit_target"} if side == "buy" else {}),
                 },

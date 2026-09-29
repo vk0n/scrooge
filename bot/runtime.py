@@ -41,6 +41,7 @@ from core.engine import initialize_realtime_strategy_processor, run_strategy_on_
 from core.indicator_inputs import normalize_indicator_inputs
 from core.binance_retry import create_binance_client
 from shared.runtime_db import bootstrap_runtime_db, runtime_artifact_dir, runtime_db_path, runtime_state_snapshot_exists
+from shared.treasury_strategy_config import treasury_strategy_config_from_mapping
 from shared.time_utils import utc_now_text
 
 RLockType = type(threading.RLock())
@@ -560,13 +561,13 @@ if __name__ == "__main__":
     load_dotenv()
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
-    spot_signal_refresh_seconds = _env_int("SCROOGE_SPOT_SIGNAL_REFRESH_SECONDS", 60)
     spot_execution_enabled = _env_flag("SCROOGE_SPOT_EXECUTION_ENABLED", False)
     client = create_binance_client(api_key, api_secret, logger=technical_logger)
     data_module.set_client(client)
     trade_module.set_client(client)
 
     if live:
+        treasury_config = treasury_strategy_config_from_mapping(cfg.get("treasury"))
         spot_client = create_binance_client(api_key, api_secret, logger=technical_logger, ping=False)
         # Load or create state
         state = load_state()
@@ -587,7 +588,12 @@ if __name__ == "__main__":
         last_strategy_candle_open_time: str | None = None
         last_chart_dataset_ts_ms = _read_last_chart_dataset_ts_ms(chart_dataset_path)
         chart_recorder = StrategyChartRecorder(symbol)
-        spot_order_executor = SpotOrderExecutor(spot_client, logger=technical_logger, db_path=db_path)
+        spot_order_executor = SpotOrderExecutor(
+            spot_client,
+            logger=technical_logger,
+            db_path=db_path,
+            strategy_config=treasury_config.progression,
+        )
         treasury_transfer_executor = TreasuryTransferExecutor(spot_client, logger=technical_logger)
         recovered_spot_orders = spot_order_executor.recover_pending()
         if recovered_spot_orders:
@@ -596,6 +602,8 @@ if __name__ == "__main__":
             spot_order_executor,
             logger=technical_logger,
             db_path=db_path,
+            config=treasury_config.progression,
+            cleanup_config=treasury_config.waiter_cleanup,
         )
         command_kwargs = _build_command_kwargs(
             symbol,
@@ -780,10 +788,11 @@ if __name__ == "__main__":
             if spot_execution_enabled:
                 spot_signal_monitor = RollingSpotSignalMonitor(
                     spot_client,
-                    interval_seconds=spot_signal_refresh_seconds,
+                    interval_seconds=treasury_config.signal_refresh_seconds,
                     execution_enabled=True,
                     logger=technical_logger,
                     db_path=db_path,
+                    config=treasury_config.signal,
                     snapshot_handler=spot_swing_strategy.handle_signal,
                     snapshot_orderer=spot_swing_strategy.order_signals_for_execution,
                     pending_recovery_handler=spot_order_executor.recover_pending,
@@ -807,7 +816,11 @@ if __name__ == "__main__":
                     restart_requested = restart_requested or restart_now
 
                     if restart_requested:
-                        cfg = load_config()
+                        next_cfg = load_config()
+                        next_treasury_config = treasury_strategy_config_from_mapping(
+                            next_cfg.get("treasury")
+                        )
+                        cfg = next_cfg
                         symbol = cfg["symbol"]
                         lvrg = cfg["leverage"]
                         qty = cfg["qty"]
@@ -839,16 +852,42 @@ if __name__ == "__main__":
                             if strategy_mode == "realtime"
                             else None
                         )
+                        if spot_signal_monitor is not None:
+                            if not spot_signal_monitor.stop():
+                                raise RuntimeError(
+                                    "Spot signal monitor did not stop; Treasury Rules were not applied."
+                                )
+                            spot_signal_monitor = None
+                        treasury_config = next_treasury_config
+                        spot_order_executor.update_strategy_config(treasury_config.progression)
+                        spot_swing_strategy.config = treasury_config.progression
+                        spot_swing_strategy.cleanup_config = treasury_config.waiter_cleanup
+                        if spot_execution_enabled:
+                            spot_signal_monitor = RollingSpotSignalMonitor(
+                                spot_client,
+                                interval_seconds=treasury_config.signal_refresh_seconds,
+                                execution_enabled=True,
+                                logger=technical_logger,
+                                db_path=db_path,
+                                config=treasury_config.signal,
+                                snapshot_handler=spot_swing_strategy.handle_signal,
+                                snapshot_orderer=spot_swing_strategy.order_signals_for_execution,
+                                pending_recovery_handler=spot_order_executor.recover_pending,
+                            )
+                            spot_signal_monitor.start()
                         restart_requested = False
                         cache_health_flags["balance_cache_stale_logged"] = False
                         cache_health_flags["position_cache_stale_logged"] = False
                         last_balance_refresh_monotonic = 0.0
                         last_strategy_candle_open_time = None
                         technical_logger.info(
-                            "config_restart_applied symbol=%s leverage=%s strategy_mode=%s",
+                            "config_restart_applied symbol=%s leverage=%s strategy_mode=%s "
+                            "spot_refresh_seconds=%s spot_close_profit_pct=%s",
                             symbol,
                             lvrg,
                             strategy_mode,
+                            treasury_config.signal_refresh_seconds,
+                            treasury_config.progression.close_profit_pct,
                         )
 
                     with state_lock:

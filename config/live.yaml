@@ -27,3 +27,28 @@ params:
   rsi_short_tp_threshold: 41
   rsi_short_close_threshold: 30
   trail_atr_mult: 0.04
+treasury:
+  signal_refresh_seconds: 60
+  signal:
+    levels_pct: [2, 3, 4, 6]
+    base_tranches_pct: [10, 20, 30, 40]
+    accumulation_tranches_pct: [1, 3, 5, 10]
+  progression:
+    close_profit_pct: 4
+    estimated_fee_rate: 0.001
+    campaign_capacity_pct: 50
+    full_deploy_threshold_pct: 25
+  waiter_cleanup:
+    enabled: true
+    max_open_bargains_per_asset: 10
+    deep_loss:
+      min_age_days: 15
+      unrealized_pnl_pct: -25
+      required_reverse_level: 1
+    aging:
+      - {min_age_days: 30, required_reverse_level: 3}
+      - {min_age_days: 60, required_reverse_level: 2}
+      - {min_age_days: 90, required_reverse_level: 1}
+    capacity_cleanup:
+      enabled: true
+      min_age_days: 30

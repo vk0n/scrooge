@@ -1,5 +1,4 @@
 import logging
-import os
 import sqlite3
 import tempfile
 import unittest
@@ -7,7 +6,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from bot.spot_strategy import ProgressiveSpotSwingExecutor, waiter_cleanup_config_from_env
+from bot.spot_strategy import ProgressiveSpotSwingExecutor
 from shared.runtime_db import (
     append_spot_swing_execution,
     apply_spot_accumulation_target_ratchet,
@@ -40,15 +39,6 @@ from shared.spot_waiter_cleanup import WaiterCleanupConfig
 
 
 class ProgressiveSwingDomainTests(unittest.TestCase):
-    def test_waiter_cleanup_threshold_is_loaded_from_environment(self):
-        with patch.dict(
-            os.environ,
-            {"SCROOGE_SPOT_DEEP_LOSS_UNREALIZED_PNL_PCT": "-17.5"},
-        ):
-            config = waiter_cleanup_config_from_env()
-
-        self.assertEqual(config.deep_loss_unrealized_pnl_pct, -17.5)
-
     def test_policy_sellable_reference_uses_only_current_target_and_minimum(self):
         self.assertEqual(policy_sellable_reference(1000, 60), 400)
         self.assertEqual(policy_sellable_reference(2000, 75), 500)

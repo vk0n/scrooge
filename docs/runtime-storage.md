@@ -121,12 +121,11 @@ toggle. The asset objective, spendable reserve, current exchange balance, and ex
 
 - When Spot execution is enabled, the bot samples Binance rolling 24-hour tickers on a configurable interval and
   persists the latest explainable signal per managed asset in `spot_signal_snapshots`. The live default is 60 seconds,
-  configured through `SCROOGE_SPOT_SIGNAL_REFRESH_SECONDS`.
+  configured through `treasury.signal_refresh_seconds` in `config/live.yaml`.
 - The primary signal is `current price / approximately-24h reference price - 1`. It is independent of UTC midnight.
-- Default absolute movement levels are `2,3,4,6%`. SELL openings use base tranches `10,20,30,40%`, configured
-  through `SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT`. `ACCUMULATE_ASSET + BUY` uses separate Free Vault Reserve
-  tranches `1,3,5,10%`, configured through `SCROOGE_SPOT_SIGNAL_ACCUMULATION_TRANCHES_PCT`. All three lists must
-  remain aligned by signal level.
+- Default absolute movement levels are `2,3,4,6%`. SELL openings use base tranches `10,20,30,40%`.
+  `ACCUMULATE_ASSET + BUY` uses separate Free Vault Reserve tranches `1,3,5,10%`. All three lists live under
+  `treasury.signal` and must remain aligned by signal level.
 - A move below Level 1 is `HOLD`; positive qualifying moves are `SELL` opportunities and negative qualifying moves are
   `BUY` opportunities.
 - Market opportunity and strategy eligibility are stored separately. Missing Trading Objective, a fully protected
@@ -153,16 +152,15 @@ toggle. The asset objective, spendable reserve, current exchange balance, and ex
 - A new SELL campaign freezes a budget from current policy sellable inventory. Normally the budget is 50% of current
   remaining sellable; when remaining sellable is at most 25% of `Target × (1 - Minimum Holding %)`, the budget is the
   full remainder. L1/L2/L3/L4 consume fixed 10/20/30/40% shares of that budget. Current Protected Floor and Binance
-  free inventory always cap execution. Configure the two percentages with `SCROOGE_SPOT_CAMPAIGN_CAPACITY_PCT` and
-  `SCROOGE_SPOT_FULL_DEPLOY_THRESHOLD_PCT`.
+  free inventory always cap execution. Configure the two percentages under `treasury.progression`.
 - Campaign-start Target, Minimum Holding, policy reference, remaining sellable, ratio, capacity mode, frozen capacity,
   and idempotently consumed quantity are persisted in `spot_strategy_campaigns`. A Target ratchet affects only future
   campaigns. A direct jump to L3 executes only L3's 30% share; it does not backfill L1 and L2.
 - Existing Swings are evaluated independently from their own weighted opening execution price. The default profitable
-  close threshold is `4%` (`SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT`), and profitable closes take priority over new exposure.
+  close threshold is `4%` (`treasury.progression.close_profit_pct`), and profitable closes take priority over new exposure.
 - New Treasury cash policies retain `40%` of each economically profitable cash Bargain. Deep-loss cleanup starts at
   `-25%` unrealized PnL after the existing minimum-age and reverse-signal requirements are met. Configure the threshold
-  with `SCROOGE_SPOT_DEEP_LOSS_UNREALIZED_PNL_PCT`; it must be zero or negative.
+  with `treasury.waiter_cleanup.deep_loss.unrealized_pnl_pct`; it must be zero or negative.
 - A signal cycle may submit multiple strategy actions for the same asset when each remains eligible after the preceding
   fill. Durable action keys and existing client order recovery prevent restarts or retries from creating a second real
   order for the same decision.
@@ -172,7 +170,7 @@ toggle. The asset objective, spendable reserve, current exchange balance, and ex
   increases Target by net acquired asset. `accumulate_cash` SELL Bargains restore the Swing quantity and leave profit
   in shared quote cash. `accumulate_asset` SELL Bargains reuse sale proceeds to buy back more asset, with finalized
   positive asset gain ratcheting Target exactly once after full closure.
-- `SCROOGE_SPOT_ESTIMATED_FEE_RATE` is used only for conservative strategy sizing. Actual Swing and portfolio accounting
+- `treasury.progression.estimated_fee_rate` is used only for conservative strategy sizing. Actual Swing and portfolio accounting
   always use confirmed Binance fills and their native fee amount/asset.
 
 ## Treasury Custody Boundaries

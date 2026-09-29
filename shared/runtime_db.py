@@ -3478,7 +3478,7 @@ def list_spot_swing_executions(
             """
             SELECT * FROM spot_swing_executions
             WHERE swing_id = ?
-            ORDER BY executed_at_ms ASC, execution_id ASC
+            ORDER BY executed_at_ms ASC, rowid ASC
             """,
             (normalized_id,),
         ).fetchall()
@@ -3493,7 +3493,7 @@ def _refresh_spot_swing_lifecycle(connection: sqlite3.Connection, swing_id: str)
         """
         SELECT * FROM spot_swing_executions
         WHERE swing_id = ?
-        ORDER BY executed_at_ms ASC, execution_id ASC
+        ORDER BY executed_at_ms ASC, rowid ASC
         """,
         (swing_id,),
     ).fetchall()
@@ -3674,7 +3674,7 @@ def apply_spot_swing_cash_retention(
         execution_rows = connection.execute(
             """
             SELECT * FROM spot_swing_executions
-            WHERE swing_id = ? ORDER BY executed_at_ms ASC, execution_id ASC
+            WHERE swing_id = ? ORDER BY executed_at_ms ASC, rowid ASC
             """,
             (normalized_id,),
         ).fetchall()
@@ -3798,7 +3798,7 @@ def apply_spot_swing_target_ratchet(
         execution_rows = connection.execute(
             """
             SELECT * FROM spot_swing_executions
-            WHERE swing_id = ? ORDER BY executed_at_ms ASC, execution_id ASC
+            WHERE swing_id = ? ORDER BY executed_at_ms ASC, rowid ASC
             """,
             (normalized_id,),
         ).fetchall()

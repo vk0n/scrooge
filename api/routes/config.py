@@ -10,8 +10,11 @@ from services.config_service import (
     extract_editable_config,
     load_config,
     load_raw_config_text,
+    load_treasury_rules_text,
+    load_treasury_strategy_config,
     update_editable_config,
     update_raw_config_text,
+    update_treasury_rules_text,
 )
 
 router = APIRouter()
@@ -119,6 +122,12 @@ class RawConfigPayload(BaseModel):
     raw_text: str = Field(min_length=1)
 
 
+class TreasuryRulesPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw_text: str = Field(min_length=1)
+
+
 @router.get("")
 def get_config() -> dict[str, object]:
     try:
@@ -196,3 +205,29 @@ def update_raw_config(payload: RawConfigPayload) -> dict[str, object]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return result
+
+
+@router.get("/treasury-rules")
+def get_treasury_rules() -> dict[str, object]:
+    try:
+        config = load_treasury_strategy_config()
+        raw_text = load_treasury_rules_text()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"rules": config.as_mapping(), "raw_text": raw_text, "path": str(CONFIG_PATH)}
+
+
+@router.post("/treasury-rules")
+def update_treasury_rules(payload: TreasuryRulesPayload) -> dict[str, object]:
+    try:
+        return update_treasury_rules_text(payload.raw_text)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

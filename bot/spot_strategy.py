@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 from typing import Any
 
@@ -57,27 +56,6 @@ def _is_permanent_close_block(error: object, action: dict[str, Any] | None = Non
     )
 
 
-def progressive_swing_config_from_env() -> ProgressiveSwingConfig:
-    return ProgressiveSwingConfig(
-        close_profit_pct=float(os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "4") or 4),
-        estimated_fee_rate=float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
-        campaign_capacity_pct=float(
-            os.getenv("SCROOGE_SPOT_CAMPAIGN_CAPACITY_PCT", "50") or 50
-        ),
-        full_deploy_threshold_pct=float(
-            os.getenv("SCROOGE_SPOT_FULL_DEPLOY_THRESHOLD_PCT", "25") or 25
-        ),
-    )
-
-
-def waiter_cleanup_config_from_env() -> WaiterCleanupConfig:
-    return WaiterCleanupConfig(
-        deep_loss_unrealized_pnl_pct=float(
-            os.getenv("SCROOGE_SPOT_DEEP_LOSS_UNREALIZED_PNL_PCT", "-25") or -25
-        )
-    )
-
-
 def _stable_key(*parts: object) -> str:
     payload = json.dumps(parts, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -99,8 +77,8 @@ class ProgressiveSpotSwingExecutor:
         self.order_executor = order_executor
         self.logger = logger
         self.db_path = db_path
-        self.config = config or progressive_swing_config_from_env()
-        self.cleanup_config = cleanup_config or waiter_cleanup_config_from_env()
+        self.config = config or ProgressiveSwingConfig()
+        self.cleanup_config = cleanup_config or WaiterCleanupConfig()
         self.account_key = str(account_key or "manual_spot").strip() or "manual_spot"
 
     def order_signals_for_execution(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:

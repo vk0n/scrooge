@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -11,43 +10,10 @@ from shared.runtime_db import (
     mark_spot_signal_snapshot_error,
     save_spot_signal_snapshot,
 )
-from shared.spot_signal import (
-    DEFAULT_BASE_TRANCHES_PCT,
-    DEFAULT_SIGNAL_LEVELS_PCT,
-    SpotSignalConfig,
-    evaluate_rolling_24h_opportunity,
-    parse_percentage_series,
-)
+from shared.spot_signal import SpotSignalConfig, evaluate_rolling_24h_opportunity
 from shared.spot_strategy import finalize_spot_strategy_signal, spot_policy_eligibility
 
 DEFAULT_ACCOUNT_KEY = "manual_spot"
-
-
-def spot_signal_config_from_env() -> SpotSignalConfig:
-    levels_raw = os.getenv(
-        "SCROOGE_SPOT_SIGNAL_LEVELS_PCT",
-        ",".join(str(value) for value in DEFAULT_SIGNAL_LEVELS_PCT),
-    )
-    tranches_raw = os.getenv(
-        "SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT",
-        ",".join(str(value) for value in DEFAULT_BASE_TRANCHES_PCT),
-    )
-    accumulation_raw = os.getenv("SCROOGE_SPOT_SIGNAL_ACCUMULATION_TRANCHES_PCT")
-    return SpotSignalConfig(
-        levels_pct=parse_percentage_series(levels_raw, field_name="SCROOGE_SPOT_SIGNAL_LEVELS_PCT"),
-        base_tranches_pct=parse_percentage_series(
-            tranches_raw,
-            field_name="SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT",
-        ),
-        accumulation_tranches_pct=(
-            parse_percentage_series(
-                accumulation_raw,
-                field_name="SCROOGE_SPOT_SIGNAL_ACCUMULATION_TRANCHES_PCT",
-            )
-            if accumulation_raw is not None
-            else None
-        ),
-    )
 
 
 def normalize_rolling_ticker(payload: Any) -> dict[str, float | int]:
@@ -92,7 +58,7 @@ class RollingSpotSignalMonitor:
         self.execution_enabled = bool(execution_enabled)
         self.logger = logger
         self.db_path = db_path
-        self.config = config or spot_signal_config_from_env()
+        self.config = config or SpotSignalConfig()
         self.account_key = str(account_key or DEFAULT_ACCOUNT_KEY).strip() or DEFAULT_ACCOUNT_KEY
         self.snapshot_handler = snapshot_handler
         self.snapshot_orderer = snapshot_orderer
@@ -112,11 +78,15 @@ class RollingSpotSignalMonitor:
         self._thread = threading.Thread(target=self._run, name="scrooge-spot-signals", daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=5.0)
+            self._thread.join(timeout=30.0)
+        if self._thread is not None and self._thread.is_alive():
+            self.logger.error("spot_signal_monitor_stop_timed_out")
+            return False
         self._thread = None
+        return True
 
     def refresh_once(self) -> list[dict[str, Any]]:
         if not self.execution_enabled:

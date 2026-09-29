@@ -103,6 +103,43 @@ type ControlCommandStatus = {
   };
 };
 
+type TreasuryRules = {
+  signal_refresh_seconds: number;
+  signal: {
+    levels_pct: number[];
+    base_tranches_pct: number[];
+    accumulation_tranches_pct: number[];
+  };
+  progression: {
+    close_profit_pct: number;
+    estimated_fee_rate: number;
+    campaign_capacity_pct: number;
+    full_deploy_threshold_pct: number;
+  };
+  waiter_cleanup: {
+    enabled: boolean;
+    max_open_bargains_per_asset: number;
+    deep_loss: {
+      min_age_days: number;
+      unrealized_pnl_pct: number;
+      required_reverse_level: number;
+    };
+    aging: Array<{ min_age_days: number; required_reverse_level: number }>;
+    capacity_cleanup: { enabled: boolean; min_age_days: number };
+  };
+};
+
+type TreasuryRulesResponse = {
+  rules: TreasuryRules;
+  raw_text: string;
+  path: string;
+};
+
+type SaveTreasuryRulesResponse = TreasuryRulesResponse & {
+  updated: boolean;
+  restart_required: boolean;
+};
+
 type PortfolioHolding = {
   asset_symbol: string;
   quote_symbol: string;
@@ -1127,6 +1164,127 @@ async function waitForControlCommand(commandId: string): Promise<ControlCommandS
     await new Promise((resolve) => window.setTimeout(resolve, 500));
   }
   throw new Error("The command is still awaiting confirmation. Check the Treasury Ledger before retrying.");
+}
+
+function TreasuryRulesPanel(): JSX.Element {
+  const [rules, setRules] = useState<TreasuryRules | null>(null);
+  const [rawText, setRawText] = useState<string>("");
+  const [draft, setDraft] = useState<string>("");
+  const [expanded, setExpanded] = useState<boolean>(false);
+  const [editing, setEditing] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    async function loadRules(): Promise<void> {
+      try {
+        const payload = await fetchApi<TreasuryRulesResponse>("/api/config/treasury-rules");
+        if (!active) return;
+        setRules(payload.rules);
+        setRawText(payload.raw_text);
+        setDraft(payload.raw_text);
+      } catch (loadError) {
+        if (active) setError(loadError instanceof Error ? loadError.message : "Could not read Treasury Rules.");
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    void loadRules();
+    return () => { active = false; };
+  }, []);
+
+  async function saveRules(): Promise<void> {
+    if (!window.confirm("Seal these Treasury Rules and restart Scrooge to apply them?")) return;
+    setSaving(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const saved = await fetchApi<SaveTreasuryRulesResponse>("/api/config/treasury-rules", {
+        method: "POST",
+        body: { raw_text: draft },
+      });
+      setRules(saved.rules);
+      setRawText(saved.raw_text);
+      setDraft(saved.raw_text);
+      setEditing(false);
+      if (!saved.updated) {
+        setInfo("The rules were already identical. No restart was needed.");
+        return;
+      }
+      setInfo("Rules sealed. Waiting for Scrooge to reopen the Treasury...");
+      const queued = await fetchApi<TreasuryTransferQueueResponse>("/api/control/restart", { method: "POST" });
+      const command = await waitForControlCommand(queued.command_id);
+      if (command.status !== "completed") throw new Error(command.message || "Scrooge could not apply the new rules.");
+      setInfo("Treasury Rules are active.");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Could not update Treasury Rules.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const levelText = rules?.signal.levels_pct.map((value) => `${value}%`).join(" / ") ?? "...";
+  const sellText = rules?.signal.base_tranches_pct.map((value) => `${value}%`).join(" / ") ?? "...";
+  const buyText = rules?.signal.accumulation_tranches_pct.map((value) => `${value}%`).join(" / ") ?? "...";
+  const agingText = rules?.waiter_cleanup.aging
+    .map((rule) => `${rule.min_age_days}d needs L${rule.required_reverse_level}`)
+    .join(", ") ?? "...";
+
+  return (
+    <section className="section-block treasury-rules-section">
+      <header className="treasury-section-head">
+        <div>
+          <h2>Treasury Rules</h2>
+          <p className="muted">The standing orders Scrooge follows for every Spot signal.</p>
+        </div>
+        <span className="treasury-insight-count">LIVE CONFIG</span>
+      </header>
+      {loading ? <p className="dialog-scrooge">Reviewing the rules...</p> : editing ? (
+        <div className="contract-editor">
+          <p className="contract-editor-note">Only the Treasury strategy section is editable here. The Futures contract remains untouched.</p>
+          <label className="dialog-user-field contract-editor-field">
+            <span className="kv-label">Technical Rules</span>
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} disabled={saving} spellCheck={false} />
+          </label>
+        </div>
+      ) : rules ? (
+        <div className={`contract-scroll${expanded ? " contract-scroll-open" : ""}`}>
+          <button type="button" className="contract-scroll-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} aria-controls="treasury-rules-body">
+            <span className="contract-scroll-toggle-copy">
+              <span className="contract-scroll-toggle-label">{expanded ? "Close the rulebook" : "Open the rulebook"}</span>
+              <span className="contract-scroll-toggle-teaser">Signals at {levelText}; Bargain Goal {rules.progression.close_profit_pct}%.</span>
+            </span>
+            <span className="contract-scroll-toggle-icon" aria-hidden="true">▾</span>
+          </button>
+          <div className="contract-scroll-body-shell" id="treasury-rules-body">
+            <div className="contract-scroll-body">
+              <div className="contract-sheet" aria-label="Treasury Rules">
+                <p><span className="contract-term">Market Bell</span> Every <span className="contract-value">{rules.signal_refresh_seconds}s</span>, measure the 24-hour move. Levels are <span className="contract-value">{levelText}</span>.</p>
+                <p><span className="contract-term">Campaign Stakes</span> Cash-accumulation tranches are <span className="contract-value">{sellText}</span>; asset-accumulation tranches are <span className="contract-value">{buyText}</span>.</p>
+                <p><span className="contract-term">Bargain Goal</span> Close profitable Bargains at gross <span className="contract-value">{rules.progression.close_profit_pct}%</span>, using a fee estimate of <span className="contract-value">{rules.progression.estimated_fee_rate * 100}%</span>.</p>
+                <p><span className="contract-term">Inventory Discipline</span> A campaign may use <span className="contract-value">{rules.progression.campaign_capacity_pct}%</span> of sellable inventory, then deploy fully below <span className="contract-value">{rules.progression.full_deploy_threshold_pct}%</span> remaining.</p>
+                <p><span className="contract-term">Waiter Cleanup</span> Cleanup is <span className="contract-value">{rules.waiter_cleanup.enabled ? "active" : "paused"}</span>. Keep at most <span className="contract-value">{rules.waiter_cleanup.max_open_bargains_per_asset}</span> open Bargains per asset. Aging gates: <span className="contract-value">{agingText}</span>.</p>
+                <p><span className="contract-term">Deep Loss</span> After <span className="contract-value">{rules.waiter_cleanup.deep_loss.min_age_days}d</span> at or below <span className="contract-value">{rules.waiter_cleanup.deep_loss.unrealized_pnl_pct}%</span>, an L<span className="contract-value">{rules.waiter_cleanup.deep_loss.required_reverse_level}</span> reverse signal may clean the position.</p>
+                <p><span className="contract-term">Capacity Relief</span> It is <span className="contract-value">{rules.waiter_cleanup.capacity_cleanup.enabled ? "active" : "paused"}</span> after <span className="contract-value">{rules.waiter_cleanup.capacity_cleanup.min_age_days}d</span>.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div className={`toolbar config-toolbar${!editing ? " config-toolbar-centered" : ""}`}>
+        {editing ? <>
+          <button type="button" className="dialog-user-btn config-action-btn" onClick={() => void saveRules()} disabled={saving}>Seal Rules and Restart</button>
+          <button type="button" className="dialog-user-btn config-action-btn" onClick={() => { setDraft(rawText); setEditing(false); setError(null); }} disabled={saving}>Cancel Revision</button>
+        </> : <button type="button" className="dialog-user-btn config-action-btn config-action-btn-centered" onClick={() => { setDraft(rawText); setEditing(true); setExpanded(true); setError(null); setInfo(null); }} disabled={loading || saving || !rules}>Revise Rules</button>}
+        {saving ? <span className="dialog-scrooge dialog-scrooge-compact">Sealing rules...</span> : null}
+      </div>
+      {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
+      {info ? <p className="dialog-scrooge">{info}</p> : null}
+    </section>
+  );
 }
 
 function SpotOrderPanel({
@@ -2925,6 +3083,8 @@ export default function TreasuryPage(): JSX.Element {
           </div>
 
         </section>
+
+        <TreasuryRulesPanel />
 
         <section className="section-block">
           <header className="treasury-section-head">

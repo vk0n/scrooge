@@ -9,6 +9,11 @@ from typing import Any
 
 import yaml
 
+from shared.treasury_strategy_config import (
+    TreasuryStrategyConfig,
+    treasury_strategy_config_from_mapping,
+)
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -109,6 +114,22 @@ def load_raw_config_text() -> str:
             return file_obj.read()
     except OSError as exc:
         raise OSError(f"Failed to read config file: {CONFIG_PATH}") from exc
+
+
+def load_treasury_strategy_config() -> TreasuryStrategyConfig:
+    return treasury_strategy_config_from_mapping(load_config().get("treasury"))
+
+
+def extract_treasury_rules(config: dict[str, Any]) -> dict[str, Any]:
+    return treasury_strategy_config_from_mapping(config.get("treasury")).as_mapping()
+
+
+def load_treasury_rules_text() -> str:
+    return yaml.safe_dump(
+        extract_treasury_rules(load_config()),
+        sort_keys=False,
+        allow_unicode=False,
+    )
 
 
 def parse_config_text(raw_text: str) -> dict[str, Any]:
@@ -324,6 +345,11 @@ def update_raw_config_text(raw_text: str) -> dict[str, Any]:
     normalized_current = current_text.rstrip() + "\n"
     normalized_next = raw_text.rstrip() + "\n"
     parsed_next = parse_config_text(normalized_next)
+    current_config = parse_config_text(normalized_current)
+    if "treasury" in current_config and "treasury" not in parsed_next:
+        raise ValueError("treasury cannot be removed from the live config")
+    if "treasury" in parsed_next:
+        extract_treasury_rules(parsed_next)
 
     if normalized_next == normalized_current:
         return {
@@ -344,4 +370,37 @@ def update_raw_config_text(raw_text: str) -> dict[str, Any]:
         "backup_path": str(backup_path),
         "editable": extract_editable_config(parsed_next),
         "raw_text": normalized_next,
+    }
+
+
+def update_treasury_rules_text(raw_text: str) -> dict[str, Any]:
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        raise ValueError("raw_text cannot be empty")
+
+    parsed = parse_config_text(raw_text)
+    rules = treasury_strategy_config_from_mapping(parsed).as_mapping()
+    current = load_config()
+    current_rules = extract_treasury_rules(current)
+    normalized_rules = yaml.safe_dump(rules, sort_keys=False, allow_unicode=False)
+    if rules == current_rules:
+        return {
+            "updated": False,
+            "restart_required": False,
+            "changed_fields": [],
+            "backup_path": None,
+            "rules": rules,
+            "raw_text": normalized_rules,
+        }
+
+    updated = copy.deepcopy(current)
+    updated["treasury"] = rules
+    backup_path = _create_backup()
+    _write_config(updated)
+    return {
+        "updated": True,
+        "restart_required": True,
+        "changed_fields": ["treasury"],
+        "backup_path": str(backup_path),
+        "rules": rules,
+        "raw_text": normalized_rules,
     }
