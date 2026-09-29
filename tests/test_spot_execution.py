@@ -518,6 +518,8 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(executions[0]["fee_asset"], "BNB")
         self.assertEqual(strategy_transactions[0]["fee_amount"], 0.001)
         self.assertEqual(strategy_transactions[0]["fee_asset"], "BNB")
+        self.assertEqual(strategy_transactions[0]["reason"], {"signal": "buy", "level": 1})
+        self.assertEqual(result["reason"], {"signal": "buy", "level": 1})
 
         executor.execute(preview["intent_id"])
         self.assertEqual(len(list_spot_swing_executions("swing-btc-buy", path=self.db_path)), 1)

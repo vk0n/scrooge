@@ -612,6 +612,9 @@ def process_pending_commands(
                     intent_id=intent_id,
                     source=command_result.get("source"),
                     swing_id=command_result.get("swing_id"),
+                    reason=command_result.get("reason"),
+                    strategy_action_type=command_result.get("strategy_action_type"),
+                    treasury_intake=command_result.get("treasury_intake"),
                     ledger_transaction_id=command_result.get("ledger_transaction_id"),
                 )
             elif action == "treasury_transfer":

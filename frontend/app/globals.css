@@ -2732,6 +2732,30 @@ button.treasury-summary-card-swings:focus-visible,
   min-width: 9rem;
 }
 
+.treasury-role-divider {
+  margin-top: 0.15rem;
+}
+
+.treasury-holdings-section > .treasury-section-head {
+  order: 1;
+}
+
+.treasury-holdings-section > .treasury-holdings-list {
+  order: 2;
+}
+
+.treasury-add-treasure-row {
+  order: 3;
+  display: flex;
+  justify-content: center;
+  padding-top: 0.12rem;
+}
+
+.treasury-holdings-section > .treasury-intake-panel {
+  order: 4;
+  margin-top: 0;
+}
+
 .treasury-intake-panel {
   margin-top: 0.72rem;
   border: 1px solid rgba(92, 111, 139, 0.28);
@@ -5086,6 +5110,10 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-form-toggle,
   .treasury-submit-btn {
     width: 100%;
+  }
+
+  .treasury-add-treasure-row .treasury-form-toggle {
+    width: min(100%, 18rem);
   }
 
   .treasury-summary-grid {

@@ -528,6 +528,7 @@ class SpotOrderExecutor:
             ledger_price = (executed_quote + embedded_quote_fee) / ledger_quantity
         transaction_id = f"spot-order:{intent['intent_id']}"
         source_label = "Strategy" if intent["source"] == "strategy" else "Manual"
+        request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
         transaction = {
             "transaction_id": transaction_id,
             "account_key": intent["account_key"],
@@ -552,6 +553,10 @@ class SpotOrderExecutor:
             "swing_id": intent.get("swing_id"),
             "executed_quote_quantity": executed_quote,
             "commissions": summary.get("commissions") or {},
+            "reason_text": intent.get("reason_text"),
+            "reason": intent.get("reason") if isinstance(intent.get("reason"), dict) else {},
+            "strategy_action_type": request.get("strategy_action_type"),
+            "treasury_intake": bool(request.get("treasury_intake")),
         }
         try:
             existing = list_portfolio_transactions(account_key=intent["account_key"], path=self.db_path)
@@ -564,7 +569,6 @@ class SpotOrderExecutor:
             ensure_spot_quote_leg(persisted_transaction, path=self.db_path)
             project_portfolio_transaction(persisted_transaction, path=self.db_path)
 
-            request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
             protected_use = None
             validation = summary.get("protected_cash_validation")
             if (
@@ -748,6 +752,10 @@ class SpotOrderExecutor:
             "quote_symbol": intent["quote_symbol"],
             "source": intent["source"],
             "swing_id": intent.get("swing_id"),
+            "reason_text": intent.get("reason_text"),
+            "reason": intent.get("reason") if isinstance(intent.get("reason"), dict) else {},
+            "strategy_action_type": request.get("strategy_action_type"),
+            "treasury_intake": bool(request.get("treasury_intake")),
             "protected_cash_used": (
                 float(protected_use["consumed_quote"])
                 if protected_use is not None

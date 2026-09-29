@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from core.event_store import build_event_record, get_event_store
 from shared.runtime_db import append_ui_log_entry as append_ui_log_db_entry
+from shared.treasury_ledger import spot_order_presentation_message
 
 try:
     from api.services.push_service import dispatch_event_push
@@ -186,9 +187,7 @@ def _render_ui_message(code: str, context: dict[str, Any]) -> str:
         return "I have closed the office and suspended trading for now."
 
     if code == "bot_restarted":
-        if symbol:
-            return f"I have reopened the office and refreshed my contract for {symbol}."
-        return "I have reopened the office and refreshed my contract."
+        return "I have reopened for business and refreshed my standing orders."
 
     if code == "manual_trade_suggested":
         action = "buy" if side == "long" else "sell"
@@ -292,15 +291,18 @@ def _render_ui_message(code: str, context: dict[str, Any]) -> str:
         return f"I could not carry out {action}: {reason}."
 
     if code in {"manual_spot_order_executed", "spot_order_executed"}:
-        action = str(context.get("side") or "trade").strip().lower()
-        quantity = _as_float(context.get("quantity"))
-        quantity_label = f"{quantity:.8f}".rstrip("0").rstrip(".") if quantity is not None else "confirmed quantity"
-        asset = str(context.get("symbol") or "asset").strip().upper()
-        price = _as_float(context.get("price"))
-        price_suffix = f" at ${price:.8f}".rstrip("0").rstrip(".") if price is not None else ""
-        source = str(context.get("source") or "manual").strip().lower()
-        actor = "My strategy" if source == "strategy" else "I"
-        return f"{actor} completed a Binance Spot {action} for {quantity_label} {asset}{price_suffix}."
+        return spot_order_presentation_message(
+            {
+                "tx_type": context.get("side"),
+                "asset_symbol": context.get("symbol"),
+                "quantity": context.get("quantity"),
+                "price": context.get("price"),
+                "source": context.get("source"),
+                "reason": context.get("reason"),
+                "strategy_action_type": context.get("strategy_action_type"),
+                "treasury_intake": context.get("treasury_intake"),
+            }
+        )
 
     fallback_message = str(context.get("message") or "").strip()
     if fallback_message:

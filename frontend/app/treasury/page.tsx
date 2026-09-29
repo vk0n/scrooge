@@ -749,7 +749,7 @@ function CustodyPanel({
     )) return;
     setOfficeBusy(true);
     setError(null);
-    setOfficeStage("Transfer queued. Scrooge is revalidating both accounts...");
+    setOfficeStage("Transfer queued. I am revalidating both accounts...");
     try {
       const queued = await fetchApi<TreasuryTransferQueueResponse>("/api/portfolio/office-transfers", {
         method: "POST",
@@ -1197,7 +1197,7 @@ function TreasuryRulesPanel(): JSX.Element {
   }, []);
 
   async function saveRules(): Promise<void> {
-    if (!window.confirm("Seal these Treasury Rules and restart Scrooge to apply them?")) return;
+    if (!window.confirm("Seal these Treasury Rules and reopen for business with them?")) return;
     setSaving(true);
     setError(null);
     setInfo(null);
@@ -1214,10 +1214,10 @@ function TreasuryRulesPanel(): JSX.Element {
         setInfo("The rules were already identical. No restart was needed.");
         return;
       }
-      setInfo("Rules sealed. Waiting for Scrooge to reopen the Treasury...");
+      setInfo("Rules sealed. I am reopening the Treasury...");
       const queued = await fetchApi<TreasuryTransferQueueResponse>("/api/control/restart", { method: "POST" });
       const command = await waitForControlCommand(queued.command_id);
-      if (command.status !== "completed") throw new Error(command.message || "Scrooge could not apply the new rules.");
+      if (command.status !== "completed") throw new Error(command.message || "I could not apply the new rules.");
       setInfo("Treasury Rules are active.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Could not update Treasury Rules.");
@@ -1238,7 +1238,7 @@ function TreasuryRulesPanel(): JSX.Element {
       <header className="treasury-section-head">
         <div>
           <h2>Treasury Rules</h2>
-          <p className="muted">The standing orders Scrooge follows for every Spot signal.</p>
+          <p className="muted">The standing orders I follow for every Spot signal.</p>
         </div>
         <span className="treasury-insight-count">LIVE CONFIG</span>
       </header>
@@ -1254,7 +1254,7 @@ function TreasuryRulesPanel(): JSX.Element {
         <div className={`contract-scroll${expanded ? " contract-scroll-open" : ""}`}>
           <button type="button" className="contract-scroll-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} aria-controls="treasury-rules-body">
             <span className="contract-scroll-toggle-copy">
-              <span className="contract-scroll-toggle-label">{expanded ? "Close the rulebook" : "Open the rulebook"}</span>
+              <span className="contract-scroll-toggle-label">{expanded ? "Roll the parchment back up" : "Unroll the parchment"}</span>
               <span className="contract-scroll-toggle-teaser">Signals at {levelText}; Bargain Goal {rules.progression.close_profit_pct}%.</span>
             </span>
             <span className="contract-scroll-toggle-icon" aria-hidden="true">▾</span>
@@ -1365,13 +1365,13 @@ function SpotOrderPanel({
     }
     setBusy(true);
     setError(null);
-    setStage("Order accepted by the Control Plane and awaiting Scrooge...");
+    setStage("Order accepted by the Control Plane. I am preparing it...");
     try {
       const queued = await fetchApi<SpotOrderQueueResponse>(
         `/api/portfolio/spot-orders/${encodeURIComponent(preview.intent_id)}/execute`,
         { method: "POST", body: { confirmation: "CONFIRM_SPOT_ORDER" } }
       );
-      setStage("Scrooge is validating fresh balances and submitting the order...");
+      setStage("I am validating fresh balances and submitting the order...");
       const command = await waitForControlCommand(queued.command_id);
       if (command.status !== "completed") {
         throw new Error(command.message || "Binance Spot order failed.");
@@ -1759,7 +1759,7 @@ function CashPolicyPanel({
     )) return;
     setOfficeBusy(true);
     setError(null);
-    setOfficeStage("Transfer queued. Scrooge is revalidating both accounts...");
+    setOfficeStage("Transfer queued. I am revalidating both accounts...");
     try {
       const queued = await fetchApi<TreasuryTransferQueueResponse>("/api/portfolio/office-transfers", {
         method: "POST",
@@ -1987,7 +1987,7 @@ function SwingLedgerRow({
   async function closeBargain(): Promise<void> {
     setClosing(true);
     setCloseError(null);
-    setCloseStatus("Scrooge is pricing the closing order...");
+    setCloseStatus("I am pricing the closing order...");
     try {
       const preview = await fetchApi<SpotOrderIntent>(
         `/api/portfolio/bargains/${encodeURIComponent(swing.swing_id)}/close-preview`,
@@ -2007,7 +2007,7 @@ function SwingLedgerRow({
         setCloseStatus(null);
         return;
       }
-      setCloseStatus("Closing order accepted. Scrooge is validating fresh balances...");
+      setCloseStatus("Closing order accepted. I am validating fresh balances...");
       const queued = await fetchApi<SpotOrderQueueResponse>(
         `/api/portfolio/spot-orders/${encodeURIComponent(preview.intent_id)}/execute`,
         { method: "POST", body: { confirmation: "CONFIRM_SPOT_ORDER" } }
@@ -2062,7 +2062,7 @@ function SwingLedgerRow({
             <span><small>Realized PnL</small><strong className={signedToneClass(economics.realized_pnl_quote, "")}>{formatSignedCurrency(economics.realized_pnl_quote)}</strong></span>
             <span><small>Open PnL</small><strong className={signedToneClass(economics.unrealized_pnl_quote, "")}>{formatSignedCurrency(economics.unrealized_pnl_quote)}</strong></span>
           </div>
-          {reason ? <p className="treasury-swing-reason">Scrooge&apos;s note: {reason}</p> : null}
+          {reason ? <p className="treasury-swing-reason">My note: {reason}</p> : null}
           <div className="treasury-swing-execution-head">
             <span>Executions</span>
             <small>{swing.executions.length} {swing.executions.length === 1 ? "fill" : "fills"}</small>
@@ -2627,24 +2627,24 @@ function HoldingCard({
     ? {
         icon: "\u{1FA99}",
         tone: "asset",
-        title: `Scrooge is using Bargains to accumulate more ${holding.asset_symbol}.`,
+        title: `I am using Bargains to accumulate more ${holding.asset_symbol}.`,
       }
     : tradingState === "unlocked" && holding.trading_objective === "accumulate_cash"
       ? {
           icon: "\u{1F4B5}",
           tone: "cash",
-          title: "Scrooge is using Bargains to accumulate more USDT.",
+          title: "I am using Bargains to accumulate more USDT.",
         }
       : {
           icon: "\u{1F512}",
           tone: "locked",
           title: !executionEnabled
-            ? "Scrooge's automatic Bargains are disabled."
+            ? "My automatic Bargains are disabled."
             : holding.is_dry_powder
               ? "Vault Reserve is not managed by an asset trading policy."
               : holding.trading_objective === null
-                ? "Choose a Trading Objective before Scrooge can bargain with this asset."
-                : "Scrooge keeps the full holding protected by policy.",
+                ? "Choose a Trading Objective before I can bargain with this asset."
+                : "I keep the full holding protected by policy.",
         };
   const refreshKey = [
     holding.quantity,
@@ -2911,7 +2911,7 @@ export default function TreasuryPage(): JSX.Element {
 
         <section className="treasury-overview">
           {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
-          {loading ? <p className="status-performance-note">Scrooge counts the vault...</p> : null}
+          {loading ? <p className="status-performance-note">I am counting the vault...</p> : null}
 
           <div className="treasury-summary-grid">
             <div className="treasury-summary-card treasury-summary-card-hero">
@@ -3084,22 +3084,11 @@ export default function TreasuryPage(): JSX.Element {
 
         </section>
 
-        <TreasuryRulesPanel />
+        <p className="dialog-scrooge treasury-role-divider">My treasury holdings:</p>
 
-        <section className="section-block">
+        <section className="section-block treasury-holdings-section">
           <header className="treasury-section-head">
-            <div>
-              <h2>Vault Holdings</h2>
-              <p className="muted">Current stacks derived from settled Treasury entries.</p>
-            </div>
-            <button
-              type="button"
-              className="dialog-user-btn treasury-form-toggle"
-              aria-expanded={formExpanded}
-              onClick={() => setFormExpanded((current) => !current)}
-            >
-              {formExpanded ? "Close Intake" : "Add Treasure"}
-            </button>
+            <h2>Vault Holdings</h2>
           </header>
           {formExpanded ? (
             <div className="treasury-intake-panel">
@@ -3133,7 +3122,7 @@ export default function TreasuryPage(): JSX.Element {
               {activeIntakeMode === "bring_in" ? (
                 <form className="treasury-form" onSubmit={(event) => void submitTransaction(event)}>
                   <p className="treasury-intake-copy">
-                    Bring a new treasure under Scrooge&apos;s care and place it in its first custody location.
+                    Bring a new treasure under my care and place it in its first custody location.
                   </p>
                   <label className="dialog-user-field">
                     Coin
@@ -3266,9 +3255,9 @@ export default function TreasuryPage(): JSX.Element {
           ) : null}
 
           {holdings.length === 0 ? (
-            <p className="trade-history-empty-sheet">The treasury is empty. Add your first treasure.</p>
+            <p className="trade-history-empty-sheet treasury-holdings-list">The treasury is empty. Add your first treasure.</p>
           ) : (
-            <div className="treasury-holdings-grid">
+            <div className="treasury-holdings-grid treasury-holdings-list">
               {holdings.map((holding) => (
                 <HoldingCard
                   key={`${holding.asset_symbol}-${holding.quote_symbol}`}
@@ -3284,7 +3273,21 @@ export default function TreasuryPage(): JSX.Element {
               ))}
             </div>
           )}
+          <div className="treasury-add-treasure-row">
+            <button
+              type="button"
+              className="dialog-user-btn treasury-form-toggle"
+              aria-expanded={formExpanded}
+              onClick={() => setFormExpanded((current) => !current)}
+            >
+              {formExpanded ? "Close Intake" : "Add Treasure"}
+            </button>
+          </div>
         </section>
+
+        <p className="dialog-scrooge treasury-role-divider">My treasury rules:</p>
+
+        <TreasuryRulesPanel />
 
         {portfolio?.warnings.length ? (
           <section className="section-block">

@@ -14,7 +14,11 @@ from shared.runtime_db import (
     count_ledger_entries,
     list_ledger_entries,
 )
-from shared.treasury_ledger import project_portfolio_transaction, project_portfolio_transactions
+from shared.treasury_ledger import (
+    project_portfolio_transaction,
+    project_portfolio_transactions,
+    treasury_transaction_presentation,
+)
 
 
 class LedgerProjectionTests(unittest.TestCase):
@@ -117,7 +121,68 @@ class LedgerProjectionTests(unittest.TestCase):
 
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["source_ref"], "portfolio_transaction:spot-order:intent-1")
-        self.assertEqual(entries[0]["message"], "Binance Spot bought 12.5 NEAR at $4.2.")
+        self.assertEqual(
+            entries[0]["message"],
+            "I bought 12.5 NEAR at $4.2 on Binance Spot at your request.",
+        )
+
+    def test_strategy_spot_messages_explain_open_profit_and_cleanup(self) -> None:
+        cases = (
+            (
+                {
+                    "tx_type": "sell",
+                    "asset_symbol": "TIA",
+                    "quantity": 45.14,
+                    "price": 0.4645,
+                    "source": "binance_strategy",
+                    "reason": {
+                        "action_type": "open",
+                        "signal_level": 3,
+                        "rolling_change_pct": 4.2,
+                        "level_allocation_pct": 30,
+                    },
+                },
+                "I sold 45.14 TIA at $0.4645 on Binance Spot. L3 rise +4.2%; I put the 30% campaign stake to work.",
+            ),
+            (
+                {
+                    "tx_type": "buy",
+                    "asset_symbol": "FIL",
+                    "quantity": 9,
+                    "price": 1.1007,
+                    "source": "binance_strategy",
+                    "reason": {
+                        "action_type": "close",
+                        "close_reason": "profit_target",
+                        "favorable_move_pct": 4.34,
+                        "close_profit_pct": 4,
+                    },
+                },
+                "I bought back 9 FIL at $1.1007 on Binance Spot. Bargain Goal cleared at +4.34% against 4%.",
+            ),
+            (
+                {
+                    "tx_type": "buy",
+                    "asset_symbol": "DYDX",
+                    "quantity": 650,
+                    "price": 0.14006148,
+                    "source": "binance_strategy",
+                    "reason": {
+                        "action_type": "close",
+                        "close_reason": "deep_loss_cleanup",
+                        "age_days": 18.25,
+                        "unrealized_pnl_pct_before_cleanup": -27.8,
+                        "actual_reverse_signal_level": 1,
+                    },
+                },
+                "I bought back 650 DYDX at $0.14006148 on Binance Spot. Deep-loss cleanup: 18.2d old, -27.8%, reverse L1.",
+            ),
+        )
+
+        for transaction, expected in cases:
+            with self.subTest(expected=expected):
+                _, _, message = treasury_transaction_presentation(transaction)
+                self.assertEqual(message, expected)
 
     def test_internal_spot_cash_legs_are_not_projected_to_the_ledger(self) -> None:
         quote_leg = append_portfolio_transaction(

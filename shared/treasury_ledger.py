@@ -21,6 +21,105 @@ def _money(value: Any) -> str:
     return f"${_number(value)}"
 
 
+def _signed_pct(value: Any) -> str | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    sign = "+" if numeric > 0 else ""
+    return f"{sign}{_number(numeric, decimals=2)}%"
+
+
+def _level(value: Any) -> str | None:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return None
+    return f"L{numeric}" if numeric > 0 else None
+
+
+def _strategy_reason(reason: dict[str, Any]) -> str:
+    action_type = str(reason.get("action_type") or "").strip().lower()
+    level = _level(reason.get("signal_level"))
+    move = _signed_pct(reason.get("rolling_change_pct"))
+
+    if action_type == "open":
+        tranche = reason.get("level_allocation_pct", reason.get("final_tranche_pct"))
+        trigger = " ".join(part for part in (level, f"rise {move}" if move else None) if part)
+        stake = f"{_number(tranche, decimals=2)}% campaign stake" if tranche is not None else "campaign stake"
+        return f"{trigger or 'A rising signal'}; I put the {stake} to work."
+
+    if action_type == "accumulate_asset":
+        tranche = reason.get("accumulation_tranche_pct", reason.get("final_tranche_pct"))
+        trigger = " ".join(part for part in (level, f"dip {move}" if move else None) if part)
+        stake = f"{_number(tranche, decimals=2)}%" if tranche is not None else "a measured share"
+        return f"{trigger or 'A buying signal'}; I deployed {stake} of Spendable Reserve."
+
+    if action_type == "close":
+        close_reason = str(reason.get("close_reason") or "").strip().lower()
+        if close_reason == "profit_target":
+            favorable = _signed_pct(reason.get("favorable_move_pct"))
+            target = (
+                f"{_number(reason['close_profit_pct'], decimals=2)}%"
+                if reason.get("close_profit_pct") is not None
+                else None
+            )
+            if favorable and target:
+                return f"Bargain Goal cleared at {favorable} against {target}."
+            return "Bargain Goal cleared."
+        cleanup_labels = {
+            "age_l1_cleanup": "L1 waiter cleanup",
+            "age_l2_cleanup": "L2 waiter cleanup",
+            "age_l3_cleanup": "L3 waiter cleanup",
+            "deep_loss_cleanup": "Deep-loss cleanup",
+            "capacity_cleanup": "Capacity cleanup",
+        }
+        if close_reason in cleanup_labels:
+            details: list[str] = []
+            if reason.get("age_days") is not None:
+                details.append(f"{_number(reason['age_days'], decimals=1)}d old")
+            pnl = _signed_pct(reason.get("unrealized_pnl_pct_before_cleanup"))
+            if pnl:
+                details.append(pnl)
+            reverse_level = _level(reason.get("actual_reverse_signal_level"))
+            if reverse_level:
+                details.append(f"reverse {reverse_level}")
+            suffix = f": {', '.join(details)}" if details else ""
+            return f"{cleanup_labels[close_reason]}{suffix}."
+        if close_reason == "manual":
+            return "Closed at your request."
+
+    return "My standing Treasury rules called for this fill."
+
+
+def spot_order_presentation_message(transaction: dict[str, Any]) -> str:
+    tx_type = str(transaction.get("tx_type") or transaction.get("side") or "trade").strip().lower()
+    asset = str(transaction.get("asset_symbol") or transaction.get("symbol") or "asset").strip().upper()
+    quantity = _number(transaction.get("quantity"))
+    price = transaction.get("price")
+    price_suffix = f" at {_money(price)}" if price is not None else ""
+    reason = transaction.get("reason") if isinstance(transaction.get("reason"), dict) else {}
+    action_type = str(reason.get("action_type") or transaction.get("strategy_action_type") or "").strip().lower()
+    source = str(transaction.get("source") or "manual").strip().lower()
+    is_close = action_type == "close"
+    verb = (
+        "bought back"
+        if is_close and tx_type == "buy"
+        else "sold out"
+        if is_close
+        else "bought"
+        if tx_type == "buy"
+        else "sold"
+    )
+    lead = f"I {verb} {quantity} {asset}{price_suffix} on Binance Spot."
+
+    if source in {"strategy", "binance_strategy"}:
+        return f"{lead} {_strategy_reason(reason)}"
+    if transaction.get("treasury_intake"):
+        return f"{lead} I brought it into the vault at your request."
+    return f"{lead[:-1]} at your request."
+
+
 def _custody_name(value: Any) -> str:
     return {
         "binance": "Binance",
@@ -54,6 +153,13 @@ def treasury_transaction_presentation(transaction: dict[str, Any]) -> tuple[str,
             "neutral",
             f"Moved {quantity} {asset} from {source_name} to {destination_name}.",
         )
+
+    if source.startswith("binance_") and tx_type in {"buy", "sell"}:
+        message = spot_order_presentation_message(transaction)
+        if str(transaction.get("status") or "settled").lower() == "voided":
+            message = f"{message[:-1]} (currently voided)."
+        tone = "positive" if tx_type == "buy" else "negative"
+        return f"treasury_{tx_type}", tone, message
 
     verb_by_type = {
         "buy": "bought",
