@@ -506,6 +506,17 @@ function formatSignedCurrency(value: number | null | undefined): string {
   return `${sign}$${formatNumber(Math.abs(value), 2)}`;
 }
 
+function formatSignedAssetQuantity(
+  value: number | null | undefined,
+  assetSymbol: string
+): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "Awaiting Settlement";
+  }
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${formatNumber(Math.abs(value), 8)} ${assetSymbol}`;
+}
+
 function formatPercent(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "Pending";
@@ -1968,9 +1979,16 @@ function SwingLedgerRow({
   const [closeError, setCloseError] = useState<string | null>(null);
   const [useProtectedCash, setUseProtectedCash] = useState<boolean>(false);
   const economics = swing.economics;
-  const pnl = economics.status === "closed"
-    ? economics.realized_pnl_quote
-    : economics.unrealized_pnl_quote;
+  const showsRealizedAssetPnl = economics.status === "closed"
+    && swing.trading_objective === "accumulate_asset";
+  const pnl = showsRealizedAssetPnl
+    ? economics.realized_net_asset_change
+    : economics.status === "closed"
+      ? economics.realized_pnl_quote
+      : economics.unrealized_pnl_quote;
+  const formattedPnl = showsRealizedAssetPnl
+    ? formatSignedAssetQuantity(pnl, swing.asset_symbol)
+    : formatSignedCurrency(pnl);
   const quantity = economics.opening_quantity || swing.planned_quantity;
   const fees = Object.entries(economics.fees_by_asset);
   const reason = swingReasonText(swing.strategy_reason);
@@ -2043,7 +2061,7 @@ function SwingLedgerRow({
         <span className={`treasury-swing-status treasury-swing-status-${economics.status}`}>
           {swingStatusLabel(economics.status)}
         </span>
-        <strong className={signedToneClass(pnl, "treasury-swing-pnl")}>{formatSignedCurrency(pnl)}</strong>
+        <strong className={signedToneClass(pnl, "treasury-swing-pnl")}>{formattedPnl}</strong>
         <span className="treasury-holding-chevron" aria-hidden="true" />
       </button>
       {expanded ? (
@@ -2055,7 +2073,14 @@ function SwingLedgerRow({
             <span><small>Opened</small><strong>{formatDateTimeEu(occurredAt)}</strong></span>
             <span><small>Age</small><strong>{formatSwingAge(swing.age_seconds)}</strong></span>
             <span><small>Market Price</small><strong>{formatCurrency(swing.current_market_price, 6)}</strong></span>
-            <span><small>Realized PnL</small><strong className={signedToneClass(economics.realized_pnl_quote, "")}>{formatSignedCurrency(economics.realized_pnl_quote)}</strong></span>
+            <span>
+              <small>{showsRealizedAssetPnl ? "Realized Asset PnL" : "Realized PnL"}</small>
+              <strong className={signedToneClass(pnl, "")}>
+                {showsRealizedAssetPnl
+                  ? formatSignedAssetQuantity(pnl, swing.asset_symbol)
+                  : formatSignedCurrency(economics.realized_pnl_quote)}
+              </strong>
+            </span>
             <span><small>Open PnL</small><strong className={signedToneClass(economics.unrealized_pnl_quote, "")}>{formatSignedCurrency(economics.unrealized_pnl_quote)}</strong></span>
           </div>
           {reason ? <p className="treasury-swing-reason">My note: {reason}</p> : null}
