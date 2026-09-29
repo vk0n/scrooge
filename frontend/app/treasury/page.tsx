@@ -1229,14 +1229,11 @@ function TreasuryRulesPanel(): JSX.Element {
   const sellText = rules?.signal.base_tranches_pct.map((value) => `${value}%`).join(" / ") ?? "...";
   const buyText = rules?.signal.accumulation_tranches_pct.map((value) => `${value}%`).join(" / ") ?? "...";
   const agingText = rules?.waiter_cleanup.aging
-    .map((rule) => `${rule.min_age_days}d needs L${rule.required_reverse_level}`)
-    .join(", ") ?? "...";
+    .map((rule) => `after ${rule.min_age_days}d I require Level ${rule.required_reverse_level}`)
+    .join("; ") ?? "...";
 
   return (
     <section className="section-block treasury-rules-section">
-      <div className="treasury-rules-badge-row">
-        <span className="treasury-insight-count">LIVE CONFIG</span>
-      </div>
       {loading ? <p className="dialog-scrooge">Reviewing the rules...</p> : editing ? (
         <div className="contract-editor">
           <p className="contract-editor-note">Only the Treasury strategy section is editable here. The Futures contract remains untouched.</p>
@@ -1250,20 +1247,24 @@ function TreasuryRulesPanel(): JSX.Element {
           <button type="button" className="contract-scroll-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} aria-controls="treasury-rules-body">
             <span className="contract-scroll-toggle-copy">
               <span className="contract-scroll-toggle-label">{expanded ? "Roll the parchment back up" : "Unroll the parchment"}</span>
-              <span className="contract-scroll-toggle-teaser">Signals at {levelText}; Bargain Goal {rules.progression.close_profit_pct}%.</span>
+              <span className="contract-scroll-toggle-teaser">
+                {expanded
+                  ? "7 clauses are open for inspection."
+                  : `Signals at ${levelText}; Bargain Goal ${rules.progression.close_profit_pct}%.`}
+              </span>
             </span>
             <span className="contract-scroll-toggle-icon" aria-hidden="true">▾</span>
           </button>
           <div className="contract-scroll-body-shell" id="treasury-rules-body">
             <div className="contract-scroll-body">
-              <div className="contract-sheet" aria-label="Treasury Rules">
-                <p><span className="contract-term">Market Bell</span> Every <span className="contract-value">{rules.signal_refresh_seconds}s</span>, measure the 24-hour move. Levels are <span className="contract-value">{levelText}</span>.</p>
-                <p><span className="contract-term">Campaign Stakes</span> Cash-accumulation tranches are <span className="contract-value">{sellText}</span>; asset-accumulation tranches are <span className="contract-value">{buyText}</span>.</p>
-                <p><span className="contract-term">Bargain Goal</span> Close profitable Bargains at gross <span className="contract-value">{rules.progression.close_profit_pct}%</span>.</p>
-                <p><span className="contract-term">Inventory Discipline</span> A campaign may use <span className="contract-value">{rules.progression.campaign_capacity_pct}%</span> of sellable inventory, then deploy fully below <span className="contract-value">{rules.progression.full_deploy_threshold_pct}%</span> remaining.</p>
-                <p><span className="contract-term">Waiter Cleanup</span> Cleanup is <span className="contract-value">{rules.waiter_cleanup.enabled ? "active" : "paused"}</span>. Keep at most <span className="contract-value">{rules.waiter_cleanup.max_open_bargains_per_asset}</span> open Bargains per asset. Aging gates: <span className="contract-value">{agingText}</span>.</p>
-                <p><span className="contract-term">Deep Loss</span> After <span className="contract-value">{rules.waiter_cleanup.deep_loss.min_age_days}d</span> at or below <span className="contract-value">{rules.waiter_cleanup.deep_loss.unrealized_pnl_pct}%</span>, an L<span className="contract-value">{rules.waiter_cleanup.deep_loss.required_reverse_level}</span> reverse signal may clean the position.</p>
-                <p><span className="contract-term">Capacity Relief</span> It is <span className="contract-value">{rules.waiter_cleanup.capacity_cleanup.enabled ? "active" : "paused"}</span> after <span className="contract-value">{rules.waiter_cleanup.capacity_cleanup.min_age_days}d</span>.</p>
+              <div className="contract-sheet" aria-label="My treasury rules">
+                <p>1. <span className="contract-term">Market bell.</span> Every <span className="contract-value">{rules.signal_refresh_seconds}s</span>, I shall inspect each coin&apos;s 24-hour move and decide whether the market is offering a buying or selling opportunity.</p>
+                <p>2. <span className="contract-term">Signal ladder.</span> Moves of <span className="contract-value">{levelText}</span> shall open Levels 1 through {rules.signal.levels_pct.length}. The farther a coin travels, the stronger the signal I shall act upon.</p>
+                <p>3. <span className="contract-term">Campaign stakes.</span> When I am building cash, Levels 1 through {rules.signal.base_tranches_pct.length} shall commit <span className="contract-value">{sellText}</span> of the campaign purse. When I am gathering more of the asset, those levels shall commit <span className="contract-value">{buyText}</span> of spendable reserve.</p>
+                <p>4. <span className="contract-term">Bargain goal.</span> I shall settle every profitable Bargain once its gross return reaches <span className="contract-value">{rules.progression.close_profit_pct}%</span>.</p>
+                <p>5. <span className="contract-term">Inventory discipline.</span> A new selling campaign may command <span className="contract-value">{rules.progression.campaign_capacity_pct}%</span> of the inventory that policy leaves sellable. Once no more than <span className="contract-value">{rules.progression.full_deploy_threshold_pct}%</span> of that allowance remains, I may deploy all of it.</p>
+                <p>6. <span className="contract-term">Patient waiters.</span> Cleanup is <span className="contract-value">{rules.waiter_cleanup.enabled ? "active" : "paused"}</span>, and I shall keep no more than <span className="contract-value">{rules.waiter_cleanup.max_open_bargains_per_asset}</span> open Bargains for one asset. For aging positions, {agingText}.</p>
+                <p>7. <span className="contract-term">Loss and capacity relief.</span> After <span className="contract-value">{rules.waiter_cleanup.deep_loss.min_age_days}d</span> at or below <span className="contract-value">{rules.waiter_cleanup.deep_loss.unrealized_pnl_pct}%</span>, a Level <span className="contract-value">{rules.waiter_cleanup.deep_loss.required_reverse_level}</span> reverse signal may release the position. Capacity relief is <span className="contract-value">{rules.waiter_cleanup.capacity_cleanup.enabled ? "active" : "paused"}</span> after <span className="contract-value">{rules.waiter_cleanup.capacity_cleanup.min_age_days}d</span>.</p>
               </div>
             </div>
           </div>
