@@ -319,7 +319,7 @@ class SpotOrderExecutor:
                 price=market_price,
                 trading_objective=str(swing.get("trading_objective") or ""),
                 close_profit_pct=float(
-                    os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "3") or 3
+                    os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "4") or 4
                 ),
                 estimated_fee_rate=max(
                     0.0,

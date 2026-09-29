@@ -107,7 +107,7 @@ class WaiterCleanupDomainTests(unittest.TestCase):
         self.assertEqual(self.requirement(90)["required_reverse_level"], 1)
 
     def test_deep_loss_boundary_and_minimum_age(self):
-        eligible = self.requirement(15, -20)
+        eligible = self.requirement(15, -25)
         self.assertEqual(eligible["cleanup_reason"], "deep_loss_cleanup")
         self.assertEqual(eligible["required_reverse_level"], 1)
         self.assertIsNone(self.requirement(15 - 1 / 24, -25))
@@ -212,7 +212,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         ]
 
         decision = self.decide(
-            signal("sell", 1, 80),
+            signal("sell", 1, 75),
             swings,
             excluded_close_swing_ids={"oldest-dust"},
         )
@@ -222,12 +222,12 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
 
     def test_cash_limited_cleanup_quantity_is_marked_as_temporary(self):
         decision = plan_spot_strategy_action(
-            signal("buy", 1, 120),
+            signal("buy", 1, 125),
             {
                 "target_quantity": 1000,
                 "minimum_holding_pct": 80,
                 "immediately_sellable_quantity": 200,
-                "market_price": 120,
+                "market_price": 125,
             },
             {},
             [swing_state("cash-limited", origin_side="sell", age_days=100)],
@@ -241,8 +241,8 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
 
     def test_sell_cleanup_cannot_spend_another_bargains_committed_cash(self):
         decision = plan_spot_strategy_action(
-            signal("buy", 1, 120),
-            holding(120),
+            signal("buy", 1, 125),
+            holding(125),
             {},
             [swing_state("lossy-sell", origin_side="sell", age_days=100, price=100)],
             # The whole reserve includes this Swing's $1,000 proceeds plus $5 genuinely free cash.
@@ -255,7 +255,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         self.assertEqual(decision["action_type"], "close")
         self.assertEqual(decision["reason"]["close_reason"], "deep_loss_cleanup")
         self.assertEqual(decision["reason"]["quantity_basis"], "available_quote")
-        self.assertAlmostEqual(decision["requested_quantity"], 1005 / 120)
+        self.assertAlmostEqual(decision["requested_quantity"], 1005 / 125)
 
     def test_maximum_open_bargains_prevents_eleventh_open(self):
         swings = [
@@ -277,14 +277,14 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         waiter = swing_state("asset-waiter", origin_side="sell", age_days=31)
         waiter["swing"]["trading_objective"] = "accumulate_asset"
         buy_signal = {
-            **signal("buy", 3, 120),
+            **signal("buy", 3, 125),
             "trading_objective": "accumulate_asset",
             "final_tranche_pct": 30,
         }
 
         decision = plan_spot_strategy_action(
             buy_signal,
-            holding(120),
+            holding(125),
             {"campaign_id": "buy-campaign", "active_side": "buy", "highest_completed_level": 0},
             [waiter],
             available_quote=1000,

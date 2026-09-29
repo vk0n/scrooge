@@ -159,7 +159,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--close-profit-pct",
         type=float,
-        help="Override the progression close-profit target for this replay.",
+        help="Override Bargain Goal: the gross favorable price move required to close.",
     )
     parser.add_argument(
         "--levels-pct",

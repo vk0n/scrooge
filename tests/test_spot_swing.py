@@ -37,6 +37,11 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
         bootstrap_runtime_db(self.db_path)
 
+    def test_new_cash_policy_uses_live_retention_default(self):
+        policy = load_portfolio_cash_policy(path=self.db_path)
+
+        self.assertEqual(policy["free_cash_retention_pct"], 40)
+
     def create_swing(
         self,
         swing_id: str,
@@ -139,7 +144,37 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(policy["retained_quote_balance"], 10)
 
+    def test_cash_positive_cleanup_loss_does_not_accrue_retention(self):
+        upsert_portfolio_cash_policy(20, path=self.db_path)
+        self.create_swing("cash-positive-loss")
+        self.add_execution(
+            "cash-positive-loss", "loss-sell", "sell", 10, 100, executed_at_ms=2_000
+        )
+        self.add_execution(
+            "cash-positive-loss",
+            "loss-buy",
+            "buy",
+            8,
+            120,
+            executed_at_ms=3_000,
+            reason={"action_type": "close", "close_reason": "deep_loss_cleanup"},
+        )
+
+        economics = self.economics("cash-positive-loss")
+        retention = apply_spot_swing_cash_retention(
+            "cash-positive-loss", path=self.db_path
+        )
+
+        self.assertEqual(economics["realized_cash_gain_quote"], 40)
+        self.assertEqual(economics["realized_pnl_quote"], -200)
+        self.assertEqual(retention["eligible_cash_gain_quote"], 0)
+        self.assertEqual(retention["retained_quote"], 0)
+        self.assertEqual(
+            load_portfolio_cash_policy(path=self.db_path)["retained_quote_balance"], 0
+        )
+
     def test_retention_policy_change_does_not_retroactively_lock_old_profit(self):
+        upsert_portfolio_cash_policy(0, path=self.db_path)
         self.create_swing("old-profit")
         self.add_execution("old-profit", "old-sell", "sell", 10, 5, executed_at_ms=2_000)
         self.add_execution(

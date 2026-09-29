@@ -758,7 +758,7 @@ _HTML = r'''<!doctype html>
       ["Final Treasury", money(data.portfolio.final_treasury_value), `Started at ${money(data.portfolio.starting_treasury_value)}`, "primary gold"],
       ["Edge vs HODL", pct(edgeMetrics.difference_pct_points || 0), `${money(edgeMetrics.quote || edge)} / HODL ${pct(edgeMetrics.hodl_return_pct || 0)}`, tone(edgeMetrics.difference_pct_points || 0)],
       ["Free Reserve", money(reserveMetrics.quote || 0), `Retained ${money(reserveMetrics.retained_quote || 0)} / Spendable ${money(reserveMetrics.spendable_quote || 0)}`, ""],
-      ["Asset Recovery", pct(recoveryMetrics.average_effective_quantity_pct || 0), `Weighted ${pct(recoveryMetrics.weighted_effective_quantity_pct || 0)}`, tone((recoveryMetrics.average_effective_quantity_pct || 0) - 100)],
+      ["Asset Recovery", pct(recoveryMetrics.average_effective_quantity_pct || 0), "Equal-weight nominal average", tone((recoveryMetrics.average_effective_quantity_pct || 0) - 100)],
       ["Max Drawdown", pct(data.portfolio.maximum_treasury_drawdown_pct), `HODL ${pct(data.hodlDrawdownPct)}`, "negative"],
       ["Execution Fees", money(data.fees), `${data.rejectedOrders.toLocaleString()} filtered attempts`, ""],
     ];

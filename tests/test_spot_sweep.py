@@ -55,7 +55,6 @@ def report(edge: float) -> dict:
                 "pct_of_initial_invested_capital": 2.5,
             },
             "asset_recovery": {
-                "weighted_effective_quantity_pct": 99,
                 "average_effective_quantity_pct": 101,
             },
         },
@@ -163,20 +162,20 @@ spot_sweep:
         self.assertEqual(resolved.free_cash_retention_pct, 20)
         self.assertEqual(resolved.waiter_cleanup.deep_loss_unrealized_pnl_pct, -20)
 
-    def test_ranking_prioritizes_edge_then_effective_assets(self):
+    def test_ranking_prioritizes_edge_then_average_nominal_assets(self):
         rows = [
             {
                 "name": "lower",
                 "status": "ok",
                 "edge_vs_hodl_pct_points": 1,
-                "weighted_effective_assets_pct": 110,
+                "average_effective_assets_pct": 110,
                 "free_reserve_pct": 10,
             },
             {
                 "name": "winner",
                 "status": "ok",
                 "edge_vs_hodl_pct_points": 2,
-                "weighted_effective_assets_pct": 90,
+                "average_effective_assets_pct": 90,
                 "free_reserve_pct": 1,
             },
         ]

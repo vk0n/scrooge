@@ -85,6 +85,7 @@ class RollingSpotSignalMonitor:
         account_key: str = DEFAULT_ACCOUNT_KEY,
         snapshot_handler: Callable[[dict[str, Any]], Any] | None = None,
         snapshot_orderer: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+        pending_recovery_handler: Callable[[], Any] | None = None,
     ) -> None:
         self.client = client
         self.interval_seconds = max(30.0, float(interval_seconds))
@@ -95,6 +96,7 @@ class RollingSpotSignalMonitor:
         self.account_key = str(account_key or DEFAULT_ACCOUNT_KEY).strip() or DEFAULT_ACCOUNT_KEY
         self.snapshot_handler = snapshot_handler
         self.snapshot_orderer = snapshot_orderer
+        self.pending_recovery_handler = pending_recovery_handler
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_states: dict[tuple[str, str], tuple[object, ...]] = {}
@@ -119,6 +121,11 @@ class RollingSpotSignalMonitor:
     def refresh_once(self) -> list[dict[str, Any]]:
         if not self.execution_enabled:
             return []
+        if self.pending_recovery_handler is not None:
+            try:
+                self.pending_recovery_handler()
+            except Exception as exc:  # noqa: BLE001
+                self.logger.exception("spot_order_cycle_recovery_failed error=%s", exc)
         policies = list_portfolio_asset_policies(account_key=self.account_key, path=self.db_path)
         results: list[dict[str, Any]] = []
         for policy in policies:

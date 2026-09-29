@@ -7,7 +7,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ProgressiveSwingConfig:
-    close_profit_pct: float = 3.0
+    close_profit_pct: float = 4.0
     estimated_fee_rate: float = 0.001
     campaign_capacity_pct: float = 50.0
     full_deploy_threshold_pct: float = 25.0
@@ -228,6 +228,7 @@ def plan_profitable_close(
         "quantity": quantity,
         "favorable_move_pct": favorable_move_pct,
         "close_profit_pct": resolved.close_profit_pct,
+        "profit_threshold_basis": "gross_price_move",
         "opening_price": opening_price,
         "current_price": market_price,
         "quantity_basis": quantity_basis,

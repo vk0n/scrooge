@@ -178,6 +178,7 @@ def plan_spot_strategy_action(
                         "close_reason": "profit_target",
                         "favorable_move_pct": close["favorable_move_pct"],
                         "close_profit_pct": close["close_profit_pct"],
+                        "profit_threshold_basis": close["profit_threshold_basis"],
                         "weighted_opening_price": close["opening_price"],
                         "market_price": current_price,
                         "remaining_quantity": economics["remaining_quantity"],

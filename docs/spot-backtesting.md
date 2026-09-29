@@ -15,6 +15,9 @@ Live and research both call the same implementations for:
 
 The replay replaces only the market source, clock, executor, state store, and reporting adapters.
 
+`close_profit_pct` is presented as **Bargain Goal**. It is a gross favorable price-move threshold from the Bargain's
+weighted opening price; fees and slippage affect execution but are not added to the threshold.
+
 ## Timing And Data
 
 - Data source: Binance Spot klines from `/api/v3/klines`, never Futures candles.
@@ -26,7 +29,7 @@ The replay replaces only the market source, clock, executor, state store, and re
 - Warm-up: at least 24 hours (`1440` candles at `1m`) before the requested start. Warm-up cannot generate signals,
   orders, Bargains, or balance changes.
 - Decision: candle N closes, then Scrooge evaluates only data whose close timestamp is at or before candle N close.
-- Fill: every action that remains eligible is executed sequentially at candle N close, adjusted by configured slippage
+- Fill: every action that remains eligible is executed sequentially at candle N+1 open, adjusted by configured slippage
   and fee. Portfolio, reserve, Swing, and campaign state are recalculated after every fill before planning the next
   action from that signal.
 - Rolling reference: the candle close exactly 24 hours before candle N close.
@@ -35,7 +38,7 @@ The replay replaces only the market source, clock, executor, state store, and re
 - Reporting: decisions still run on every `1m` candle. Equity and inventory are sampled hourly plus the exact final state,
   signal-level observation counts are aggregated exactly, and `signals.csv` records signal-state transitions.
 
-This is a strategy backtest, not a Binance order-book or market-impact simulation. Current cached Binance symbol filters are used because historical filter versions are not generally available.
+This is a strategy backtest, not a Binance order-book or market-impact simulation. A small default slippage allowance is applied, and current cached Binance symbol filters are used because historical filter versions are not generally available.
 
 ## Shared Cash And Ordering
 

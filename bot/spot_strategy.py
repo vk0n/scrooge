@@ -59,7 +59,7 @@ def _is_permanent_close_block(error: object, action: dict[str, Any] | None = Non
 
 def progressive_swing_config_from_env() -> ProgressiveSwingConfig:
     return ProgressiveSwingConfig(
-        close_profit_pct=float(os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "3") or 3),
+        close_profit_pct=float(os.getenv("SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT", "4") or 4),
         estimated_fee_rate=float(os.getenv("SCROOGE_SPOT_ESTIMATED_FEE_RATE", "0.001") or 0.001),
         campaign_capacity_pct=float(
             os.getenv("SCROOGE_SPOT_CAMPAIGN_CAPACITY_PCT", "50") or 50
@@ -67,6 +67,14 @@ def progressive_swing_config_from_env() -> ProgressiveSwingConfig:
         full_deploy_threshold_pct=float(
             os.getenv("SCROOGE_SPOT_FULL_DEPLOY_THRESHOLD_PCT", "25") or 25
         ),
+    )
+
+
+def waiter_cleanup_config_from_env() -> WaiterCleanupConfig:
+    return WaiterCleanupConfig(
+        deep_loss_unrealized_pnl_pct=float(
+            os.getenv("SCROOGE_SPOT_DEEP_LOSS_UNREALIZED_PNL_PCT", "-25") or -25
+        )
     )
 
 
@@ -92,7 +100,7 @@ class ProgressiveSpotSwingExecutor:
         self.logger = logger
         self.db_path = db_path
         self.config = config or progressive_swing_config_from_env()
-        self.cleanup_config = cleanup_config or WaiterCleanupConfig()
+        self.cleanup_config = cleanup_config or waiter_cleanup_config_from_env()
         self.account_key = str(account_key or "manual_spot").strip() or "manual_spot"
 
     def order_signals_for_execution(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -476,22 +484,30 @@ class ProgressiveSpotSwingExecutor:
             if intent is not None and intent["status"] in COMPLETED_INTENT_STATUSES:
                 self._complete_action(action)
                 continue
-            if intent is not None and intent["status"] in {"queueing", "queued"}:
-                result = self._execute_action(action)
-                if result.get("status") == "blocked" and _is_permanent_close_block(result.get("error"), result):
-                    continue
-                if result.get("status") == "completed":
-                    continue
-                return result
-            if intent is not None and intent["status"] in ACTIVE_INTENT_STATUSES:
-                update_spot_strategy_action(action["action_key"], {"status": "executing"}, path=self.db_path)
-                return action
-            if intent is not None and intent["status"] in RETRYABLE_INTENT_STATUSES:
-                action = update_spot_strategy_action(
+            if intent is not None and intent["status"] in {"queueing", "queued", *RETRYABLE_INTENT_STATUSES}:
+                # No exchange order can still be live in these states. Require the
+                # current signal planner to authorize a replacement instead of
+                # blindly replaying an action from an older campaign or signal.
+                if intent["status"] in {"queueing", "queued"}:
+                    update_spot_order_intent(
+                        intent["intent_id"],
+                        {
+                            "status": "failed",
+                            "error": "Strategy action is waiting for a fresh signal replan.",
+                        },
+                        expected_statuses={"queueing", "queued"},
+                        path=self.db_path,
+                    )
+                update_spot_strategy_action(
                     action["action_key"],
-                    {"status": "retryable", "error": intent.get("error")},
+                    {
+                        "status": "blocked",
+                        "error": "Strategy action is waiting for a fresh signal replan.",
+                    },
                     path=self.db_path,
-                ) or action
+                )
+                continue
+            if intent is not None and intent["status"] in ACTIVE_INTENT_STATUSES:
                 result = self._execute_action(action)
                 if result.get("status") == "blocked" and _is_permanent_close_block(result.get("error"), result):
                     continue

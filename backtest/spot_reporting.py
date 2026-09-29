@@ -1066,14 +1066,6 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
         for item in per_asset.values()
         if item["asset_recovery"]["effective_final_quantity_pct"] is not None
     ]
-    initial_quantity_total = sum(
-        float(item["asset_recovery"]["initial_quantity"])
-        for item in per_asset.values()
-    )
-    effective_quantity_total = sum(
-        float(item["asset_recovery"]["effective_final_quantity"])
-        for item in per_asset.values()
-    )
     return {
         "scenario": {
             "name": result.scenario.name,
@@ -1179,11 +1171,6 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             "asset_recovery": {
                 "average_effective_quantity_pct": (
                     mean(recovery_pct_values) if recovery_pct_values else None
-                ),
-                "weighted_effective_quantity_pct": (
-                    effective_quantity_total / initial_quantity_total * 100.0
-                    if initial_quantity_total > 0
-                    else None
                 ),
                 "per_asset": {
                     symbol: item["asset_recovery"]
@@ -1312,7 +1299,8 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         "strategy_code_revision": _git_revision(),
         "timing": (
             "Evaluate after candle N closes using data through N; execute every eligible action sequentially "
-            "at candle N close, refreshing simulated state after every fill. Warm-up candles never trade."
+            "at candle N+1 open with configured slippage, refreshing simulated state after every fill. "
+            "Warm-up candles never trade and the final close cannot create an unfillable action."
         ),
         "rolling_24h_reference": "Candle close exactly 24 hours before the evaluated candle close.",
         "missing_candles": "Fail the run; no interpolation or forward fill.",
@@ -1325,7 +1313,7 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         },
         "quantization": "Current cached Binance Spot filters, not historical filter versions.",
         "execution_model": (
-            "Deterministic synchronous candle-close market-action batch plus configured fee and slippage."
+            "Deterministic next-candle-open market-action batch plus configured fee and slippage."
         ),
     }
     _write_json(target / "summary.json", report)
@@ -1409,7 +1397,7 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         f"- HODL Return: {portfolio['hodl_return_pct']:.2f}%",
         f"- Edge vs HODL: {edge_metrics['difference_pct_points']:.2f} pp ({edge_metrics['relative_outperformance_pct']:.2f}% relative)",
         f"- Free Reserve: ${reserve_metrics['quote']:,.2f} ({reserve_metrics['pct_of_initial_invested_capital']:.2f}% of initial invested capital)",
-        f"- Effective Asset Recovery: {recovery_metrics['average_effective_quantity_pct']:.2f}% average / {recovery_metrics['weighted_effective_quantity_pct']:.2f}% weighted",
+        f"- Average Nominal Asset Recovery: {recovery_metrics['average_effective_quantity_pct']:.2f}%",
         f"- Maximum Treasury Drawdown: {portfolio['maximum_treasury_drawdown_pct']:.2f}%",
         "",
         "## Bargains",

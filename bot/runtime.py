@@ -786,6 +786,7 @@ if __name__ == "__main__":
                     db_path=db_path,
                     snapshot_handler=spot_swing_strategy.handle_signal,
                     snapshot_orderer=spot_swing_strategy.order_signals_for_execution,
+                    pending_recovery_handler=spot_order_executor.recover_pending,
                 )
                 spot_signal_monitor.start()
             else:

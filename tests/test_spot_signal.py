@@ -46,11 +46,11 @@ class SpotSignalDomainTests(unittest.TestCase):
 
     def test_default_levels_create_progressive_sell_opportunities(self):
         expectations = [
-            (104.9, 0, 0, 0),
-            (105, 1, 10, 1),
-            (108, 2, 20, 3),
-            (112, 3, 30, 5),
-            (118, 4, 40, 10),
+            (101.9, 0, 0, 0),
+            (102, 1, 10, 1),
+            (103, 2, 20, 3),
+            (104, 3, 30, 5),
+            (106, 4, 40, 10),
         ]
 
         for price, level, tranche, accumulation_tranche in expectations:
@@ -62,13 +62,13 @@ class SpotSignalDomainTests(unittest.TestCase):
                 self.assertEqual(result["accumulation_tranche_pct"], accumulation_tranche)
 
     def test_negative_move_creates_buy_opportunity(self):
-        result = self.evaluate(88)
+        result = self.evaluate(96)
 
         self.assertEqual(result["opportunity"], "buy")
         self.assertEqual(result["level"], 3)
         self.assertEqual(result["accumulation_tranche_pct"], 5)
         self.assertEqual(result["base_tranche_pct"], 30)
-        self.assertAlmostEqual(result["rolling_change_pct"], -12)
+        self.assertAlmostEqual(result["rolling_change_pct"], -4)
 
     def test_reference_must_be_approximately_24_hours_old(self):
         with self.assertRaisesRegex(ValueError, "approximately 24 hours"):
@@ -145,7 +145,7 @@ class RollingSpotSignalMonitorTests(unittest.TestCase):
 
         self.assertEqual(len(results), 2)
         self.assertEqual(near["opportunity"], "sell")
-        self.assertEqual(near["level"], 2)
+        self.assertEqual(near["level"], 4)
         self.assertTrue(near["strategy_eligible"])
         self.assertEqual(near["eligibility_reason"], "eligible")
         self.assertEqual(xrp["opportunity"], "buy")
@@ -177,6 +177,20 @@ class RollingSpotSignalMonitorTests(unittest.TestCase):
 
         self.assertEqual([item["asset_symbol"] for item in results], ["NEAR", "XRP"])
         self.assertEqual(handled, ["XRP", "NEAR"])
+
+    def test_monitor_recovers_pending_orders_before_loading_new_signals(self):
+        events = []
+        monitor = RollingSpotSignalMonitor(
+            FakeTickerClient({}),
+            interval_seconds=300,
+            execution_enabled=True,
+            logger=logging.getLogger("test.spot-signal"),
+            db_path=self.db_path,
+            pending_recovery_handler=lambda: events.append("recovered"),
+        )
+
+        self.assertEqual(monitor.refresh_once(), [])
+        self.assertEqual(events, ["recovered"])
 
     def test_fully_protected_policy_is_not_strategy_eligible(self):
         self.policy("NEAR", objective="accumulate_asset", minimum=100)
@@ -222,14 +236,14 @@ class RollingSpotSignalMonitorTests(unittest.TestCase):
         self.monitor(client).refresh_once()
         snapshot = load_spot_signal_snapshot("NEAR", path=self.db_path)
 
-        self.assertEqual(snapshot["final_tranche_pct"], 20)
+        self.assertEqual(snapshot["final_tranche_pct"], 40)
         self.assertNotIn("indicator_context", snapshot)
         self.assertNotIn("sizing_modifier", snapshot)
         self.assertEqual(client.calls, [{"symbol": "NEARUSDT"}])
 
     def test_hold_keeps_zero_final_tranche(self):
         self.policy("NEAR", objective="accumulate_cash")
-        client = FakeTickerClient({"NEARUSDT": rolling_ticker(4, 4.1)})
+        client = FakeTickerClient({"NEARUSDT": rolling_ticker(4, 4.05)})
 
         self.monitor(client).refresh_once()
         snapshot = load_spot_signal_snapshot("NEAR", path=self.db_path)

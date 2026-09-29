@@ -341,7 +341,6 @@ def _summary_row(
         "spendable_reserve_quote": float(
             reserve.get("spendable_quote", reserve["quote"])
         ),
-        "weighted_effective_assets_pct": float(recovery["weighted_effective_quantity_pct"]),
         "average_effective_assets_pct": float(recovery["average_effective_quantity_pct"]),
         "maximum_drawdown_pct": float(portfolio["maximum_treasury_drawdown_pct"]),
         "opened_bargains": int(swings["total_opened"]),
@@ -370,7 +369,7 @@ def _rank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     succeeded.sort(
         key=lambda row: (
             -float(row["edge_vs_hodl_pct_points"]),
-            -float(row["weighted_effective_assets_pct"]),
+            -float(row["average_effective_assets_pct"]),
             -float(row["free_reserve_pct"]),
         )
     )
@@ -406,11 +405,11 @@ def _comparison_html(payload: dict[str, Any]) -> str:
 :root{{--bg:#080c11;--panel:#111821;--line:#293647;--ink:#edf2f7;--muted:#8d9bad;--gold:#e8b84a;--green:#48d6a2;--red:#ff647f}}
 *{{box-sizing:border-box}}body{{margin:0;background:repeating-linear-gradient(135deg,#080c11,#080c11 12px,#0a0f15 12px,#0a0f15 24px);color:var(--ink);font:13px ui-monospace,SFMono-Regular,Menlo,monospace}}
 main{{width:min(1500px,calc(100% - 28px));margin:28px auto 60px}}header,.panel{{border:1px solid var(--line);border-radius:18px;background:rgba(17,24,33,.97)}}header{{padding:28px;background:linear-gradient(125deg,#351020,#111923);margin-bottom:18px}}h1{{margin:8px 0;font-size:34px}}p{{color:var(--muted)}}.eyebrow{{color:var(--gold);letter-spacing:.14em;text-transform:uppercase}}.panel{{padding:18px;overflow:auto}}table{{width:100%;border-collapse:collapse;min-width:1120px}}th,td{{padding:11px 10px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}}th{{color:var(--muted);font-weight:400;position:sticky;top:0;background:var(--panel)}}th:nth-child(2),td:nth-child(2){{text-align:left}}tr:first-child td{{color:var(--green);font-weight:700}}.positive{{color:var(--green)}}.negative{{color:var(--red)}}@media(max-width:700px){{h1{{font-size:26px}}}}
-</style></head><body><main><header><span class="eyebrow">Scrooge Research / Spot Parameter Sweep</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><table><thead><tr><th>Rank</th><th>Levels</th><th>Take Profit</th><th>Retention</th><th>Deep Loss</th><th>Edge</th><th>Edge pp</th><th>Final</th><th>Free Reserve</th><th>Weighted Assets</th><th>Average Assets</th><th>Cleanup PnL</th><th>Inventory Deficit</th><th>Open</th><th>Oldest</th><th>Drawdown</th><th>Runtime</th></tr></thead><tbody id="rows"></tbody></table></section></main>
+</style></head><body><main><header><span class="eyebrow">Scrooge Research / Spot Parameter Sweep</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><table><thead><tr><th>Rank</th><th>Levels</th><th title="Gross favorable price move required to close a Bargain">Bargain Goal</th><th>Retention</th><th>Deep Loss</th><th>Edge</th><th>Edge pp</th><th>Final</th><th>Free Reserve</th><th>Average Assets</th><th>Cleanup PnL</th><th>Inventory Deficit</th><th>Open</th><th>Oldest</th><th>Drawdown</th><th>Runtime</th></tr></thead><tbody id="rows"></tbody></table></section></main>
 <script id="data" type="application/json">{data}</script><script>
 const d=JSON.parse(document.getElementById('data').textContent),money=v=>`${{v<0?'-':''}}$${{Math.abs(v).toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}})}}`,pct=v=>`${{v>=0?'+':''}}${{v.toFixed(2)}}%`,tone=v=>v>0?'positive':v<0?'negative':'';
 document.getElementById('title').textContent=d.name;document.getElementById('meta').textContent=`${{d.start}} to ${{d.end}} | ${{d.completed}}/${{d.total}} completed`;
-document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td>${{pct(r.close_profit_pct)}}</td><td>${{pct(r.free_cash_retention_pct)}}</td><td>${{pct(r.unrealized_pnl_pct)}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · protected ${{money(r.retained_reserve_quote||0)}} · spendable ${{money(r.spendable_reserve_quote||0)}}</td><td>${{pct(r.weighted_effective_assets_pct)}}</td><td>${{pct(r.average_effective_assets_pct)}}</td><td class="${{tone(r.cleanup_net_pnl)}}">${{money(r.cleanup_net_pnl)}}</td><td>${{money(r.cleanup_inventory_deficit_value)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
+document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td>${{pct(r.close_profit_pct)}}</td><td>${{pct(r.free_cash_retention_pct)}}</td><td>${{pct(r.unrealized_pnl_pct)}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · protected ${{money(r.retained_reserve_quote||0)}} · spendable ${{money(r.spendable_reserve_quote||0)}}</td><td>${{pct(r.average_effective_assets_pct)}}</td><td class="${{tone(r.cleanup_net_pnl)}}">${{money(r.cleanup_net_pnl)}}</td><td>${{money(r.cleanup_inventory_deficit_value)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
 </script></body></html>"""
 
 
@@ -696,7 +695,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  {variant.name}: levels "
                 f"{', '.join(f'{value:g}' for value in variant.levels_pct)}; "
-                f"take profit {variant.close_profit_pct:g}%; "
+                f"Bargain Goal {variant.close_profit_pct:g}% gross; "
                 f"retention {variant.free_cash_retention_pct:g}%; "
                 f"deep loss {variant.unrealized_pnl_pct:g}%"
             )
@@ -709,7 +708,7 @@ def main(argv: list[str] | None = None) -> int:
         if winner is not None:
             print(
                 f"Winner: {'/'.join(f'{value:g}' for value in winner['levels_pct'])} | "
-                f"TP {winner['close_profit_pct']:g}% | "
+                f"Bargain Goal {winner['close_profit_pct']:g}% | "
                 f"retention {winner['free_cash_retention_pct']:g}% | "
                 f"deep loss {winner['unrealized_pnl_pct']:g}% | "
                 f"Edge vs HODL {winner['edge_vs_hodl_pct_points']:+.2f} pp "

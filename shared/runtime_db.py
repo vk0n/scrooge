@@ -383,7 +383,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS portfolio_cash_policies (
             account_key TEXT PRIMARY KEY,
-            free_cash_retention_pct REAL NOT NULL DEFAULT 0 CHECK (
+            free_cash_retention_pct REAL NOT NULL DEFAULT 40 CHECK (
                 free_cash_retention_pct >= 0 AND free_cash_retention_pct <= 100
             ),
             retained_quote_balance REAL NOT NULL DEFAULT 0 CHECK (retained_quote_balance >= 0),
@@ -1847,7 +1847,7 @@ def load_portfolio_cash_policy(
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES (?, 0, ?, ?)
+            VALUES (?, 40, ?, ?)
             """,
             (normalized_account, now_ms, now_ms),
         )
@@ -3692,7 +3692,7 @@ def apply_spot_swing_cash_retention(
                 retained_quote_balance,
                 created_at_ms,
                 updated_at_ms
-            ) VALUES (?, 0, 0, ?, ?)
+            ) VALUES (?, 40, 0, ?, ?)
             """,
             (swing["account_key"], now_ms, now_ms),
         )

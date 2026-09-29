@@ -262,10 +262,12 @@ def calculate_cash_retention(
     """Allocate a percentage of one finalized cash profit to protected reserve."""
     normalized_pct = min(100.0, max(0.0, _number(retention_pct, field="Cash retention percentage")))
     realized_cash_gain = float(economics.get("realized_cash_gain_quote") or 0.0)
+    realized_pnl = float(economics.get("realized_pnl_quote") or 0.0)
     eligible_gain = (
         max(0.0, realized_cash_gain)
         if str(swing.get("trading_objective") or "").strip().lower() == "accumulate_cash"
         and str(economics.get("status") or "").strip().lower() == "closed"
+        and realized_pnl > 0.0
         else 0.0
     )
     return {

@@ -40,7 +40,7 @@ class WaiterCleanupConfig:
     enabled: bool = True
     max_open_bargains_per_asset: int = 10
     deep_loss_min_age_days: float = 15.0
-    deep_loss_unrealized_pnl_pct: float = -20.0
+    deep_loss_unrealized_pnl_pct: float = -25.0
     deep_loss_required_reverse_level: int = 1
     aging_rules: tuple[AgingCleanupRule, ...] = field(default_factory=_default_aging_rules)
     capacity_cleanup_enabled: bool = True
@@ -97,7 +97,7 @@ def waiter_cleanup_config_from_mapping(payload: dict[str, Any] | None) -> Waiter
         enabled=bool(data.get("enabled", True)),
         max_open_bargains_per_asset=int(data.get("max_open_bargains_per_asset", 10)),
         deep_loss_min_age_days=float(deep_loss.get("min_age_days", 15)),
-        deep_loss_unrealized_pnl_pct=float(deep_loss.get("unrealized_pnl_pct", -20)),
+        deep_loss_unrealized_pnl_pct=float(deep_loss.get("unrealized_pnl_pct", -25)),
         deep_loss_required_reverse_level=int(deep_loss.get("required_reverse_level", 1)),
         aging_rules=aging_rules,
         capacity_cleanup_enabled=bool(capacity.get("enabled", True)),

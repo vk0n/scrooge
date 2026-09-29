@@ -123,7 +123,7 @@ toggle. The asset objective, spendable reserve, current exchange balance, and ex
   persists the latest explainable signal per managed asset in `spot_signal_snapshots`. The live default is 60 seconds,
   configured through `SCROOGE_SPOT_SIGNAL_REFRESH_SECONDS`.
 - The primary signal is `current price / approximately-24h reference price - 1`. It is independent of UTC midnight.
-- Default absolute movement levels are `5,8,12,18%`. SELL openings use base tranches `10,20,30,40%`, configured
+- Default absolute movement levels are `2,3,4,6%`. SELL openings use base tranches `10,20,30,40%`, configured
   through `SCROOGE_SPOT_SIGNAL_BASE_TRANCHES_PCT`. `ACCUMULATE_ASSET + BUY` uses separate Free Vault Reserve
   tranches `1,3,5,10%`, configured through `SCROOGE_SPOT_SIGNAL_ACCUMULATION_TRANCHES_PCT`. All three lists must
   remain aligned by signal level.
@@ -159,7 +159,10 @@ toggle. The asset objective, spendable reserve, current exchange balance, and ex
   and idempotently consumed quantity are persisted in `spot_strategy_campaigns`. A Target ratchet affects only future
   campaigns. A direct jump to L3 executes only L3's 30% share; it does not backfill L1 and L2.
 - Existing Swings are evaluated independently from their own weighted opening execution price. The default profitable
-  close threshold is `3%` (`SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT`), and profitable closes take priority over new exposure.
+  close threshold is `4%` (`SCROOGE_SPOT_SWING_CLOSE_PROFIT_PCT`), and profitable closes take priority over new exposure.
+- New Treasury cash policies retain `40%` of each economically profitable cash Bargain. Deep-loss cleanup starts at
+  `-25%` unrealized PnL after the existing minimum-age and reverse-signal requirements are met. Configure the threshold
+  with `SCROOGE_SPOT_DEEP_LOSS_UNREALIZED_PNL_PCT`; it must be zero or negative.
 - A signal cycle may submit multiple strategy actions for the same asset when each remains eligible after the preceding
   fill. Durable action keys and existing client order recovery prevent restarts or retries from creating a second real
   order for the same decision.

@@ -93,7 +93,7 @@ class SpotBacktestAsset:
 @dataclass(frozen=True)
 class SpotBacktestExecutionConfig:
     fee_rate: float = 0.001
-    slippage_bps: float = 0.0
+    slippage_bps: float = 5.0
     force_close_at_end: bool = False
 
 
@@ -306,7 +306,7 @@ def load_spot_backtest_scenario(
         execution=SpotBacktestExecutionConfig(
             fee_rate=fee_rate,
             slippage_bps=_number(
-                execution_payload.get("slippage_bps", 0),
+                execution_payload.get("slippage_bps", 5),
                 field_name="execution.slippage_bps",
                 minimum=0,
             ),
@@ -453,7 +453,7 @@ def export_current_treasury_scenario(
             "warmup_candles": 1440,
             "starting_usdt": starting_usdt,
             "assets": assets,
-            "execution": {"fee_rate": 0.001, "slippage_bps": 0, "force_close_at_end": False},
+            "execution": {"fee_rate": 0.001, "slippage_bps": 5, "force_close_at_end": False},
             "strategy": {
                 "signal": {
                     "levels_pct": [5, 8, 12, 18],

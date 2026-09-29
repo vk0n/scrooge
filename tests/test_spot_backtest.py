@@ -106,7 +106,7 @@ def scenario(
             slippage_bps=slippage_bps,
             force_close_at_end=False,
         ),
-        signal=SpotSignalConfig(),
+        signal=SpotSignalConfig(levels_pct=(5, 8, 12, 18)),
         progression=ProgressiveSwingConfig(
             close_profit_pct=5,
             estimated_fee_rate=fee_rate,
@@ -179,6 +179,24 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(updates[0][0], 0)
         self.assertGreater(updates[0][1], 0)
         self.assertEqual(updates[-1], (updates[0][1], updates[0][1]))
+
+    def test_signal_fills_at_next_candle_open(self):
+        config = scenario((asset("AAA"),), hours=3)
+        result = self.run_scenario(
+            config,
+            lambda _symbol, index: 100 if index < 0 else 110 if index == 0 else 120,
+        )
+
+        opening = next(
+            item
+            for item in result.executions
+            if item["reason"].get("action_type") == "open" and item["side"] == "sell"
+        )
+        self.assertEqual(opening["price"], 120)
+        self.assertEqual(
+            opening["executed_at_ms"],
+            int((config.start + timedelta(hours=1)).timestamp() * 1000),
+        )
 
     def test_cleanup_report_separates_restored_and_unrestored_inventory_pnl(self):
         rows = _cleanup_accounting_rows(
@@ -860,6 +878,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             reference_price=100,
             current_at_ms=candle.close_time_ms,
             reference_at_ms=candle.close_time_ms - 24 * HOUR_MS,
+            config=config.signal,
         )
 
         self.assertEqual(actual["opportunity"], expected["opportunity"])

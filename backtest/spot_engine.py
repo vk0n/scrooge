@@ -239,14 +239,25 @@ class SpotPortfolioBacktester:
                 symbol: rows_by_symbol[symbol][self._replay_start_indices[symbol] + step]
                 for symbol in self.scenario.asset_order
             }
-            references = {
-                symbol: rows_by_symbol[symbol][
-                    self._replay_start_indices[symbol] + step - rolling_offset
-                ]
-                for symbol in self.scenario.asset_order
-            }
             prices = {symbol: candle.close for symbol, candle in candles.items()}
-            self._evaluate_cycle(candles, references=references)
+            if step > 0:
+                signal_candles = {
+                    symbol: rows_by_symbol[symbol][
+                        self._replay_start_indices[symbol] + step - 1
+                    ]
+                    for symbol in self.scenario.asset_order
+                }
+                references = {
+                    symbol: rows_by_symbol[symbol][
+                        self._replay_start_indices[symbol] + step - 1 - rolling_offset
+                    ]
+                    for symbol in self.scenario.asset_order
+                }
+                self._evaluate_cycle(
+                    signal_candles,
+                    references=references,
+                    execution_candles=candles,
+                )
             timestamp_ms = candles[self.scenario.asset_order[0]].close_time_ms
             if (timestamp_ms + 1) % HOUR_MS == 0 or step + 1 == step_count:
                 equity.append(self._equity_point(timestamp_ms, prices, starting_value))
@@ -345,7 +356,9 @@ class SpotPortfolioBacktester:
         candles: dict[str, SpotCandle],
         *,
         references: dict[str, SpotCandle],
+        execution_candles: dict[str, SpotCandle] | None = None,
     ) -> None:
+        fills = execution_candles or candles
         contexts: list[tuple[str, SpotCandle, dict[str, Any], dict[str, Any]]] = []
         for symbol in self.scenario.asset_order:
             candle = candles[symbol]
@@ -423,7 +436,17 @@ class SpotPortfolioBacktester:
             key=lambda item: self._signal_context_priority(item[1], item[0]),
         )
         for _index, (symbol, candle, signal, campaign) in ordered:
-            self._execute_signal_batch(symbol, candle, signal, campaign)
+            execution_candle = fills[symbol]
+            if not self._is_market_available(symbol, execution_candle.open_time_ms):
+                continue
+            self._execute_signal_batch(
+                symbol,
+                candle,
+                signal,
+                campaign,
+                execution_price=execution_candle.open,
+                execution_timestamp_ms=execution_candle.open_time_ms,
+            )
 
     def _signal_context_priority(
         self,
@@ -457,7 +480,16 @@ class SpotPortfolioBacktester:
         candle: SpotCandle,
         signal: dict[str, Any],
         campaign: dict[str, Any],
+        *,
+        execution_price: float | None = None,
+        execution_timestamp_ms: int | None = None,
     ) -> None:
+        fill_price = candle.close if execution_price is None else float(execution_price)
+        fill_timestamp_ms = (
+            candle.close_time_ms
+            if execution_timestamp_ms is None
+            else int(execution_timestamp_ms)
+        )
         excluded_close_swing_ids = set(self.permanently_blocked_close_swings)
         while True:
             committed_quote = self._committed_quote_reserve()
@@ -470,7 +502,8 @@ class SpotPortfolioBacktester:
                 available_quote=self.usdt,
                 free_quote_reserve=free_quote,
                 available_accumulation_quote=free_quote,
-                timestamp_ms=candle.close_time_ms,
+                timestamp_ms=fill_timestamp_ms,
+                execution_price=fill_price,
                 excluded_close_swing_ids=excluded_close_swing_ids,
             )
             if decision is None:
@@ -491,8 +524,8 @@ class SpotPortfolioBacktester:
             completed = self._execute_action(
                 symbol,
                 action,
-                candle.close,
-                candle.close_time_ms,
+                fill_price,
+                fill_timestamp_ms,
             )
             if action_type == "close":
                 excluded_close_swing_ids.add(str(decision["swing_id"]))
@@ -561,6 +594,7 @@ class SpotPortfolioBacktester:
         available_quote: float,
         available_accumulation_quote: float,
         timestamp_ms: int,
+        execution_price: float | None = None,
         free_quote_reserve: float | None = None,
         excluded_close_swing_ids: set[str] | None = None,
     ) -> dict[str, Any] | None:
@@ -584,7 +618,9 @@ class SpotPortfolioBacktester:
             error, permanent = self._close_preflight_error(
                 symbol,
                 decision,
-                observed_price=observed_price,
+                observed_price=(
+                    observed_price if execution_price is None else execution_price
+                ),
                 available_quote=(
                     available_quote
                     if free_quote_reserve is None

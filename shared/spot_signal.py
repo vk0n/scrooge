@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from typing import Sequence
 
-DEFAULT_SIGNAL_LEVELS_PCT = (5.0, 8.0, 12.0, 18.0)
+DEFAULT_SIGNAL_LEVELS_PCT = (2.0, 3.0, 4.0, 6.0)
 DEFAULT_BASE_TRANCHES_PCT = (10.0, 20.0, 30.0, 40.0)
 DEFAULT_ACCUMULATION_TRANCHES_PCT = (1.0, 3.0, 5.0, 10.0)
 ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000
