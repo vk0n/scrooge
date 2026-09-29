@@ -1250,7 +1250,7 @@ function TreasuryRulesPanel(): JSX.Element {
               <span className="contract-scroll-toggle-teaser">
                 {expanded
                   ? "7 clauses are open for inspection."
-                  : `Signals at ${levelText}; Bargain Goal ${rules.progression.close_profit_pct}%.`}
+                  : "My rules are sealed. 7 clauses await inspection."}
               </span>
             </span>
             <span className="contract-scroll-toggle-icon" aria-hidden="true">▾</span>
