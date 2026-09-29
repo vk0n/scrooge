@@ -1470,6 +1470,12 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(released["portfolio"]["summary"]["vault_reserve_retained"], 15)
         self.assertEqual(released["portfolio"]["summary"]["vault_reserve_spendable"], 76)
 
+        retained, _ = portfolio_service.transfer_portfolio_retained_cash(
+            {"direction": "to_retained", "quantity": 20}
+        )
+        self.assertEqual(retained["portfolio"]["summary"]["vault_reserve_retained"], 35)
+        self.assertEqual(retained["portfolio"]["summary"]["vault_reserve_spendable"], 56)
+
     def test_office_transfer_changes_treasury_value_and_invested_capital_together(self):
         self.add("USDT", 100, 1, "binance")
 

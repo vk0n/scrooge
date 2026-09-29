@@ -25,6 +25,7 @@ from shared.runtime_db import (  # noqa: E402
     append_portfolio_transaction,
     consume_portfolio_retained_cash,
     count_portfolio_transactions,
+    credit_portfolio_retained_cash,
     create_spot_order_intent,
     ensure_portfolio_asset_policies,
     load_exchange_account_snapshot,
@@ -1733,31 +1734,58 @@ def update_portfolio_cash_policy(payload: dict[str, Any]) -> tuple[dict[str, Any
     return {"policy": policy, "portfolio": snapshot}, warnings
 
 
-def release_portfolio_retained_cash(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def transfer_portfolio_retained_cash(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    direction = str(payload.get("direction") or "").strip().lower()
+    if direction not in {"to_retained", "to_spendable"}:
+        raise ValueError("Cash transfer direction must be to_retained or to_spendable.")
     quantity = _as_float(payload.get("quantity"))
     if quantity is None or quantity <= 0:
-        raise ValueError("Protected Cash release must be greater than zero.")
+        raise ValueError("Cash transfer must be greater than zero.")
     snapshot, _ = load_portfolio_snapshot()
     retained = _as_float(snapshot["summary"].get("vault_reserve_retained")) or 0.0
-    if quantity > retained + 1e-8:
-        raise ValueError(f"Only ${retained:,.2f} of Protected Cash is currently available to release.")
-    release = consume_portfolio_retained_cash(
-        quantity,
-        reference_id=f"protected-cash-release:{uuid.uuid4().hex}",
-        use_type="release",
-        account_key=DEFAULT_ACCOUNT_KEY,
-        context={"requested_by": "treasury_control"},
-    )
+    spendable = _as_float(snapshot["summary"].get("vault_reserve_spendable")) or 0.0
+    reference_id = f"protected-cash-transfer:{uuid.uuid4().hex}"
+    context = {"requested_by": "treasury_control", "direction": direction}
+    if direction == "to_retained":
+        if quantity > spendable + 1e-8:
+            raise ValueError(f"Only ${spendable:,.2f} of Spendable Cash is currently available to retain.")
+        adjustment = credit_portfolio_retained_cash(
+            quantity,
+            reference_id=reference_id,
+            credit_type="manual_lock",
+            account_key=DEFAULT_ACCOUNT_KEY,
+            context=context,
+        )
+        adjusted_quote = float(adjustment["credited_quote"])
+        event_code = "treasury_cash_manually_retained"
+        message = f"Moved ${adjusted_quote:,.2f} from Spendable Cash to Protected Cash."
+    else:
+        if quantity > retained + 1e-8:
+            raise ValueError(f"Only ${retained:,.2f} of Protected Cash is currently available to release.")
+        adjustment = consume_portfolio_retained_cash(
+            quantity,
+            reference_id=reference_id,
+            use_type="release",
+            account_key=DEFAULT_ACCOUNT_KEY,
+            context=context,
+        )
+        adjusted_quote = float(adjustment["consumed_quote"])
+        event_code = "treasury_protected_cash_released"
+        message = f"Moved ${adjusted_quote:,.2f} from Protected Cash to Spendable Cash."
     append_treasury_event(
-        code="treasury_protected_cash_released",
+        code=event_code,
         tone="neutral",
-        message=f"Released ${release['consumed_quote']:,.2f} from Protected Cash to Free Vault Reserve.",
-        source_ref=release["reference_id"],
-        context=release,
+        message=message,
+        source_ref=adjustment["reference_id"],
+        context=adjustment,
     )
     refreshed, warnings = load_portfolio_snapshot()
     policy = load_portfolio_cash_policy(account_key=DEFAULT_ACCOUNT_KEY)
     return {"policy": policy, "portfolio": refreshed}, warnings
+
+
+def release_portfolio_retained_cash(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    return transfer_portfolio_retained_cash({**payload, "direction": "to_spendable"})
 
 
 def set_portfolio_transaction_status(

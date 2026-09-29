@@ -59,9 +59,9 @@ persistent retained balance. Retained cash is excluded from accumulation BUYs an
 affects future profitable settlements only and does not retroactively lock existing reserve.
 
 In live Treasury, protected cash remains owner-controlled rather than permanently frozen. It can be explicitly
-released back to Free Vault Reserve, transferred to Futures Office, or authorized for a manual Spot buy or manual
-loss close. Those actions debit the accumulated balance exactly once; automatic strategy actions never receive that
-authorization.
+moved in either direction between Spendable Cash and Protected Cash, transferred in either direction between
+Protected Cash and Futures Office, or authorized for a manual Spot buy or manual loss close. Those actions are
+audited and applied exactly once; automatic strategy actions never receive that authorization.
 
 Strategy SELL openings also pass a round-trip exchange check. An opening is rejected when its projected profit-target BUY would fall below Binance minimum notional after the objective's quantity semantics and estimated fees; this prevents valid entries from becoming permanently uncloseable dust.
 

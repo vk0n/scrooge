@@ -90,6 +90,84 @@ class TreasuryTransferExecutorTests(unittest.TestCase):
         self.assertEqual(consume_retained.call_args.args[0], 10)
         self.assertEqual(result["protected_cash_used"], 10)
 
+    @patch("bot.treasury_transfer.consume_portfolio_retained_cash")
+    @patch("bot.treasury_transfer.record_confirmed_office_transfer")
+    @patch("bot.treasury_transfer.load_portfolio_snapshot")
+    def test_transfer_to_office_can_draw_only_from_retained_cash(
+        self,
+        load_snapshot,
+        record_transfer,
+        consume_retained,
+    ):
+        load_snapshot.return_value = (
+            {
+                "summary": {
+                    "vault_reserve_available": 100,
+                    "vault_reserve_spendable": 80,
+                    "vault_reserve_retained": 20,
+                },
+                "exchange": {"usdt_free": 100},
+            },
+            [],
+        )
+        self.client.universal_transfer.return_value = {"tranId": 789}
+        record_transfer.return_value = (
+            {
+                "transaction": {
+                    "transaction_id": "office-transfer:retained-ref",
+                    "protected_cash_required": 15,
+                }
+            },
+            [],
+        )
+        consume_retained.return_value = {"consumed_quote": 15}
+
+        result = self.executor.execute(
+            {
+                "direction": "to_office",
+                "quantity": 15,
+                "transfer_ref": "retained-ref",
+                "cash_bucket": "retained",
+            }
+        )
+
+        consume_retained.assert_called_once()
+        self.assertEqual(consume_retained.call_args.args[0], 15)
+        self.assertEqual(result["cash_bucket"], "retained")
+        self.assertEqual(result["protected_cash_used"], 15)
+
+    @patch("bot.treasury_transfer.credit_portfolio_retained_cash")
+    @patch("bot.treasury_transfer.record_confirmed_office_transfer")
+    @patch("bot.treasury_transfer.load_portfolio_snapshot")
+    def test_transfer_from_office_can_credit_retained_cash(
+        self,
+        load_snapshot,
+        record_transfer,
+        credit_retained,
+    ):
+        load_snapshot.return_value = ({"summary": {}, "exchange": {}}, [])
+        self.client.futures_account_balance.return_value = [
+            {"asset": "USDT", "balance": "100", "availableBalance": "25"}
+        ]
+        self.client.universal_transfer.return_value = {"tranId": 790}
+        record_transfer.return_value = (
+            {"transaction": {"transaction_id": "office-transfer:credit-ref"}},
+            [],
+        )
+        credit_retained.return_value = {"credited_quote": 12}
+
+        result = self.executor.execute(
+            {
+                "direction": "from_office",
+                "quantity": 12,
+                "transfer_ref": "credit-ref",
+                "cash_bucket": "retained",
+            }
+        )
+
+        credit_retained.assert_called_once()
+        self.assertEqual(result["protected_cash_credited"], 12)
+
     @patch("bot.treasury_transfer.record_confirmed_office_transfer")
     @patch("bot.treasury_transfer.load_portfolio_snapshot")
     def test_transfer_from_office_checks_futures_available_balance(self, load_snapshot, record_transfer):

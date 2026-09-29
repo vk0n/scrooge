@@ -356,6 +356,8 @@ type PortfolioTransactionType = "buy" | "sell" | "deposit" | "withdraw" | "adjus
 type CustodyLocation = "unassigned" | "binance" | "cold_storage";
 type CustodyAction = "move" | "bring_in" | "release";
 type TreasureIntakeMode = "bring_in" | "buy_binance";
+type RetainedTransferMenu = "office" | "spendable";
+type RetainedCashDirection = "to_retained" | "to_spendable";
 
 type TreasureIntakeFormState = {
   asset_symbol: string;
@@ -1514,16 +1516,26 @@ function AssetPolicyPanel({
 
 function CashPolicyPanel({
   summary,
+  exchange,
   onUpdated,
+  onExecuted,
 }: {
   summary: PortfolioSummary;
+  exchange: PortfolioExchange | null;
   onUpdated: (response: UpdateCashPolicyResponse) => void;
+  onExecuted: () => Promise<void>;
 }): JSX.Element {
   const [retentionPct, setRetentionPct] = useState<string>(String(summary.free_cash_retention_pct));
-  const [releaseQuantity, setReleaseQuantity] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<boolean>(false);
+  const [transferMenu, setTransferMenu] = useState<RetainedTransferMenu | null>(null);
+  const [cashDirection, setCashDirection] = useState<RetainedCashDirection>("to_retained");
+  const [cashQuantity, setCashQuantity] = useState<string>("");
+  const [officeDirection, setOfficeDirection] = useState<"to_office" | "from_office">("to_office");
+  const [officeQuantity, setOfficeQuantity] = useState<string>("");
+  const [officeBusy, setOfficeBusy] = useState<boolean>(false);
+  const [officeStage, setOfficeStage] = useState<string | null>(null);
 
   useEffect(() => {
     setRetentionPct(String(summary.free_cash_retention_pct));
@@ -1546,26 +1558,72 @@ function CashPolicyPanel({
     }
   }
 
-  async function releaseProtectedCash(event: FormEvent<HTMLFormElement>): Promise<void> {
+  function toggleTransferMenu(menu: RetainedTransferMenu): void {
+    setTransferMenu((current) => current === menu ? null : menu);
+    setCashQuantity("");
+    setOfficeQuantity("");
+    setOfficeStage(null);
+    setError(null);
+  }
+
+  async function submitCashTransfer(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    const quantity = asNumber(releaseQuantity);
+    const quantity = asNumber(cashQuantity);
     if (quantity === null || quantity <= 0) return;
+    const from = cashDirection === "to_retained" ? "Spendable Cash" : "Retained Cash";
+    const to = cashDirection === "to_retained" ? "Retained Cash" : "Spendable Cash";
     if (!window.confirm(
-      `Release ${formatCurrency(quantity)} from Protected Cash to ordinary Free Vault Reserve?\n\nScrooge may use released cash for automatic buys and loss coverage.`
+      `Move ${formatCurrency(quantity)} from ${from} to ${to}?`
     )) return;
     setSaving(true);
     setError(null);
     try {
-      const response = await fetchApi<UpdateCashPolicyResponse>("/api/portfolio/cash-policy/release", {
+      const response = await fetchApi<UpdateCashPolicyResponse>("/api/portfolio/cash-policy/transfer", {
         method: "POST",
-        body: { quantity },
+        body: { direction: cashDirection, quantity },
       });
-      setReleaseQuantity("");
+      setCashQuantity("");
       onUpdated(response);
-    } catch (releaseError) {
-      setError(releaseError instanceof Error ? releaseError.message : "Could not release Protected Cash.");
+    } catch (transferError) {
+      setError(transferError instanceof Error ? transferError.message : "Could not move the cash reserve.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function submitOfficeTransfer(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const quantity = asNumber(officeQuantity);
+    if (quantity === null || quantity <= 0) return;
+    const directionLabel = officeDirection === "to_office" ? "Retained Cash to Futures Office" : "Futures Office to Retained Cash";
+    if (!window.confirm(
+      `Transfer ${formatCurrency(quantity)} USDT from ${directionLabel}?\n\nThis is a REAL Binance account transfer and changes Treasury invested capital.`
+    )) return;
+    setOfficeBusy(true);
+    setError(null);
+    setOfficeStage("Transfer queued. Scrooge is revalidating both accounts...");
+    try {
+      const queued = await fetchApi<TreasuryTransferQueueResponse>("/api/portfolio/office-transfers", {
+        method: "POST",
+        body: {
+          direction: officeDirection,
+          quantity,
+          confirmation: "CONFIRM_TREASURY_TRANSFER",
+          cash_bucket: "retained",
+        },
+      });
+      const command = await waitForControlCommand(queued.command_id);
+      if (command.status !== "completed") {
+        throw new Error(command.message || "Protected Cash Office transfer failed.");
+      }
+      setOfficeStage(command.message || "Transfer confirmed. Protected Cash updated.");
+      setOfficeQuantity("");
+      await onExecuted();
+    } catch (transferError) {
+      setError(transferError instanceof Error ? transferError.message : "Could not complete the Office transfer.");
+      setOfficeStage("Transfer did not complete cleanly. Check the Treasury Ledger before retrying.");
+    } finally {
+      setOfficeBusy(false);
     }
   }
 
@@ -1590,10 +1648,128 @@ function CashPolicyPanel({
       {expanded ? <div className="treasury-policy-content">
         <div className="treasury-policy-metrics treasury-cash-policy-metrics">
           <div><span>Free Cash</span><strong>{formatCurrency(summary.vault_reserve_available)}</strong></div>
-          <div><span>Retained</span><strong>{formatCurrency(summary.vault_reserve_retained)}</strong></div>
+          <div className="treasury-retained-metric">
+            <span>Retained</span>
+            <span className="treasury-retained-metric-value">
+              <strong>{formatCurrency(summary.vault_reserve_retained)}</strong>
+              <span className="treasury-retained-actions">
+                <button
+                  type="button"
+                  aria-label="Transfer between Retained Cash and Futures Office"
+                  aria-expanded={transferMenu === "office"}
+                  title="Retained Cash / Futures Office"
+                  onClick={() => toggleTransferMenu("office")}
+                >
+                  ⚖️ / 🏦
+                </button>
+                <button
+                  type="button"
+                  aria-label="Transfer between Retained Cash and Spendable Cash"
+                  aria-expanded={transferMenu === "spendable"}
+                  title="Lock / unlock cash"
+                  onClick={() => toggleTransferMenu("spendable")}
+                >
+                  🔒 / 🔓
+                </button>
+              </span>
+            </span>
+          </div>
           <div><span>Spendable</span><strong>{formatCurrency(summary.vault_reserve_spendable)}</strong></div>
           <div><span>Committed</span><strong>{formatCurrency(summary.vault_reserve_committed)}</strong></div>
         </div>
+        {transferMenu === "office" ? (
+          <section className="treasury-retained-transfer-panel treasury-retained-office-panel">
+            <header>
+              <span>Retained Cash / Futures Office</span>
+              <strong>Real Binance Transfer</strong>
+            </header>
+            <form className="treasury-retained-transfer-form" onSubmit={(event) => void submitOfficeTransfer(event)}>
+              <label className="dialog-user-field">
+                Direction
+                <select
+                  value={officeDirection}
+                  onChange={(event) => {
+                    setOfficeDirection(event.target.value as "to_office" | "from_office");
+                    setOfficeQuantity("");
+                    setOfficeStage(null);
+                  }}
+                  disabled={officeBusy}
+                >
+                  <option value="to_office">Retained → Office</option>
+                  <option value="from_office">Office → Retained</option>
+                </select>
+              </label>
+              <label className="dialog-user-field">
+                Amount (USDT)
+                <input
+                  type="number"
+                  min="0.01"
+                  max={officeDirection === "to_office" ? summary.vault_reserve_retained : undefined}
+                  step="0.01"
+                  value={officeQuantity}
+                  placeholder={officeDirection === "to_office" ? formatNumber(summary.vault_reserve_retained, 2) : "0.00"}
+                  onChange={(event) => setOfficeQuantity(event.target.value)}
+                  disabled={officeBusy}
+                  required
+                />
+              </label>
+              <button
+                type="submit"
+                className="dialog-user-btn"
+                disabled={officeBusy || !exchange?.treasury_transfer_enabled}
+              >
+                {officeBusy ? "Transferring..." : "Transfer USDT"}
+              </button>
+            </form>
+            <p className="treasury-policy-note">
+              {exchange?.treasury_transfer_enabled
+                ? "Moves real USDT between Binance Spot Treasury and the Futures Office."
+                : "Real Office transfers are locked by the Treasury transfer safety switch."}
+            </p>
+            {officeStage ? <p className="treasury-spot-order-stage">{officeStage}</p> : null}
+          </section>
+        ) : null}
+        {transferMenu === "spendable" ? (
+          <section className="treasury-retained-transfer-panel">
+            <header><span>Retained / Spendable Cash</span></header>
+            <form className="treasury-retained-transfer-form" onSubmit={(event) => void submitCashTransfer(event)}>
+              <label className="dialog-user-field">
+                Direction
+                <select
+                  value={cashDirection}
+                  onChange={(event) => {
+                    setCashDirection(event.target.value as RetainedCashDirection);
+                    setCashQuantity("");
+                  }}
+                  disabled={saving}
+                >
+                  <option value="to_retained">Spendable → Retained</option>
+                  <option value="to_spendable">Retained → Spendable</option>
+                </select>
+              </label>
+              <label className="dialog-user-field">
+                Amount (USDT)
+                <input
+                  type="number"
+                  min="0.01"
+                  max={cashDirection === "to_retained" ? summary.vault_reserve_spendable : summary.vault_reserve_retained}
+                  step="0.01"
+                  value={cashQuantity}
+                  placeholder={formatNumber(
+                    cashDirection === "to_retained" ? summary.vault_reserve_spendable : summary.vault_reserve_retained,
+                    2
+                  )}
+                  onChange={(event) => setCashQuantity(event.target.value)}
+                  disabled={saving}
+                  required
+                />
+              </label>
+              <button type="submit" className="dialog-user-btn" disabled={saving}>
+                {saving ? "Moving..." : "Move Cash"}
+              </button>
+            </form>
+          </section>
+        ) : null}
         <form className="treasury-policy-form treasury-cash-policy-form" onSubmit={(event) => void submitPolicy(event)}>
           <label className="dialog-user-field">
             Free Cash Retention %
@@ -1611,28 +1787,9 @@ function CashPolicyPanel({
             {saving ? "Saving..." : "Update Policy"}
           </button>
         </form>
-        <form className="treasury-policy-form treasury-cash-release-form" onSubmit={(event) => void releaseProtectedCash(event)}>
-          <label className="dialog-user-field">
-            Release to Free Reserve (USDT)
-            <input
-              type="number"
-              min="0.01"
-              max={summary.vault_reserve_retained}
-              step="0.01"
-              value={releaseQuantity}
-              placeholder={formatNumber(summary.vault_reserve_retained, 2)}
-              onChange={(event) => setReleaseQuantity(event.target.value)}
-              disabled={saving || summary.vault_reserve_retained <= 0}
-              required
-            />
-          </label>
-          <button type="submit" className="dialog-user-btn" disabled={saving || summary.vault_reserve_retained <= 0}>
-            Release Cash
-          </button>
-        </form>
         <p className="treasury-policy-note">
           This percentage of every realized cash profit is added to protected reserve. Automatic actions cannot spend
-          it. You can explicitly release it, transfer it to Office, or authorize it for a manual buy or loss close.
+          it. The Retained controls move cash to or from Spendable and the Futures Office.
         </p>
         {error ? <p className="form-error">{error}</p> : null}
       </div> : null}
@@ -2438,7 +2595,12 @@ function HoldingCard({
             onExecuted={onReload}
           />
           {holding.is_dry_powder ? (
-            <CashPolicyPanel summary={summary} onUpdated={onPortfolioUpdated} />
+            <CashPolicyPanel
+              summary={summary}
+              exchange={exchange}
+              onUpdated={onPortfolioUpdated}
+              onExecuted={onReload}
+            />
           ) : executionEnabled ? (
             <AssetPolicyPanel holding={holding} exchange={exchange} onUpdated={onPortfolioUpdated} />
           ) : null}

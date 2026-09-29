@@ -448,6 +448,22 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_portfolio_cash_retention_uses_account
         ON portfolio_cash_retention_uses(account_key, applied_at_ms DESC);
 
+        CREATE TABLE IF NOT EXISTS portfolio_cash_retention_credits (
+            reference_id TEXT PRIMARY KEY,
+            account_key TEXT NOT NULL,
+            credit_type TEXT NOT NULL CHECK (
+                credit_type IN ('manual_lock', 'office_transfer')
+            ),
+            requested_quote REAL NOT NULL CHECK (requested_quote >= 0),
+            credited_quote REAL NOT NULL CHECK (credited_quote >= 0),
+            context_json TEXT NOT NULL DEFAULT '{}',
+            applied_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_portfolio_cash_retention_credits_account
+        ON portfolio_cash_retention_credits(account_key, applied_at_ms DESC);
+
         CREATE TABLE IF NOT EXISTS exchange_account_snapshots (
             venue TEXT NOT NULL,
             account_type TEXT NOT NULL,
@@ -1980,6 +1996,91 @@ def consume_portfolio_retained_cash(
         "requested_quote": normalized_requested,
         "consumed_quote": consumed,
         "context": context if isinstance(context, dict) else {},
+        "applied_at_ms": now_ms,
+        "idempotent_replay": False,
+    }
+
+
+def credit_portfolio_retained_cash(
+    requested_quote: float,
+    *,
+    reference_id: str,
+    credit_type: str,
+    account_key: str = "manual_spot",
+    context: dict[str, Any] | None = None,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Move an explicitly authorized amount into the protected cash balance."""
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_reference = str(reference_id or "").strip()
+    normalized_type = str(credit_type or "").strip().lower()
+    normalized_requested = _as_float_or_none(requested_quote)
+    if not normalized_reference:
+        raise ValueError("Protected Cash credit requires a stable reference ID.")
+    if normalized_type not in {"manual_lock", "office_transfer"}:
+        raise ValueError("Unsupported Protected Cash credit type.")
+    if normalized_requested is None or normalized_requested < 0:
+        raise ValueError("Protected Cash amount must be zero or greater.")
+
+    load_portfolio_cash_policy(account_key=normalized_account, path=path)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    normalized_context = context if isinstance(context, dict) else {}
+    with _connection(path) as connection:
+        existing = connection.execute(
+            "SELECT * FROM portfolio_cash_retention_credits WHERE reference_id = ? LIMIT 1",
+            (normalized_reference,),
+        ).fetchone()
+        if existing is not None:
+            if str(existing["account_key"]) != normalized_account:
+                raise ValueError("Protected Cash reference belongs to another Treasury account.")
+            if (
+                str(existing["credit_type"]) != normalized_type
+                or abs(float(existing["requested_quote"]) - normalized_requested) > 1e-8
+            ):
+                raise ValueError("Protected Cash reference was already credited with different terms.")
+            return {
+                "reference_id": str(existing["reference_id"]),
+                "account_key": str(existing["account_key"]),
+                "credit_type": str(existing["credit_type"]),
+                "requested_quote": float(existing["requested_quote"]),
+                "credited_quote": float(existing["credited_quote"]),
+                "context": json.loads(existing["context_json"]),
+                "applied_at_ms": int(existing["applied_at_ms"]),
+                "idempotent_replay": True,
+            }
+
+        connection.execute(
+            """
+            UPDATE portfolio_cash_policies
+            SET retained_quote_balance = retained_quote_balance + ?, updated_at_ms = ?
+            WHERE account_key = ?
+            """,
+            (normalized_requested, now_ms, normalized_account),
+        )
+        connection.execute(
+            """
+            INSERT INTO portfolio_cash_retention_credits (
+                reference_id, account_key, credit_type, requested_quote,
+                credited_quote, context_json, applied_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_reference,
+                normalized_account,
+                normalized_type,
+                normalized_requested,
+                normalized_requested,
+                _json_text(normalized_context),
+                now_ms,
+            ),
+        )
+    return {
+        "reference_id": normalized_reference,
+        "account_key": normalized_account,
+        "credit_type": normalized_type,
+        "requested_quote": normalized_requested,
+        "credited_quote": normalized_requested,
+        "context": normalized_context,
         "applied_at_ms": now_ms,
         "idempotent_replay": False,
     }

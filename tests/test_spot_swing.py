@@ -12,6 +12,7 @@ from shared.runtime_db import (
     bootstrap_runtime_db,
     create_spot_order_intent,
     create_spot_swing,
+    credit_portfolio_retained_cash,
     consume_portfolio_retained_cash,
     list_portfolio_asset_policies,
     list_portfolio_transactions,
@@ -191,6 +192,27 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertFalse(first["idempotent_replay"])
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(load_portfolio_cash_policy(path=self.db_path)["retained_quote_balance"], 0.75)
+
+    def test_owner_can_credit_retained_cash_exactly_once(self):
+        upsert_portfolio_cash_policy(20, path=self.db_path)
+
+        first = credit_portfolio_retained_cash(
+            12.5,
+            reference_id="manual-lock-1",
+            credit_type="manual_lock",
+            path=self.db_path,
+        )
+        replay = credit_portfolio_retained_cash(
+            12.5,
+            reference_id="manual-lock-1",
+            credit_type="manual_lock",
+            path=self.db_path,
+        )
+
+        self.assertEqual(first["credited_quote"], 12.5)
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(load_portfolio_cash_policy(path=self.db_path)["retained_quote_balance"], 12.5)
 
     def test_existing_cash_policy_schema_migrates_with_zero_accrued_balance(self):
         legacy_path = Path(self.tmp.name) / "legacy.sqlite3"

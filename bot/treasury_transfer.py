@@ -8,7 +8,7 @@ from api.services.portfolio_service import (
     record_confirmed_office_transfer,
     treasury_transfer_enabled,
 )
-from shared.runtime_db import consume_portfolio_retained_cash
+from shared.runtime_db import consume_portfolio_retained_cash, credit_portfolio_retained_cash
 
 
 def _number(value: Any) -> float:
@@ -39,8 +39,11 @@ class TreasuryTransferExecutor:
         quantity = _number(payload.get("quantity"))
         transfer_ref = str(payload.get("transfer_ref") or "").strip()
         use_protected_cash = bool(payload.get("use_protected_cash"))
+        cash_bucket = str(payload.get("cash_bucket") or "spendable").strip().lower()
         if not transfer_ref:
             raise ValueError("Office transfer reference is required.")
+        if cash_bucket not in {"spendable", "retained", "mixed"}:
+            raise ValueError("Office transfer cash bucket must be spendable, retained, or mixed.")
         if direction != "to_office" and use_protected_cash:
             raise ValueError("Protected Cash applies only to Treasury-to-Office transfers.")
 
@@ -56,13 +59,26 @@ class TreasuryTransferExecutor:
                 else max(0.0, available - retained)
             )
             exchange_free = float(portfolio["exchange"].get("usdt_free") or 0.0)
-            permitted_reserve = spendable + (retained if use_protected_cash else 0.0)
+            if cash_bucket == "retained":
+                permitted_reserve = retained
+            elif cash_bucket == "mixed" or use_protected_cash:
+                permitted_reserve = spendable + retained
+            else:
+                permitted_reserve = spendable
             if quantity > min(permitted_reserve, exchange_free) + 1e-8:
-                hint = " Enable Protected Cash for this transfer." if not use_protected_cash and retained > 0 else ""
+                hint = (
+                    " Enable Protected Cash for this transfer."
+                    if cash_bucket == "spendable" and not use_protected_cash and retained > 0
+                    else ""
+                )
                 raise ValueError(f"Office transfer exceeds currently spendable Treasury USDT.{hint}")
             if quantity > available + 1e-8:
                 raise ValueError("Office transfer exceeds currently available Treasury USDT.")
-            protected_required = max(0.0, quantity - spendable)
+            protected_required = (
+                quantity
+                if cash_bucket == "retained"
+                else max(0.0, quantity - spendable)
+            )
             transfer_type = "MAIN_UMFUTURE"
         else:
             balances = self.client.futures_account_balance()
@@ -117,6 +133,18 @@ class TreasuryTransferExecutor:
                     "direction": direction,
                 },
             )
+        protected_credit = None
+        if direction == "from_office" and cash_bucket == "retained":
+            protected_credit = credit_portfolio_retained_cash(
+                quantity,
+                reference_id=f"office-transfer:{transfer_ref}:protected-cash-credit",
+                credit_type="office_transfer",
+                context={
+                    "transfer_ref": transfer_ref,
+                    "quantity": quantity,
+                    "direction": direction,
+                },
+            )
         self.logger.info(
             "treasury_office_transfer_completed direction=%s quantity=%s transfer_ref=%s exchange_id=%s",
             direction,
@@ -131,9 +159,15 @@ class TreasuryTransferExecutor:
             "transfer_ref": transfer_ref,
             "exchange_transfer_id": external_id,
             "ledger_transaction_id": transaction["transaction_id"],
+            "cash_bucket": cash_bucket,
             "protected_cash_used": (
                 float(protected_use["consumed_quote"])
                 if protected_use is not None
+                else 0.0
+            ),
+            "protected_cash_credited": (
+                float(protected_credit["credited_quote"])
+                if protected_credit is not None
                 else 0.0
             ),
         }

@@ -620,10 +620,18 @@ def process_pending_commands(
                 command_result = execute_treasury_transfer_fn(command_payload)
                 direction = str(command_result.get("direction") or "")
                 quantity = _as_float(command_result.get("quantity"))
-                message = (
-                    f"Transferred {quantity if quantity is not None else 'confirmed'} USDT "
-                    f"{'to' if direction == 'to_office' else 'from'} the Futures Office."
-                )
+                amount_text = quantity if quantity is not None else "confirmed"
+                if command_result.get("cash_bucket") == "retained":
+                    message = (
+                        f"Transferred {amount_text} USDT from Retained Cash to the Futures Office."
+                        if direction == "to_office"
+                        else f"Transferred {amount_text} USDT from the Futures Office to Retained Cash."
+                    )
+                else:
+                    message = (
+                        f"Transferred {amount_text} USDT "
+                        f"{'to' if direction == 'to_office' else 'from'} the Futures Office."
+                    )
                 emit_event(
                     code="treasury_office_transfer_executed",
                     category="command",

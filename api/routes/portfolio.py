@@ -17,6 +17,7 @@ from services.portfolio_service import (
     load_portfolio_bargain_ledger,
     load_portfolio_snapshot,
     release_portfolio_retained_cash,
+    transfer_portfolio_retained_cash,
     treasury_transfer_enabled,
     set_portfolio_transaction_status,
     update_portfolio_asset_policy,
@@ -71,6 +72,11 @@ class ProtectedCashReleaseRequest(BaseModel):
     quantity: float = Field(..., gt=0)
 
 
+class ProtectedCashTransferRequest(BaseModel):
+    direction: Literal["to_retained", "to_spendable"]
+    quantity: float = Field(..., gt=0)
+
+
 class SpotOrderPreviewRequest(BaseModel):
     asset_symbol: str = Field(..., min_length=1, max_length=24)
     quote_symbol: str = Field(default="USDT", min_length=1, max_length=24)
@@ -93,6 +99,7 @@ class TreasuryTransferRequest(BaseModel):
     quantity: float = Field(..., gt=0)
     confirmation: Literal["CONFIRM_TREASURY_TRANSFER"]
     use_protected_cash: bool = False
+    cash_bucket: Literal["spendable", "retained", "mixed"] = "spendable"
 
 
 @router.get("")
@@ -154,6 +161,17 @@ def update_cash_policy(data: PortfolioCashPolicyRequest) -> dict[str, object]:
 def release_protected_cash(data: ProtectedCashReleaseRequest) -> dict[str, object]:
     try:
         payload, warnings = release_portfolio_retained_cash(data.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {**payload, "warnings": warnings}
+
+
+@router.post("/cash-policy/transfer")
+def transfer_protected_cash(data: ProtectedCashTransferRequest) -> dict[str, object]:
+    try:
+        payload, warnings = transfer_portfolio_retained_cash(data.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:
@@ -332,11 +350,13 @@ def execute_office_transfer(
             snapshot, _ = load_portfolio_snapshot()
         except OSError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        reserve_limit = float(
-            snapshot["summary"].get(
-                "vault_reserve_available" if data.use_protected_cash else "vault_reserve_spendable"
-            ) or 0.0
-        )
+        if data.cash_bucket == "retained":
+            reserve_key = "vault_reserve_retained"
+        elif data.cash_bucket == "mixed" or data.use_protected_cash:
+            reserve_key = "vault_reserve_available"
+        else:
+            reserve_key = "vault_reserve_spendable"
+        reserve_limit = float(snapshot["summary"].get(reserve_key) or 0.0)
         available = min(
             reserve_limit,
             float(snapshot["exchange"].get("usdt_free") or 0.0),
@@ -357,6 +377,7 @@ def execute_office_transfer(
                 "quantity": data.quantity,
                 "transfer_ref": transfer_ref,
                 "use_protected_cash": data.use_protected_cash,
+                "cash_bucket": data.cash_bucket,
             },
         )
     except RuntimeError as exc:

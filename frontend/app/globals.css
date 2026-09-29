@@ -3522,15 +3522,80 @@ button.treasury-summary-card-swings:focus-visible,
   justify-content: start;
 }
 
-.treasury-cash-release-form {
-  grid-template-columns: minmax(12rem, 16rem) auto;
-  justify-content: start;
-  border-top: 1px solid rgba(112, 130, 155, 0.18);
-  padding-top: 0.55rem;
-}
-
 .treasury-cash-policy-metrics {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.treasury-retained-metric-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.treasury-retained-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.treasury-retained-actions button {
+  min-width: 3.5rem;
+  border: 1px solid rgba(217, 174, 69, 0.35);
+  border-radius: 0.42rem;
+  padding: 0.2rem 0.34rem;
+  color: #eef3fb;
+  background: rgba(35, 44, 58, 0.78);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1.1;
+}
+
+.treasury-retained-actions button:hover,
+.treasury-retained-actions button[aria-expanded="true"] {
+  border-color: rgba(96, 156, 220, 0.78);
+  background: rgba(31, 57, 87, 0.72);
+}
+
+.treasury-retained-transfer-panel {
+  display: grid;
+  gap: 0.52rem;
+  border: 1px solid rgba(91, 112, 143, 0.34);
+  border-radius: 0.7rem;
+  padding: 0.7rem;
+  background: rgba(10, 16, 24, 0.72);
+}
+
+.treasury-retained-transfer-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #eef3fb;
+  font-size: 0.78rem;
+}
+
+.treasury-retained-transfer-panel > header strong {
+  color: #d9ae45;
+  font-size: 0.68rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.treasury-retained-office-panel {
+  border-color: rgba(217, 174, 69, 0.32);
+  background: rgba(63, 47, 14, 0.14);
+}
+
+.treasury-retained-transfer-form {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(10rem, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.treasury-retained-transfer-form .dialog-user-btn {
+  min-width: 10rem;
 }
 
 .treasury-ledger-cash-delta {
@@ -5151,6 +5216,15 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .treasury-retained-transfer-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .treasury-retained-transfer-form .dialog-user-btn {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
   .treasury-policy-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -5823,9 +5897,19 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-custody-breakdown,
   .treasury-custody-form,
   .treasury-custody-boundary-form,
+  .treasury-retained-transfer-form,
   .treasury-policy-form,
   .treasury-policy-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .treasury-retained-transfer-form .dialog-user-btn {
+    grid-column: auto;
+  }
+
+  .treasury-retained-metric-value {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .treasury-custody-note,
