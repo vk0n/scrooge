@@ -849,6 +849,137 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         )
         download.assert_not_called()
 
+    def test_overlapping_candle_cache_downloads_only_missing_prefix(self):
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        start_ms = int(start.timestamp() * 1000)
+
+        def candle(index: int) -> SpotCandle:
+            open_ms = start_ms + index * HOUR_MS
+            return SpotCandle(
+                open_time_ms=open_ms,
+                close_time_ms=open_ms + HOUR_MS - 1,
+                open=100 + index,
+                high=101 + index,
+                low=99 + index,
+                close=100 + index,
+                volume=10,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = BinanceSpotHistoricalAdapter(tmp)
+            overlapping = (
+                Path(tmp)
+                / "klines"
+                / f"AAAUSDT-1h-{start_ms + 2 * HOUR_MS}-{start_ms + 5 * HOUR_MS}.csv"
+            )
+            overlapping.parent.mkdir(parents=True)
+            adapter._write_candles(overlapping, [candle(index) for index in range(2, 5)])
+
+            with patch.object(
+                adapter,
+                "_download_candles",
+                return_value=[candle(0), candle(1)],
+            ) as download:
+                rows, source = adapter.load_candles(
+                    "AAAUSDT",
+                    interval="1h",
+                    start=start,
+                    end=start + timedelta(hours=5),
+                )
+
+        self.assertEqual(source, "binance_spot_rest")
+        self.assertEqual([row.open_time_ms for row in rows], [candle(i).open_time_ms for i in range(5)])
+        download.assert_called_once_with(
+            "AAAUSDT",
+            interval="1h",
+            start_ms=start_ms,
+            end_ms=start_ms + 2 * HOUR_MS,
+        )
+
+    def test_market_wide_candle_gap_is_flat_filled_and_marked_unavailable(self):
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        start_ms = int(start.timestamp() * 1000)
+
+        def row(index: int, price: float) -> SpotCandle:
+            open_ms = start_ms + index * HOUR_MS
+            return SpotCandle(
+                open_time_ms=open_ms,
+                close_time_ms=open_ms + HOUR_MS - 1,
+                open=price,
+                high=price,
+                low=price,
+                close=price,
+                volume=10,
+            )
+
+        assets = [
+            {
+                "symbol": symbol,
+                "candles": [row(0, price), row(1, price), row(4, price + 1), row(5, price + 1)],
+                "symbol_info": {"symbol": f"{symbol}USDT"},
+                "source": "cache",
+                "unavailable": frozenset(),
+            }
+            for symbol, price in (("AAA", 100), ("BBB", 200))
+        ]
+
+        repaired = BinanceSpotHistoricalAdapter._repair_common_market_gaps(
+            assets,
+            interval_ms=HOUR_MS,
+            start=start,
+            end=start + timedelta(hours=6),
+        )
+
+        for item, price in zip(repaired, (100, 200)):
+            self.assertEqual(len(item["candles"]), 6)
+            self.assertEqual(item["candles"][2].close, price)
+            self.assertEqual(item["candles"][3].volume, 0)
+            self.assertEqual(
+                item["unavailable"],
+                frozenset({start_ms + 2 * HOUR_MS, start_ms + 3 * HOUR_MS}),
+            )
+
+    def test_asset_specific_candle_gap_still_aborts_replay(self):
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        start_ms = int(start.timestamp() * 1000)
+
+        def row(index: int) -> SpotCandle:
+            open_ms = start_ms + index * HOUR_MS
+            return SpotCandle(
+                open_time_ms=open_ms,
+                close_time_ms=open_ms + HOUR_MS - 1,
+                open=100,
+                high=100,
+                low=100,
+                close=100,
+                volume=10,
+            )
+
+        assets = [
+            {
+                "symbol": "AAA",
+                "candles": [row(0), row(1), row(4), row(5)],
+                "symbol_info": {"symbol": "AAAUSDT"},
+                "source": "cache",
+                "unavailable": frozenset(),
+            },
+            {
+                "symbol": "BBB",
+                "candles": [row(index) for index in range(6)],
+                "symbol_info": {"symbol": "BBBUSDT"},
+                "source": "cache",
+                "unavailable": frozenset(),
+            },
+        ]
+
+        with self.assertRaisesRegex(ValueError, "not market-wide"):
+            BinanceSpotHistoricalAdapter._repair_common_market_gaps(
+                assets,
+                interval_ms=HOUR_MS,
+                start=start,
+                end=start + timedelta(hours=6),
+            )
+
     def test_future_candle_extremes_do_not_change_decisions(self):
         config = scenario((asset("AAA"),))
         prices = lambda _symbol, index: 111 if 0 <= index < 3 else 100

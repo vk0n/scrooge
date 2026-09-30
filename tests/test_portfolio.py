@@ -224,6 +224,44 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             ["closed-eth-swing", "open-btc-swing"],
         )
 
+    def test_bargain_count_24h_changes_tracks_open_closed_and_total(self):
+        now_ms = 2_000_000_000_000
+        day_ms = 24 * 60 * 60 * 1000
+        swings = [
+            {"swing_id": "new-open", "opened_at_ms": now_ms - 1_000, "closed_at_ms": None},
+            {
+                "swing_id": "old-recent-close-one",
+                "opened_at_ms": now_ms - (2 * day_ms),
+                "closed_at_ms": now_ms - 2_000,
+            },
+            {
+                "swing_id": "old-recent-close-two",
+                "opened_at_ms": now_ms - (3 * day_ms),
+                "closed_at_ms": now_ms - 3_000,
+            },
+            {
+                "swing_id": "old-close",
+                "opened_at_ms": now_ms - (4 * day_ms),
+                "closed_at_ms": now_ms - (2 * day_ms),
+            },
+        ]
+        economics_by_swing = {
+            "new-open": {"status": "open"},
+            "old-recent-close-one": {"status": "closed"},
+            "old-recent-close-two": {"status": "closed"},
+            "old-close": {"status": "closed"},
+        }
+
+        changes = portfolio_service._bargain_count_24h_changes(
+            swings,
+            economics_by_swing,
+            now_ms=now_ms,
+        )
+
+        self.assertEqual(changes["open_swing_count_24h_change"], -1)
+        self.assertEqual(changes["closed_swing_count_24h_change"], 2)
+        self.assertEqual(changes["total_swing_count_24h_change"], 1)
+
     def test_manual_bargain_close_preview_preserves_swing_linkage(self):
         self.add("BTC", 1, 90, "binance")
         portfolio_service.update_portfolio_asset_policy(

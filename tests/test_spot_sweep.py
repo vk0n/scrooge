@@ -162,6 +162,68 @@ spot_sweep:
         self.assertEqual(resolved.free_cash_retention_pct, 20)
         self.assertEqual(resolved.waiter_cleanup.deep_loss_unrealized_pnl_pct, -20)
 
+    def test_parameter_grid_can_sweep_cleanup_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "base.yaml").write_text(BASE_SCENARIO, encoding="utf-8")
+            sweep = root / "cleanup.yaml"
+            sweep.write_text(
+                """
+spot_sweep:
+  name: cleanup-sweep
+  base_config: base.yaml
+  output_dir: output
+  parameter_grid:
+    deep_loss_min_age_days: [10, 20]
+    deep_loss_required_reverse_level: [2]
+    max_open_bargains_per_asset: [8]
+    age_l3_min_age_days: [25]
+    age_l2_min_age_days: [50]
+    age_l1_min_age_days: [75]
+    capacity_cleanup_min_age_days: [20]
+""",
+                encoding="utf-8",
+            )
+
+            config = load_spot_sweep_config(sweep)
+            resolved = _scenario_for_variant(config, config.variants[1])
+
+        self.assertEqual(len(config.variants), 2)
+        self.assertEqual(resolved.waiter_cleanup.deep_loss_min_age_days, 20)
+        self.assertEqual(resolved.waiter_cleanup.deep_loss_required_reverse_level, 2)
+        self.assertEqual(resolved.waiter_cleanup.max_open_bargains_per_asset, 8)
+        self.assertEqual(
+            [item.min_age_days for item in resolved.waiter_cleanup.aging_rules],
+            [25, 50, 75],
+        )
+        self.assertEqual(resolved.waiter_cleanup.capacity_cleanup_min_age_days, 20)
+
+    def test_parameter_grid_accepts_levels_as_a_dimension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "base.yaml").write_text(BASE_SCENARIO, encoding="utf-8")
+            sweep = root / "levels-in-grid.yaml"
+            sweep.write_text(
+                """
+spot_sweep:
+  name: levels-in-grid
+  base_config: base.yaml
+  output_dir: output
+  parameter_grid:
+    levels_pct:
+      - [1, 3, 5, 7]
+      - [2, 3, 4, 6]
+    close_profit_pct: [4, 5]
+""",
+                encoding="utf-8",
+            )
+
+            config = load_spot_sweep_config(sweep)
+
+        self.assertEqual(len(config.variants), 4)
+        self.assertEqual(config.variants[0].levels_pct, (1.0, 3.0, 5.0, 7.0))
+        self.assertTrue(config.variants[0].name.startswith("1-3-5-7-"))
+
     def test_ranking_prioritizes_edge_then_average_nominal_assets(self):
         rows = [
             {

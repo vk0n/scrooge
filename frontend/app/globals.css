@@ -2241,6 +2241,21 @@ button.treasury-summary-card-swings:focus-visible,
   color: #aab4c6;
 }
 
+.treasury-bargain-counts .treasury-bargain-count-change {
+  margin-left: auto;
+  color: #dce4f1;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.treasury-bargain-counts .treasury-bargain-count-change.value-positive {
+  color: var(--value-positive-surface);
+}
+
+.treasury-bargain-counts .treasury-bargain-count-change.value-negative {
+  color: var(--value-negative-surface);
+}
+
 .treasury-summary-card .treasury-bargain-counts strong {
   min-width: 1.8rem;
   margin: 0;

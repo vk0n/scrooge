@@ -152,6 +152,19 @@ class BinanceSpotHistoricalAdapter:
         finally:
             self._progress = None
 
+        loaded_assets = self._repair_common_market_gaps(
+            loaded_assets,
+            interval_ms=interval_ms,
+            start=warmup_start,
+            end=scenario.end,
+        )
+        for item in loaded_assets:
+            self._validate_candles(
+                item["candles"],
+                interval_ms=interval_ms,
+                symbol=str(item["symbol_info"].get("symbol") or item["symbol"]),
+            )
+
         return SpotHistoricalDataset(
             candles={item["symbol"]: item["candles"] for item in loaded_assets},
             symbol_info={item["symbol"]: item["symbol_info"] for item in loaded_assets},
@@ -199,8 +212,6 @@ class BinanceSpotHistoricalAdapter:
                 end=end,
             )
             unavailable = set()
-        self._start_progress_phase(f"Validating {asset.market_symbol}", total=len(rows))
-        self._validate_candles(rows, interval_ms=interval_ms, symbol=asset.market_symbol)
         self._start_progress_phase(f"Loading {asset.market_symbol} rules", total=1)
         symbol_info = asset.symbol_info or self.load_symbol_info(asset.market_symbol)
         self._advance_progress(1)
@@ -213,6 +224,104 @@ class BinanceSpotHistoricalAdapter:
             "source": source,
             "unavailable": frozenset(unavailable),
         }
+
+    @staticmethod
+    def _gap_ranges(
+        rows: list[SpotCandle],
+        *,
+        interval_ms: int,
+        start_ms: int,
+        end_ms: int,
+        symbol: str,
+    ) -> tuple[tuple[int, int], ...]:
+        if not rows:
+            raise ValueError(f"No historical Spot candles are available for {symbol}.")
+        gaps: list[tuple[int, int]] = []
+        expected = start_ms
+        for row in rows:
+            if row.open_time_ms < expected:
+                raise ValueError(f"{symbol} candles are duplicated or out of order.")
+            if row.open_time_ms > expected:
+                gaps.append((expected, row.open_time_ms))
+            expected = row.open_time_ms + interval_ms
+        if expected < end_ms:
+            gaps.append((expected, end_ms))
+        if expected > end_ms:
+            raise ValueError(f"{symbol} candle cache extends beyond the requested range.")
+        return tuple(gaps)
+
+    @classmethod
+    def _repair_common_market_gaps(
+        cls,
+        loaded_assets: list[dict[str, Any]],
+        *,
+        interval_ms: int,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        if not loaded_assets:
+            return loaded_assets
+        start_ms = int(start.astimezone(UTC).timestamp() * 1000)
+        end_ms = int(end.astimezone(UTC).timestamp() * 1000)
+        gaps_by_symbol = {
+            str(item["symbol"]): cls._gap_ranges(
+                item["candles"],
+                interval_ms=interval_ms,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                symbol=str(item["symbol"]),
+            )
+            for item in loaded_assets
+        }
+        common_gaps = set.intersection(
+            *(set(ranges) for ranges in gaps_by_symbol.values())
+        )
+        for symbol, ranges in gaps_by_symbol.items():
+            unique = [gap for gap in ranges if gap not in common_gaps]
+            if unique:
+                gap_start, gap_end = unique[0]
+                previous_time = datetime.fromtimestamp(
+                    (gap_start - interval_ms) / 1000,
+                    tz=UTC,
+                ).isoformat()
+                current_time = datetime.fromtimestamp(gap_end / 1000, tz=UTC).isoformat()
+                raise ValueError(
+                    f"Missing {symbol} candle between {previous_time} and "
+                    f"{current_time}; gap is not market-wide, replay aborted."
+                )
+        if not common_gaps:
+            return loaded_assets
+
+        repaired: list[dict[str, Any]] = []
+        for item in loaded_assets:
+            rows_by_time = {row.open_time_ms: row for row in item["candles"]}
+            unavailable = set(item.get("unavailable") or ())
+            for gap_start, gap_end in sorted(common_gaps):
+                previous = rows_by_time.get(gap_start - interval_ms)
+                if previous is None:
+                    raise ValueError(
+                        f"Cannot value market-wide gap at replay boundary for {item['symbol']}."
+                    )
+                previous_close = previous.close
+                for open_time_ms in range(gap_start, gap_end, interval_ms):
+                    rows_by_time[open_time_ms] = SpotCandle(
+                        open_time_ms=open_time_ms,
+                        close_time_ms=open_time_ms + interval_ms - 1,
+                        open=previous_close,
+                        high=previous_close,
+                        low=previous_close,
+                        close=previous_close,
+                        volume=0.0,
+                    )
+                    unavailable.add(open_time_ms)
+            repaired.append(
+                {
+                    **item,
+                    "candles": [rows_by_time[key] for key in sorted(rows_by_time)],
+                    "unavailable": frozenset(unavailable),
+                }
+            )
+        return repaired
 
     def _start_progress_phase(self, label: str, *, total: int | None = None) -> None:
         if self._progress is not None:
@@ -342,6 +451,52 @@ class BinanceSpotHistoricalAdapter:
                 and rows[-1].open_time_ms == end_ms - interval_ms
             ):
                 return rows, "cache"
+        overlapping_cache = self._best_overlapping_cache_path(
+            symbol,
+            interval=interval,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+        if not cache_path.exists() and overlapping_cache is not None:
+            interval_ms = interval_milliseconds(interval)
+            self._start_progress_phase(
+                f"Reading {symbol.upper()} cache",
+                total=self._cached_row_capacity(
+                    overlapping_cache,
+                    interval_ms=interval_ms,
+                ),
+            )
+            cached_rows = [
+                row
+                for row in self._read_candles(overlapping_cache)
+                if start_ms <= row.open_time_ms < end_ms
+            ]
+            downloaded: list[SpotCandle] = []
+            if cached_rows:
+                if cached_rows[0].open_time_ms > start_ms:
+                    downloaded.extend(
+                        self._download_candles(
+                            symbol.upper(),
+                            interval=interval,
+                            start_ms=start_ms,
+                            end_ms=cached_rows[0].open_time_ms,
+                        )
+                    )
+                tail_start_ms = cached_rows[-1].open_time_ms + interval_ms
+                if tail_start_ms < end_ms:
+                    downloaded.extend(
+                        self._download_candles(
+                            symbol.upper(),
+                            interval=interval,
+                            start_ms=tail_start_ms,
+                            end_ms=end_ms,
+                        )
+                    )
+                merged = {row.open_time_ms: row for row in (*cached_rows, *downloaded)}
+                rows = [merged[key] for key in sorted(merged)]
+                self._start_progress_phase(f"Writing {symbol.upper()} cache", total=len(rows))
+                self._write_candles(cache_path, rows)
+                return rows, "binance_spot_rest" if downloaded else "cache"
         if cache_path.exists():
             self._start_progress_phase(
                 f"Reading {symbol.upper()} cache",
@@ -431,6 +586,32 @@ class BinanceSpotHistoricalAdapter:
         if not candidates:
             return None
         return min(candidates, key=lambda item: item[0])[1]
+
+    def _best_overlapping_cache_path(
+        self,
+        symbol: str,
+        *,
+        interval: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> Path | None:
+        directory = self.cache_dir / "klines"
+        prefix = f"{symbol.upper()}-{interval}-"
+        candidates: list[tuple[int, Path]] = []
+        for path in directory.glob(f"{prefix}*.csv"):
+            bounds = path.stem[len(prefix):].split("-", 1)
+            if len(bounds) != 2:
+                continue
+            try:
+                cached_start, cached_end = (int(value) for value in bounds)
+            except ValueError:
+                continue
+            overlap = min(cached_end, end_ms) - max(cached_start, start_ms)
+            if overlap > 0:
+                candidates.append((overlap, path))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[0])[1]
 
     def load_symbol_info(self, symbol: str) -> dict[str, Any]:
         normalized = symbol.upper()

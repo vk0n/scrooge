@@ -36,6 +36,29 @@ def _maximum_drawdown(values: list[float]) -> float:
     return worst
 
 
+def _relative_wealth_metrics(equity: list[dict[str, Any]]) -> dict[str, float]:
+    ratios = [
+        float(item["treasury_value"]) / float(item["hodl_value"])
+        for item in equity
+        if float(item.get("hodl_value") or 0.0) > 0.0
+    ]
+    if not ratios:
+        return {
+            "minimum": 1.0,
+            "maximum": 1.0,
+            "terminal": 1.0,
+            "maximum_drawdown_pct": 0.0,
+        }
+    start = ratios[0]
+    normalized = [value / start for value in ratios]
+    return {
+        "minimum": min(normalized),
+        "maximum": max(normalized),
+        "terminal": normalized[-1],
+        "maximum_drawdown_pct": _maximum_drawdown(normalized),
+    }
+
+
 def _maximum_concurrent(swings: list[dict[str, Any]]) -> int:
     events: list[tuple[int, int]] = []
     for swing in swings:
@@ -82,6 +105,7 @@ def _swing_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
         "total_opened": len(swings),
         "total_closed": len(closed),
         "still_open": len(opened),
+        "total_fills": sum(len(item.get("executions") or []) for item in swings),
         "profitable_closed": len(profitable),
         "losing_closed": len(losing),
         "win_rate_pct": (len(profitable) / len(closed)) * 100 if closed else None,
@@ -1066,6 +1090,25 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
         for item in per_asset.values()
         if item["asset_recovery"]["effective_final_quantity_pct"] is not None
     ]
+    recovery_weights = {
+        symbol: (
+            float(per_asset[symbol]["starting"]["quantity"])
+            * float(per_asset[symbol]["market"]["starting_price"])
+        )
+        for symbol in result.scenario.asset_order
+    }
+    recovery_weight_total = sum(recovery_weights.values())
+    weighted_recovery_pct = (
+        sum(
+            recovery_weights[symbol]
+            * float(per_asset[symbol]["asset_recovery"]["effective_final_quantity_pct"])
+            for symbol in result.scenario.asset_order
+        )
+        / recovery_weight_total
+        if recovery_weight_total > 0
+        else None
+    )
+    relative_wealth = _relative_wealth_metrics(result.equity)
     return {
         "scenario": {
             "name": result.scenario.name,
@@ -1102,6 +1145,10 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             "maximum_treasury_drawdown_pct": _maximum_drawdown(
                 [float(item["treasury_value"]) for item in result.equity]
             ),
+            "maximum_hodl_drawdown_pct": _maximum_drawdown(
+                [float(item["hodl_value"]) for item in result.equity]
+            ),
+            "relative_wealth": relative_wealth,
             "final_allocation_pct": final_allocations,
         },
         "shared_usdt": {
@@ -1172,6 +1219,7 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 "average_effective_quantity_pct": (
                     mean(recovery_pct_values) if recovery_pct_values else None
                 ),
+                "weighted_effective_quantity_pct": weighted_recovery_pct,
                 "per_asset": {
                     symbol: item["asset_recovery"]
                     for symbol, item in per_asset.items()

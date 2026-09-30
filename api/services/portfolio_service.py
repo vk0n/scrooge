@@ -801,6 +801,36 @@ def _attach_exchange_state(holdings: list[dict[str, Any]], exchange: dict[str, A
 
 PORTFOLIO_TRANSACTION_PAGE_SIZE = 5
 PORTFOLIO_TIMELINE_DAYS = 180
+BARGAIN_CHANGE_WINDOW_MS = 24 * 60 * 60 * 1000
+
+
+def _bargain_count_24h_changes(
+    swings: list[dict[str, Any]],
+    economics_by_swing: dict[str, dict[str, Any]],
+    *,
+    now_ms: int,
+) -> dict[str, int]:
+    cutoff_ms = int(now_ms) - BARGAIN_CHANGE_WINDOW_MS
+
+    def occurred_in_window(value: Any) -> bool:
+        try:
+            timestamp_ms = int(value)
+        except (TypeError, ValueError):
+            return False
+        return cutoff_ms <= timestamp_ms <= now_ms
+
+    opened_count = sum(1 for swing in swings if occurred_in_window(swing.get("opened_at_ms")))
+    closed_count = sum(
+        1
+        for swing in swings
+        if economics_by_swing.get(str(swing.get("swing_id")), {}).get("status") == "closed"
+        and occurred_in_window(swing.get("closed_at_ms"))
+    )
+    return {
+        "open_swing_count_24h_change": opened_count - closed_count,
+        "closed_swing_count_24h_change": closed_count,
+        "total_swing_count_24h_change": opened_count,
+    }
 
 
 def _portfolio_timeline(summary: dict[str, Any], holdings: list[dict[str, Any]], warnings: list[str]) -> list[dict[str, Any]]:
@@ -880,6 +910,13 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     summary["open_swing_count"] = len(open_swings)
     summary["closed_swing_count"] = len(closed_swings)
     summary["total_swing_count"] = len(swings)
+    summary.update(
+        _bargain_count_24h_changes(
+            swings,
+            economics_by_swing,
+            now_ms=int(time.time() * 1000),
+        )
+    )
     summary["open_swing_asset_count"] = len(
         {(swing["asset_symbol"], swing["quote_symbol"]) for swing in open_swings}
     )

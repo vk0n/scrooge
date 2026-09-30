@@ -27,6 +27,7 @@ from backtest.spot_scenario import (
     scenario_as_dict,
 )
 from shared.spot_signal import SpotSignalConfig
+from shared.spot_waiter_cleanup import AgingCleanupRule
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,13 @@ class SpotSweepVariant:
     close_profit_pct: float
     free_cash_retention_pct: float
     unrealized_pnl_pct: float
+    deep_loss_min_age_days: float
+    deep_loss_required_reverse_level: int
+    max_open_bargains_per_asset: int
+    age_l3_min_age_days: float
+    age_l2_min_age_days: float
+    age_l1_min_age_days: float
+    capacity_cleanup_min_age_days: float
 
 
 @dataclass(frozen=True)
@@ -130,13 +138,23 @@ def load_spot_sweep_config(
             field_name="spot_sweep.parameter_grid",
         )
         supported = {
+            "levels_pct",
             "close_profit_pct",
             "free_cash_retention_pct",
             "unrealized_pnl_pct",
+            "deep_loss_min_age_days",
+            "deep_loss_required_reverse_level",
+            "max_open_bargains_per_asset",
+            "age_l3_min_age_days",
+            "age_l2_min_age_days",
+            "age_l1_min_age_days",
+            "capacity_cleanup_min_age_days",
         }
         unknown = sorted(set(parameter_grid) - supported)
         if unknown:
             raise ValueError(f"Unsupported Spot sweep parameters: {', '.join(unknown)}.")
+        if raw_levels_variants is None and parameter_grid.get("levels_pct") is not None:
+            raw_levels_variants = parameter_grid["levels_pct"]
 
     level_options: list[tuple[float, ...]] = []
     if raw_levels_variants is None:
@@ -175,22 +193,91 @@ def load_spot_sweep_config(
         "unrealized_pnl_pct",
         scenario.waiter_cleanup.deep_loss_unrealized_pnl_pct,
     )
-    seen: set[tuple[tuple[float, ...], float, float, float]] = set()
+    aging_by_level = {
+        item.required_reverse_level: item.min_age_days
+        for item in scenario.waiter_cleanup.aging_rules
+    }
+    deep_loss_age_options = grid_values(
+        "deep_loss_min_age_days",
+        scenario.waiter_cleanup.deep_loss_min_age_days,
+    )
+    deep_loss_level_options = grid_values(
+        "deep_loss_required_reverse_level",
+        scenario.waiter_cleanup.deep_loss_required_reverse_level,
+    )
+    max_open_options = grid_values(
+        "max_open_bargains_per_asset",
+        scenario.waiter_cleanup.max_open_bargains_per_asset,
+    )
+    age_l3_options = grid_values("age_l3_min_age_days", aging_by_level.get(3, 30))
+    age_l2_options = grid_values("age_l2_min_age_days", aging_by_level.get(2, 60))
+    age_l1_options = grid_values("age_l1_min_age_days", aging_by_level.get(1, 90))
+    capacity_age_options = grid_values(
+        "capacity_cleanup_min_age_days",
+        scenario.waiter_cleanup.capacity_cleanup_min_age_days,
+    )
+    seen: set[tuple[Any, ...]] = set()
     parameter_sweep = parameter_grid_raw is not None
-    for levels, close_profit, retention, unrealized_pnl in product(
+    for (
+        levels,
+        close_profit,
+        retention,
+        unrealized_pnl,
+        deep_loss_age,
+        deep_loss_level_raw,
+        max_open_raw,
+        age_l3,
+        age_l2,
+        age_l1,
+        capacity_age,
+    ) in product(
         level_options,
         close_profit_options,
         retention_options,
         unrealized_pnl_options,
+        deep_loss_age_options,
+        deep_loss_level_options,
+        max_open_options,
+        age_l3_options,
+        age_l2_options,
+        age_l1_options,
+        capacity_age_options,
     ):
+        deep_loss_level = int(deep_loss_level_raw)
+        max_open = int(max_open_raw)
+        if deep_loss_level != deep_loss_level_raw:
+            raise ValueError("deep_loss_required_reverse_level must contain integers.")
+        if max_open != max_open_raw:
+            raise ValueError("max_open_bargains_per_asset must contain integers.")
         replace(scenario.progression, close_profit_pct=close_profit)
         replace(
             scenario.waiter_cleanup,
             deep_loss_unrealized_pnl_pct=unrealized_pnl,
+            deep_loss_min_age_days=deep_loss_age,
+            deep_loss_required_reverse_level=deep_loss_level,
+            max_open_bargains_per_asset=max_open,
+            aging_rules=(
+                AgingCleanupRule(min_age_days=age_l3, required_reverse_level=3),
+                AgingCleanupRule(min_age_days=age_l2, required_reverse_level=2),
+                AgingCleanupRule(min_age_days=age_l1, required_reverse_level=1),
+            ),
+            capacity_cleanup_min_age_days=capacity_age,
         )
         if not 0 <= retention <= 100:
             raise ValueError("Spot free cash retention must be in the range [0, 100].")
-        key = (levels, close_profit, retention, unrealized_pnl)
+        key = (
+            levels,
+            close_profit,
+            retention,
+            unrealized_pnl,
+            deep_loss_age,
+            deep_loss_level,
+            max_open,
+            age_l3,
+            age_l2,
+            age_l1,
+            capacity_age,
+        )
         if key in seen:
             raise ValueError(f"Duplicate Spot sweep combination: {key}.")
         seen.add(key)
@@ -199,6 +286,21 @@ def load_spot_sweep_config(
             free_cash_retention_pct=retention,
             unrealized_pnl_pct=unrealized_pnl,
         )
+        optional_name_parts = []
+        optional_values = (
+            ("deep_loss_min_age_days", "lossage", deep_loss_age),
+            ("deep_loss_required_reverse_level", "losslevel", deep_loss_level),
+            ("max_open_bargains_per_asset", "maxopen", max_open),
+            ("age_l3_min_age_days", "l3age", age_l3),
+            ("age_l2_min_age_days", "l2age", age_l2),
+            ("age_l1_min_age_days", "l1age", age_l1),
+            ("capacity_cleanup_min_age_days", "capage", capacity_age),
+        )
+        for key_name, label, value in optional_values:
+            if key_name in parameter_grid:
+                optional_name_parts.append(f"{label}-{_format_level(value)}")
+        if optional_name_parts:
+            parameter_name = f"{parameter_name}-{'-'.join(optional_name_parts)}"
         if parameter_sweep:
             name = (
                 parameter_name
@@ -214,6 +316,13 @@ def load_spot_sweep_config(
                 close_profit_pct=close_profit,
                 free_cash_retention_pct=retention,
                 unrealized_pnl_pct=unrealized_pnl,
+                deep_loss_min_age_days=deep_loss_age,
+                deep_loss_required_reverse_level=deep_loss_level,
+                max_open_bargains_per_asset=max_open,
+                age_l3_min_age_days=age_l3,
+                age_l2_min_age_days=age_l2,
+                age_l1_min_age_days=age_l1,
+                capacity_cleanup_min_age_days=capacity_age,
             )
         )
 
@@ -256,6 +365,24 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
     waiter_cleanup = replace(
         config.scenario.waiter_cleanup,
         deep_loss_unrealized_pnl_pct=variant.unrealized_pnl_pct,
+        deep_loss_min_age_days=variant.deep_loss_min_age_days,
+        deep_loss_required_reverse_level=variant.deep_loss_required_reverse_level,
+        max_open_bargains_per_asset=variant.max_open_bargains_per_asset,
+        aging_rules=(
+            AgingCleanupRule(
+                min_age_days=variant.age_l3_min_age_days,
+                required_reverse_level=3,
+            ),
+            AgingCleanupRule(
+                min_age_days=variant.age_l2_min_age_days,
+                required_reverse_level=2,
+            ),
+            AgingCleanupRule(
+                min_age_days=variant.age_l1_min_age_days,
+                required_reverse_level=1,
+            ),
+        ),
+        capacity_cleanup_min_age_days=variant.capacity_cleanup_min_age_days,
     )
     metadata = {
         **config.scenario.metadata,
@@ -265,6 +392,19 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
         "sweep_close_profit_pct": variant.close_profit_pct,
         "sweep_free_cash_retention_pct": variant.free_cash_retention_pct,
         "sweep_unrealized_pnl_pct": variant.unrealized_pnl_pct,
+        "sweep_deep_loss_min_age_days": variant.deep_loss_min_age_days,
+        "sweep_deep_loss_required_reverse_level": (
+            variant.deep_loss_required_reverse_level
+        ),
+        "sweep_max_open_bargains_per_asset": variant.max_open_bargains_per_asset,
+        "sweep_aging_min_age_days": {
+            "l3": variant.age_l3_min_age_days,
+            "l2": variant.age_l2_min_age_days,
+            "l1": variant.age_l1_min_age_days,
+        },
+        "sweep_capacity_cleanup_min_age_days": (
+            variant.capacity_cleanup_min_age_days
+        ),
     }
     return replace(
         config.scenario,
@@ -327,6 +467,13 @@ def _summary_row(
         "close_profit_pct": variant.close_profit_pct,
         "free_cash_retention_pct": variant.free_cash_retention_pct,
         "unrealized_pnl_pct": variant.unrealized_pnl_pct,
+        "deep_loss_min_age_days": variant.deep_loss_min_age_days,
+        "deep_loss_required_reverse_level": variant.deep_loss_required_reverse_level,
+        "max_open_bargains_per_asset": variant.max_open_bargains_per_asset,
+        "age_l3_min_age_days": variant.age_l3_min_age_days,
+        "age_l2_min_age_days": variant.age_l2_min_age_days,
+        "age_l1_min_age_days": variant.age_l1_min_age_days,
+        "capacity_cleanup_min_age_days": variant.capacity_cleanup_min_age_days,
         "status": "ok",
         "resumed": resumed,
         "duration_seconds": duration_seconds,
@@ -391,7 +538,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             writer.writerow(
                 {
-                    key: json.dumps(value, separators=(",", ":")) if isinstance(value, list) else value
+                    key: json.dumps(value, separators=(",", ":"))
+                    if isinstance(value, (list, dict))
+                    else value
                     for key, value in row.items()
                 }
             )

@@ -30,6 +30,9 @@ type PortfolioSummary = {
   open_swing_count: number;
   closed_swing_count: number;
   total_swing_count: number;
+  open_swing_count_24h_change: number;
+  closed_swing_count_24h_change: number;
+  total_swing_count_24h_change: number;
   open_swing_asset_count: number;
   realized_accumulated_cash: number;
   prices_updated_at: string | null;
@@ -529,6 +532,13 @@ function formatSignedPercent(value: number | null | undefined): string {
     return "Pending";
   }
   return `${value > 0 ? "+" : ""}${formatNumber(value, 2)}%`;
+}
+
+function formatSignedCount(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value === 0) {
+    return "0";
+  }
+  return `${value > 0 ? "+" : ""}${formatNumber(value, 0)}`;
 }
 
 function signedToneClass(value: number | null | undefined, baseClass: string): string {
@@ -3006,14 +3016,41 @@ export default function TreasuryPage(): JSX.Element {
                 <span>
                   <strong className="treasury-bargain-count-open">{formatNumber(summary?.open_swing_count ?? 0, 0)}</strong>
                   <small>open</small>
+                  <small
+                    className={signedToneClass(
+                      summary?.open_swing_count_24h_change,
+                      "treasury-bargain-count-change"
+                    )}
+                    title="Open Bargains change over the last 24 hours"
+                  >
+                    {formatSignedCount(summary?.open_swing_count_24h_change)}
+                  </small>
                 </span>
                 <span>
                   <strong>{formatNumber(summary?.closed_swing_count ?? 0, 0)}</strong>
                   <small>closed</small>
+                  <small
+                    className={signedToneClass(
+                      summary?.closed_swing_count_24h_change,
+                      "treasury-bargain-count-change"
+                    )}
+                    title="Closed Bargains change over the last 24 hours"
+                  >
+                    {formatSignedCount(summary?.closed_swing_count_24h_change)}
+                  </small>
                 </span>
                 <span>
                   <strong>{formatNumber(summary?.total_swing_count ?? 0, 0)}</strong>
                   <small>total</small>
+                  <small
+                    className={signedToneClass(
+                      summary?.total_swing_count_24h_change,
+                      "treasury-bargain-count-change"
+                    )}
+                    title="Total Bargains change over the last 24 hours"
+                  >
+                    {formatSignedCount(summary?.total_swing_count_24h_change)}
+                  </small>
                 </span>
               </span>
               <span className="treasury-summary-card-chevron" aria-hidden="true" />
