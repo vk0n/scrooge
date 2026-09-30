@@ -2744,7 +2744,7 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-form-toggle {
-  min-width: 9rem;
+  min-width: 12.6rem;
 }
 
 .treasury-role-divider {
@@ -5124,7 +5124,7 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-add-treasure-row .treasury-form-toggle {
-    width: min(100%, 18rem);
+    width: min(100%, 12.6rem);
   }
 
   .treasury-summary-grid {
@@ -6193,6 +6193,15 @@ body.logs-page-active .logs-page-panel .log-box {
     min-height: 1.7rem;
     padding: 0.24rem 0.38rem;
     font-size: 0.83rem;
+  }
+
+  .config-toolbar > .treasury-primary-action,
+  .treasury-add-treasure-row > .treasury-primary-action {
+    width: min(100%, 12.6rem);
+    min-height: 2.1rem;
+    padding: 0.36rem 0.9rem;
+    border-radius: 8px;
+    font-size: 0.93rem;
   }
 
   .config-toolbar > .dialog-scrooge-compact {

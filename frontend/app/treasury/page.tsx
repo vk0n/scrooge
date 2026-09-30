@@ -1295,7 +1295,7 @@ function TreasuryRulesPanel(): JSX.Element {
         {editing ? <>
           <button type="button" className="dialog-user-btn config-action-btn" onClick={() => void saveRules()} disabled={saving}>Seal Rules and Restart</button>
           <button type="button" className="dialog-user-btn config-action-btn" onClick={() => { setDraft(rawText); setEditing(false); setError(null); }} disabled={saving}>Cancel Revision</button>
-        </> : <button type="button" className="dialog-user-btn config-action-btn config-action-btn-centered" onClick={() => { setDraft(rawText); setEditing(true); setExpanded(true); setError(null); setInfo(null); }} disabled={loading || saving || !rules}>Revise Rules</button>}
+        </> : <button type="button" className="dialog-user-btn config-action-btn config-action-btn-centered treasury-primary-action" onClick={() => { setDraft(rawText); setEditing(true); setExpanded(true); setError(null); setInfo(null); }} disabled={loading || saving || !rules}>Revise Rules</button>}
         {saving ? <span className="dialog-scrooge dialog-scrooge-compact">Sealing rules...</span> : null}
       </div>
       {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
@@ -3331,7 +3331,7 @@ export default function TreasuryPage(): JSX.Element {
           <div className="treasury-add-treasure-row">
             <button
               type="button"
-              className="dialog-user-btn treasury-form-toggle"
+              className="dialog-user-btn config-action-btn config-action-btn-centered treasury-form-toggle treasury-primary-action"
               aria-expanded={formExpanded}
               onClick={() => setFormExpanded((current) => !current)}
             >
