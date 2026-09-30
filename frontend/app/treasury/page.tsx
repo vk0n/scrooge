@@ -8,8 +8,8 @@ import { formatDateTimeEu } from "../../lib/datetime";
 
 type PortfolioSummary = {
   total_value: number;
-  total_value_24h_change: number | null;
-  total_value_24h_change_pct: number | null;
+  total_value_day_change: number | null;
+  total_value_day_change_pct: number | null;
   invested_capital: number;
   total_gain: number;
   total_gain_pct: number | null;
@@ -30,9 +30,9 @@ type PortfolioSummary = {
   open_swing_count: number;
   closed_swing_count: number;
   total_swing_count: number;
-  open_swing_count_24h_change: number;
-  closed_swing_count_24h_change: number;
-  total_swing_count_24h_change: number;
+  open_swing_count_day_change: number;
+  closed_swing_count_day_change: number;
+  total_swing_count_day_change: number;
   open_swing_asset_count: number;
   realized_accumulated_cash: number;
   prices_updated_at: string | null;
@@ -2956,24 +2956,24 @@ export default function TreasuryPage(): JSX.Element {
                 </span>
                 <span>{formatNumber(summary?.total_value ?? 0)}</span>
               </strong>
-              {typeof summary?.total_value_24h_change === "number" ? (
+              {typeof summary?.total_value_day_change === "number" ? (
                 <span className="treasury-total-change">
                   <span
                     className={signedToneClass(
-                      summary.total_value_24h_change,
+                      summary.total_value_day_change,
                       "treasury-total-change-value"
                     )}
                   >
-                    {formatSignedCurrency(summary.total_value_24h_change)}
+                    {formatSignedCurrency(summary.total_value_day_change)}
                   </span>
                   <span className="treasury-total-change-separator" aria-hidden="true">·</span>
                   <span
                     className={signedToneClass(
-                      summary.total_value_24h_change_pct,
+                      summary.total_value_day_change_pct,
                       "treasury-total-change-pct"
                     )}
                   >
-                    {formatSignedPercent(summary.total_value_24h_change_pct)}
+                    {formatSignedPercent(summary.total_value_day_change_pct)}
                   </span>
                 </span>
               ) : null}
@@ -3018,12 +3018,12 @@ export default function TreasuryPage(): JSX.Element {
                   <small>open</small>
                   <small
                     className={signedToneClass(
-                      summary?.open_swing_count_24h_change,
+                      summary?.open_swing_count_day_change,
                       "treasury-bargain-count-change"
                     )}
-                    title="Open Bargains change over the last 24 hours"
+                    title="Open Bargains change since midnight"
                   >
-                    {formatSignedCount(summary?.open_swing_count_24h_change)}
+                    {formatSignedCount(summary?.open_swing_count_day_change)}
                   </small>
                 </span>
                 <span>
@@ -3031,12 +3031,12 @@ export default function TreasuryPage(): JSX.Element {
                   <small>closed</small>
                   <small
                     className={signedToneClass(
-                      summary?.closed_swing_count_24h_change,
+                      summary?.closed_swing_count_day_change,
                       "treasury-bargain-count-change"
                     )}
-                    title="Closed Bargains change over the last 24 hours"
+                    title="Closed Bargains change since midnight"
                   >
-                    {formatSignedCount(summary?.closed_swing_count_24h_change)}
+                    {formatSignedCount(summary?.closed_swing_count_day_change)}
                   </small>
                 </span>
                 <span>
@@ -3044,12 +3044,12 @@ export default function TreasuryPage(): JSX.Element {
                   <small>total</small>
                   <small
                     className={signedToneClass(
-                      summary?.total_swing_count_24h_change,
+                      summary?.total_swing_count_day_change,
                       "treasury-bargain-count-change"
                     )}
-                    title="Total Bargains change over the last 24 hours"
+                    title="Total Bargains change since midnight"
                   >
-                    {formatSignedCount(summary?.total_swing_count_24h_change)}
+                    {formatSignedCount(summary?.total_swing_count_day_change)}
                   </small>
                 </span>
               </span>

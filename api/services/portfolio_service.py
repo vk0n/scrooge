@@ -534,30 +534,6 @@ def _attach_asset_performance(
     return portfolio_accumulated_cash
 
 
-def _portfolio_24h_change(holdings: list[dict[str, Any]]) -> tuple[float | None, float | None]:
-    current_total = 0.0
-    previous_total = 0.0
-    for holding in holdings:
-        market_value = _as_float(holding.get("market_value"))
-        if market_value is None:
-            continue
-        current_total += market_value
-        if bool(holding.get("is_dry_powder")):
-            previous_total += market_value
-            continue
-        change_pct = _as_float(holding.get("rolling_24h_change_pct"))
-        if change_pct is None:
-            return None, None
-        price_ratio = 1.0 + change_pct / 100.0
-        if price_ratio <= 0:
-            return None, None
-        previous_total += market_value / price_ratio
-    if current_total <= 0 or previous_total <= 0:
-        return None, None
-    change_quote = current_total - previous_total
-    return change_quote, change_quote / previous_total * 100.0
-
-
 def _summary_from_holdings(
     holdings: list[dict[str, Any]],
     *,
@@ -566,7 +542,6 @@ def _summary_from_holdings(
     economics_by_swing: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     total_value = sum(_as_float(holding.get("market_value")) or 0.0 for holding in holdings)
-    total_value_24h_change, total_value_24h_change_pct = _portfolio_24h_change(holdings)
     total_gain = total_value - invested_capital
     dry_powder = sum(
         _as_float(holding.get("market_value")) or 0.0
@@ -591,8 +566,8 @@ def _summary_from_holdings(
     ]
     return {
         "total_value": total_value,
-        "total_value_24h_change": total_value_24h_change,
-        "total_value_24h_change_pct": total_value_24h_change_pct,
+        "total_value_day_change": None,
+        "total_value_day_change_pct": None,
         "invested_capital": invested_capital,
         "total_gain": total_gain,
         "total_gain_pct": (total_gain / invested_capital) * 100 if invested_capital > 0 else None,
@@ -801,47 +776,87 @@ def _attach_exchange_state(holdings: list[dict[str, Any]], exchange: dict[str, A
 
 PORTFOLIO_TRANSACTION_PAGE_SIZE = 5
 PORTFOLIO_TIMELINE_DAYS = 180
-BARGAIN_CHANGE_WINDOW_MS = 24 * 60 * 60 * 1000
 
 
-def _bargain_count_24h_changes(
+def _portfolio_day_boundary(now_ms: int) -> tuple[str, int]:
+    current = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc)
+    day_start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    return current.date().isoformat(), int(day_start.timestamp() * 1000)
+
+
+def _bargain_count_day_changes(
     swings: list[dict[str, Any]],
     economics_by_swing: dict[str, dict[str, Any]],
     *,
     now_ms: int,
 ) -> dict[str, int]:
-    cutoff_ms = int(now_ms) - BARGAIN_CHANGE_WINDOW_MS
+    _, day_start_ms = _portfolio_day_boundary(now_ms)
 
-    def occurred_in_window(value: Any) -> bool:
+    def occurred_today(value: Any) -> bool:
         try:
             timestamp_ms = int(value)
         except (TypeError, ValueError):
             return False
-        return cutoff_ms <= timestamp_ms <= now_ms
+        return day_start_ms <= timestamp_ms <= now_ms
 
-    opened_count = sum(1 for swing in swings if occurred_in_window(swing.get("opened_at_ms")))
+    opened_count = sum(1 for swing in swings if occurred_today(swing.get("opened_at_ms")))
     closed_count = sum(
         1
         for swing in swings
         if economics_by_swing.get(str(swing.get("swing_id")), {}).get("status") == "closed"
-        and occurred_in_window(swing.get("closed_at_ms"))
+        and occurred_today(swing.get("closed_at_ms"))
     )
     return {
-        "open_swing_count_24h_change": opened_count - closed_count,
-        "closed_swing_count_24h_change": closed_count,
-        "total_swing_count_24h_change": opened_count,
+        "open_swing_count_day_change": opened_count - closed_count,
+        "closed_swing_count_day_change": closed_count,
+        "total_swing_count_day_change": opened_count,
     }
 
 
 def _portfolio_timeline(summary: dict[str, Any], holdings: list[dict[str, Any]], warnings: list[str]) -> list[dict[str, Any]]:
+    captured_at = datetime.now(timezone.utc)
+    captured_at_ms = int(captured_at.timestamp() * 1000)
+    snapshot_date, day_start_ms = _portfolio_day_boundary(captured_at_ms)
+    existing_timeline = list_portfolio_daily_snapshots(
+        account_key=DEFAULT_ACCOUNT_KEY,
+        limit=PORTFOLIO_TIMELINE_DAYS,
+    )
+    today_snapshot = next(
+        (point for point in existing_timeline if point.get("snapshot_date") == snapshot_date),
+        None,
+    )
+    day_open_total = _as_float((today_snapshot or {}).get("day_open_total_value"))
+    if day_open_total is None:
+        previous_points = [
+            point
+            for point in existing_timeline
+            if int(point.get("captured_at_ms") or 0) < day_start_ms
+        ]
+        previous_point = max(
+            previous_points,
+            key=lambda point: int(point.get("captured_at_ms") or 0),
+            default=None,
+        )
+        day_open_total = _as_float((previous_point or {}).get("total_value"))
+    if day_open_total is None:
+        day_open_total = _as_float(summary.get("total_value"))
+
+    current_total = _as_float(summary.get("total_value"))
+    if current_total is not None and day_open_total is not None:
+        day_change = current_total - day_open_total
+        summary["total_value_day_change"] = day_change
+        summary["total_value_day_change_pct"] = (
+            day_change / day_open_total * 100.0 if day_open_total > 0 else None
+        )
+
     prices_complete = all(holding.get("market_value") is not None for holding in holdings)
     if prices_complete:
-        captured_at = datetime.now(timezone.utc)
         upsert_portfolio_daily_snapshot(
             {
-                "snapshot_date": captured_at.date().isoformat(),
-                "captured_at_ms": int(captured_at.timestamp() * 1000),
+                "snapshot_date": snapshot_date,
+                "captured_at_ms": captured_at_ms,
                 "total_value": summary["total_value"],
+                "day_open_total_value": day_open_total,
                 "invested_capital": summary["invested_capital"],
                 "unrealized_pnl": summary["unrealized_pnl"],
                 "dry_powder": summary["dry_powder"],
@@ -911,7 +926,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     summary["closed_swing_count"] = len(closed_swings)
     summary["total_swing_count"] = len(swings)
     summary.update(
-        _bargain_count_24h_changes(
+        _bargain_count_day_changes(
             swings,
             economics_by_swing,
             now_ms=int(time.time() * 1000),

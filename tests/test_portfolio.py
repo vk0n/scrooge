@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -90,42 +91,21 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual([round(holding["allocation_pct"], 2) for holding in snapshot["holdings"]], [83.33, 16.67])
         self.assertEqual(snapshot["holdings"][0]["rolling_24h_change_pct"], 6.25)
         self.assertIsNone(snapshot["holdings"][1]["rolling_24h_change_pct"])
-        self.assertIsNone(snapshot["summary"]["total_value_24h_change"])
-        self.assertIsNone(snapshot["summary"]["total_value_24h_change_pct"])
+        self.assertEqual(snapshot["summary"]["total_value_day_change"], 100)
+        self.assertEqual(snapshot["summary"]["total_value_day_change_pct"], 500)
         self.assertEqual(snapshot["summary"]["prices_updated_at"], "2026-09-22 13:45:00")
         self.assertTrue(all(holding["market_price_updated_at"] for holding in snapshot["holdings"]))
 
-    def test_summary_calculates_weighted_24h_treasure_change(self):
-        holdings = [
-            {
-                "asset_symbol": "BTC",
-                "market_value": 110.0,
-                "rolling_24h_change_pct": 10.0,
-                "is_dry_powder": False,
-            },
-            {
-                "asset_symbol": "ETH",
-                "market_value": 50.0,
-                "rolling_24h_change_pct": -50.0,
-                "is_dry_powder": False,
-            },
-            {
-                "asset_symbol": "USDT",
-                "market_value": 40.0,
-                "rolling_24h_change_pct": None,
-                "is_dry_powder": True,
-            },
-        ]
+    def test_portfolio_day_boundary_uses_utc_midnight(self):
+        now_ms = int(datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
 
-        summary = portfolio_service._summary_from_holdings(
-            holdings,
-            invested_capital=200.0,
-            open_swings=[],
-            economics_by_swing={},
+        snapshot_date, day_start_ms = portfolio_service._portfolio_day_boundary(now_ms)
+
+        self.assertEqual(snapshot_date, "2026-09-30")
+        self.assertEqual(
+            day_start_ms,
+            int(datetime(2026, 9, 30, 0, 0, tzinfo=timezone.utc).timestamp() * 1000),
         )
-
-        self.assertAlmostEqual(summary["total_value_24h_change"], -40.0)
-        self.assertAlmostEqual(summary["total_value_24h_change_pct"], -16.6666666667)
 
     def test_summary_counts_only_open_spot_swings(self):
         create_spot_swing(
@@ -224,25 +204,25 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             ["closed-eth-swing", "open-btc-swing"],
         )
 
-    def test_bargain_count_24h_changes_tracks_open_closed_and_total(self):
-        now_ms = 2_000_000_000_000
-        day_ms = 24 * 60 * 60 * 1000
+    def test_bargain_count_day_changes_tracks_open_closed_and_total(self):
+        now_ms = int(datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        _, day_start_ms = portfolio_service._portfolio_day_boundary(now_ms)
         swings = [
             {"swing_id": "new-open", "opened_at_ms": now_ms - 1_000, "closed_at_ms": None},
             {
                 "swing_id": "old-recent-close-one",
-                "opened_at_ms": now_ms - (2 * day_ms),
+                "opened_at_ms": day_start_ms - 1_000,
                 "closed_at_ms": now_ms - 2_000,
             },
             {
                 "swing_id": "old-recent-close-two",
-                "opened_at_ms": now_ms - (3 * day_ms),
+                "opened_at_ms": day_start_ms - 2_000,
                 "closed_at_ms": now_ms - 3_000,
             },
             {
                 "swing_id": "old-close",
-                "opened_at_ms": now_ms - (4 * day_ms),
-                "closed_at_ms": now_ms - (2 * day_ms),
+                "opened_at_ms": day_start_ms - 3_000,
+                "closed_at_ms": day_start_ms - 1_000,
             },
         ]
         economics_by_swing = {
@@ -252,15 +232,15 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             "old-close": {"status": "closed"},
         }
 
-        changes = portfolio_service._bargain_count_24h_changes(
+        changes = portfolio_service._bargain_count_day_changes(
             swings,
             economics_by_swing,
             now_ms=now_ms,
         )
 
-        self.assertEqual(changes["open_swing_count_24h_change"], -1)
-        self.assertEqual(changes["closed_swing_count_24h_change"], 2)
-        self.assertEqual(changes["total_swing_count_24h_change"], 1)
+        self.assertEqual(changes["open_swing_count_day_change"], -1)
+        self.assertEqual(changes["closed_swing_count_day_change"], 2)
+        self.assertEqual(changes["total_swing_count_day_change"], 1)
 
     def test_manual_bargain_close_preview_preserves_swing_linkage(self):
         self.add("BTC", 1, 90, "binance")
