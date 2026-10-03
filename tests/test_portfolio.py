@@ -695,6 +695,12 @@ class PortfolioPhaseOneTests(unittest.TestCase):
                 "quote_symbol": "USDT",
                 "origin_side": "sell",
                 "trading_objective": "accumulate_asset",
+                "strategy_reason": {
+                    "action_type": "open",
+                    "signal_level": 1,
+                    "rolling_change_pct": 2.03,
+                    "level_allocation_pct": 10,
+                },
                 "source": "strategy",
                 "opened_at_ms": 3_000,
             }
@@ -730,6 +736,10 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(open_swing["economics"]["unrealized_pnl_quote"], 2.5)
         self.assertAlmostEqual(open_swing["economics"]["unrealized_pnl_pct"], 9.0909090909)
         self.assertEqual(open_swing["economics"]["unpriced_fees_by_asset"], {"BNB": 0.01})
+        self.assertEqual(
+            open_swing["opening_message"],
+            "I sold 0.25 BTC at $110 on Binance Spot. L1 rise +2.03%; I put the 10% campaign stake to work.",
+        )
         closed_swing = ledger["entries"][1]["swing"]
         self.assertEqual(closed_swing["economics"]["realized_pnl_quote"], 20)
         self.assertEqual(len(closed_swing["executions"]), 2)

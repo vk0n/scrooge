@@ -50,7 +50,11 @@ from shared.runtime_db import (  # noqa: E402
 from shared.spot_accounting import backfill_spot_quote_legs  # noqa: E402
 from shared.spot_policy import calculate_spot_inventory_policy  # noqa: E402
 from shared.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics  # noqa: E402
-from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction  # noqa: E402
+from shared.treasury_ledger import (  # noqa: E402
+    append_treasury_event,
+    project_portfolio_transaction,
+    spot_order_presentation_message,
+)
 
 DEFAULT_ACCOUNT_KEY = "manual_spot"
 DEFAULT_QUOTE = "USDT"
@@ -1010,6 +1014,18 @@ def _project_swing_ledger_entry(
     opened_at_ms = int(swing["opened_at_ms"])
     effective_now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     derived_status = str(economics["status"])
+    opening_message = None
+    if economics["opening_quantity"] > 0 and economics["weighted_opening_price"] is not None:
+        opening_message = spot_order_presentation_message(
+            {
+                "tx_type": swing["origin_side"],
+                "asset_symbol": swing["asset_symbol"],
+                "quantity": economics["opening_quantity"],
+                "price": economics["weighted_opening_price"],
+                "source": swing["source"],
+                "reason": swing.get("strategy_reason") or {},
+            }
+        )
     return {
         "entry_type": "swing",
         "entry_id": f"swing:{swing['swing_id']}",
@@ -1023,6 +1039,7 @@ def _project_swing_ledger_entry(
             "status": derived_status,
             "current_market_price": current_market_price,
             "market_price_updated_at": market_price_updated_at,
+            "opening_message": opening_message,
             "age_seconds": max(
                 0,
                 int(((swing.get("closed_at_ms") or effective_now_ms) - opened_at_ms) / 1000),

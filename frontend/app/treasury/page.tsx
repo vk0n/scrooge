@@ -301,6 +301,7 @@ type SpotSwing = {
   closed_at_ms: number | null;
   current_market_price: number | null;
   market_price_updated_at: string | null;
+  opening_message: string | null;
   age_seconds: number;
   economics: SpotSwingEconomics;
   executions: SpotSwingExecution[];
@@ -602,14 +603,6 @@ function swingObjectiveLabel(objective: SpotSwing["trading_objective"]): string 
   if (objective === "accumulate_cash") return "Accumulate Cash";
   if (objective === "accumulate_asset") return "Accumulate Asset";
   return "Not Set";
-}
-
-function swingReasonText(reason: Record<string, unknown>): string | null {
-  for (const key of ["message", "reason", "summary", "signal"]) {
-    const value = reason[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return Object.keys(reason).length ? JSON.stringify(reason) : null;
 }
 
 function custodyQuantity(holding: PortfolioHolding, location: CustodyLocation): number {
@@ -2012,7 +2005,6 @@ function SwingLedgerRow({
     : formattedPnl;
   const quantity = economics.opening_quantity || swing.planned_quantity;
   const fees = Object.entries(economics.fees_by_asset);
-  const reason = swingReasonText(swing.strategy_reason);
   const canClose = economics.status !== "closed" && economics.opening_quantity > 0 && economics.remaining_quantity > 0;
   const canAuthorizeProtectedClose = canClose
     && swing.origin_side === "sell"
@@ -2088,12 +2080,10 @@ function SwingLedgerRow({
       {expanded ? (
         <div className="treasury-swing-details">
           <div className="treasury-swing-metrics">
-            <span><small>Origin</small><strong>{swing.origin_side.toUpperCase()}</strong></span>
             <span><small>Objective</small><strong>{swingObjectiveLabel(swing.trading_objective)}</strong></span>
             <span><small>Remaining</small><strong>{formatNumber(economics.remaining_quantity, 8)} {swing.asset_symbol}</strong></span>
             <span><small>Opened</small><strong>{formatDateTimeEu(occurredAt)}</strong></span>
             <span><small>Age</small><strong>{formatSwingAge(swing.age_seconds)}</strong></span>
-            <span><small>Market Price</small><strong>{formatCurrency(swing.current_market_price, 6)}</strong></span>
             <span>
               <small>{showsRealizedAssetPnl ? "Realized Asset PnL" : "Realized PnL"}</small>
               <strong className={signedToneClass(pnl, "")}>
@@ -2115,7 +2105,7 @@ function SwingLedgerRow({
               </strong>
             </span>
           </div>
-          {reason ? <p className="treasury-swing-reason">My note: {reason}</p> : null}
+          {swing.opening_message ? <p className="treasury-swing-reason">{swing.opening_message}</p> : null}
           <div className="treasury-swing-execution-head">
             <span>Executions</span>
             <small>{swing.executions.length} {swing.executions.length === 1 ? "fill" : "fills"}</small>
@@ -2659,6 +2649,7 @@ function HoldingCard({
   exchange,
   summary,
   realizedAccumulatedCash,
+  focusRequest = 0,
   onPortfolioUpdated,
   onReload,
 }: {
@@ -2666,10 +2657,12 @@ function HoldingCard({
   exchange: PortfolioExchange | null;
   summary: PortfolioSummary;
   realizedAccumulatedCash: number;
+  focusRequest?: number;
   onPortfolioUpdated: (response: CreatePortfolioTransactionResponse | UpdatePortfolioPolicyResponse | UpdateCashPolicyResponse) => void;
   onReload: () => Promise<void>;
 }): JSX.Element {
   const [expanded, setExpanded] = useState<boolean>(false);
+  const cardRef = useRef<HTMLElement>(null);
   const executionEnabled = exchange?.spot_execution_enabled === true;
   const tradingState = holding.spot_trading_state ?? (
     executionEnabled && !holding.is_dry_powder && (holding.minimum_holding_pct ?? 100) < 100
@@ -2707,8 +2700,21 @@ function HoldingCard({
     holding.unassigned_quantity,
   ].join(":");
 
+  useEffect(() => {
+    if (focusRequest <= 0) return;
+    setExpanded(true);
+    const frame = window.requestAnimationFrame(() => {
+      cardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusRequest]);
+
   return (
-    <article className={`${holdingToneClass(holding.total_gain)}${expanded ? " treasury-holding-card-expanded" : ""}`}>
+    <article
+      ref={cardRef}
+      id={`treasury-holding-${holding.asset_symbol.toLowerCase()}`}
+      className={`${holdingToneClass(holding.total_gain)}${expanded ? " treasury-holding-card-expanded" : ""}`}
+    >
       <div className="treasury-holding-row">
         <button
           type="button"
@@ -2838,6 +2844,7 @@ export default function TreasuryPage(): JSX.Element {
   const [intakeMode, setIntakeMode] = useState<TreasureIntakeMode>("bring_in");
   const [buyAssetSymbol, setBuyAssetSymbol] = useState<string>("");
   const [bargainsExpanded, setBargainsExpanded] = useState<boolean>(false);
+  const [reserveFocusRequest, setReserveFocusRequest] = useState<number>(0);
   const refreshInFlight = useRef<boolean>(false);
   const initialLoadSettled = useRef<boolean>(false);
 
@@ -3016,7 +3023,12 @@ export default function TreasuryPage(): JSX.Element {
                 {formatSignedPercent(summary?.total_gain_pct)}
               </span>
             </div>
-            <div className="treasury-summary-card">
+            <button
+              type="button"
+              className="treasury-summary-card treasury-summary-card-reserve"
+              aria-controls="treasury-holding-usdt"
+              onClick={() => setReserveFocusRequest((current) => current + 1)}
+            >
               <span className="treasury-summary-label">Vault Reserve</span>
               <strong>{formatCurrency(summary?.vault_reserve ?? 0)}</strong>
               <span className="treasury-summary-note">
@@ -3025,7 +3037,7 @@ export default function TreasuryPage(): JSX.Element {
                   ? <><br />{formatCurrency(summary?.vault_reserve_committed ?? 0)} committed</>
                   : ""}
               </span>
-            </div>
+            </button>
             <button
               type="button"
               className={`treasury-summary-card treasury-summary-card-swings${bargainsExpanded ? " treasury-summary-card-swings-expanded" : ""}`}
@@ -3342,6 +3354,7 @@ export default function TreasuryPage(): JSX.Element {
                   exchange={exchange}
                   summary={summary!}
                   realizedAccumulatedCash={summary?.realized_accumulated_cash ?? 0}
+                  focusRequest={holding.is_dry_powder && holding.asset_symbol === "USDT" ? reserveFocusRequest : 0}
                   onPortfolioUpdated={(response) => {
                     setPortfolio(mergePortfolioPayload(response.portfolio, response.warnings));
                   }}
