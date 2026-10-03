@@ -2704,7 +2704,12 @@ function HoldingCard({
     if (focusRequest <= 0) return;
     setExpanded(true);
     const frame = window.requestAnimationFrame(() => {
-      cardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const card = cardRef.current;
+      if (!card) return;
+      const navigationBottom = document.querySelector<HTMLElement>(".top-nav")
+        ?.getBoundingClientRect().bottom ?? 0;
+      const targetTop = window.scrollY + card.getBoundingClientRect().top - navigationBottom - 12;
+      window.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [focusRequest]);

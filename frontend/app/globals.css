@@ -2882,7 +2882,6 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-holding-card {
-  scroll-margin-top: 7rem;
   border: 1px solid rgba(95, 108, 128, 0.34);
   border-radius: 0.9rem;
   padding: 0.62rem 0.72rem;
