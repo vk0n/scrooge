@@ -161,6 +161,9 @@ def reverse_signal_satisfies(
 
 
 def remaining_unrealized_pnl_pct(economics: dict[str, Any]) -> float | None:
+    calculated_pct = economics.get("unrealized_pnl_pct")
+    if calculated_pct is not None:
+        return float(calculated_pct)
     unrealized = economics.get("unrealized_pnl_quote")
     remaining_notional = economics.get("remaining_opening_quote_quantity")
     if unrealized is None or remaining_notional is None:

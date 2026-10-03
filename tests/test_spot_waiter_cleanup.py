@@ -149,6 +149,7 @@ class WaiterCleanupDomainTests(unittest.TestCase):
 
         self.assertEqual(economics["remaining_opening_quote_quantity"], 500)
         self.assertEqual(economics["unrealized_pnl_quote"], -125)
+        self.assertEqual(economics["unrealized_pnl_pct"], -25)
         self.assertEqual(remaining_unrealized_pnl_pct(economics), -25)
 
 

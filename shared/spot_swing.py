@@ -169,6 +169,7 @@ def calculate_swing_economics(
     remaining_open_quote_fees = sum(lot["remaining"] * lot["quote_fee_per_unit"] for lot in opening_lots)
     unrealized_gross: float | None = None
     unrealized_pnl: float | None = None
+    unrealized_pnl_pct: float | None = None
     if current_price is not None:
         market_price = _number(current_price, field="Current price", positive=True)
         if origin_side == "sell":
@@ -176,6 +177,8 @@ def calculate_swing_economics(
         else:
             unrealized_gross = sum(lot["remaining"] * (market_price - lot["unit_price"]) for lot in opening_lots)
         unrealized_pnl = unrealized_gross - remaining_open_quote_fees
+        if remaining_opening_quote > epsilon:
+            unrealized_pnl_pct = unrealized_pnl / remaining_opening_quote * 100.0
 
     stored_status = str(swing.get("status") or "open").strip().lower()
     if opening_inventory_quantity > epsilon and remaining_quantity <= epsilon:
@@ -226,6 +229,7 @@ def calculate_swing_economics(
         "target_ratchet_quantity": target_ratchet_quantity,
         "unrealized_gross_pnl_quote": unrealized_gross,
         "unrealized_pnl_quote": unrealized_pnl,
+        "unrealized_pnl_pct": unrealized_pnl_pct,
         "fees_by_asset": fees_by_asset,
         "unpriced_fees_by_asset": {
             asset: amount for asset, amount in fees_by_asset.items() if asset != quote_symbol

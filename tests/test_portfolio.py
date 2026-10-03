@@ -714,7 +714,9 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             }
         )
 
-        ledger = portfolio_service.load_portfolio_asset_ledger("BTC")
+        with patch.object(portfolio_service.time, "time", return_value=10.0):
+            ledger = portfolio_service.load_portfolio_asset_ledger("BTC")
+            bargain_ledger = portfolio_service.load_portfolio_bargain_ledger()
 
         self.assertEqual(ledger["entry_count"], 3)
         self.assertEqual(
@@ -726,12 +728,23 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(open_swing["economics"]["status"], "open")
         self.assertEqual(open_swing["economics"]["remaining_quantity"], 0.25)
         self.assertEqual(open_swing["economics"]["unrealized_pnl_quote"], 2.5)
+        self.assertAlmostEqual(open_swing["economics"]["unrealized_pnl_pct"], 9.0909090909)
         self.assertEqual(open_swing["economics"]["unpriced_fees_by_asset"], {"BNB": 0.01})
         closed_swing = ledger["entries"][1]["swing"]
         self.assertEqual(closed_swing["economics"]["realized_pnl_quote"], 20)
         self.assertEqual(len(closed_swing["executions"]), 2)
         self.assertEqual(ledger["sort"], "date")
         self.assertEqual(ledger["direction"], "desc")
+        asset_swings = {
+            entry["swing"]["swing_id"]: entry
+            for entry in ledger["entries"]
+            if entry["entry_type"] == "swing"
+        }
+        bargain_swings = {
+            entry["swing"]["swing_id"]: entry
+            for entry in bargain_ledger["entries"]
+        }
+        self.assertEqual(bargain_swings, asset_swings)
 
         open_ledger = portfolio_service.load_portfolio_asset_ledger("BTC", entry_filter="open")
         closed_ledger = portfolio_service.load_portfolio_asset_ledger("BTC", entry_filter="closed")

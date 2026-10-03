@@ -119,6 +119,7 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertEqual(result["remaining_quantity"], 50)
         self.assertEqual(result["realized_pnl_quote"], 0)
         self.assertEqual(result["unrealized_pnl_quote"], 25)
+        self.assertEqual(result["unrealized_pnl_pct"], 10)
 
     def test_profitable_cash_swing_accrues_retention_exactly_once(self):
         upsert_portfolio_cash_policy(20, path=self.db_path)

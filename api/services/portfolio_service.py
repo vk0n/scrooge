@@ -994,6 +994,45 @@ def load_portfolio_asset_transactions(
     }
 
 
+def _project_swing_ledger_entry(
+    swing: dict[str, Any],
+    *,
+    current_market_price: float | None,
+    market_price_updated_at: str | None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    executions = list_spot_swing_executions(str(swing["swing_id"]))
+    economics = calculate_swing_economics(
+        swing,
+        executions,
+        current_price=current_market_price,
+    )
+    opened_at_ms = int(swing["opened_at_ms"])
+    effective_now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+    derived_status = str(economics["status"])
+    return {
+        "entry_type": "swing",
+        "entry_id": f"swing:{swing['swing_id']}",
+        "occurred_at_ms": opened_at_ms,
+        "occurred_at": datetime.fromtimestamp(
+            opened_at_ms / 1000,
+            tz=timezone.utc,
+        ).strftime("%Y-%m-%d %H:%M:%S"),
+        "swing": {
+            **swing,
+            "status": derived_status,
+            "current_market_price": current_market_price,
+            "market_price_updated_at": market_price_updated_at,
+            "age_seconds": max(
+                0,
+                int(((swing.get("closed_at_ms") or effective_now_ms) - opened_at_ms) / 1000),
+            ),
+            "economics": economics,
+            "executions": executions,
+        },
+    }
+
+
 def load_portfolio_asset_ledger(
     asset_symbol: str,
     *,
@@ -1145,37 +1184,17 @@ def load_portfolio_asset_ledger(
         materialized_only=True,
     )
     for swing in swings:
-        executions = list_spot_swing_executions(swing["swing_id"])
-        economics = calculate_swing_economics(swing, executions, current_price=market_price)
-        derived_status = str(economics["status"])
+        entry = _project_swing_ledger_entry(
+            swing,
+            current_market_price=market_price,
+            market_price_updated_at=market_price_updated_at,
+        )
+        derived_status = str(entry["swing"]["economics"]["status"])
         if normalized_filter == "open" and derived_status == "closed":
             continue
         if normalized_filter == "closed" and derived_status != "closed":
             continue
-        opened_at_ms = int(swing["opened_at_ms"])
-        entries.append(
-            {
-                "entry_type": "swing",
-                "entry_id": f"swing:{swing['swing_id']}",
-                "occurred_at_ms": opened_at_ms,
-                "occurred_at": datetime.fromtimestamp(
-                    opened_at_ms / 1000,
-                    tz=timezone.utc,
-                ).strftime("%Y-%m-%d %H:%M:%S"),
-                "swing": {
-                    **swing,
-                    "status": derived_status,
-                    "current_market_price": market_price,
-                    "market_price_updated_at": market_price_updated_at,
-                    "age_seconds": max(
-                        0,
-                        int(((swing.get("closed_at_ms") or time.time() * 1000) - opened_at_ms) / 1000),
-                    ),
-                    "economics": economics,
-                    "executions": executions,
-                },
-            }
-        )
+        entries.append(entry)
 
     entries.sort(key=sort_key, reverse=normalized_direction == "desc")
     paged_entries = entries[normalized_offset:normalized_offset + ASSET_LEDGER_PAGE_SIZE]
@@ -1225,9 +1244,12 @@ def load_portfolio_bargain_ledger(
             market_price, _, market_price_updated_at = _fetch_market_price(*pair)
             prices[pair] = (market_price, market_price_updated_at)
         market_price, market_price_updated_at = prices[pair]
-        executions = list_spot_swing_executions(swing["swing_id"])
-        economics = calculate_swing_economics(swing, executions, current_price=market_price)
-        derived_status = str(economics["status"])
+        entry = _project_swing_ledger_entry(
+            swing,
+            current_market_price=market_price,
+            market_price_updated_at=market_price_updated_at,
+        )
+        derived_status = str(entry["swing"]["economics"]["status"])
         if derived_status == "closed":
             closed_count += 1
         else:
@@ -1236,30 +1258,7 @@ def load_portfolio_bargain_ledger(
             continue
         if normalized_filter == "closed" and derived_status != "closed":
             continue
-        opened_at_ms = int(swing["opened_at_ms"])
-        entries.append(
-            {
-                "entry_type": "swing",
-                "entry_id": f"swing:{swing['swing_id']}",
-                "occurred_at_ms": opened_at_ms,
-                "occurred_at": datetime.fromtimestamp(
-                    opened_at_ms / 1000,
-                    tz=timezone.utc,
-                ).strftime("%Y-%m-%d %H:%M:%S"),
-                "swing": {
-                    **swing,
-                    "status": derived_status,
-                    "current_market_price": market_price,
-                    "market_price_updated_at": market_price_updated_at,
-                    "age_seconds": max(
-                        0,
-                        int(((swing.get("closed_at_ms") or time.time() * 1000) - opened_at_ms) / 1000),
-                    ),
-                    "economics": economics,
-                    "executions": executions,
-                },
-            }
-        )
+        entries.append(entry)
 
     def sort_key(item: dict[str, Any]) -> tuple[float, int, str]:
         if normalized_sort == "pnl":

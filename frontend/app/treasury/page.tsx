@@ -278,6 +278,7 @@ type SpotSwingEconomics = {
   realized_asset_gain: number | null;
   target_ratchet_quantity: number;
   unrealized_pnl_quote: number | null;
+  unrealized_pnl_pct: number | null;
   fees_by_asset: Record<string, number>;
   unpriced_fees_by_asset: Record<string, number>;
 };
@@ -1999,6 +2000,10 @@ function SwingLedgerRow({
   const formattedPnl = showsRealizedAssetPnl
     ? formatSignedAssetQuantity(pnl, swing.asset_symbol)
     : formatSignedCurrency(pnl);
+  const formattedHeadlinePnl = economics.status !== "closed"
+    && typeof economics.unrealized_pnl_pct === "number"
+    ? `${formattedPnl} · ${formatSignedPercent(economics.unrealized_pnl_pct)}`
+    : formattedPnl;
   const quantity = economics.opening_quantity || swing.planned_quantity;
   const fees = Object.entries(economics.fees_by_asset);
   const reason = swingReasonText(swing.strategy_reason);
@@ -2071,7 +2076,7 @@ function SwingLedgerRow({
         <span className={`treasury-swing-status treasury-swing-status-${economics.status}`}>
           {swingStatusLabel(economics.status)}
         </span>
-        <strong className={signedToneClass(pnl, "treasury-swing-pnl")}>{formattedPnl}</strong>
+        <strong className={signedToneClass(pnl, "treasury-swing-pnl")}>{formattedHeadlinePnl}</strong>
         <span className="treasury-holding-chevron" aria-hidden="true" />
       </button>
       {expanded ? (
@@ -2091,7 +2096,15 @@ function SwingLedgerRow({
                   : formatSignedCurrency(economics.realized_pnl_quote)}
               </strong>
             </span>
-            <span><small>Open PnL</small><strong className={signedToneClass(economics.unrealized_pnl_quote, "")}>{formatSignedCurrency(economics.unrealized_pnl_quote)}</strong></span>
+            <span>
+              <small>Open PnL</small>
+              <strong className={signedToneClass(economics.unrealized_pnl_quote, "")}>
+                {formatSignedCurrency(economics.unrealized_pnl_quote)}
+                {typeof economics.unrealized_pnl_pct === "number"
+                  ? ` · ${formatSignedPercent(economics.unrealized_pnl_pct)}`
+                  : ""}
+              </strong>
+            </span>
           </div>
           {reason ? <p className="treasury-swing-reason">My note: {reason}</p> : null}
           <div className="treasury-swing-execution-head">
