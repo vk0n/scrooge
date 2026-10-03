@@ -273,8 +273,10 @@ type SpotSwingEconomics = {
   weighted_opening_price: number | null;
   weighted_closing_price: number | null;
   realized_pnl_quote: number;
+  realized_pnl_pct: number | null;
   realized_cash_gain_quote: number | null;
   realized_net_asset_change: number | null;
+  realized_net_asset_change_pct: number | null;
   realized_asset_gain: number | null;
   target_ratchet_quantity: number;
   unrealized_pnl_quote: number | null;
@@ -1997,12 +1999,16 @@ function SwingLedgerRow({
     : economics.status === "closed"
       ? economics.realized_pnl_quote
       : economics.unrealized_pnl_quote;
+  const pnlPct = showsRealizedAssetPnl
+    ? economics.realized_net_asset_change_pct
+    : economics.status === "closed"
+      ? economics.realized_pnl_pct
+      : economics.unrealized_pnl_pct;
   const formattedPnl = showsRealizedAssetPnl
     ? formatSignedAssetQuantity(pnl, swing.asset_symbol)
     : formatSignedCurrency(pnl);
-  const formattedHeadlinePnl = economics.status !== "closed"
-    && typeof economics.unrealized_pnl_pct === "number"
-    ? `${formattedPnl} · ${formatSignedPercent(economics.unrealized_pnl_pct)}`
+  const formattedHeadlinePnl = typeof pnlPct === "number"
+    ? `${formattedPnl} · ${formatSignedPercent(pnlPct)}`
     : formattedPnl;
   const quantity = economics.opening_quantity || swing.planned_quantity;
   const fees = Object.entries(economics.fees_by_asset);
@@ -2094,6 +2100,9 @@ function SwingLedgerRow({
                 {showsRealizedAssetPnl
                   ? formatSignedAssetQuantity(pnl, swing.asset_symbol)
                   : formatSignedCurrency(economics.realized_pnl_quote)}
+                {typeof pnlPct === "number" && economics.status === "closed"
+                  ? ` · ${formatSignedPercent(pnlPct)}`
+                  : ""}
               </strong>
             </span>
             <span>

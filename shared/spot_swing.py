@@ -191,6 +191,17 @@ def calculate_swing_economics(
         derived_status = "accepting_loss"
 
     realized_cash_gain = net_quote_cash_flow if derived_status == "closed" else None
+    realized_pnl = realized_gross - realized_quote_fees
+    realized_pnl_pct = (
+        realized_pnl / opening_quote * 100.0
+        if derived_status == "closed" and opening_quote > epsilon
+        else None
+    )
+    realized_net_asset_change_pct = (
+        net_asset_flow / opening_inventory_quantity * 100.0
+        if derived_status == "closed" and opening_inventory_quantity > epsilon
+        else None
+    )
     realized_asset_gain = max(0.0, net_asset_flow) if derived_status == "closed" else None
     target_ratchet_quantity = (
         realized_asset_gain
@@ -222,9 +233,11 @@ def calculate_swing_economics(
         "weighted_closing_price": closing_quote / closing_quantity if closing_quantity > epsilon else None,
         "realized_gross_pnl_quote": realized_gross,
         "realized_fee_quote": realized_quote_fees,
-        "realized_pnl_quote": realized_gross - realized_quote_fees,
+        "realized_pnl_quote": realized_pnl,
+        "realized_pnl_pct": realized_pnl_pct,
         "realized_cash_gain_quote": realized_cash_gain,
         "realized_net_asset_change": net_asset_flow if derived_status == "closed" else None,
+        "realized_net_asset_change_pct": realized_net_asset_change_pct,
         "realized_asset_gain": realized_asset_gain,
         "target_ratchet_quantity": target_ratchet_quantity,
         "unrealized_gross_pnl_quote": unrealized_gross,

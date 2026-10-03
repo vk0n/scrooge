@@ -290,6 +290,7 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertEqual(closed["status"], "closed")
         self.assertEqual(closed["remaining_quantity"], 0)
         self.assertAlmostEqual(closed["realized_pnl_quote"], 28)
+        self.assertAlmostEqual(closed["realized_pnl_pct"], 11.2)
         self.assertEqual(load_spot_swing("swing-partial", path=self.db_path)["closed_at_ms"], 5_000)
 
     def test_terminal_sell_close_crystallizes_unrecovered_inventory_without_a_tail(self):
@@ -466,6 +467,7 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertEqual(result["status"], "closed")
         self.assertAlmostEqual(result["realized_cash_gain_quote"], 27.5)
         self.assertAlmostEqual(result["realized_net_asset_change"], 4.8)
+        self.assertAlmostEqual(result["realized_net_asset_change_pct"], 4.8)
         self.assertAlmostEqual(result["realized_asset_gain"], 4.8)
         self.assertAlmostEqual(result["target_ratchet_quantity"], 4.8)
         self.assertAlmostEqual(ratchet["previous_target_quantity"], 1_000)
