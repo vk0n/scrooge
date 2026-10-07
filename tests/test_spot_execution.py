@@ -329,6 +329,11 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(quote_legs[0]["asset_symbol"], "USDT")
         self.assertEqual(quote_legs[0]["tx_type"], "sell")
         self.assertAlmostEqual(quote_legs[0]["quantity"], 25)
+        self.assertEqual(
+            quote_legs[0]["note"],
+            "I put this cash to work gathering more BTC.",
+        )
+        self.assertNotIn("spot-order", quote_legs[0]["note"])
         self.assertAlmostEqual(policy["target_quantity"], 1.24)
         self.assertEqual(len(list_spot_accumulation_target_ratchets(path=self.db_path)), 1)
         self.assertEqual(client.create_calls, 1)
@@ -469,6 +474,11 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(len(quote_legs), 1)
         self.assertEqual(quote_legs[0]["tx_type"], "sell")
         self.assertAlmostEqual(quote_legs[0]["quantity"], 25.05)
+        self.assertEqual(
+            quote_legs[0]["note"],
+            "At your request, I put this cash to work gathering more BTC.",
+        )
+        self.assertNotIn("spot-order", quote_legs[0]["note"])
         self.assertAlmostEqual(snapshot["summary"]["dry_powder"], 74.95)
         self.assertAlmostEqual(snapshot["summary"]["invested_capital"], 190)
         self.assertAlmostEqual(snapshot["summary"]["total_value"], 199.95)

@@ -14,6 +14,22 @@ def _number(value: Any) -> float:
     return numeric if numeric == numeric else 0.0
 
 
+def _quote_leg_note(transaction: dict[str, Any], *, side: str, source: str) -> str:
+    asset_symbol = str(transaction.get("asset_symbol") or "asset").strip().upper() or "asset"
+    is_manual = source == "binance_manual"
+    has_bargain = bool(str(transaction.get("swing_id") or "").strip())
+
+    if side == "buy":
+        action = (
+            f"I spent this cash to settle my {asset_symbol} Bargain."
+            if has_bargain
+            else f"I put this cash to work gathering more {asset_symbol}."
+        )
+    else:
+        action = f"I brought the proceeds from my {asset_symbol} sale into the Vault."
+    return f"At your request, {action}" if is_manual else action
+
+
 def build_spot_quote_leg(transaction: dict[str, Any]) -> dict[str, Any] | None:
     """Build the managed quote-currency leg for one confirmed Binance Spot fill."""
     source = str(transaction.get("source") or "").strip().lower()
@@ -53,7 +69,7 @@ def build_spot_quote_leg(transaction: dict[str, Any]) -> dict[str, Any] | None:
         "price": 1.0,
         "source": source,
         "status": transaction.get("status") or "settled",
-        "note": f"Managed {quote_symbol} leg for {transaction_id}.",
+        "note": _quote_leg_note(transaction, side=side, source=source),
         "external_order_id": transaction.get("external_order_id"),
         "custody_location": "binance",
         "spot_quote_leg": True,
