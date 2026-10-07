@@ -1,13 +1,6 @@
 # Scrooge Control Frontend
 
-Next.js control plane UI for Scrooge.
-
-The frontend is the operator surface for:
-- login and auth persistence
-- dashboard status and control actions
-- chart/replay inspection
-- live log viewing
-- push notification setup
+Next.js 14 operator interface for Scrooge's two live systems: Office / Futures and Treasury / Spot. Market Map and Ledger are shared supporting surfaces.
 
 ## Run
 
@@ -17,102 +10,42 @@ npm install
 npm run dev
 ```
 
-Optional for split local dev:
+For split local development, set `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Compose uses `INTERNAL_API_BASE_URL=http://api:8000`.
+
+## Pages
+
+- **Office** (`/dashboard`) - Futures status, trade controls, performance, history, and My Contract.
+- **Treasury** (`/treasury`) - Treasury overview, allocation/timeline, global Bargains Ledger, holdings, custody, asset Policy, Asset Ledger, manual Spot actions, and My Treasury Rules.
+- **Market Map** (`/chart`) - Futures candles, engine-recorded indicators, trades, and equity.
+- **Ledger** (`/logs`) - role-styled Office and Treasury events with filters and pagination.
+
+`/config` and `/controls` remain compatibility redirects to Office.
+
+## Treasury UX Contract
+
+The overview and per-asset screens are projections of the same API state. The global and per-asset Bargain lists render the same Bargain representation rather than maintaining duplicate frontend models.
+
+The Vault Reserve card scrolls to and expands USDT. Holding rows expose custody, policy, and ledger sections. Open and closed Bargains show PnL in the objective's meaningful unit and percentage. Manual exchange actions always show preview/confirmation and wait for durable intent state.
+
+Daily overview deltas use UTC midnight. `NEXT_PUBLIC_DISPLAY_TIMEZONE` changes only timestamp formatting.
+
+## Auth And Updates
+
+- `/login` stores HTTP Basic credentials in browser local storage.
+- `AuthGate` protects operator pages.
+- `Step Out` clears saved credentials.
+- Office/Ledger prefer WebSocket updates and fall back to polling.
+- Treasury refreshes its DB-backed projection periodically and after mutations.
+
+## Notifications
+
+The bell uses `frontend/public/sw.js` and the notifications API to subscribe, test, and unsubscribe Web Push. It requires browser service-worker support and server-side VAPID configuration.
+
+## Build
 
 ```bash
-export NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+npm run build
+npm start
 ```
 
-In Docker Compose the frontend uses:
-
-```bash
-INTERNAL_API_BASE_URL=http://api:8000
-```
-
-Open:
-
-```text
-http://localhost:3000
-```
-
-## Auth
-
-- `/login` stores HTTP Basic credentials in browser local storage
-- authenticated pages are wrapped by `AuthGate`
-- top navigation shows `Step Out` to clear saved credentials
-
-## Main Pages
-
-Primary navigation:
-- `Office` → `/dashboard`
-- `Market Map` → `/chart`
-- `Ledger` → `/logs`
-
-Legacy compatibility routes:
-- `/config` redirects to `/dashboard`
-- `/controls` redirects to `/dashboard`
-
-### Office / Dashboard
-
-`/dashboard` shows:
-- runtime status
-- balance / leverage / symbol / last price
-- current trade summary
-- trailing state
-- config editing
-- live control actions
-- inline command status feedback
-- contract text built from the editable config
-
-It prefers websocket updates from `/ws/status` and falls back to polling `GET /api/status`.
-
-### Market Map
-
-`/chart` renders Plotly charts using `GET /api/chart`.
-
-Features:
-- candlesticks
-- trade entry/exit markers
-- equity curve
-- RSI
-- shared x-axis sync
-- fullscreen chart mode
-- mobile-friendly controls
-
-### Ledger
-
-`/logs` shows live runtime logs using:
-- websocket updates when available
-- polling fallback to `GET /api/logs`
-
-Features:
-- adjustable row count
-- auto-tail toggle
-- newest-first toggle
-
-## Push Notifications
-
-The bell control in navigation and panel mode:
-- checks browser support
-- requests permission
-- subscribes through `/api/notifications/subscribe`
-- sends a test push through `/api/notifications/test`
-- unregisters through `/api/notifications/unsubscribe`
-
-It depends on:
-- browser service workers
-- `frontend/public/sw.js`
-- server-side VAPID configuration in the API/runtime environment
-
-## UX Notes
-
-The current UI is optimized for:
-- desktop control-plane usage
-- compact mobile inspection
-- sticky top navigation
-- bottom mobile navigation
-- Scrooge-style copy and compact dashboard cards
-
-Realtime status UX is intentionally conservative:
-- websocket mode is preferred
-- fallback banners only appear on actual fallback, not on every initial load
+The interface supports desktop and compact mobile layouts with sticky desktop navigation and bottom mobile navigation.

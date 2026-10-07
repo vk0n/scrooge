@@ -319,7 +319,16 @@ class SpotExecutionTests(unittest.TestCase):
             if item.get("spot_order_intent_id") == preview["intent_id"]
             and not item.get("spot_quote_leg")
         )
+        quote_legs = [
+            item for item in list_portfolio_transactions(path=self.db_path)
+            if item.get("base_transaction_id") == transaction["transaction_id"]
+            and item.get("spot_quote_leg")
+        ]
         self.assertAlmostEqual(transaction["quantity"], 0.24)
+        self.assertEqual(len(quote_legs), 1)
+        self.assertEqual(quote_legs[0]["asset_symbol"], "USDT")
+        self.assertEqual(quote_legs[0]["tx_type"], "sell")
+        self.assertAlmostEqual(quote_legs[0]["quantity"], 25)
         self.assertAlmostEqual(policy["target_quantity"], 1.24)
         self.assertEqual(len(list_spot_accumulation_target_ratchets(path=self.db_path)), 1)
         self.assertEqual(client.create_calls, 1)
@@ -335,9 +344,22 @@ class SpotExecutionTests(unittest.TestCase):
         )
 
         result = executor.execute(preview["intent_id"])
+        executor.execute(preview["intent_id"])
 
         self.assertEqual(result["status"], "FILLED")
         self.assertEqual(client.create_calls, 1)
+        policy = next(
+            item for item in list_portfolio_asset_policies(path=self.db_path)
+            if item["asset_symbol"] == "BTC"
+        )
+        quote_legs = [
+            item for item in list_portfolio_transactions(path=self.db_path)
+            if item.get("base_transaction_id") == f"spot-order:{preview['intent_id']}"
+            and item.get("spot_quote_leg")
+        ]
+        self.assertAlmostEqual(policy["target_quantity"], 1.25)
+        self.assertEqual(len(quote_legs), 1)
+        self.assertAlmostEqual(quote_legs[0]["quantity"], 25.05)
 
     def test_accumulation_execution_is_capped_by_actual_binance_usdt(self):
         preview = self._accumulation_preview()

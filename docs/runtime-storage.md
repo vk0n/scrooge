@@ -1,198 +1,139 @@
 # Runtime Storage Contract
 
-Scrooge is now DB-first.
+Scrooge is DB-first. Canonical mutable runtime state lives in SQLite at `SCROOGE_DB_PATH`, normally `runtime/scrooge.sqlite3` locally or `/runtime/scrooge.sqlite3` in Compose.
 
-## Source Of Truth
+## Ownership
 
-Canonical runtime state lives in:
-- `SCROOGE_DB_PATH`
-- default: `runtime/scrooge.sqlite3`
+SQLite is authoritative for:
 
-SQLite is the source of truth for:
-- current runtime state snapshot
-- trade history
-- balance history
-- Ledger/UI log lines
-- event history records
+- Futures runtime snapshots, trade history, balance history, chart samples, and event history;
+- structured Ledger/UI entries;
+- Treasury accounts, settled transactions, custody, asset policies, cash policy, and daily snapshots;
+- Binance account snapshots and per-asset balances;
+- Spot order intents, status transitions, Swing executions, signals, campaigns, actions, and target ratchets.
 
-File artifacts remain only where they are still useful as raw or replay-oriented outputs:
-- `event_history.jsonl`
-- `market_events.jsonl`
-- `chart_dataset.csv`
+These files remain useful artifacts, but are not canonical state:
 
-These file artifacts are not the canonical runtime state contract.
+- `event_history.jsonl` - replay/debug mirror of domain events;
+- `market_events.jsonl` - raw Futures market and account events;
+- `chart_dataset.csv` - chart/replay data;
+- generated backtest reports and CSV/JSON outputs.
 
-## Bootstrap Contract
+Redis is a command queue and command-status channel. It is not a trading ledger and must never be used to reconstruct portfolio accounting.
 
-On a clean instance:
-1. `/runtime` may be empty.
-2. Bot/API resolve `SCROOGE_DB_PATH`.
-3. Runtime DB is created if missing.
-4. Schema is initialized.
-5. Live bot seeds the initial runtime state snapshot if none exists.
+## Bootstrap And Migration
 
-## Schema Contract
+On a clean instance the bot or API resolves `SCROOGE_DB_PATH`, creates the database, applies every migration, and initializes missing runtime state. `schema_migrations` is the authoritative version record.
 
-`schema_migrations` is the authoritative schema-version table.
+Current schema version: **20**.
 
-Current schema version:
-- `15`
+Schema changes belong in explicit, forward-safe migration steps in `shared/runtime_db.py`. Services may start against an older database and migrate it; they must not require an operator to edit tables manually.
 
-Current runtime tables:
+## Tables
+
+### Futures And Shared Runtime
+
 - `schema_migrations`
 - `runtime_state_snapshot`
 - `trade_history`
 - `balance_history`
 - `event_history`
 - `ui_log_entries`
+- `strategy_chart_snapshots`
+
+### Treasury Accounting
+
 - `portfolio_accounts`
 - `portfolio_transactions`
 - `portfolio_asset_policies`
+- `portfolio_cash_policies`
+- `portfolio_cash_retention_uses`
+- `portfolio_cash_retention_credits`
 - `portfolio_daily_snapshots`
+
+### Exchange State And Orders
+
 - `exchange_account_snapshots`
 - `exchange_asset_balances`
 - `spot_order_intents`
 - `spot_order_status_events`
+
+### Spot Strategy And Bargains
+
 - `spot_swings`
 - `spot_swing_executions`
+- `spot_swing_cash_retentions`
 - `spot_signal_snapshots`
 - `spot_strategy_campaigns`
 - `spot_strategy_actions`
-- `spot_swing_target_ratchets`
+- `spot_strategy_campaign_consumptions`
 - `spot_accumulation_target_ratchets`
+- `spot_swing_target_ratchets`
+- `spot_manual_target_ratchets`
 
-`portfolio_transactions` remains the accounting source of truth for Treasury. `ui_log_entries` is a structured,
-filterable Ledger projection spanning both Futures trade events and Treasury events; Treasury transaction entries are
-reconciled idempotently by their transaction IDs.
+## Treasury Accounting Source Of Truth
 
-`spot_swings` and `spot_swing_executions` are a separate trading-lifecycle projection. They preserve independent
-Swing economics and exchange execution identity, but they do not replace `portfolio_transactions` or participate
-directly in the holdings/cost-basis projection. Existing Treasury transactions are not backfilled into Swings.
+`portfolio_transactions` is the source of truth for managed quantity, cost basis, external capital flows, and custody. Holdings and overview totals are projections over settled transactions plus current prices; they are not copied from the Binance balance endpoint.
 
-The per-asset Asset Ledger is a read-only chronological projection over both domains. Its `All` view interleaves
-Treasury accounting entries with compact Swing lifecycle entries; `Open` and `Closed` filter Swing lifecycle state.
-Expanding a Swing exposes its own executions, fees, remaining quantity, and realized/unrealized economics. Building
-this projection does not create Swings, submit orders, settle fills, or mutate portfolio accounting.
+Confirmed Binance Spot trades record both economic legs:
 
-A Swing objective is explicitly `accumulate_cash`, `accumulate_asset`, or unset. Closed Swing economics expose both
-net quote cash flow and net asset change. A positive net asset gain from a closed `accumulate_asset` Swing can produce
-an upward-only Target Holding ratchet proposal. The authoritative fill settlement applies that ratchet atomically and
-exactly once after full closure. Normal portfolio transactions, custody movements, and current balance changes never
-derive or rewrite Target Holding.
+- BUY records an asset increase and a USDT decrease;
+- SELL records an asset decrease and a USDT increase.
+
+The quote leg uses the same execution identity and is backfilled exactly once for older confirmed manual/strategy intents that predate quote accounting. Internal Binance manual trades carry `capital_effect: none`, so they alter assets and reserve without inflating Invested Capital. Deposits and withdrawals remain external capital flows.
+
+`ui_log_entries` is a structured, filterable projection over Futures and Treasury events. Treasury entries are reconciled by stable transaction or source references, preventing duplicate Ledger lines after a restart.
+
+## Bargain Source Of Truth
+
+`spot_swings` and `spot_swing_executions` preserve each Bargain's lifecycle and exchange economics. They do not replace `portfolio_transactions`: confirmed fills settle the Swing and also produce the portfolio legs required to update holdings and cash.
+
+The global Bargains Ledger and every per-asset Asset Ledger project the same Swing records. The UI does not maintain duplicate Bargain models. Filters, sorting, pagination, and expansion are presentation concerns over the shared API representation.
+
+Open Bargain objectives follow the current asset Policy. Closed Bargains preserve their historical objective. Realized fields expose quote cash gain and net asset change so `accumulate_cash` and `accumulate_asset` can be displayed in their economically meaningful units.
+
+## Target Ratchets
+
+Target Holding changes are stored as separate idempotent projections:
+
+- `spot_accumulation_target_ratchets` for standalone strategy accumulation;
+- `spot_swing_target_ratchets` for finalized `accumulate_asset` Bargains;
+- `spot_manual_target_ratchets` for confirmed standalone manual Binance BUY/SELL orders.
+
+Manual BUY increases Target by net asset received. Manual SELL decreases Target by total asset debit. A Swing close and a Treasury-intake operation are excluded from the generic manual ratchet path to prevent double application. Deposits, withdrawals, adjustments, and custody transfers do not infer Target changes.
+
+## Cash Protection
+
+`portfolio_cash_policies.retained_quote_balance` is the current Protected Cash balance. It is an accrued amount, not a percentage applied to today's full reserve.
+
+When an eligible profitable `accumulate_cash` Bargain closes, `spot_swing_cash_retentions` records the calculation and `portfolio_cash_retention_credits` applies the credit exactly once. Explicit owner uses and bucket transfers are recorded in `portfolio_cash_retention_uses` and credit records with stable references.
+
+Automatic strategy actions cannot spend Protected Cash. Manual BUYs, manual loss closes, and Office transfers can use it only when the operator explicitly authorizes that path.
 
 ## Spot Execution Boundaries
 
-- Swing logic works with economic quantities and does not apply Binance filters.
-- The authoritative Spot executor owns `stepSize`, `tickSize`, `minQty`, `minNotional`, and other venue constraints.
-- Swing accounting consumes actual Binance fill quantity and price, never requested or pre-quantized values.
-- Manual and strategy intents converge on the same authoritative executor. Public Control Plane previews are always
-  manual. Strategy intents must carry either a valid `swing_id`, or an explicit standalone `accumulate_asset`
-  action identity and explainable reason.
-- Intent quantities remain economic requests. Immediately before submission the executor rounds quantity down to the
-  Binance `stepSize`, then validates `minQty`, `maxQty`, notional rules, current balances, and Protected Floor.
-- Fees retain their original `fee_amount` and `fee_asset`. Fees paid in BNB or another third asset remain unpriced until
-  a future analytics layer can value them from historical market data.
-- Every execution transition is persisted in `spot_order_status_events`: previewed, queued/processing, validated,
-  submitted, accepted, fill confirmed, accounting updated, and final/failed states. Stable Binance client order IDs
-  prevent duplicate submission, while confirmed fills can retry local Treasury/Swing settlement without resubmission.
-- `portfolio_transactions` receives one idempotent transaction for every confirmed order and remains the holdings/cost
-  basis source of truth. A linked Swing separately receives the actual Binance fills, preserving exchange trade identity
-  and fees; replay cannot double-count either projection.
-- Runtime startup only resumes previously confirmed/in-flight intents. Recovery does not create Swings or new
-  automatic orders.
-- A closed `accumulate_asset` Swing may produce a Target ratchet only after its net asset gain is final. Authoritative
-  settlement applies it atomically and idempotently exactly once. Partial closes never ratchet Target, and a losing
-  Swing never lowers it.
-- A confirmed standalone Treasury accumulation BUY ratchets Target by the net acquired base asset exactly once. Its
-  action-key ratchet is stored separately from Swing ratchets and does not create Swing execution state.
+- Swing and policy logic work in economic quantities and never pretend to apply Binance filters.
+- The bot-side executor owns `stepSize`, `tickSize`, quantity/notional bounds, current balances, and final policy protection.
+- Manual and strategy requests converge on the same executor and settlement path.
+- Intent quantity is a request; accounting quantity and price always come from confirmed fills.
+- Native fee amount and fee asset are preserved. Third-asset fees such as BNB remain unpriced unless reliable historical conversion data exists.
+- Every intent transition is appended to `spot_order_status_events`.
+- Stable intent, action, execution, and client-order identities make retries idempotent.
 
-## Treasury Policy Mode
+If submission outcome is ambiguous, the intent remains `uncertain`. If the exchange fill is known but local settlement fails, it remains `accounting_error`. Both states require reconciliation by client order ID before any replacement submission.
 
-`SCROOGE_SPOT_EXECUTION_ENABLED` remains the global Spot execution switch. Reserve deployment through
-`ACCUMULATE_ASSET + BUY` is baseline platform behavior and has no separate environment, UI, or per-asset automation
-toggle. The asset objective, spendable reserve, current exchange balance, and exchange order filters constrain it.
+## Exchange Snapshots
 
-- With execution disabled, every holding is `locked`, immediate sellable inventory is zero, and trading policy/order
-  controls are omitted from the UI. Stored Target and Minimum Holding values remain unchanged.
-- With execution enabled, a managed asset is `locked` at 100% Minimum Holding and `unlocked` below 100%.
-- Dry Powder is not policy-managed and remains `locked`.
+The live bot periodically stores Binance account snapshots and free/locked balances. These snapshots constrain execution and expose custody consistency warnings. They do not overwrite Treasury ownership or cost basis.
 
-## Rolling Spot Signal Boundaries
+A stale Spot balance snapshot blocks API preview/execution paths that cannot be validated safely. The freshness window is configured with `SCROOGE_SPOT_BALANCE_STALE_AFTER_SECONDS`.
 
-- When Spot execution is enabled, the bot samples Binance rolling 24-hour tickers on a configurable interval and
-  persists the latest explainable signal per managed asset in `spot_signal_snapshots`. The live default is 60 seconds,
-  configured through `treasury.signal_refresh_seconds` in `config/live.yaml`.
-- The primary signal is `current price / approximately-24h reference price - 1`. It is independent of UTC midnight.
-- Default absolute movement levels are `2,3,4,6%`. SELL openings use base tranches `10,20,30,40%`.
-  `ACCUMULATE_ASSET + BUY` uses separate Free Vault Reserve tranches `1,3,5,10%`. All three lists live under
-  `treasury.signal` and must remain aligned by signal level.
-- A move below Level 1 is `HOLD`; positive qualifying moves are `SELL` opportunities and negative qualifying moves are
-  `BUY` opportunities.
-- Market opportunity and strategy eligibility are stored separately. Missing Trading Objective, a fully protected
-  policy, disabled execution, or unavailable market data cannot become an eligible strategy action.
-- The signal monitor does not create a Swing, create an order intent, submit an order, or mutate Treasury accounting.
-  Those remain later strategy/execution phases.
-- Every live cycle exhausts all currently eligible actions for an asset in deterministic order: profit-target closes,
-  waiter/capacity cleanup closes, then the current campaign-level opening or reserve accumulation. Orders are submitted
-  sequentially, with Binance balances, Treasury reserve accounting, Swing state, and campaign state refreshed after
-  each terminal fill. A non-terminal, retryable, or uncertain order stops the batch instead of risking duplicate
-  spending.
+## UTC Contract
 
-## Spot Signal Boundaries
+Persisted timestamps are Unix milliseconds in UTC. Portfolio daily snapshots and change-since-midnight metrics use UTC day boundaries. Display timezone configuration is presentation-only.
 
-- Treasury signals use only Binance's rolling 24-hour price change and fixed level allocations.
-- `HOLD` keeps a zero final tranche; actionable `BUY` and `SELL` signals use the allocation assigned to their level.
-- Technical indicators belong to the Futures strategy and are neither fetched nor evaluated by Treasury.
+## Backup And Reset
 
-## Progressive Spot Swing Execution
+Back up at least the SQLite database and mounted YAML config before a production migration. The named `scrooge_runtime` volume survives normal container recreation.
 
-- An eligible rolling opportunity processes at most one action for each newly reached level in the current directional
-  campaign. HOLD preserves the campaign; an opposite actionable signal starts a new campaign; completed levels survive
-  restarts.
-- A new SELL campaign freezes a budget from current policy sellable inventory. Normally the budget is 50% of current
-  remaining sellable; when remaining sellable is at most 25% of `Target × (1 - Minimum Holding %)`, the budget is the
-  full remainder. L1/L2/L3/L4 consume fixed 10/20/30/40% shares of that budget. Current Protected Floor and Binance
-  free inventory always cap execution. Configure the two percentages under `treasury.progression`.
-- Campaign-start Target, Minimum Holding, policy reference, remaining sellable, ratio, capacity mode, frozen capacity,
-  and idempotently consumed quantity are persisted in `spot_strategy_campaigns`. A Target ratchet affects only future
-  campaigns. A direct jump to L3 executes only L3's 30% share; it does not backfill L1 and L2.
-- Existing Swings are evaluated independently from their own weighted opening execution price. The default profitable
-  close threshold is `4%` (`treasury.progression.close_profit_pct`), and profitable closes take priority over new exposure.
-- New Treasury cash policies retain `40%` of each economically profitable cash Bargain. Deep-loss cleanup starts at
-  `-25%` unrealized PnL after the existing minimum-age and reverse-signal requirements are met. Configure the threshold
-  with `treasury.waiter_cleanup.deep_loss.unrealized_pnl_pct`; it must be zero or negative.
-- A signal cycle may submit multiple strategy actions for the same asset when each remains eligible after the preceding
-  fill. Durable action keys and existing client order recovery prevent restarts or retries from creating a second real
-  order for the same decision.
-- New strategy exposure opens only from SELL opportunities. BUY opportunities close existing SELL-origin Swings but do
-  not create BUY-origin Swings. For `accumulate_cash`, an otherwise unused BUY advances campaign state without an
-  order. For `accumulate_asset`, it may deploy only Free Vault Reserve through a standalone BUY, and a confirmed fill
-  increases Target by net acquired asset. `accumulate_cash` SELL Bargains restore the Swing quantity and leave profit
-  in shared quote cash. `accumulate_asset` SELL Bargains reuse sale proceeds to buy back more asset, with finalized
-  positive asset gain ratcheting Target exactly once after full closure.
-- `treasury.progression.estimated_fee_rate` is used only for conservative strategy sizing. Actual Swing and portfolio accounting
-  always use confirmed Binance fills and their native fee amount/asset.
-
-## Treasury Custody Boundaries
-
-- `deposit` brings an asset under Treasury jurisdiction in a selected custody location. A non-stable asset must include
-  its entry cost so the accounting projection cannot create a zero-cost holding.
-- `withdraw` releases an asset from Treasury jurisdiction and removes the proportional cost basis from the selected
-  custody location.
-- `custody_transfer` moves an already managed asset between `unassigned`, `binance`, and `cold_storage` without changing
-  total quantity, cost basis, or Target Holding.
-- `buy` and `sell` remain economic executions. They are not used as manual aliases for bringing assets into or releasing
-  them from Treasury.
-- Deposits, withdrawals, and custody movements never mutate Target Holding. A fully withdrawn asset can disappear from
-  current holdings while its stored policy remains dormant for a later return.
-
-Schema changes must be introduced through explicit migration steps in `shared/runtime_db.py`.
-
-## Fresh Start Rule
-
-For a new production instance, only these classes of data should be carried over:
-- secrets/credentials
-- canonical config
-- DB schema code
-
-Runtime artifacts are intentionally disposable.
+`docker compose down -v` deletes the runtime volume and therefore the canonical database. Use it only for an intentional fresh start. A fresh production instance should carry secrets and reviewed config, not stale generated runtime artifacts.

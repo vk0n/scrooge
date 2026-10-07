@@ -1,9 +1,15 @@
 # Scrooge Docker Deploy
 
+The primary deployment is the live control plane plus two trading books hosted by one bot process:
+- **Office / Futures** - realtime Binance USD-M Futures trading
+- **Treasury / Spot** - Spot monitoring, execution, and accounting
+
+They share deployment infrastructure but keep separate strategy and accounting state. The optional `backtest` profile is an auxiliary one-shot research runner, not a third live service.
+
 Scrooge uses Docker Compose profiles for:
 - control plane only
-- live trading runtime
-- one-shot backtests
+- both live books through the `live` profile
+- auxiliary one-shot research through the `backtest` profile
 
 The stack consists of:
 - `redis` — command queue and command status storage
@@ -11,7 +17,7 @@ The stack consists of:
 - `frontend` — Next.js control plane UI
 - `proxy` — nginx public entrypoint
 - `bot` — live trading runtime (`profile: live`)
-- `backtest` — one-shot backtest runner (`profile: backtest`)
+- `backtest` — auxiliary one-shot research runner (`profile: backtest`)
 - `watchtower` — optional auto-update service (`profile: watchtower`)
 
 Persistent runtime state lives in the `scrooge_runtime` Docker volume.
@@ -24,6 +30,8 @@ For local stand/debug work, you can switch `/runtime` to a bind mount with
 Main mounted configs:
 - `config/live.yaml -> /runtime/config.yaml`
 - `config/backtest.yaml -> /runtime/config.backtest.yaml`
+
+`config/live.yaml` contains both the Futures contract and the required `treasury` strategy subtree. The API mounts the same file read/write so Treasury Rules can create a backup and replace only that subtree. The bot mount is read-only and sees the change after restart.
 
 ## Prepare `.env`
 
@@ -45,6 +53,14 @@ Optional control token:
 ```env
 SCROOGE_CONTROL_TOKEN=...
 ```
+
+Real Spot execution remains off unless both API and bot receive:
+
+```env
+SCROOGE_SPOT_EXECUTION_ENABLED=1
+```
+
+Use a Binance key with Spot trading permission and without withdrawal permission. `SCROOGE_TREASURY_TRANSFER_ENABLED=1` separately enables confirmed internal USDT transfers between Treasury Spot and the USD-M Futures Office.
 
 Optional image refs for registry deploys:
 
@@ -167,14 +183,15 @@ Current live runtime is:
 - websocket-driven for user/account updates
 - event-driven when `strategy_mode: realtime`
 - command-driven via Redis queue for control actions
+- polling Binance Spot balances and rolling ticker signals on configured intervals
+- settling Futures and Treasury state into the same SQLite database through separate domain tables
 
 Important:
 - `config/live.yaml` is currently the main source of truth for live `strategy_mode`
 - the Compose env var `SCROOGE_STRATEGY_MODE` is still available as an override, but if `strategy_mode` is set in the YAML config, the YAML value wins
-- the checked-in live preset currently runs the tuned realtime winner:
-  - `strategy_mode: realtime`
-  - `indicator_inputs`: `ema=intrabar`, `rsi=closed`, `bb=closed`, `atr=intrabar`
-  - tuned params from `config/live.yaml`
+- the `treasury` subtree is strict and complete; missing or unknown fields fail validation instead of silently using a partial contract
+- changing Treasury Rules requires a bot restart; the API response and UI state report this explicitly
+- the documented Spot baseline is in [docs/spot-treasury.md](docs/spot-treasury.md); always inspect the mounted production YAML before restart
 
 Useful live env knobs:
 
@@ -195,6 +212,11 @@ SCROOGE_USER_STREAM_EVENTS=ACCOUNT_UPDATE,ORDER_TRADE_UPDATE
 SCROOGE_RUNTIME_MODE=live
 SCROOGE_STRATEGY_MODE=realtime
 SCROOGE_DEBUG_STRATEGY_TICKS=0
+SCROOGE_LIVE_POLL_SECONDS=60
+SCROOGE_SPOT_BALANCE_REFRESH_SECONDS=60
+SCROOGE_SPOT_BALANCE_STALE_AFTER_SECONDS=180
+SCROOGE_SPOT_EXECUTION_ENABLED=0
+SCROOGE_TREASURY_TRANSFER_ENABLED=0
 ```
 
 Behavior:
@@ -213,10 +235,11 @@ Live services write into `/runtime`:
 - generated VAPID key files when push is enabled and keys are not pre-supplied
 
 Notes:
-- `scrooge.sqlite3` is the source of truth for runtime state, trade history, balance history, and Ledger/UI log lines
+- `scrooge.sqlite3` is the source of truth for Futures runtime state and all Treasury accounting, policies, orders, Bargains, campaigns, snapshots, and Ledger/UI lines
 - `event_history.jsonl` remains a replay/debug event artifact mirrored alongside DB records
 - `market_events.jsonl` carries both market and account/execution events
 - runtime artifacts survive normal upgrades as long as the `scrooge_runtime` volume is preserved
+- back up the database and mounted config together before schema or strategy-contract changes
 
 ## Backtest Artifacts
 
@@ -296,3 +319,5 @@ docker compose down -v
 ```
 
 Use `down -v` only if you intentionally want to wipe `/runtime`.
+
+Removing the volume deletes the canonical Treasury ledger as well as Futures history. It is not a routine redeploy step.

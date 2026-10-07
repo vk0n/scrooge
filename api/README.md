@@ -1,152 +1,81 @@
 # Scrooge Control API
 
-FastAPI backend for the Scrooge control plane.
-
-It provides:
-- runtime status
-- chart payloads
-- log streaming support
-- config read/write endpoints
-- Redis-backed control commands
-- web push notification setup
-- DB-backed runtime state/history/log access
+FastAPI backend for Scrooge's two live systems: Office / Futures and Treasury / Spot. Market Map and Ledger are shared operator surfaces. The API reads canonical SQLite state, creates validated previews, and sends asynchronous execution/control commands through Redis; it does not submit exchange orders itself.
 
 ## Run Locally
 
 ```bash
 cd api
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+../scrooge-env/bin/uvicorn main:app --reload --port 8000
 ```
 
-Default CORS origins:
-- `http://localhost:3000`
-- `http://127.0.0.1:3000`
+Default CORS origins are `http://localhost:3000` and `http://127.0.0.1:3000`. Override them with comma-separated `SCROOGE_GUI_CORS_ORIGINS`.
 
-Override:
+## Authentication
 
-```bash
-export SCROOGE_GUI_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://YOUR_HOST:3000
-```
+- Every `/api/*` endpoint requires HTTP Basic auth.
+- WebSocket endpoints require the same credentials.
+- `/api/control/*` also accepts `X-Scrooge-Control-Token` for machine clients.
 
-## Auth Model
+Configure `SCROOGE_GUI_USERNAME`, `SCROOGE_GUI_PASSWORD`, and optionally `SCROOGE_CONTROL_TOKEN`.
 
-- all `/api/*` endpoints require HTTP Basic auth
-- `/ws` endpoints also require auth
-- `/api/control/*` additionally accept `X-Scrooge-Control-Token`
+## Treasury / Spot Safety
 
-Relevant env vars:
-- `SCROOGE_GUI_USERNAME`
-- `SCROOGE_GUI_PASSWORD`
-- `SCROOGE_CONTROL_TOKEN`
+Real Spot execution requires `SCROOGE_SPOT_EXECUTION_ENABLED=1` in both API and bot. The flow is preview, explicit confirmation, Redis delivery, bot-side state/policy/filter revalidation, idempotent Binance submission, confirmed fill, and atomic Treasury settlement.
 
-## Runtime Storage Env
+Relevant settings:
 
-The API is DB-first:
-- `SCROOGE_CONFIG_PATH`
 - `SCROOGE_DB_PATH`
-- `SCROOGE_SPOT_BALANCE_STALE_AFTER_SECONDS` (freshness window for the bot-written Binance Spot snapshot)
-- `SCROOGE_SPOT_EXECUTION_ENABLED` (`0` by default; both API and bot must receive `1` before real Spot orders are accepted)
-- `SCROOGE_TREASURY_TRANSFER_ENABLED` (`0` by default; enables confirmed Treasury USDT transfers to and from Binance USD-M Futures)
+- `SCROOGE_CONFIG_PATH`
+- `SCROOGE_SPOT_BALANCE_STALE_AFTER_SECONDS`
 - `SCROOGE_SPOT_ORDER_PREVIEW_TTL_SECONDS`
 - `SCROOGE_SPOT_ORDER_COMMAND_STALE_AFTER_SECONDS`
+- `SCROOGE_TREASURY_TRANSFER_ENABLED`
 
-## Binance Spot Execution
+An `uncertain` or `accounting_error` intent must be reconciled by Binance client order ID before a replacement is attempted.
 
-Real Spot execution is disabled by default. Use a Binance API key with Spot trading permission and without withdrawal permission, then set `SCROOGE_SPOT_EXECUTION_ENABLED=1` for both the API and bot containers. Every order follows preview, explicit confirmation, bot-side balance/policy revalidation, idempotent submission, confirmed fill, and Treasury Ledger recording.
+## Endpoint Map
 
-An `uncertain` or `accounting_error` intent must be reconciled by its Binance client order ID before any replacement order is attempted.
-
-Treasury Office transfers use Binance universal transfers (`MAIN_UMFUTURE` / `UMFUTURE_MAIN`). They are initiated from the USDT Custody panel, revalidated by the runtime, and recorded as Treasury withdrawals or contributions only after Binance confirms the transfer.
-
-Chart-specific env:
-- `SCROOGE_CHART_SOURCE` (`auto`, `dataset`, `binance`)
-- `SCROOGE_CHART_MAX_CANDLES`
-- `SCROOGE_CHART_DATASET_MAX_CANDLES`
-- `SCROOGE_CHART_TIMEOUT_SECONDS`
-- `SCROOGE_CHART_DATASET_PATH`
-
-Redis/control env:
-- `SCROOGE_REDIS_HOST`
-- `SCROOGE_REDIS_PORT`
-- `SCROOGE_REDIS_DB`
-- `SCROOGE_CONTROL_QUEUE_KEY`
-- `SCROOGE_COMMAND_STATUS_PREFIX`
-- `SCROOGE_COMMAND_STATUS_TTL_SECONDS`
-- `SCROOGE_WS_PUSH_INTERVAL_SECONDS`
-- `SCROOGE_WS_LOG_LINES`
-
-Push env:
-- `SCROOGE_PUSH_ENABLED`
-- `SCROOGE_PUSH_VAPID_SUBJECT`
-- `SCROOGE_PUSH_VAPID_PRIVATE_KEY`
-- `SCROOGE_PUSH_VAPID_PUBLIC_KEY`
-- `SCROOGE_PUSH_SUBSCRIPTIONS_FILE`
-- `SCROOGE_PUSH_VAPID_PRIVATE_KEY_FILE`
-- `SCROOGE_PUSH_VAPID_PUBLIC_KEY_FILE`
-
-## Main Endpoints
-
-### Health
+### Shared Runtime And History
 
 - `GET /health`
-- `GET /`
-
-### Runtime status
-
 - `GET /api/status`
+- `GET /api/history/trades`
+- `GET /api/history/summary`
+- `GET /api/logs`
+- `GET /api/ledger`
+- `GET /api/chart`
 
-Returns:
-- bot running/paused state
-- current symbol and leverage
-- balance
-- last price and timestamp
-- open trade info
-- trailing state
-- warnings
+### Treasury / Spot
 
-### Logs
+- `GET /api/portfolio` - overview, holdings, reserve, exchange state, and recent entries.
+- `POST /api/portfolio/transactions` - accounting deposit, withdrawal, adjustment, or manual entry.
+- `POST /api/portfolio/custody-transfers` - move managed quantity between custody locations.
+- `POST /api/portfolio/assets/{asset}/policy` - Target, Minimum Holding, and objective.
+- `GET /api/portfolio/assets/{asset}/transactions` - accounting entries for one asset.
+- `GET /api/portfolio/assets/{asset}/ledger` - unified transactions and Bargains for one asset.
+- `GET /api/portfolio/bargains` - the same Bargain objects across the full Treasury.
+- `POST /api/portfolio/bargains/{swing_id}/close-preview` - preview a manual Bargain close.
+- `POST /api/portfolio/cash-policy` - set future profitable-cash retention percentage.
+- `POST /api/portfolio/cash-policy/release` - release Protected Cash.
+- `POST /api/portfolio/cash-policy/transfer` - move cash between Protected and Spendable.
+- `POST /api/portfolio/spot-orders/preview` - validate a manual Spot request.
+- `GET /api/portfolio/spot-orders/{intent_id}` - inspect durable intent state.
+- `POST /api/portfolio/spot-orders/{intent_id}/execute` - requires `CONFIRM_SPOT_ORDER`.
+- `POST /api/portfolio/office-transfers` - optional confirmed Treasury/Futures USDT transfer.
 
-- `GET /api/logs?lines=200`
+Manual confirmed Binance BUY/SELL orders update asset quantity, USDT cash, and Target Holding. They are internal trades and do not count as external Invested Capital.
 
-### Chart
-
-- `GET /api/chart?symbol=BTCUSDT&period=1d&interval=1m&indicators=true&source=auto`
-
-Supports:
-- runtime dataset-backed charts
-- runtime/backtest artifact-backed charts
-- direct Binance fallback when configured
-
-### Config
+### Configuration
 
 - `GET /api/config`
-- `GET /api/config/editable`
-- `POST /api/config/editable`
-- `GET /api/config/raw`
-- `POST /api/config/raw`
-- `GET /api/config/treasury-rules`
-- `POST /api/config/treasury-rules`
+- `GET/POST /api/config/editable`
+- `GET/POST /api/config/raw`
+- `GET/POST /api/config/treasury-rules`
 
-Editable config includes:
-- top-level runtime fields such as `strategy_mode`, `symbol`, `leverage`, `qty`
-- timeframe `intervals`
-- `indicator_inputs`
-- selected strategy params
+Writes create a backup and report `restart_required`. Treasury Rules strictly validate and replace only the `treasury` subtree.
 
-Important:
-- editable writes create a config backup first
-- responses return `backup_path`
-- responses also indicate whether `restart_required`
-- Treasury Rules writes validate and replace only the `treasury` subtree in `config/live.yaml`
-
-`indicator_inputs` supported values:
-- `closed`
-- `intrabar`
-
-### Control
+### Office / Futures Control
 
 - `POST /api/control/start`
 - `POST /api/control/stop`
@@ -157,32 +86,18 @@ Important:
 - `POST /api/control/update-tp`
 - `GET /api/control/commands/{command_id}`
 
-Semantics:
-- `start` = resume trading
-- `stop` = pause trading
-- `restart` = resume trading + reload config
-- `close-position` = manual close active position
-- `suggest-trade` = queue manual buy/sell suggestion
-- `update-sl` / `update-tp` = adjust current position levels
+Commands are asynchronous and require the live bot to be running.
 
-Commands are queued through Redis and executed asynchronously by the live bot loop.
+### Notifications And WebSocket
 
-### Notifications
+- `GET/POST /api/notifications/*`
+- `WS /ws`
+- `WS /ws/status`
 
-- `GET /api/notifications`
-- `POST /api/notifications/subscribe`
-- `POST /api/notifications/unsubscribe`
-- `POST /api/notifications/test`
+WebSocket payloads provide status/log updates; the frontend falls back to polling.
 
-This powers the bell control in the frontend and stores subscriptions in runtime storage.
+## Runtime Dependencies
 
-### WebSocket
+The API needs the same mounted SQLite database and YAML config as the bot, plus the same Redis command namespace. Chart behavior is controlled by `SCROOGE_CHART_SOURCE`, `SCROOGE_CHART_DATASET_PATH`, and related limits. Push behavior uses the `SCROOGE_PUSH_*` settings documented in `.env.example`.
 
-- `ws://localhost:8000/ws`
-- `ws://localhost:8000/ws/status`
-
-Pushes:
-- status snapshots
-- log snapshots
-
-The frontend uses websocket updates first and falls back to polling when needed.
+See [Runtime Storage](../docs/runtime-storage.md) and [Spot Treasury](../docs/spot-treasury.md) for state ownership and business semantics.

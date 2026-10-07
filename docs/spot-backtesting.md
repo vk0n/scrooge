@@ -1,181 +1,148 @@
-# Spot Research Backtests
+# Spot Treasury Backtesting
 
-Phase H replays the production Spot strategy over an isolated historical Treasury. It does not submit orders or add live behavior.
+The Spot research engine replays the production Treasury domain over an isolated historical portfolio. It never submits orders or reads mutable production state during a run.
 
-## Shared Production Logic
+## What Is Shared With Live
 
-Live and research both call the same implementations for:
+Live and research call the same implementations for:
 
-- rolling 24-hour opportunity levels in `shared/spot_signal.py`
-- fixed signal-level allocations and HOLD invariants in `shared/spot_signal.py`
-- policy eligibility and action selection in `shared/spot_strategy.py`
-- progressive opening and profitable close economics in `shared/spot_progression.py`
-- Bargain accounting and Target ratchet proposals in `shared/spot_swing.py`
-- Binance market quantity and notional rules in `shared/spot_execution_rules.py`
+- rolling 24-hour levels and tranches in `shared/spot_signal.py`;
+- Policy eligibility and action selection in `shared/spot_strategy.py`;
+- campaign capacity and profitable-close planning in `shared/spot_progression.py`;
+- Bargain economics and Target proposals in `shared/spot_swing.py`;
+- waiter/capacity cleanup in `shared/spot_waiter_cleanup.py`;
+- Binance quantity and notional rules in `shared/spot_execution_rules.py`.
 
-The replay replaces only the market source, clock, executor, state store, and reporting adapters.
+Replay replaces the clock, market source, executor, persistence adapter, and reporting. The documented live baseline is `2/3/4/5%` signal levels and a `10%` Bargain Goal. A scenario or sweep may deliberately override those values; research files are not live configuration.
 
-`close_profit_pct` is presented as **Bargain Goal**. It is a gross favorable price-move threshold from the Bargain's
-weighted opening price; fees and slippage affect execution but are not added to the threshold.
+## Market And Fill Model
 
-## Timing And Data
+- Source: Binance Spot klines from `/api/v3/klines`, never Futures candles.
+- Default interval: `1m`.
+- Time: all scenario boundaries and candles are UTC.
+- Warm-up: at least 24 hours before the requested start; warm-up cannot trade or mutate balances.
+- Decision: after candle N closes, using only observations known by that close.
+- Fill: candle N+1 open, adjusted by configured slippage and fee.
+- Rolling reference: the close approximately 24 hours before the decision.
+- Entry cost: first candle open at scenario start; legacy scenario `entry_cost` does not control replay cost basis.
+- End: open Bargains remain marked to market unless the analysis-only `force_close_at_end` option is enabled.
 
-- Data source: Binance Spot klines from `/api/v3/klines`, never Futures candles.
-- Cache: deterministic CSV files under `data/spot_backtest/klines`; current exchange filters are cached as JSON.
-- Timezone: all scenario and candle timestamps are UTC.
-- Default interval: one minute, matching the live signal poll cadence.
-- Entry cost: the open of the first candle at the scenario start. Any legacy `entry_cost` value in a scenario is
-  ignored by the backtest cost basis and performance calculations.
-- Warm-up: at least 24 hours (`1440` candles at `1m`) before the requested start. Warm-up cannot generate signals,
-  orders, Bargains, or balance changes.
-- Decision: candle N closes, then Scrooge evaluates only data whose close timestamp is at or before candle N close.
-- Fill: every action that remains eligible is executed sequentially at candle N+1 open, adjusted by configured slippage
-  and fee. Portfolio, reserve, Swing, and campaign state are recalculated after every fill before planning the next
-  action from that signal.
-- Rolling reference: the candle close exactly 24 hours before candle N close.
-- Missing candles: the run fails. There is no interpolation or forward fill.
-- End of run: open Bargains remain open and are marked to market unless the analysis-only `force_close_at_end` flag is enabled.
-- Reporting: decisions still run on every `1m` candle. Equity and inventory are sampled hourly plus the exact final state,
-  signal-level observation counts are aggregated exactly, and `signals.csv` records signal-state transitions.
+All assets share one USDT pool. Asset batches beginning with a close execute before batches with only openings; ties preserve deterministic policy order. Within one asset, profitable closes run first, cleanup closes run oldest-first, and the current campaign action runs last. State and available cash are refreshed after every fill.
 
-This is a strategy backtest, not a Binance order-book or market-impact simulation. A small default slippage allowance is applied, and current cached Binance symbol filters are used because historical filter versions are not generally available.
+### Missing Candles
 
-## Shared Cash And Ordering
+Asset-specific gaps abort replay because filling them would invent relative price behavior. A gap that is identical across every configured market is treated as an exchange-wide outage: candles are flat-filled for valuation continuity and marked unavailable, so the repaired interval cannot signal or trade. A common gap at a boundary that cannot be valued still aborts.
 
-All assets draw from one USDT pool. As in live execution, asset batches whose first action is a close run before batches
-without a close; ties retain alphabetical policy order. Within one asset, profitable closes run first, then every
-eligible waiter/capacity cleanup, then the current campaign-level opening or reserve accumulation. Every BUY is
-constrained by the pool remaining after prior fills. The resolved asset order is recorded in every result. Cold Storage
-contributes to value and Protected Floor economics but is never sellable.
+This distinction keeps a known market-wide Binance outage from destroying a multi-year run without hiding missing data for one coin.
 
-Waiter cleanup is enabled by default. Profitable closes retain priority, then all eligible Bargains close oldest-first on
-the same reverse signal. Deep loss at 15 days and -20% requires L1+; the 30/60/90-day thresholds require
-L3+/L2+/L1+. A hard cap of 10 open Bargains per asset may use an eligible 30-day reverse signal for capacity cleanup,
-otherwise the cycle holds instead of opening an eleventh Bargain. Cleanup uses each Bargain's remaining open economics
-and the same executor, fees, quantization, and accounting path as every other close.
+## Execution And Accounting
 
-Opening and closing market actions are lifecycle-atomic. A SELL-origin close may spend only that Bargain's committed quote plus Free Vault Reserve and buys the maximum exchange-valid quantity available from that budget. Once the terminal market order fills, the Bargain closes without a partial or dust tail; any quantity that could not be restored is recorded as realized inventory deficit rather than left waiting for future reserve.
+The simulator applies current cached Binance symbol filters because historical filter versions are generally unavailable. It quantizes orders, checks minimum quantity/notional, charges the configured fee, and applies configured slippage. Opening also checks that the projected target close should remain exchange-valid.
 
-`free_cash_retention_pct` is an accrual policy, not a percentage of the current reserve snapshot. When an
-`ACCUMULATE_CASH` Bargain closes with a positive net cash gain, the configured percentage of that gain is added to a
-persistent retained balance. Retained cash is excluded from accumulation BUYs and loss coverage; changing the policy
-affects future profitable settlements only and does not retroactively lock existing reserve.
+SELL-origin closes may use the Bargain's committed quote plus the reserve allowed by the scenario. A terminal close finalizes restored inventory and any remaining deficit; it does not leave a synthetic dust position open forever.
 
-In live Treasury, protected cash remains owner-controlled rather than permanently frozen. It can be explicitly
-moved in either direction between Spendable Cash and Protected Cash, transferred in either direction between
-Protected Cash and Futures Office, or authorized for a manual Spot buy or manual loss close. Those actions are
-audited and applied exactly once; automatic strategy actions never receive that authorization.
+`free_cash_retention_pct` is an accrual policy. It protects that share of eligible positive `accumulate_cash` settlement gain, not that share of the entire current reserve. `accumulate_asset` gain is finalized in asset units and ratchets Target exactly once.
 
-Strategy SELL openings also pass a round-trip exchange check. An opening is rejected when its projected profit-target BUY would fall below Binance minimum notional after the objective's quantity semantics and estimated fees; this prevents valid entries from becoming permanently uncloseable dust.
+The V1 simulator charges its configured fee in USDT. Shared accounting preserves native third-asset fee data when supplied, but replay does not invent historical BNB conversion rates.
 
-Set `strategy.waiter_cleanup.enabled: false` only for a research baseline. There is no separate production or UI toggle.
+## Export And Run
 
-## Scenario Workflow
-
-Export current Treasury into a static, reviewable scenario:
+Export current Treasury into a static scenario:
 
 ```bash
 ./scrooge-env/bin/python -m backtest.spot_runner \
   --export-current runtime/current-treasury-spot.yaml \
-  --start 2025-09-23 --end 2026-09-23
+  --start 2025-10-07 --end 2026-10-07
 ```
 
-The generated YAML no longer depends on the production database. Review quantities, cost bases, custody, policies, and objectives before running it.
+Review quantities, cost bases, custody, policies, reserve, and objectives in the generated YAML. The replay will not consult the production database again.
 
-Explicit period:
+Run an explicit period:
 
 ```bash
 ./scrooge-env/bin/python -m backtest.spot_runner \
   --config runtime/current-treasury-spot.yaml \
-  --start 2026-03-23 --end 2026-09-23
+  --start 2025-10-07 --end 2026-10-07
 ```
 
-The CLI reports market-data loading, replay progress with elapsed time and ETA, and artifact generation. Interactive terminals receive a single updating progress bar; redirected logs receive a milestone every 5%.
-
-Six-month preset relative to an explicit end:
+Run relative presets:
 
 ```bash
 ./scrooge-env/bin/python -m backtest.spot_runner \
-  --config runtime/current-treasury-spot.yaml \
-  --preset 6m --end 2026-09-23
-```
+  --config runtime/current-treasury-spot.yaml --preset 6m --end 2026-10-07
 
-One-year preset:
-
-```bash
 ./scrooge-env/bin/python -m backtest.spot_runner \
-  --config runtime/current-treasury-spot.yaml \
-  --preset 1y --end 2026-09-23
+  --config runtime/current-treasury-spot.yaml --preset 1y --end 2026-10-07
 ```
 
 ## Parameter Sweeps
 
-Use the dedicated sweep runner instead of shell loops. A sweep YAML references one base Spot scenario and declares
-either tested `levels_pct` combinations or a `parameter_grid` for `close_profit_pct`,
-`free_cash_retention_pct`, and deep-loss `unrealized_pnl_pct`. The grid expands to the Cartesian product. Market data is loaded once and shared by every replay, while each variant gets
-its own complete artifact directory. The runner updates `manifest.json` after every variant and writes a ranked
-`comparison.json`, `comparison.csv`, and `comparison.html`, ordered by Edge vs HODL.
-Independent asset histories are loaded concurrently using `market_data_workers` (three by default); this parallelizes
-cache parsing and Binance REST pagination without duplicating the full dataset across replay processes.
-Independent sweep variants run in separate processes when `replay_parallel` is enabled. `replay_max_workers`
-defaults to at most two, matching the Futures comparison runner; large grids can raise it explicitly (the three-year
-treasury-level sweep uses 12). A single replay remains sequential because all assets share reserve and execution
-ordering. On Linux, `fork` lets the workers reuse the already-loaded candle dataset.
+`backtest.spot_sweep` expands a Cartesian grid over signal levels, Bargain Goal, cash retention, and deep-loss parameters. Market data is loaded once and shared; each variant receives isolated artifacts. Completed matching variants resume automatically.
 
 ```bash
 ./scrooge-env/bin/python -m backtest.spot_sweep \
-  --config runtime/spot_backtests/sweeps/treasury-levels-3y.yaml
+  --config runtime/spot_backtests/sweeps/treasury-profit-retention-refinement-3y.yaml
 ```
 
-Completed matching variants are resumed automatically. Use `--dry-run` to validate and list the matrix without
-loading candles, or `--force` to deliberately rerun completed variants. A run directory produced by a different
-resolved scenario is never silently reused.
+Useful controls:
+
+- `--dry-run` validates and lists the matrix without loading candles.
+- `--force` deliberately reruns completed variants.
+- `market_data_workers` parallelizes independent asset loading.
+- `replay_parallel` and `replay_max_workers` parallelize variants, not actions inside one portfolio.
+
+Ordinary sweep ranking first maximizes Edge vs HODL and then the unweighted average effective asset quantity. The second metric is intentionally nominal and equal-weighted across assets; volatile dollar prices do not give one coin more influence.
+
+## Cross-Regime Sweeps
+
+Use `backtest.spot_regime_selection` to discover auditable, non-overlapping Bull, Neutral, and Bear windows from HODL behavior. Freeze those periods before inspecting strategy results. Then run:
+
+```bash
+./scrooge-env/bin/python -m backtest.spot_regime_sweep \
+  --config runtime/spot_backtests/sweeps/treasury-profit-retention-regimes-1y.yaml
+```
+
+Every candidate is replayed over all three frozen regimes. Ranking uses:
+
+1. mean Edge vs HODL across regimes;
+2. worst-regime Edge vs HODL;
+3. number of regimes beating HODL;
+4. worst-regime effective asset quantity;
+5. mean fee drag.
+
+The report labels a candidate robust only when its worst regime has non-negative Edge. This is a model-selection aid, not proof of future performance. Do not repeatedly redefine regimes around a preferred result.
 
 ## Artifacts
 
-Each run writes:
+A standalone replay writes:
 
-- `scenario.resolved.json`
-- `scenario.resolved.yaml`
-- `summary.json`, `report.md`, and the self-contained visual `report.html`
-- `equity.csv` and `monthly.csv`
-- `per_asset_summary.json`
-- `waiter_cleanup.json` and `waiter_cleanup_reasons.csv`
-- `swings.json` and `executions.csv`
-- `sell_campaigns.json` and `sell_campaigns.csv`
-- `signals.csv` and `actions.csv`
-- `inventory.csv` and `target_history.csv`
-- `final_state.json` and `rejections.csv`
+- `scenario.resolved.json` and `scenario.resolved.yaml`;
+- `summary.json`, `report.md`, and self-contained `report.html`;
+- `equity.csv`, `monthly.csv`, and `per_asset_summary.json`;
+- `swings.json`, `executions.csv`, `signals.csv`, and `actions.csv`;
+- `sell_campaigns.json`, `sell_campaigns.csv`, `inventory.csv`, and `target_history.csv`;
+- `waiter_cleanup.json`, `waiter_cleanup_reasons.csv`, `rejections.csv`, and `final_state.json`.
 
-The report separates realized and unrealized Bargain economics, compares against the same-start HODL benchmark, and preserves third-asset fee structures if such executions are supplied. Waiter Cleanup separates PnL on inventory that was restored from PnL on inventory left unrestored; those two economic components reconcile to Cleanup Net PnL. Cleanup BUY volume is explicitly cumulative turnover across every cleanup execution, with count, average, median, and maximum order size; it is capital deployment, not a loss or simultaneous capital requirement. Additional reserve deployment is also shown separately as a capital flow. The remaining coin deficit is reported both by quantity and by market value at each cleanup price. Bargain Analytics adds lifecycle PnL, closure and expectancy metrics, duration percentiles, fee drag, outcome and risk categories, an interactive cohort breakdown, and a duration-versus-return view. Each Portfolio Ledger asset row expands into filterable Bargain history, and each Bargain expands into its execution fills. The V1 simulator itself charges its configured fee in USDT.
+A sweep additionally writes resumable `manifest.json` plus `comparison.json`, `comparison.csv`, Markdown, and HTML reports. Regime sweeps preserve per-candidate, per-regime directories and a combined summary.
 
-To produce controlled six-month and one-year baseline comparisons from one scenario:
-
-```bash
-./scrooge-env/bin/python -m backtest.spot_waiter_comparison \
-  --config runtime/current-treasury-spot.yaml \
-  --output runtime/spot_backtests/comparisons/waiter-cleanup-defaults
-```
-
-The comparison directory contains both individual modes and `comparison.json`, `comparison.csv`, and a self-contained `comparison.html`.
-
-To add or rebuild the visual report for an existing artifact directory without rerunning the replay:
+Rebuild HTML without replaying:
 
 ```bash
 ./scrooge-env/bin/python -m backtest.spot_report_html \
-  runtime/spot_backtests/runs/20260924T064219Z
+  runtime/spot_backtests/runs/<run-id>
 ```
 
-The generated page embeds its sampled chart data and has no CDN, API, or frontend runtime dependency. Rebuilding also backfills `bargain_analysis` into an older run's `summary.json`.
+## Realism And Interpretation
 
-## Known V1 Limits
+The backtest is designed to be close enough for Spot swing parameter selection, not to reconstruct an exchange order book.
 
-- Live signals poll Binance's rolling ticker every minute by default; exported replay scenarios evaluate `1m` candle
-  closes and use the close exactly 24 hours earlier. Treasury does not fetch or evaluate technical indicators.
-- Live orders face the real order book, latency, and changing exchange balances. Replay approximates immediate market
-  execution at the observed candle close plus configured slippage, with the same sequential action ordering and
-  state refresh after each fill.
-- Current Binance Spot filters are used; historical filter changes are not reconstructed.
-- The simulator's configured fee is charged in USDT. Shared Swing accounting still preserves third-asset fee amounts when such executions are supplied, but does not invent historical conversion rates.
-- Every configured symbol must have a complete Binance Spot candle range. Missing, newly listed, or delisted markets fail the run rather than being filled or substituted.
-- The exporter snapshots current state once. It never reads production state during replay, and non-USDT stable balances are excluded with a review warning rather than converted automatically.
+- A one-minute decision and next-open fill can differ from a live rolling-ticker order by several percent on a fast swing.
+- Slippage is fixed by scenario, while real spread, impact, latency, and partial liquidity vary.
+- Current exchange filters stand in for historical filters.
+- Balances and fills are deterministic; live reconciliation and network uncertainty are absent.
+- Market-wide gaps are made non-tradable, but surrounding candle OHLC still cannot describe intraminute path.
+- Fees in a third asset cannot be valued exactly without another historical market.
+- HODL is calculated from the same starting portfolio and period; it is not a cash-only benchmark.
+- Portfolio drawdown is dominated by mark-to-market asset prices and should not be treated as a direct measure of platform correctness.
+
+For this project's Spot swing use case, a few percent of execution error on an individual swing is an accepted approximation. Promote a parameter only after it remains sensible across untouched periods, frozen regimes, fees/slippage perturbations, and neighboring parameter values.

@@ -1,16 +1,13 @@
 # Scrooge
 
-Scrooge is an event-driven Binance Futures trading system with:
-- a live runtime in `bot/`
-- shared strategy and event logic in `core/`
-- replayable backtests, compare runs, reporting, and optimization in `backtest/`
-- a local control plane in `api/` + `frontend/`
+Scrooge is a live Binance trading and treasury system with two primary parts:
 
-Today the project is centered on realtime execution and realtime-grade historical replay:
-- live trading can run in `strategy_mode: realtime`
-- backtests can replay native historical `market_events.jsonl`
-- historical Binance Futures `aggTrades` can be converted into realtime-style event streams
-- control actions go through a Redis-backed command channel instead of mutating bot state directly
+- **Office / Futures** - event-driven Binance USD-M Futures trading, supervision, and risk management.
+- **Treasury / Spot** - Spot holdings, custody, policies, progressive Bargains, and protected cash.
+
+The live systems share the control plane, SQLite runtime storage, Redis command channel, and Ledger, while keeping their strategy state and accounting separate. Shared Futures logic lives in `core/`; shared Spot Treasury logic lives in `shared/`.
+
+Backtesting is a separate, auxiliary research mode. The `backtest/` package replays Futures and Spot strategies, compares candidates, runs parameter and regime sweeps, and generates reports without becoming part of live execution.
 
 ## Structure
 
@@ -20,8 +17,10 @@ scrooge/
 ├── frontend/                # Next.js control plane frontend
 ├── bot/                     # Live runtime, control polling, state persistence, exchange adapters
 ├── core/                    # Shared engine, event model, indicator-input selection, event store
-├── backtest/                # Dataset build, event-stream build, compare, optimize, reporting
+├── shared/                  # Spot Treasury domain, accounting, config, and SQLite contract
+├── backtest/                # Auxiliary Futures and Spot research mode
 ├── config/                  # Live/backtest/compare/grid configs
+├── docs/                    # Runtime, Spot Treasury, and backtest contracts
 ├── docker/                  # Dockerfiles and entrypoints
 ├── requirements/            # Split dependency sets
 ├── runtime/                 # Local runtime/backtest artifacts (gitignored)
@@ -30,9 +29,13 @@ scrooge/
 └── main.py                  # Thin entry shim
 ```
 
-## Key Concepts
+## Live Systems
 
-### Strategy Modes
+### Office / Futures
+
+Office is the live Binance USD-M Futures book. It owns the current leveraged trade, realtime market and account streams, indicator-driven decisions, Safety Net, Treasure Mark, Tail Guard, and operator controls.
+
+#### Strategy Modes
 
 - `strategy_mode: discrete`
   - minute-snapshot style evaluation
@@ -41,7 +44,7 @@ scrooge/
   - event-driven evaluation on `price_tick`, `candle_closed`, `indicator_snapshot`, and account/order events
   - used both in live mode and in realtime historical replay
 
-### Indicator Inputs
+#### Indicator Inputs
 
 Strategy timing and strategy decision values are separated:
 - `strategy_mode` decides **when** the strategy evaluates
@@ -57,20 +60,25 @@ Supported modes:
 - `closed` — use the last closed-candle indicator value
 - `intrabar` — use the current intrabar/realtime indicator value
 
-### Backtest Input Modes
+### Treasury / Spot
 
-- `build`
-  - fetch historical candles, build dataset, derive tape, synthesize a historical event stream
-- `discrete_tape`
-  - replay from an existing `market_tape.jsonl`
-- `market_event_stream`
-  - replay directly from an existing `market_events.jsonl`
-- `agg_trade_stream`
-  - build a native historical market-event stream from Binance Futures `aggTrades`
+Treasury is the Spot portfolio and swing-management book. It tracks settled holdings separately from exchange balance snapshots, applies per-asset Target, Minimum Holding, and Trading Objective policies, and represents each SELL-origin swing as an independent Bargain.
+
+The documented live baseline is:
+- market check every `60s`
+- signal levels `2% / 3% / 4% / 5%`
+- cash campaign stakes `10% / 20% / 30% / 40%`
+- asset campaign stakes `1% / 3% / 5% / 10%`
+- Bargain Goal `10%` gross
+- campaign capacity `50%`, with full deployment below `25%` remaining allowance
+- at most `10` open Bargains per asset
+- deep-loss relief after `15d` at or below `-25%`; aging gates at `30d / 60d / 90d`
+
+The complete live behavior and accounting contract is documented in [docs/spot-treasury.md](docs/spot-treasury.md).
 
 ## Installation
 
-### Python runtime and backtest stack
+### Python Stack
 
 ```bash
 git clone https://github.com/vk0n/scrooge.git
@@ -116,8 +124,10 @@ SCROOGE_PUSH_VAPID_PUBLIC_KEY=
 
 ## Config Files
 
-Primary working configs:
+Live config:
 - [config/live.yaml](config/live.yaml)
+
+Auxiliary research configs:
 - [config/backtest.yaml](config/backtest.yaml)
 - [config/compare.yaml](config/compare.yaml)
 - [config/param_grid.yaml](config/param_grid.yaml)
@@ -125,13 +135,17 @@ Primary working configs:
 Treat checked-in configs as working presets:
 - they are meant to be copied, edited, and compared
 - they are not a promise that every checked-in file is the final production strategy preset
-- the currently checked-in `live.yaml` and `backtest.yaml` already point to the tuned realtime winner:
+- the Futures live and backtest presets currently share the tuned realtime strategy profile:
   - `strategy_mode: realtime`
   - `indicator_inputs`: `ema=intrabar`, `rsi=closed`, `bb=closed`, `atr=intrabar`
 
-## Running Scrooge
+The required `treasury` subtree contains the live Spot strategy rules. Treasury Rules in the UI strictly validate and replace only that subtree, create a backup, and require a bot restart. Fee estimation is an internal sizing assumption rather than an editable Treasury Rule; accounting uses confirmed Binance fills and native fee assets.
 
-### Live runtime
+## Running Live Scrooge
+
+### Live Runtime
+
+One bot process runs the Office and Treasury live loops from the mounted live config. Office consumes realtime Futures events; Treasury refreshes Spot balances and rolling signals, then sends every eligible action through the authoritative Spot executor.
 
 By default:
 - `main.py` loads `config/live.yaml`
@@ -161,7 +175,7 @@ Default live artifacts:
 - `runtime/chart_dataset.csv`
 
 Runtime storage model:
-- `scrooge.sqlite3` is the source of truth for runtime state, trade history, balance history, and Ledger/UI log lines
+- `scrooge.sqlite3` is the source of truth for runtime state, Futures history, Treasury accounting and policies, Spot orders and Bargains, and Ledger/UI log lines
 - `event_history.jsonl` remains a replay/debug artifact mirrored alongside DB event records
 - `market_events.jsonl` and `chart_dataset.csv` remain raw runtime artifacts
 
@@ -169,8 +183,9 @@ Runtime contract reference:
 - `docs/runtime-storage.md`
 
 Live runtime behavior:
-- websocket-driven market stream
-- websocket-driven user/account stream
+- websocket-driven Futures market and user/account streams
+- periodic Spot balance and rolling-signal refresh
+- separate Office and Treasury strategy/accounting state
 - canonical append-only event log
 - Redis-backed control command queue
 - push notifications via web push when configured
@@ -199,11 +214,13 @@ Open:
 
 Primary pages:
 - `Office` → `/dashboard`
+- `Treasury` → `/treasury`
 - `Market Map` → `/chart`
 - `Ledger` → `/logs`
 
 The control plane provides:
 - status and open-trade visibility
+- Treasury overview, holdings, custody, asset policies, Bargains, and manual Spot execution
 - config editing
 - manual control commands
 - live/polling updates
@@ -218,7 +235,17 @@ fill the history before the first recorded decision in each chart window; record
 decisions take precedence from that point onward. Missing indicators are not reconstructed
 from Binance candles. Deploy the bot and API together to enable this data source.
 
-### Local backtests
+## Research Mode
+
+Research mode is offline and auxiliary. It validates and tunes the two live strategies using isolated historical state; it does not submit live orders or replace the Office/Treasury runtime contract.
+
+### Futures Backtests
+
+Supported input modes:
+- `build` - fetch candles, build a dataset and tape, then synthesize historical events
+- `discrete_tape` - replay an existing `market_tape.jsonl`
+- `market_event_stream` - replay an existing `market_events.jsonl`
+- `agg_trade_stream` - construct realtime-style events from Binance Futures `aggTrades`
 
 Run against `config/backtest.yaml`:
 
@@ -261,11 +288,11 @@ Backtest storage model:
 - `scrooge.sqlite3` is the canonical store for replay state, trade history, balance history, and UI log lines inside the run directory
 - `event_history.jsonl`, `market_events.jsonl`, and the replay/alignment artifacts remain file-based outputs
 
-### Spot Treasury research
+### Spot Treasury Backtests
 
-The portfolio-level Spot research runner is separate from the Futures backtester and reuses the live Spot decision domain. See [docs/spot-backtesting.md](docs/spot-backtesting.md) for scenario export, deterministic replay semantics, 6-month and 1-year commands, and generated artifacts.
+The portfolio-level Spot research runner is separate from the Futures backtester and reuses the live Spot decision domain. See [docs/spot-backtesting.md](docs/spot-backtesting.md) for scenario export, deterministic replay semantics, parameter and regime sweeps, realism limits, and generated artifacts. Research presets are experiments and do not automatically define the live baseline.
 
-### Historical aggTrades replay
+### Historical aggTrades Replay
 
 Example:
 
@@ -284,7 +311,7 @@ Notes:
 - raw archive data is cached under `data/agg_trades`
 - archive cache is sharded per UTC day under `data/agg_trades/<symbol>/archive_daily`
 
-## Compare Runs and Sieves
+### Compare Runs And Sieves
 
 Run a compare matrix:
 
@@ -313,7 +340,7 @@ Current compare flow also supports multi-stage sieve screening:
 
 Candidates that fail an earlier stage are skipped for later stages.
 
-### Generate large candidate matrices
+#### Generate Large Candidate Matrices
 
 ```bash
 python -m backtest.generate_compare_candidates \
@@ -330,7 +357,7 @@ This clones one scenario from `config/compare.yaml`, expands the parameter grid 
 SCROOGE_COMPARE_CONFIG_PATH=/tmp/scrooge.compare.generated.yaml python -m backtest.compare
 ```
 
-## Optimization
+### Optimization
 
 Run optimizer:
 
@@ -341,7 +368,7 @@ python -m backtest.optimize
 The optimizer reads:
 - [config/param_grid.yaml](config/param_grid.yaml)
 
-## Reporting
+### Reporting
 
 Backtests can emit unified run reports from [backtest/reporting.py](backtest/reporting.py).
 
@@ -371,20 +398,25 @@ API details:
 Frontend details:
 - [frontend/README.md](frontend/README.md)
 
+Live Treasury details:
+- [docs/spot-treasury.md](docs/spot-treasury.md)
+- [docs/runtime-storage.md](docs/runtime-storage.md)
+
+Research details:
+- [docs/spot-backtesting.md](docs/spot-backtesting.md)
+
 ## Current Architecture Summary
 
-Scrooge is no longer just a discrete minute-polling bot.
+Scrooge live has two primary books:
+- **Office / Futures** - realtime exchange events, indicator-driven decisions, leveraged execution, and active-trade supervision
+- **Treasury / Spot** - DB-backed holdings, progressive campaigns, independent Bargains, custody, protected cash, and idempotent Target ratchets
 
-The project now has:
-- a realtime live path driven by exchange events
-- a historical realtime replay path driven by stored or reconstructed `market_events.jsonl`
-- a shared engine for live and replay execution
-- a control plane that talks to the bot through queued commands
-- a reporting/compare workflow for tuning and validation
+Both live books use the same control plane, queued commands, runtime database, and Ledger while preserving separate strategy and accounting boundaries.
 
-The main practical split is now:
-- `5s` replay for research and tuning
-- `1s` replay for higher-fidelity validation
+Research is a supporting mode around those live systems:
+- Futures can replay stored or reconstructed `market_events.jsonl`; `5s` replay is used for tuning and `1s` for higher-fidelity validation
+- Spot can replay the shared Treasury domain over historical candles and run parameter or frozen-regime sweeps
+- all research runs use isolated state and produce reports for validation; they never become a third live trading book
 
 ## Disclaimer
 
