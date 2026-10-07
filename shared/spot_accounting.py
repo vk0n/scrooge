@@ -15,17 +15,14 @@ def _number(value: Any) -> float:
 
 
 def build_spot_quote_leg(transaction: dict[str, Any]) -> dict[str, Any] | None:
-    """Build the managed quote-currency leg for one confirmed Bargain fill."""
+    """Build the managed quote-currency leg for one confirmed Binance Spot fill."""
     source = str(transaction.get("source") or "").strip().lower()
     side = str(transaction.get("tx_type") or "").strip().lower()
     quote_symbol = str(transaction.get("quote_symbol") or "USDT").strip().upper() or "USDT"
     transaction_id = str(transaction.get("transaction_id") or "").strip()
-    is_strategy_fill = source == "binance_strategy"
-    is_linked_manual_fill = source == "binance_manual" and bool(
-        str(transaction.get("swing_id") or "").strip()
-    )
+    is_managed_fill = source in {"binance_strategy", "binance_manual"}
     if (
-        not (is_strategy_fill or is_linked_manual_fill)
+        not is_managed_fill
         or side not in {"buy", "sell"}
         or not transaction_id
     ):
@@ -94,7 +91,7 @@ def backfill_spot_quote_legs(
     *,
     path: Path | None = None,
 ) -> int:
-    """Project historical strategy fills into managed quote cash exactly once."""
+    """Project historical Binance fills into managed quote cash exactly once."""
     existing_ids = {str(item.get("transaction_id") or "") for item in transactions}
     reserve_by_account: dict[tuple[str, str], float] = {}
     for transaction in transactions:

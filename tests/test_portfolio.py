@@ -17,6 +17,7 @@ from shared.runtime_db import (
     append_portfolio_transaction,
     append_spot_swing_execution,
     create_spot_swing,
+    load_spot_swing,
     list_portfolio_transactions,
     mark_exchange_account_snapshot_error,
     save_exchange_account_snapshot,
@@ -341,6 +342,40 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(len(quote_legs), 1)
         self.assertEqual(quote_legs[0]["tx_type"], "sell")
         self.assertEqual(quote_legs[0]["quantity"], 315.52)
+
+    def test_snapshot_backfills_quote_spend_for_existing_standalone_manual_buy(self):
+        self.add("USDT", 100, 1, "binance")
+        append_portfolio_transaction(
+            {
+                "transaction_id": "manual-wct-buy",
+                "account_key": "manual_spot",
+                "executed_at": "2026-10-07 19:03:39",
+                "tx_type": "buy",
+                "asset_symbol": "WCT",
+                "quote_symbol": "USDT",
+                "quantity": 926.1,
+                "price": 0.04050689,
+                "source": "binance_manual",
+                "status": "settled",
+                "custody_location": "binance",
+                "executed_quote_quantity": 37.513403829,
+                "commissions": {"BNB": 0.00001},
+            }
+        )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+        repeated_snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        quote_legs = [
+            item for item in list_portfolio_transactions()
+            if item.get("base_transaction_id") == "manual-wct-buy"
+            and item.get("spot_quote_leg")
+        ]
+        self.assertEqual(len(quote_legs), 1)
+        self.assertAlmostEqual(quote_legs[0]["quantity"], 37.513403829)
+        self.assertAlmostEqual(snapshot["summary"]["dry_powder"], 62.486596171)
+        self.assertAlmostEqual(snapshot["summary"]["invested_capital"], 100)
+        self.assertEqual(repeated_snapshot["summary"], snapshot["summary"])
 
     def test_strategy_fill_preserves_owner_capital_and_tracks_committed_reserve(self):
         self.add("BTC", 1, 90, "binance")
@@ -1138,6 +1173,47 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(holding["quantity"], 1)
         self.assertEqual(holding["target_quantity"], 0.8)
         self.assertEqual(holding["minimum_holding_pct"], 75)
+
+    def test_asset_policy_objective_updates_existing_open_bargains(self):
+        self.add("BTC", 1, 90)
+        create_spot_swing(
+            {
+                "swing_id": "policy-objective-btc",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            }
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "policy-objective-btc-sell",
+                "swing_id": "policy-objective-btc",
+                "symbol": "BTCUSDT",
+                "side": "sell",
+                "quantity": 0.25,
+                "price": 100,
+                "source": "strategy",
+            }
+        )
+
+        result, _ = portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {
+                "target_quantity": 1,
+                "minimum_holding_pct": 75,
+                "trading_objective": "accumulate_asset",
+            },
+        )
+
+        self.assertEqual(result["policy"]["trading_objective"], "accumulate_asset")
+        self.assertEqual(
+            load_spot_swing("policy-objective-btc")["trading_objective"],
+            "accumulate_asset",
+        )
+        bargain = portfolio_service.load_portfolio_bargain_ledger()["entries"][0]["swing"]
+        self.assertEqual(bargain["trading_objective"], "accumulate_asset")
 
     def test_asset_policy_validates_target_and_minimum_holding(self):
         self.add("BTC", 1, 90)

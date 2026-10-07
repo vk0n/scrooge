@@ -2698,6 +2698,7 @@ function HoldingCard({
     holding.binance_quantity,
     holding.cold_storage_quantity,
     holding.unassigned_quantity,
+    holding.trading_objective ?? "",
   ].join(":");
 
   useEffect(() => {
@@ -3102,6 +3103,9 @@ export default function TreasuryPage(): JSX.Element {
                 summary?.open_swing_count ?? 0,
                 summary?.closed_swing_count ?? 0,
                 summary?.prices_updated_at ?? "",
+                ...holdings.map((holding) => (
+                  `${holding.asset_symbol}:${holding.quote_symbol}:${holding.trading_objective ?? ""}`
+                )),
               ].join(":")}
               summary={summary!}
               onBargainClosed={() => loadPortfolio()}

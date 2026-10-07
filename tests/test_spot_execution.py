@@ -46,12 +46,14 @@ class FakeSpotExecutionClient:
         order_status: str = "FILLED",
         commission_amount: float = 0.05,
         commission_asset: str = "USDT",
+        executed_at_ms: int = 1_790_120_000_000,
     ):
         self.btc_free = btc_free
         self.usdt_free = usdt_free
         self.order_status = order_status
         self.commission_amount = commission_amount
         self.commission_asset = commission_asset
+        self.executed_at_ms = executed_at_ms
         self.create_calls = 0
 
     def get_account(self, **kwargs):
@@ -86,7 +88,7 @@ class FakeSpotExecutionClient:
             "symbol": kwargs["symbol"],
             "orderId": 42,
             "clientOrderId": kwargs["newClientOrderId"],
-            "transactTime": 1_790_120_000_000,
+            "transactTime": self.executed_at_ms,
             "status": self.order_status,
             "executedQty": kwargs["quantity"],
             "cummulativeQuoteQty": str(float(kwargs["quantity"]) * 100),
@@ -97,7 +99,7 @@ class FakeSpotExecutionClient:
             "symbol": kwargs["symbol"],
             "orderId": 42,
             "clientOrderId": self.order_params["newClientOrderId"],
-            "updateTime": 1_790_120_000_000,
+            "updateTime": self.executed_at_ms,
             "status": self.order_status,
             "executedQty": self.order_params["quantity"],
             "cummulativeQuoteQty": str(float(self.order_params["quantity"]) * 100),
@@ -114,7 +116,7 @@ class FakeSpotExecutionClient:
                 "quoteQty": str(quantity * 100),
                 "commission": str(self.commission_amount),
                 "commissionAsset": self.commission_asset,
-                "time": 1_790_120_000_000,
+                "time": self.executed_at_ms,
             }
         ]
 
@@ -365,7 +367,7 @@ class SpotExecutionTests(unittest.TestCase):
         exchange_entries = [
             item
             for item in list_portfolio_transactions(path=self.db_path)
-            if item.get("source") == "binance_manual"
+            if item.get("source") == "binance_manual" and not item.get("spot_quote_leg")
         ]
         self.assertEqual(len(exchange_entries), 1)
         self.assertEqual(exchange_entries[0]["tx_type"], "buy")
@@ -375,6 +377,146 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(recovered["order_id"], "42")
         self.assertEqual(client.create_calls, 1)
         self.assertEqual(load_spot_order_intent(preview["intent_id"], path=self.db_path)["status"], "filled")
+
+    def test_manual_buy_increases_target_by_net_received_asset_once(self):
+        preview = self._preview_and_queue("buy", 0.25)
+        executor = SpotOrderExecutor(
+            FakeSpotExecutionClient(commission_amount=0.01, commission_asset="BTC"),
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        executor.execute(preview["intent_id"])
+        executor.execute(preview["intent_id"])
+
+        policy = next(
+            item for item in list_portfolio_asset_policies(path=self.db_path)
+            if item["asset_symbol"] == "BTC"
+        )
+        self.assertAlmostEqual(policy["target_quantity"], 1.24)
+
+    def test_manual_buy_debits_quote_cash_without_adding_owner_capital(self):
+        portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "deposit",
+                "asset_symbol": "USDT",
+                "quantity": 100,
+                "quote_symbol": "USDT",
+                "custody_location": "binance",
+            }
+        )
+        preview = self._preview_and_queue("buy", 0.25)
+        executor = SpotOrderExecutor(
+            FakeSpotExecutionClient(
+                commission_amount=0.05,
+                commission_asset="USDT",
+                executed_at_ms=int(time.time() * 1000) + 1_000,
+            ),
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        executor.execute(preview["intent_id"])
+        with patch.object(
+            portfolio_service,
+            "_fetch_market_price",
+            side_effect=lambda asset, quote: (
+                1.0 if asset == "USDT" else 100.0,
+                None,
+                "2026-10-07 19:10:00",
+            ),
+        ):
+            snapshot, _ = portfolio_service.load_portfolio_snapshot()
+        executor.execute(preview["intent_id"])
+        with patch.object(
+            portfolio_service,
+            "_fetch_market_price",
+            side_effect=lambda asset, quote: (
+                1.0 if asset == "USDT" else 100.0,
+                None,
+                "2026-10-07 19:10:00",
+            ),
+        ):
+            repeated_snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        quote_legs = [
+            item for item in list_portfolio_transactions(path=self.db_path)
+            if item.get("base_transaction_id") == f"spot-order:{preview['intent_id']}"
+            and item.get("spot_quote_leg")
+        ]
+        self.assertEqual(len(quote_legs), 1)
+        self.assertEqual(quote_legs[0]["tx_type"], "sell")
+        self.assertAlmostEqual(quote_legs[0]["quantity"], 25.05)
+        self.assertAlmostEqual(snapshot["summary"]["dry_powder"], 74.95)
+        self.assertAlmostEqual(snapshot["summary"]["invested_capital"], 190)
+        self.assertAlmostEqual(snapshot["summary"]["total_value"], 199.95)
+        self.assertAlmostEqual(snapshot["summary"]["total_gain"], 9.95)
+        self.assertEqual(repeated_snapshot["summary"], snapshot["summary"])
+
+    def test_manual_sell_decreases_target_by_total_asset_debit_once(self):
+        preview = self._preview_and_queue("sell", 0.25)
+        executor = SpotOrderExecutor(
+            FakeSpotExecutionClient(commission_amount=0.01, commission_asset="BTC"),
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        executor.execute(preview["intent_id"])
+        executor.execute(preview["intent_id"])
+
+        policy = next(
+            item for item in list_portfolio_asset_policies(path=self.db_path)
+            if item["asset_symbol"] == "BTC"
+        )
+        self.assertAlmostEqual(policy["target_quantity"], 0.74)
+
+    def test_manual_sell_credits_quote_cash_without_changing_owner_capital(self):
+        portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "deposit",
+                "asset_symbol": "USDT",
+                "quantity": 100,
+                "quote_symbol": "USDT",
+                "custody_location": "binance",
+            }
+        )
+        preview = self._preview_and_queue("sell", 0.25)
+        executor = SpotOrderExecutor(
+            FakeSpotExecutionClient(
+                commission_amount=0.05,
+                commission_asset="USDT",
+                executed_at_ms=int(time.time() * 1000) + 1_000,
+            ),
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        executor.execute(preview["intent_id"])
+        with patch.object(
+            portfolio_service,
+            "_fetch_market_price",
+            side_effect=lambda asset, quote: (
+                1.0 if asset == "USDT" else 100.0,
+                None,
+                "2026-10-07 19:10:00",
+            ),
+        ):
+            snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        quote_leg = next(
+            item for item in list_portfolio_transactions(path=self.db_path)
+            if item.get("base_transaction_id") == f"spot-order:{preview['intent_id']}"
+            and item.get("spot_quote_leg")
+        )
+        btc = next(item for item in snapshot["holdings"] if item["asset_symbol"] == "BTC")
+        self.assertEqual(quote_leg["tx_type"], "buy")
+        self.assertAlmostEqual(quote_leg["quantity"], 24.95)
+        self.assertAlmostEqual(snapshot["summary"]["dry_powder"], 124.95)
+        self.assertAlmostEqual(snapshot["summary"]["invested_capital"], 190)
+        self.assertAlmostEqual(snapshot["summary"]["total_value"], 199.95)
+        self.assertAlmostEqual(snapshot["summary"]["total_gain"], 9.95)
+        self.assertAlmostEqual(btc["initial_quantity"], 0.75)
+        self.assertAlmostEqual(btc["initial_capital"], 67.5)
 
     def test_executor_quantizes_economic_quantity_and_audits_each_stage(self):
         preview = self._preview_and_queue("buy", 0.2504)
@@ -594,6 +736,11 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(len(quote_legs), 1)
         self.assertEqual(quote_legs[0]["source"], "binance_manual")
         self.assertEqual(quote_legs[0]["tx_type"], "buy")
+        policy = next(
+            item for item in list_portfolio_asset_policies(path=self.db_path)
+            if item["asset_symbol"] == "BTC"
+        )
+        self.assertEqual(policy["target_quantity"], 0.75)
 
     def test_live_atomic_close_accepts_normalized_quantity_and_folds_dust(self):
         portfolio_service.update_portfolio_asset_policy(
@@ -693,7 +840,10 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(client.create_calls, 1)
         self.assertEqual(load_spot_order_intent(preview["intent_id"], path=self.db_path)["status"], "filled")
         self.assertEqual(
-            len([item for item in list_portfolio_transactions(path=self.db_path) if item.get("source") == "binance_manual"]),
+            len([
+                item for item in list_portfolio_transactions(path=self.db_path)
+                if item.get("source") == "binance_manual" and not item.get("spot_quote_leg")
+            ]),
             1,
         )
 
@@ -805,7 +955,10 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(client.create_calls, 1)
         self.assertEqual(load_spot_order_intent(preview["intent_id"], path=self.db_path)["status"], "filled")
         self.assertEqual(
-            len([item for item in list_portfolio_transactions(path=self.db_path) if item.get("source") == "binance_manual"]),
+            len([
+                item for item in list_portfolio_transactions(path=self.db_path)
+                if item.get("source") == "binance_manual" and not item.get("spot_quote_leg")
+            ]),
             1,
         )
 

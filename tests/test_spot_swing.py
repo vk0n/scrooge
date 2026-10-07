@@ -544,6 +544,101 @@ class SpotSwingDomainTests(unittest.TestCase):
 
         self.assertEqual(updated["trading_objective"], "accumulate_asset")
 
+    def test_policy_objective_update_synchronizes_only_nonclosed_swings(self):
+        self.create_swing("objective-open")
+        self.add_execution("objective-open", "open-sell", "sell", 50, 5, executed_at_ms=2_000)
+
+        self.create_swing("objective-partial")
+        self.add_execution("objective-partial", "partial-sell", "sell", 50, 5, executed_at_ms=3_000)
+        self.add_execution("objective-partial", "partial-buy", "buy", 10, 4, executed_at_ms=4_000)
+
+        self.create_swing("objective-closed")
+        self.add_execution("objective-closed", "closed-sell", "sell", 50, 5, executed_at_ms=5_000)
+        self.add_execution("objective-closed", "closed-buy", "buy", 50, 4, executed_at_ms=6_000)
+
+        upsert_portfolio_asset_policy(
+            {
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "target_quantity": 1_000,
+                "minimum_holding_pct": 80,
+                "trading_objective": "accumulate_asset",
+            },
+            path=self.db_path,
+        )
+
+        self.assertEqual(
+            load_spot_swing("objective-open", path=self.db_path)["trading_objective"],
+            "accumulate_asset",
+        )
+        self.assertEqual(
+            load_spot_swing("objective-partial", path=self.db_path)["trading_objective"],
+            "accumulate_asset",
+        )
+        self.assertEqual(
+            load_spot_swing("objective-partial", path=self.db_path)["status"],
+            "partially_closed",
+        )
+        self.assertEqual(
+            load_spot_swing("objective-closed", path=self.db_path)["trading_objective"],
+            "accumulate_cash",
+        )
+        self.assertEqual(load_spot_swing("objective-closed", path=self.db_path)["status"], "closed")
+
+    def test_bootstrap_reconciles_existing_open_swing_with_policy_objective(self):
+        upsert_portfolio_asset_policy(
+            {
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "target_quantity": 1_000,
+                "minimum_holding_pct": 80,
+                "trading_objective": "accumulate_asset",
+            },
+            path=self.db_path,
+        )
+        self.create_swing("bootstrap-objective-open", objective="accumulate_cash")
+
+        bootstrap_runtime_db(self.db_path)
+
+        self.assertEqual(
+            load_spot_swing("bootstrap-objective-open", path=self.db_path)["trading_objective"],
+            "accumulate_asset",
+        )
+
+    def test_policy_update_without_objective_does_not_rewrite_open_swings(self):
+        self.create_swing("legacy-objective-open", objective="accumulate_cash")
+        upsert_portfolio_asset_policy(
+            {
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "target_quantity": 1_000,
+                "minimum_holding_pct": 80,
+                "trading_objective": "accumulate_asset",
+            },
+            path=self.db_path,
+        )
+
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE spot_swings SET trading_objective = 'accumulate_cash' WHERE swing_id = 'legacy-objective-open'"
+            )
+            connection.commit()
+
+        upsert_portfolio_asset_policy(
+            {
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "target_quantity": 1_100,
+                "minimum_holding_pct": 75,
+            },
+            path=self.db_path,
+        )
+
+        self.assertEqual(
+            load_spot_swing("legacy-objective-open", path=self.db_path)["trading_objective"],
+            "accumulate_cash",
+        )
+
     def test_duplicate_exchange_execution_is_idempotent_and_conflicts_are_rejected(self):
         self.create_swing("swing-dedup")
         first = self.add_execution(

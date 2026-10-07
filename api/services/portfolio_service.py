@@ -399,6 +399,17 @@ def _derive_owner_positions(
             price = 1.0
         key = (asset, quote)
         bucket = positions.setdefault(key, {"quantity": 0.0, "basis": 0.0})
+        is_standalone_manual_spot = (
+            source == "binance_manual"
+            and not transaction.get("swing_id")
+            and not transaction.get("spot_quote_leg")
+        )
+        if is_standalone_manual_spot and tx_type == "sell":
+            average_basis = bucket["basis"] / bucket["quantity"] if bucket["quantity"] > 0 else 0.0
+            removed_quantity = min(quantity, bucket["quantity"])
+            bucket["quantity"] = max(0.0, bucket["quantity"] - removed_quantity)
+            bucket["basis"] = max(0.0, bucket["basis"] - removed_quantity * average_basis)
+            continue
         is_contribution = capital_effect == "contribution" or (
             not capital_effect and tx_type in {"buy", "deposit", "adjustment"}
         )
@@ -414,6 +425,17 @@ def _derive_owner_positions(
             bucket["quantity"] = max(0.0, bucket["quantity"] - removed_quantity)
             bucket["basis"] = max(0.0, bucket["basis"] - removed_quantity * average_basis)
     return positions
+
+
+def _derive_invested_capital(transactions: list[dict[str, Any]]) -> float:
+    """Return owner capital crossing the Treasury boundary, excluding internal Spot trades."""
+    external_transactions = [
+        transaction
+        for transaction in transactions
+        if str(transaction.get("source") or "manual").strip().lower() != "binance_manual"
+    ]
+    external_positions = _derive_owner_positions(external_transactions)
+    return max(0.0, sum(position["basis"] for position in external_positions.values()))
 
 
 def _swing_economics_by_id(
@@ -922,7 +944,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     ]
     summary = _summary_from_holdings(
         holdings,
-        invested_capital=max(0.0, sum(position["basis"] for position in owner_positions.values())),
+        invested_capital=_derive_invested_capital(transactions),
         open_swings=open_swings,
         economics_by_swing=economics_by_swing,
     )

@@ -24,8 +24,8 @@ from shared.spot_strategy import transition_spot_strategy_campaign
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 18
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Audited owner use and release of protected Treasury cash"
+RUNTIME_DB_SCHEMA_VERSION = 20
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Manual Spot trades ratchet the asset Target Holding"
 
 
 class RuntimeDbError(OSError):
@@ -708,6 +708,23 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             FOREIGN KEY(swing_id) REFERENCES spot_swings(swing_id)
         );
 
+        CREATE TABLE IF NOT EXISTS spot_manual_target_ratchets (
+            intent_id TEXT PRIMARY KEY,
+            transaction_id TEXT NOT NULL UNIQUE,
+            account_key TEXT NOT NULL,
+            asset_symbol TEXT NOT NULL,
+            quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+            side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+            previous_target_quantity REAL NOT NULL,
+            settled_quantity REAL NOT NULL CHECK (settled_quantity > 0),
+            target_delta_quantity REAL NOT NULL,
+            next_target_quantity REAL NOT NULL CHECK (next_target_quantity >= 0),
+            applied_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key),
+            FOREIGN KEY(intent_id) REFERENCES spot_order_intents(intent_id),
+            FOREIGN KEY(transaction_id) REFERENCES portfolio_transactions(transaction_id)
+        );
+
         CREATE TABLE IF NOT EXISTS portfolio_daily_snapshots (
             account_key TEXT NOT NULL,
             snapshot_date TEXT NOT NULL,
@@ -1003,6 +1020,40 @@ def list_strategy_chart_snapshots(
     return [json.loads(row["payload_json"]) for row in rows]
 
 
+def _synchronize_open_spot_swing_objectives(connection: sqlite3.Connection) -> int:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    cursor = connection.execute(
+        """
+        UPDATE spot_swings
+        SET trading_objective = (
+                SELECT policy.trading_objective
+                FROM portfolio_asset_policies AS policy
+                WHERE policy.account_key = spot_swings.account_key
+                  AND policy.asset_symbol = spot_swings.asset_symbol
+                  AND policy.quote_symbol = spot_swings.quote_symbol
+            ),
+            updated_at_ms = ?
+        WHERE status != 'closed'
+          AND EXISTS (
+              SELECT 1
+              FROM portfolio_asset_policies AS policy
+              WHERE policy.account_key = spot_swings.account_key
+                AND policy.asset_symbol = spot_swings.asset_symbol
+                AND policy.quote_symbol = spot_swings.quote_symbol
+          )
+          AND COALESCE(trading_objective, '') != (
+              SELECT policy.trading_objective
+              FROM portfolio_asset_policies AS policy
+              WHERE policy.account_key = spot_swings.account_key
+                AND policy.asset_symbol = spot_swings.asset_symbol
+                AND policy.quote_symbol = spot_swings.quote_symbol
+          )
+        """,
+        (now_ms,),
+    )
+    return cursor.rowcount
+
+
 def bootstrap_runtime_db(
     path: Path | None = None,
     *,
@@ -1014,6 +1065,7 @@ def bootstrap_runtime_db(
     """
     resolved_path = (path or runtime_db_path()).expanduser()
     with _connection(resolved_path) as connection:
+        _synchronize_open_spot_swing_objectives(connection)
         if initial_state is not None:
             row = connection.execute(
                 "SELECT 1 FROM runtime_state_snapshot WHERE state_key = ? LIMIT 1",
@@ -2146,7 +2198,8 @@ def upsert_portfolio_asset_policy(
     quote_symbol = str(policy.get("quote_symbol") or "USDT").strip().upper() or "USDT"
     target_quantity = _as_float_or_none(policy.get("target_quantity"))
     minimum_holding_pct = _as_float_or_none(policy.get("minimum_holding_pct"))
-    if "trading_objective" in policy:
+    objective_was_provided = "trading_objective" in policy
+    if objective_was_provided:
         trading_objective = str(policy.get("trading_objective") or "accumulate_cash").strip().lower()
     else:
         existing = next(
@@ -2191,6 +2244,27 @@ def upsert_portfolio_asset_policy(
                 now_ms,
             ),
         )
+        if objective_was_provided:
+            # Open Bargains follow the current policy; closed ones preserve history.
+            connection.execute(
+                """
+                UPDATE spot_swings
+                SET trading_objective = ?, updated_at_ms = ?
+                WHERE account_key = ?
+                  AND asset_symbol = ?
+                  AND quote_symbol = ?
+                  AND status != 'closed'
+                  AND COALESCE(trading_objective, '') != ?
+                """,
+                (
+                    trading_objective,
+                    now_ms,
+                    normalized_account,
+                    asset_symbol,
+                    quote_symbol,
+                    trading_objective,
+                ),
+            )
     policies = list_portfolio_asset_policies(account_key=normalized_account, path=path)
     return next(
         policy
@@ -3892,6 +3966,143 @@ def _spot_accumulation_ratchet_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "fee_asset": str(row["fee_asset"]) if row["fee_asset"] is not None else None,
         "applied_at_ms": int(row["applied_at_ms"]),
     }
+
+
+def _spot_manual_target_ratchet_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "intent_id": str(row["intent_id"]),
+        "transaction_id": str(row["transaction_id"]),
+        "account_key": str(row["account_key"]),
+        "asset_symbol": str(row["asset_symbol"]),
+        "quote_symbol": str(row["quote_symbol"]),
+        "side": str(row["side"]),
+        "previous_target_quantity": float(row["previous_target_quantity"]),
+        "settled_quantity": float(row["settled_quantity"]),
+        "target_delta_quantity": float(row["target_delta_quantity"]),
+        "next_target_quantity": float(row["next_target_quantity"]),
+        "applied_at_ms": int(row["applied_at_ms"]),
+    }
+
+
+def apply_manual_spot_target_ratchet(
+    intent_id: str,
+    transaction_id: str,
+    *,
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Move Target with one standalone manual Spot fill exactly once."""
+    normalized_intent = str(intent_id or "").strip()
+    normalized_transaction = str(transaction_id or "").strip()
+    if not normalized_intent or not normalized_transaction:
+        raise ValueError("Manual Spot Target ratchet requires intent and transaction identities.")
+
+    with _connection(path) as connection:
+        existing = connection.execute(
+            "SELECT * FROM spot_manual_target_ratchets WHERE intent_id = ?",
+            (normalized_intent,),
+        ).fetchone()
+        if existing is not None:
+            return {**_spot_manual_target_ratchet_from_row(existing), "idempotent_replay": True}
+
+        intent = connection.execute(
+            "SELECT * FROM spot_order_intents WHERE intent_id = ?",
+            (normalized_intent,),
+        ).fetchone()
+        if intent is None:
+            raise ValueError("Manual Spot order intent was not found for Target settlement.")
+        request = json.loads(intent["request_json"])
+        if not isinstance(request, dict):
+            request = {}
+        if (
+            str(intent["source"]) != "manual"
+            or intent["swing_id"] is not None
+            or bool(request.get("treasury_intake"))
+        ):
+            return None
+
+        transaction = connection.execute(
+            "SELECT * FROM portfolio_transactions WHERE transaction_id = ?",
+            (normalized_transaction,),
+        ).fetchone()
+        if transaction is None:
+            raise ValueError("Manual Spot ledger transaction was not found for Target settlement.")
+        transaction_payload = json.loads(transaction["payload_json"])
+        if not isinstance(transaction_payload, dict):
+            transaction_payload = {}
+        if (
+            str(transaction["source"]) != "binance_manual"
+            or str(transaction["status"]) != "settled"
+            or str(transaction_payload.get("spot_order_intent_id") or "") != normalized_intent
+            or str(transaction["account_key"]) != str(intent["account_key"])
+            or str(transaction["asset_symbol"]) != str(intent["asset_symbol"])
+            or str(transaction["quote_symbol"]) != str(intent["quote_symbol"])
+            or str(transaction["tx_type"]) != str(intent["side"])
+        ):
+            raise ValueError("Manual Spot transaction does not match its order intent.")
+
+        settled_quantity = float(transaction["quantity"])
+        if not math.isfinite(settled_quantity) or settled_quantity <= 0:
+            raise ValueError("Manual Spot Target ratchet requires a positive settled quantity.")
+        policy = connection.execute(
+            """
+            SELECT * FROM portfolio_asset_policies
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (intent["account_key"], intent["asset_symbol"], intent["quote_symbol"]),
+        ).fetchone()
+        if policy is None:
+            raise ValueError("Manual Spot Target policy was not found for settlement.")
+
+        side = str(intent["side"])
+        target_delta = settled_quantity if side == "buy" else -settled_quantity
+        previous_target = float(policy["target_quantity"])
+        next_target = max(0.0, previous_target + target_delta)
+        if next_target < 1e-12:
+            next_target = 0.0
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        connection.execute(
+            """
+            UPDATE portfolio_asset_policies
+            SET target_quantity = ?, updated_at_ms = ?
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (
+                next_target,
+                now_ms,
+                intent["account_key"],
+                intent["asset_symbol"],
+                intent["quote_symbol"],
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO spot_manual_target_ratchets (
+                intent_id, transaction_id, account_key, asset_symbol, quote_symbol,
+                side, previous_target_quantity, settled_quantity,
+                target_delta_quantity, next_target_quantity, applied_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_intent,
+                normalized_transaction,
+                intent["account_key"],
+                intent["asset_symbol"],
+                intent["quote_symbol"],
+                side,
+                previous_target,
+                settled_quantity,
+                target_delta,
+                next_target,
+                now_ms,
+            ),
+        )
+        saved = connection.execute(
+            "SELECT * FROM spot_manual_target_ratchets WHERE intent_id = ?",
+            (normalized_intent,),
+        ).fetchone()
+    if saved is None:
+        raise RuntimeDbError("Manual Spot Target ratchet was not persisted.")
+    return {**_spot_manual_target_ratchet_from_row(saved), "idempotent_replay": False}
 
 
 def apply_spot_accumulation_target_ratchet(

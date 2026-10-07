@@ -10,6 +10,7 @@ from typing import Any
 
 from bot.spot_account import normalize_spot_account_snapshot
 from shared.runtime_db import (
+    apply_manual_spot_target_ratchet,
     apply_spot_accumulation_target_ratchet,
     apply_spot_swing_cash_retention,
     apply_spot_swing_target_ratchet,
@@ -620,6 +621,17 @@ class SpotOrderExecutor:
                         }
                     ],
                     account_key=intent["account_key"],
+                    path=self.db_path,
+                )
+
+            if (
+                intent["source"] == "manual"
+                and not intent.get("swing_id")
+                and not bool(request.get("treasury_intake"))
+            ):
+                apply_manual_spot_target_ratchet(
+                    intent["intent_id"],
+                    transaction_id,
                     path=self.db_path,
                 )
 
