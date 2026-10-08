@@ -2582,12 +2582,9 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-allocation-legend {
-  max-height: 11.4rem;
   margin: 0;
   padding: 0 0.16rem 0 0;
   list-style: none;
-  overflow-y: auto;
-  scrollbar-width: thin;
 }
 
 .treasury-allocation-empty {
@@ -5067,6 +5064,33 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-visibility-grid {
     grid-template-columns: 1fr;
   }
+
+  .treasury-holding-toggle {
+    grid-template-columns: minmax(0, 1fr) 1rem;
+    gap: 0.52rem;
+  }
+
+  .treasury-holding-head,
+  .treasury-holding-lines {
+    grid-column: 1;
+  }
+
+  .treasury-holding-lines {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.38rem 0.72rem;
+  }
+
+  .treasury-holding-lines > span {
+    border-top: 1px solid rgba(106, 124, 150, 0.16);
+    border-left: 0;
+    padding: 0.36rem 0 0;
+  }
+
+  .treasury-holding-chevron {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    justify-self: center;
+  }
 }
 
 @media (max-width: 760px) {
@@ -5902,10 +5926,6 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-allocation-donut {
     width: min(72vw, 11rem);
-  }
-
-  .treasury-allocation-legend {
-    max-height: none;
   }
 
   .treasury-allocation-foot {
