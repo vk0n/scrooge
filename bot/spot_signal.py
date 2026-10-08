@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -68,14 +69,19 @@ class RollingSpotSignalMonitor:
         self._last_states: dict[tuple[str, str], tuple[object, ...]] = {}
         self._last_errors: dict[tuple[str, str], str] = {}
 
-    def start(self) -> None:
+    def start(self, *, refresh_immediately: bool = True) -> None:
         if not self.execution_enabled:
             self.logger.info("spot_signal_monitor_disabled reason=execution_disabled")
             return
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, name="scrooge-spot-signals", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            kwargs={"refresh_immediately": refresh_immediately},
+            name="scrooge-spot-signals",
+            daemon=True,
+        )
         self._thread.start()
 
     def stop(self) -> bool:
@@ -91,6 +97,7 @@ class RollingSpotSignalMonitor:
     def refresh_once(self) -> list[dict[str, Any]]:
         if not self.execution_enabled:
             return []
+        cycle_started = time.monotonic()
         if self.pending_recovery_handler is not None:
             try:
                 self.pending_recovery_handler()
@@ -124,6 +131,14 @@ class RollingSpotSignalMonitor:
                         saved.get("market_symbol"),
                         exc,
                     )
+        elapsed_seconds = time.monotonic() - cycle_started
+        if elapsed_seconds >= self.interval_seconds:
+            self.logger.warning(
+                "spot_signal_cycle_slow signals=%s elapsed_seconds=%.2f interval_seconds=%.2f",
+                len(results),
+                elapsed_seconds,
+                self.interval_seconds,
+            )
         return results
 
     def _evaluate_policy(self, policy: dict[str, Any]) -> dict[str, Any] | None:
@@ -204,7 +219,9 @@ class RollingSpotSignalMonitor:
         self._last_states[key] = state
         return saved
 
-    def _run(self) -> None:
+    def _run(self, *, refresh_immediately: bool = True) -> None:
+        if not refresh_immediately and self._stop_event.wait(self.interval_seconds):
+            return
         while not self._stop_event.is_set():
             try:
                 self.refresh_once()

@@ -13,6 +13,7 @@ from shared.runtime_db import (
     apply_spot_swing_target_ratchet,
     bootstrap_runtime_db,
     complete_spot_strategy_campaign_level,
+    create_spot_order_intent,
     create_spot_swing,
     ensure_spot_strategy_action,
     initialize_spot_strategy_campaign_capacity,
@@ -20,6 +21,7 @@ from shared.runtime_db import (
     list_spot_accumulation_target_ratchets,
     list_spot_strategy_actions,
     list_spot_swings,
+    load_spot_order_intent,
     load_spot_strategy_campaign,
     reconcile_spot_strategy_campaign_progress,
     sync_spot_strategy_campaign,
@@ -878,6 +880,154 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(persisted["status"], "planned")
 
+    def test_previewed_action_is_replanned_before_execution(self):
+        executor = ProgressiveSpotSwingExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+        intent = create_spot_order_intent(
+            {
+                "intent_id": "stale-preview",
+                "client_order_id": "stale-preview",
+                "symbol": "NEARUSDT",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "side": "buy",
+                "requested_quantity": 10,
+                "estimated_price": 5,
+                "estimated_quote_value": 50,
+                "source": "strategy",
+                "swing_id": "stale-swing",
+                "reason": {"close_profit_pct": 5},
+            },
+            path=self.db_path,
+        )
+        action = ensure_spot_strategy_action(
+            {
+                "action_key": "close:stale-swing:opening-fill",
+                "account_key": "manual_spot",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "action_type": "close",
+                "side": "buy",
+                "swing_id": "stale-swing",
+                "requested_quantity": 10,
+                "reason": {"close_profit_pct": 5},
+            },
+            path=self.db_path,
+        )
+        update_spot_strategy_action(
+            action["action_key"],
+            {"intent_id": intent["intent_id"], "status": "intent_created"},
+            path=self.db_path,
+        )
+
+        result = executor._reconcile_actions("NEAR", "USDT")
+
+        self.assertIsNone(result)
+        persisted_intent = load_spot_order_intent(intent["intent_id"], path=self.db_path)
+        persisted_action = next(
+            item
+            for item in list_spot_strategy_actions(path=self.db_path)
+            if item["action_key"] == action["action_key"]
+        )
+        self.assertEqual(persisted_intent["status"], "failed")
+        self.assertEqual(persisted_action["status"], "blocked")
+
+    def test_goal_change_replans_previewed_close_with_current_threshold(self):
+        swing_id = "swing-goal-change"
+        create_spot_swing(
+            {
+                "swing_id": swing_id,
+                "account_key": "manual_spot",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "open-goal-change",
+                "swing_id": swing_id,
+                "symbol": "NEARUSDT",
+                "side": "sell",
+                "quantity": 10,
+                "price": 10,
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        intent = create_spot_order_intent(
+            {
+                "intent_id": "preview-at-five-percent",
+                "client_order_id": "preview-at-five-percent",
+                "symbol": "NEARUSDT",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "side": "buy",
+                "requested_quantity": 10,
+                "estimated_price": 9.5,
+                "estimated_quote_value": 95,
+                "source": "strategy",
+                "swing_id": swing_id,
+                "reason": {"close_profit_pct": 5},
+            },
+            path=self.db_path,
+        )
+        executor = RecordingProgressiveExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+            config=ProgressiveSwingConfig(close_profit_pct=6),
+        )
+        action = executor._persist_close_action(
+            "NEAR",
+            "USDT",
+            {
+                "action_type": "close",
+                "side": "buy",
+                "swing_id": swing_id,
+                "requested_quantity": 10,
+                "reason": {"close_profit_pct": 5},
+            },
+        )
+        update_spot_strategy_action(
+            action["action_key"],
+            {"intent_id": intent["intent_id"], "status": "intent_created"},
+            path=self.db_path,
+        )
+        signal = {
+            **self.signal(0, 0),
+            "opportunity": "hold",
+            "strategy_eligible": True,
+            "current_price": 9.3,
+        }
+        portfolio = self.portfolio()[0]
+        portfolio["holdings"][0]["market_price"] = 9.3
+        portfolio["summary"] = {
+            "vault_reserve": 1000,
+            "vault_reserve_available": 100,
+            "vault_reserve_spendable": 100,
+        }
+
+        with patch("bot.spot_strategy.load_portfolio_snapshot", return_value=(portfolio, [])):
+            result = executor.handle_signal(signal)
+
+        persisted_intent = load_spot_order_intent(intent["intent_id"], path=self.db_path)
+        persisted_action = next(
+            item
+            for item in list_spot_strategy_actions(path=self.db_path)
+            if item["action_key"] == action["action_key"]
+        )
+        self.assertEqual(persisted_intent["status"], "failed")
+        self.assertEqual(persisted_action["status"], "completed")
+        self.assertEqual(persisted_action["reason"]["close_profit_pct"], 6)
+        self.assertEqual(result["profit_close_batch_swing_ids"], [swing_id])
+
     def test_active_intent_is_recovered_during_signal_reconciliation(self):
         executor = ProgressiveSpotSwingExecutor(
             object(),
@@ -1249,6 +1399,45 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             ordered = executor.order_signals_for_execution(signals)
 
         self.assertEqual([item["asset_symbol"] for item in ordered], ["NEAR", "XRP"])
+
+    def test_signal_batch_reuses_one_portfolio_snapshot_for_idle_assets(self):
+        executor = ProgressiveSpotSwingExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+        portfolio = {
+            "holdings": [
+                {"asset_symbol": "NEAR", "quote_symbol": "USDT", "market_price": 5},
+                {"asset_symbol": "XRP", "quote_symbol": "USDT", "market_price": 1},
+            ],
+            "exchange": {"usdt_free": 1000},
+            "summary": {
+                "vault_reserve": 1000,
+                "vault_reserve_spendable": 100,
+            },
+        }
+        signals = [
+            {
+                "asset_symbol": asset,
+                "quote_symbol": "USDT",
+                "opportunity": "hold",
+                "level": 0,
+                "current_price": price,
+                "current_at_ms": 1_800_000_000_000,
+            }
+            for asset, price in (("NEAR", 5), ("XRP", 1))
+        ]
+
+        with (
+            patch("bot.spot_strategy.load_portfolio_snapshot", return_value=(portfolio, [])) as load_snapshot,
+            patch("bot.spot_strategy.plan_spot_strategy_action", return_value=None),
+        ):
+            ordered = executor.order_signals_for_execution(signals)
+            for signal in ordered:
+                executor.handle_signal(signal)
+
+        load_snapshot.assert_called_once_with()
 
     def test_blocked_dust_close_falls_through_to_next_profitable_swing(self):
         executor = BlockingFirstProgressiveExecutor(

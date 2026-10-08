@@ -820,6 +820,12 @@ if __name__ == "__main__":
                         next_treasury_config = treasury_strategy_config_from_mapping(
                             next_cfg.get("treasury")
                         )
+                        if spot_signal_monitor is not None:
+                            if not spot_signal_monitor.stop():
+                                raise RuntimeError(
+                                    "Spot signal monitor did not stop; Treasury Rules were not applied."
+                                )
+                            spot_signal_monitor = None
                         cfg = next_cfg
                         symbol = cfg["symbol"]
                         lvrg = cfg["leverage"]
@@ -852,12 +858,6 @@ if __name__ == "__main__":
                             if strategy_mode == "realtime"
                             else None
                         )
-                        if spot_signal_monitor is not None:
-                            if not spot_signal_monitor.stop():
-                                raise RuntimeError(
-                                    "Spot signal monitor did not stop; Treasury Rules were not applied."
-                                )
-                            spot_signal_monitor = None
                         treasury_config = next_treasury_config
                         spot_order_executor.update_strategy_config(treasury_config.progression)
                         spot_swing_strategy.config = treasury_config.progression
@@ -874,7 +874,10 @@ if __name__ == "__main__":
                                 snapshot_orderer=spot_swing_strategy.order_signals_for_execution,
                                 pending_recovery_handler=spot_order_executor.recover_pending,
                             )
-                            spot_signal_monitor.start()
+                            # Apply changed goals to every open Bargain before
+                            # returning to the ordinary timed monitoring cycle.
+                            spot_signal_monitor.refresh_once()
+                            spot_signal_monitor.start(refresh_immediately=False)
                         restart_requested = False
                         cache_health_flags["balance_cache_stale_logged"] = False
                         cache_health_flags["position_cache_stale_logged"] = False

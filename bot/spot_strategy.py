@@ -81,10 +81,23 @@ class ProgressiveSpotSwingExecutor:
         self.config = config or ProgressiveSwingConfig()
         self.cleanup_config = cleanup_config or WaiterCleanupConfig()
         self.account_key = str(account_key or "manual_spot").strip() or "manual_spot"
+        self._batch_portfolio: dict[str, Any] | None = None
+        self._batch_signal_keys: set[tuple[str, str, int]] = set()
 
     def order_signals_for_execution(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Prioritize portfolio closes before any new openings consume shared quote."""
+        self._batch_portfolio = None
+        self._batch_signal_keys = set()
         portfolio, _ = load_portfolio_snapshot()
+        self._batch_portfolio = portfolio
+        self._batch_signal_keys = {
+            (
+                str(signal.get("asset_symbol") or "").strip().upper(),
+                str(signal.get("quote_symbol") or "USDT").strip().upper() or "USDT",
+                int(signal.get("evaluated_at_ms") or signal.get("current_at_ms") or 0),
+            )
+            for signal in signals
+        }
         holdings = {
             (item.get("asset_symbol"), item.get("quote_symbol")): item
             for item in portfolio.get("holdings", [])
@@ -141,6 +154,9 @@ class ProgressiveSpotSwingExecutor:
         signal_at_ms = int(signal.get("evaluated_at_ms") or signal.get("current_at_ms") or 0)
         if not asset or opportunity not in {"hold", "buy", "sell"} or signal_at_ms <= 0:
             return None
+        batch_signal_key = (asset, quote, signal_at_ms)
+        use_batch_context = batch_signal_key in self._batch_signal_keys
+        self._batch_signal_keys.discard(batch_signal_key)
 
         campaign = sync_spot_strategy_campaign(
             account_key=self.account_key,
@@ -176,7 +192,7 @@ class ProgressiveSpotSwingExecutor:
         campaign = reconciled_campaign or campaign
 
         holding, available_quote, free_quote_reserve, available_accumulation_quote = (
-            self._load_execution_context(asset, quote)
+            self._load_execution_context(asset, quote, refresh=not use_batch_context)
         )
         if holding is None:
             return None
@@ -258,7 +274,7 @@ class ProgressiveSpotSwingExecutor:
                 excluded_close_swing_ids.add(str(decision["swing_id"]))
 
             holding, available_quote, free_quote_reserve, available_accumulation_quote = (
-                self._load_execution_context(asset, quote)
+                self._load_execution_context(asset, quote, refresh=True)
             )
             if holding is None:
                 return self._signal_batch_result(asset, completed_actions)
@@ -339,8 +355,13 @@ class ProgressiveSpotSwingExecutor:
         self,
         asset: str,
         quote: str,
+        *,
+        refresh: bool = True,
     ) -> tuple[dict[str, Any] | None, float, float, float]:
-        portfolio, _ = load_portfolio_snapshot()
+        portfolio = self._batch_portfolio if not refresh else None
+        if portfolio is None:
+            portfolio, _ = load_portfolio_snapshot()
+            self._batch_portfolio = portfolio
         holding = next(
             (
                 item
@@ -483,18 +504,23 @@ class ProgressiveSpotSwingExecutor:
             if intent is not None and intent["status"] in COMPLETED_INTENT_STATUSES:
                 self._complete_action(action)
                 continue
-            if intent is not None and intent["status"] in {"queueing", "queued", *RETRYABLE_INTENT_STATUSES}:
+            if intent is not None and intent["status"] in {
+                "previewed",
+                "queueing",
+                "queued",
+                *RETRYABLE_INTENT_STATUSES,
+            }:
                 # No exchange order can still be live in these states. Require the
                 # current signal planner to authorize a replacement instead of
                 # blindly replaying an action from an older campaign or signal.
-                if intent["status"] in {"queueing", "queued"}:
+                if intent["status"] in {"previewed", "queueing", "queued"}:
                     update_spot_order_intent(
                         intent["intent_id"],
                         {
                             "status": "failed",
                             "error": "Strategy action is waiting for a fresh signal replan.",
                         },
-                        expected_statuses={"queueing", "queued"},
+                        expected_statuses={"previewed", "queueing", "queued"},
                         path=self.db_path,
                     )
                 update_spot_strategy_action(
