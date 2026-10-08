@@ -436,6 +436,7 @@ const CUSTODY_LOCATIONS = Object.keys(CUSTODY_LABELS) as CustodyLocation[];
 const STABLE_ASSETS = new Set(["USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI"]);
 const TREASURY_REFRESH_MS = 60_000;
 const INITIAL_TREASURY_RETRY_DELAYS_MS = [1_000, 3_000, 7_000] as const;
+const BACKGROUND_TREASURY_RETRY_DELAYS_MS = [750, 2_500] as const;
 
 const ALLOCATION_COLORS = [
   "#d9ae45",
@@ -464,6 +465,13 @@ function isRetryablePortfolioLoad(error: unknown): boolean {
   }
   const status = Number(statusMatch[1]);
   return status === 408 || status === 429 || status >= 500;
+}
+
+function portfolioLoadErrorMessage(error: unknown): string {
+  if (error instanceof Error && /^API\s+\d{3}:/.test(error.message)) {
+    return error.message;
+  }
+  return "I lost the line to the Control Plane. I will keep trying.";
 }
 
 function asNumber(value: string): number | null {
@@ -2853,6 +2861,7 @@ export default function TreasuryPage(): JSX.Element {
   const [reserveFocusRequest, setReserveFocusRequest] = useState<number>(0);
   const refreshInFlight = useRef<boolean>(false);
   const initialLoadSettled = useRef<boolean>(false);
+  const backgroundFailureCount = useRef<number>(0);
 
   const loadPortfolio = useCallback(async (background = false): Promise<void> => {
     if (refreshInFlight.current) {
@@ -2862,14 +2871,17 @@ export default function TreasuryPage(): JSX.Element {
     if (!background) {
       setLoading(true);
     }
-    const retryDelays = !background && !initialLoadSettled.current
-      ? INITIAL_TREASURY_RETRY_DELAYS_MS
-      : [];
+    const retryDelays = background
+      ? BACKGROUND_TREASURY_RETRY_DELAYS_MS
+      : !initialLoadSettled.current
+        ? INITIAL_TREASURY_RETRY_DELAYS_MS
+        : [];
     try {
       for (let attempt = 0; ; attempt += 1) {
         try {
           const payload = await fetchApi<PortfolioPayload>("/api/portfolio");
           setPortfolio(payload);
+          backgroundFailureCount.current = 0;
           setError(null);
           break;
         } catch (loadError) {
@@ -2881,7 +2893,16 @@ export default function TreasuryPage(): JSX.Element {
         }
       }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Treasury is unavailable.");
+      if (background && initialLoadSettled.current) {
+        backgroundFailureCount.current += 1;
+        if (backgroundFailureCount.current >= 2) {
+          setError(
+            "I cannot refresh my count right now. The last confirmed Treasury figures remain on display."
+          );
+        }
+      } else {
+        setError(portfolioLoadErrorMessage(loadError));
+      }
     } finally {
       if (!background) {
         initialLoadSettled.current = true;
