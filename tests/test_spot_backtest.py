@@ -939,6 +939,55 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
                 frozenset({start_ms + 2 * HOUR_MS, start_ms + 3 * HOUR_MS}),
             )
 
+    def test_prelisting_warmup_gap_is_flat_filled_and_marked_unavailable(self):
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        start_ms = int(start.timestamp() * 1000)
+
+        def row(index: int, price: float) -> SpotCandle:
+            open_ms = start_ms + index * HOUR_MS
+            return SpotCandle(
+                open_time_ms=open_ms,
+                close_time_ms=open_ms + HOUR_MS - 1,
+                open=price,
+                high=price,
+                low=price,
+                close=price,
+                volume=10,
+            )
+
+        assets = [
+            {
+                "symbol": "AAA",
+                "candles": [row(index, 100) for index in range(6)],
+                "symbol_info": {"symbol": "AAAUSDT"},
+                "source": "cache",
+                "unavailable": frozenset(),
+            },
+            {
+                "symbol": "NEW",
+                "candles": [row(index, 25) for index in range(2, 6)],
+                "symbol_info": {"symbol": "NEWUSDT"},
+                "source": "cache",
+                "unavailable": frozenset(),
+            },
+        ]
+
+        repaired = BinanceSpotHistoricalAdapter._repair_common_market_gaps(
+            assets,
+            interval_ms=HOUR_MS,
+            start=start,
+            replay_start=start + timedelta(hours=3),
+            end=start + timedelta(hours=6),
+        )
+
+        new_asset = repaired[1]
+        self.assertEqual(len(new_asset["candles"]), 6)
+        self.assertEqual([row.close for row in new_asset["candles"][:2]], [25, 25])
+        self.assertEqual(
+            new_asset["unavailable"],
+            frozenset({start_ms, start_ms + HOUR_MS}),
+        )
+
     def test_asset_specific_candle_gap_still_aborts_replay(self):
         start = datetime(2026, 1, 1, tzinfo=UTC)
         start_ms = int(start.timestamp() * 1000)
@@ -989,6 +1038,21 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
 
         self.assertEqual(normal.actions, extreme.actions)
         self.assertEqual(normal.equity, extreme.equity)
+
+    def test_unavailable_rolling_reference_does_not_create_signal(self):
+        config = scenario((asset("AAA"),))
+        historical = dataset(config, lambda _symbol, index: 108 if index >= 0 else 100)
+        replay_open_ms = int(config.start.timestamp() * 1000)
+        unavailable_reference_ms = replay_open_ms - 24 * HOUR_MS
+        historical = replace(
+            historical,
+            unavailable_open_times={"AAA": frozenset({unavailable_reference_ms})},
+        )
+        replay = SpotPortfolioBacktester(config, historical)
+
+        signal = replay._signal_for("AAA", replay._replay_rows()["AAA"][0])
+
+        self.assertIsNone(signal)
 
     def test_incomplete_historical_range_fails_instead_of_shortening_replay(self):
         config = scenario((asset("AAA"),), hours=6)

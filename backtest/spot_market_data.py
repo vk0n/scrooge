@@ -156,6 +156,7 @@ class BinanceSpotHistoricalAdapter:
             loaded_assets,
             interval_ms=interval_ms,
             start=warmup_start,
+            replay_start=scenario.start,
             end=scenario.end,
         )
         for item in loaded_assets:
@@ -257,12 +258,49 @@ class BinanceSpotHistoricalAdapter:
         *,
         interval_ms: int,
         start: datetime,
+        replay_start: datetime | None = None,
         end: datetime,
     ) -> list[dict[str, Any]]:
         if not loaded_assets:
             return loaded_assets
         start_ms = int(start.astimezone(UTC).timestamp() * 1000)
+        replay_start_ms = int((replay_start or start).astimezone(UTC).timestamp() * 1000)
         end_ms = int(end.astimezone(UTC).timestamp() * 1000)
+
+        # A newly listed asset can begin partway through warm-up. Backfill only
+        # that unavailable boundary so every asset remains time-aligned.
+        boundary_repaired: list[dict[str, Any]] = []
+        for item in loaded_assets:
+            rows = item["candles"]
+            unavailable = set(item.get("unavailable") or ())
+            if rows and start_ms < rows[0].open_time_ms <= replay_start_ms:
+                first = rows[0]
+                if (first.open_time_ms - start_ms) % interval_ms != 0:
+                    raise ValueError(f"{item['symbol']} candles are not aligned with the replay interval.")
+                prefix = []
+                for open_time_ms in range(start_ms, first.open_time_ms, interval_ms):
+                    prefix.append(
+                        SpotCandle(
+                            open_time_ms=open_time_ms,
+                            close_time_ms=open_time_ms + interval_ms - 1,
+                            open=first.open,
+                            high=first.open,
+                            low=first.open,
+                            close=first.open,
+                            volume=0.0,
+                        )
+                    )
+                    unavailable.add(open_time_ms)
+                rows = [*prefix, *rows]
+            boundary_repaired.append(
+                {
+                    **item,
+                    "candles": rows,
+                    "unavailable": frozenset(unavailable),
+                }
+            )
+        loaded_assets = boundary_repaired
+
         gaps_by_symbol = {
             str(item["symbol"]): cls._gap_ranges(
                 item["candles"],

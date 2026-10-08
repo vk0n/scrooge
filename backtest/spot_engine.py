@@ -737,6 +737,8 @@ class SpotPortfolioBacktester:
                 offset_ms - ROLLING_WINDOW_MS
             ) // self.dataset.interval_ms
             reference = rows[reference_index]
+        if not self._is_market_available(symbol, reference.open_time_ms):
+            return None
         signal = evaluate_rolling_24h_opportunity(
             current_price=candle.close,
             reference_price=reference.close,
