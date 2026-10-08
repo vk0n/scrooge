@@ -19,6 +19,7 @@ from shared.runtime_db import (
     load_spot_order_intent,
     load_spot_strategy_campaign,
     load_spot_swing,
+    reconcile_spot_strategy_campaign_progress,
     reserve_spot_order_intent,
     sync_spot_strategy_campaign,
     update_spot_order_intent,
@@ -153,6 +154,26 @@ class ProgressiveSpotSwingExecutor:
         pending = self._reconcile_actions(asset, quote)
         if pending is not None:
             return pending
+        reconciled_campaign = reconcile_spot_strategy_campaign_progress(
+            account_key=self.account_key,
+            asset_symbol=asset,
+            quote_symbol=quote,
+            campaign_id=str(campaign.get("campaign_id") or ""),
+            path=self.db_path,
+        )
+        if (
+            reconciled_campaign is not None
+            and int(reconciled_campaign.get("highest_completed_level") or 0)
+            > int(campaign.get("highest_completed_level") or 0)
+        ):
+            self.logger.warning(
+                "spot_strategy_campaign_progress_repaired symbol=%s%s campaign_id=%s level=%s",
+                asset,
+                quote,
+                reconciled_campaign.get("campaign_id"),
+                reconciled_campaign.get("highest_completed_level"),
+            )
+        campaign = reconciled_campaign or campaign
 
         holding, available_quote, free_quote_reserve, available_accumulation_quote = (
             self._load_execution_context(asset, quote)
@@ -614,11 +635,6 @@ class ProgressiveSpotSwingExecutor:
     def _complete_action(self, action: dict[str, Any]) -> dict[str, Any]:
         intent = load_spot_order_intent(action.get("intent_id"), path=self.db_path) if action.get("intent_id") else None
         completed_at_ms = int(intent["updated_at_ms"]) if intent is not None else int(action["updated_at_ms"])
-        updated = update_spot_strategy_action(
-            action["action_key"],
-            {"status": "completed", "error": None, "completed_at_ms": completed_at_ms},
-            path=self.db_path,
-        )
         if (
             action["action_type"] in {"open", "accumulate_asset", "campaign_only"}
             and action.get("campaign_id")
@@ -637,4 +653,9 @@ class ProgressiveSpotSwingExecutor:
                 action_key=action["action_key"] if consumed_quantity > 0 else None,
                 path=self.db_path,
             )
+        updated = update_spot_strategy_action(
+            action["action_key"],
+            {"status": "completed", "error": None, "completed_at_ms": completed_at_ms},
+            path=self.db_path,
+        )
         return updated or action

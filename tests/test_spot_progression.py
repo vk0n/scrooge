@@ -21,6 +21,7 @@ from shared.runtime_db import (
     list_spot_strategy_actions,
     list_spot_swings,
     load_spot_strategy_campaign,
+    reconcile_spot_strategy_campaign_progress,
     sync_spot_strategy_campaign,
     upsert_portfolio_asset_policy,
     update_spot_strategy_action,
@@ -500,6 +501,62 @@ class SpotStrategyCampaignTests(unittest.TestCase):
             self.assertEqual(persisted, resumed)
             self.assertIsNone(self.opening(resumed, "sell", 1))
 
+    def test_completed_action_repairs_campaign_progress_before_lower_level(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "runtime.sqlite3"
+            bootstrap_runtime_db(db_path)
+            campaign = sync_spot_strategy_campaign(
+                account_key="manual_spot",
+                asset_symbol="TIA",
+                quote_symbol="USDT",
+                opportunity="sell",
+                signal_level=4,
+                signal_at_ms=1,
+                path=db_path,
+            )
+            action = ensure_spot_strategy_action(
+                {
+                    "action_key": f"open:{campaign['campaign_id']}:level:4",
+                    "account_key": "manual_spot",
+                    "asset_symbol": "TIA",
+                    "quote_symbol": "USDT",
+                    "campaign_id": campaign["campaign_id"],
+                    "action_type": "open",
+                    "side": "sell",
+                    "signal_level": 4,
+                    "swing_id": "swing-tia-l4",
+                    "requested_quantity": 10,
+                    "reason": {},
+                },
+                path=db_path,
+            )
+            update_spot_strategy_action(
+                action["action_key"],
+                {"status": "completed", "completed_at_ms": 2},
+                path=db_path,
+            )
+
+            repaired = reconcile_spot_strategy_campaign_progress(
+                account_key="manual_spot",
+                asset_symbol="TIA",
+                quote_symbol="USDT",
+                campaign_id=campaign["campaign_id"],
+                path=db_path,
+            )
+            lower_signal = sync_spot_strategy_campaign(
+                account_key="manual_spot",
+                asset_symbol="TIA",
+                quote_symbol="USDT",
+                opportunity="sell",
+                signal_level=2,
+                signal_at_ms=3,
+                path=db_path,
+            )
+
+            self.assertEqual(repaired["highest_completed_level"], 4)
+            self.assertEqual(lower_signal["highest_completed_level"], 4)
+            self.assertIsNone(self.opening(lower_signal, "sell", 2))
+
     def test_campaign_capacity_and_consumption_survive_restart_idempotently(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "runtime.sqlite3"
@@ -775,6 +832,51 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             },
             [],
         )
+
+    def test_action_is_not_marked_completed_before_campaign_progress(self):
+        campaign = sync_spot_strategy_campaign(
+            account_key="manual_spot",
+            asset_symbol="NEAR",
+            quote_symbol="USDT",
+            opportunity="sell",
+            signal_level=4,
+            signal_at_ms=1,
+            path=self.db_path,
+        )
+        action = ensure_spot_strategy_action(
+            {
+                "action_key": f"open:{campaign['campaign_id']}:level:4",
+                "account_key": "manual_spot",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "campaign_id": campaign["campaign_id"],
+                "action_type": "open",
+                "side": "sell",
+                "signal_level": 4,
+                "swing_id": "swing-near-l4",
+                "requested_quantity": 10,
+                "reason": {},
+            },
+            path=self.db_path,
+        )
+        executor = ProgressiveSpotSwingExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+
+        with patch(
+            "bot.spot_strategy.complete_spot_strategy_campaign_level",
+            side_effect=RuntimeError("campaign write failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "campaign write failed"):
+                executor._complete_action(action)
+
+        persisted = next(
+            item for item in list_spot_strategy_actions(path=self.db_path)
+            if item["action_key"] == action["action_key"]
+        )
+        self.assertEqual(persisted["status"], "planned")
 
     def test_active_intent_is_recovered_during_signal_reconciliation(self):
         executor = ProgressiveSpotSwingExecutor(

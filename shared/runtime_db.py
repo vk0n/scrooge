@@ -2729,6 +2729,67 @@ def complete_spot_strategy_campaign_level(
         )
 
 
+def reconcile_spot_strategy_campaign_progress(
+    *,
+    account_key: str,
+    asset_symbol: str,
+    quote_symbol: str,
+    campaign_id: str,
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Repair campaign progress from actions already known to be complete."""
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_asset = str(asset_symbol or "").strip().upper()
+    normalized_quote = str(quote_symbol or "USDT").strip().upper() or "USDT"
+    normalized_campaign = str(campaign_id or "").strip()
+    if not normalized_asset or not normalized_campaign:
+        return None
+
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        completed = connection.execute(
+            """
+            SELECT action_key, action_type, signal_level
+            FROM spot_strategy_actions
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+              AND campaign_id = ? AND status = 'completed'
+              AND action_type IN ('open', 'accumulate_asset', 'campaign_only')
+              AND signal_level IS NOT NULL
+            """,
+            (normalized_account, normalized_asset, normalized_quote, normalized_campaign),
+        ).fetchall()
+        highest_level = max((int(row["signal_level"]) for row in completed), default=0)
+        if highest_level > 0:
+            connection.execute(
+                """
+                UPDATE spot_strategy_campaigns
+                SET highest_completed_level = MAX(highest_completed_level, ?),
+                    updated_at_ms = ?
+                WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+                  AND campaign_id = ?
+                  AND highest_completed_level < ?
+                """,
+                (
+                    highest_level,
+                    now_ms,
+                    normalized_account,
+                    normalized_asset,
+                    normalized_quote,
+                    normalized_campaign,
+                    highest_level,
+                ),
+            )
+        row = connection.execute(
+            """
+            SELECT * FROM spot_strategy_campaigns
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+              AND campaign_id = ?
+            """,
+            (normalized_account, normalized_asset, normalized_quote, normalized_campaign),
+        ).fetchone()
+    return _spot_strategy_campaign_from_row(row) if row is not None else None
+
+
 def _spot_strategy_action_from_row(row: sqlite3.Row) -> dict[str, Any]:
     reason = json.loads(row["reason_json"] or "{}")
     return {
