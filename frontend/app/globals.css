@@ -2582,9 +2582,18 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-allocation-legend {
+  box-sizing: border-box;
+  max-height: 11.4rem;
   margin: 0;
-  padding: 0 0.16rem 0 0;
+  padding: 0.5rem 0.42rem 0.35rem 0.65rem;
   list-style: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(123, 143, 173, 0.68) rgba(23, 30, 41, 0.7);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
 }
 
 .treasury-allocation-empty {
@@ -5064,32 +5073,40 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-visibility-grid {
     grid-template-columns: 1fr;
   }
+}
 
+@media (min-width: 761px) and (max-width: 960px) {
   .treasury-holding-toggle {
-    grid-template-columns: minmax(0, 1fr) 1rem;
-    gap: 0.52rem;
-  }
-
-  .treasury-holding-head,
-  .treasury-holding-lines {
-    grid-column: 1;
+    grid-template-columns: minmax(7.35rem, 0.72fr) minmax(0, 5.28fr) 0.75rem;
+    gap: 0.35rem;
   }
 
   .treasury-holding-lines {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.38rem 0.72rem;
+    grid-template-columns: 1.05fr 0.95fr 0.85fr 0.85fr 0.95fr 1.62fr;
   }
 
   .treasury-holding-lines > span {
-    border-top: 1px solid rgba(106, 124, 150, 0.16);
-    border-left: 0;
-    padding: 0.36rem 0 0;
+    padding-inline: 0.28rem;
   }
 
-  .treasury-holding-chevron {
-    grid-column: 2;
-    grid-row: 1 / 3;
-    justify-self: center;
+  .treasury-holding-lines > span > span:first-child {
+    font-size: 0.69rem;
+    line-height: 1.12;
+    white-space: normal;
+  }
+
+  .treasury-holding-lines strong {
+    font-size: 0.75rem;
+    letter-spacing: -0.025em;
+  }
+
+  .treasury-holding-lines .treasury-gain-breakdown {
+    font-size: 0.58rem;
+  }
+
+  .treasury-rolling-change {
+    padding-left: 0.2rem;
+    font-size: 0.76rem;
   }
 }
 
