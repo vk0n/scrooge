@@ -21,6 +21,7 @@ from shared.runtime_db import (
     ensure_spot_strategy_action,
     list_portfolio_asset_policies,
     list_portfolio_transactions,
+    list_ledger_entries,
     list_spot_accumulation_target_ratchets,
     list_spot_order_status_events,
     list_spot_swings,
@@ -338,6 +339,17 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(len(list_spot_accumulation_target_ratchets(path=self.db_path)), 1)
         self.assertEqual(client.create_calls, 1)
         self.assertEqual(list_spot_swings(path=self.db_path), [])
+        ledger_entries, _ = list_ledger_entries(scope="treasury", path=self.db_path)
+        settlement_entries = [
+            item
+            for item in ledger_entries
+            if item.get("source_ref") == f"portfolio_transaction:spot-order:{preview['intent_id']}"
+        ]
+        self.assertEqual(len(settlement_entries), 1)
+        self.assertIn("The fill used $25", settlement_entries[0]["message"])
+        self.assertIn("raised Target by 0.24 BTC to 1.24 BTC", settlement_entries[0]["message"])
+        self.assertTrue(settlement_entries[0]["message"].endswith("Result: Target +0.24 BTC."))
+        self.assertEqual(settlement_entries[0]["tone"], "positive")
 
     def test_accumulation_execution_requires_no_separate_feature_gate(self):
         preview = self._accumulation_preview()

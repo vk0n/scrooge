@@ -17,6 +17,7 @@ from shared.runtime_db import (
 from shared.treasury_ledger import (
     project_portfolio_transaction,
     project_portfolio_transactions,
+    spot_order_settlement_message,
     treasury_transaction_presentation,
 )
 
@@ -207,6 +208,126 @@ class LedgerProjectionTests(unittest.TestCase):
         self.assertEqual(project_portfolio_transactions(path=self.db_path), 0)
         entries, _ = list_ledger_entries(scope="treasury", path=self.db_path)
         self.assertEqual(entries, [])
+
+    def test_deferred_spot_transaction_is_projected_once_after_settlement(self) -> None:
+        transaction = append_portfolio_transaction(
+            {
+                "transaction_id": "spot-order:atomic-intent",
+                "account_key": "manual_spot",
+                "executed_at": "2026-01-01 12:00:00",
+                "tx_type": "buy",
+                "asset_symbol": "XRP",
+                "quote_symbol": "USDT",
+                "quantity": 5.2,
+                "price": 1.343,
+                "source": "binance_strategy",
+                "status": "settled",
+                "custody_location": "binance",
+                "ledger_projection_deferred": True,
+                "reason": {
+                    "action_type": "accumulate_asset",
+                    "signal_level": 4,
+                    "rolling_change_pct": -5.23,
+                    "accumulation_tranche_pct": 10,
+                },
+            },
+            path=self.db_path,
+        )
+
+        self.assertEqual(project_portfolio_transactions(path=self.db_path), 0)
+        entries, _ = list_ledger_entries(scope="treasury", path=self.db_path)
+        self.assertEqual(entries, [])
+
+        settlement = {
+            "accumulation_ratchet": {
+                "deployed_quote_quantity": 6.98,
+                "applied_gain_quantity": 5.2,
+                "next_target_quantity": 2_006.8,
+            }
+        }
+        self.assertTrue(
+            project_portfolio_transaction(
+                transaction,
+                settlement=settlement,
+                path=self.db_path,
+            )
+        )
+        self.assertFalse(
+            project_portfolio_transaction(
+                transaction,
+                settlement=settlement,
+                path=self.db_path,
+            )
+        )
+        entries, _ = list_ledger_entries(scope="treasury", path=self.db_path)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["source_ref"], "portfolio_transaction:spot-order:atomic-intent")
+        self.assertEqual(
+            entries[0]["message"],
+            "I bought 5.2 XRP at $1.343 on Binance Spot. L4 dip -5.23%; I deployed 10% of "
+            "Spendable Reserve. The fill used $6.98 from Free Vault Reserve and raised Target "
+            "by 5.2 XRP to 2,006.8 XRP. Result: Target +5.2 XRP.",
+        )
+
+    def test_close_settlement_combines_retention_and_target_effects(self) -> None:
+        transaction = {
+            "tx_type": "buy",
+            "asset_symbol": "FIL",
+            "quantity": 9,
+            "price": 1.1007,
+            "source": "binance_strategy",
+            "reason": {
+                "action_type": "close",
+                "close_reason": "profit_target",
+                "favorable_move_pct": 6.27,
+                "close_profit_pct": 6,
+            },
+        }
+
+        cash_message = spot_order_settlement_message(
+            transaction,
+            {
+                "cash_retention": {
+                    "retained_quote": 9.45,
+                    "eligible_cash_gain_quote": 15.75,
+                },
+                "swing_economics": {
+                    "status": "closed",
+                    "trading_objective": "accumulate_cash",
+                    "realized_pnl_quote": 15.75,
+                    "realized_pnl_pct": 6.27,
+                },
+            },
+        )
+        asset_message = spot_order_settlement_message(
+            transaction,
+            {
+                "target_ratchet": {
+                    "applied_gain_quantity": 0.52,
+                    "next_target_quantity": 1_928.52,
+                },
+                "swing_economics": {
+                    "status": "closed",
+                    "trading_objective": "accumulate_asset",
+                    "realized_net_asset_change": 0.52,
+                    "realized_net_asset_change_pct": 6.27,
+                },
+            },
+        )
+
+        self.assertEqual(
+            cash_message,
+            "I bought back 9 FIL at $1.1007 on Binance Spot. Bargain Goal cleared at +6.27% "
+            "against 6%. I retained $9.45 from $15.75 of realized cash profit. "
+            "Result: +$15.75 (+6.27%).",
+        )
+        self.assertEqual(
+            asset_message,
+            "I bought back 9 FIL at $1.1007 on Binance Spot. Bargain Goal cleared at +6.27% "
+            "against 6%. I secured 0.52 FIL of Swing profit in Target, now 1,928.52 FIL. "
+            "Result: +0.52 FIL (+6.27%).",
+        )
 
 
 if __name__ == "__main__":

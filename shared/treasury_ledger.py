@@ -30,6 +30,24 @@ def _signed_pct(value: Any) -> str | None:
     return f"{sign}{_number(numeric, decimals=2)}%"
 
 
+def _signed_money(value: Any) -> str | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    sign = "+" if numeric > 0 else "-" if numeric < 0 else ""
+    return f"{sign}${_number(abs(numeric), decimals=2)}"
+
+
+def _signed_quantity(value: Any, asset: str) -> str | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    sign = "+" if numeric > 0 else "-" if numeric < 0 else ""
+    return f"{sign}{_number(abs(numeric))} {asset}"
+
+
 def _level(value: Any) -> str | None:
     try:
         numeric = int(value)
@@ -120,6 +138,97 @@ def spot_order_presentation_message(transaction: dict[str, Any]) -> str:
     return f"{lead[:-1]} at your request."
 
 
+def spot_order_settlement_message(
+    transaction: dict[str, Any],
+    settlement: dict[str, Any],
+) -> str:
+    message = spot_order_presentation_message(transaction)
+    asset = str(transaction.get("asset_symbol") or transaction.get("symbol") or "asset").strip().upper()
+    details: list[str] = []
+
+    protected_cash = settlement.get("protected_cash_use")
+    if isinstance(protected_cash, dict) and float(protected_cash.get("consumed_quote") or 0) > 0:
+        details.append(
+            f"I drew ${_number(protected_cash['consumed_quote'], decimals=2)} from Protected Cash."
+        )
+
+    cash_retention = settlement.get("cash_retention")
+    if isinstance(cash_retention, dict) and float(cash_retention.get("retained_quote") or 0) > 0:
+        details.append(
+            f"I retained ${_number(cash_retention['retained_quote'], decimals=2)} from "
+            f"${_number(cash_retention.get('eligible_cash_gain_quote'), decimals=2)} "
+            "of realized cash profit."
+        )
+
+    target_ratchet = settlement.get("target_ratchet")
+    if isinstance(target_ratchet, dict) and float(target_ratchet.get("applied_gain_quantity") or 0) > 0:
+        details.append(
+            f"I secured {_number(target_ratchet['applied_gain_quantity'])} {asset} of Swing profit "
+            f"in Target, now {_number(target_ratchet.get('next_target_quantity'))} {asset}."
+        )
+
+    accumulation_ratchet = settlement.get("accumulation_ratchet")
+    if isinstance(accumulation_ratchet, dict):
+        details.append(
+            f"The fill used ${_number(accumulation_ratchet.get('deployed_quote_quantity'), decimals=2)} "
+            f"from Free Vault Reserve and raised Target by "
+            f"{_number(accumulation_ratchet.get('applied_gain_quantity'))} {asset} to "
+            f"{_number(accumulation_ratchet.get('next_target_quantity'))} {asset}."
+        )
+
+    manual_target_ratchet = settlement.get("manual_target_ratchet")
+    if isinstance(manual_target_ratchet, dict):
+        details.append(
+            f"I moved Target from {_number(manual_target_ratchet.get('previous_target_quantity'))} {asset} "
+            f"to {_number(manual_target_ratchet.get('next_target_quantity'))} {asset}."
+        )
+
+    result, _ = _spot_order_settlement_result(settlement, asset)
+    if result:
+        details.append(result)
+
+    return " ".join((message, *details))
+
+
+def _spot_order_settlement_result(
+    settlement: dict[str, Any],
+    asset: str,
+) -> tuple[str | None, float | None]:
+    economics = settlement.get("swing_economics")
+    if isinstance(economics, dict) and economics.get("status") == "closed":
+        objective = str(economics.get("trading_objective") or "").strip().lower()
+        if objective == "accumulate_asset":
+            value = economics.get("realized_net_asset_change")
+            result = _signed_quantity(value, asset)
+            numeric = float(value) if result is not None else None
+            percentage_value = economics.get("realized_net_asset_change_pct")
+        else:
+            value = economics.get("realized_pnl_quote")
+            result = _signed_money(value)
+            numeric = float(value) if result is not None else None
+            percentage_value = economics.get("realized_pnl_pct")
+        percentage = _signed_pct(percentage_value)
+        if result:
+            percentage_suffix = f" ({percentage})" if percentage else ""
+            return f"Result: {result}{percentage_suffix}.", numeric
+
+    accumulation_ratchet = settlement.get("accumulation_ratchet")
+    if isinstance(accumulation_ratchet, dict):
+        value = accumulation_ratchet.get("applied_gain_quantity")
+        result = _signed_quantity(value, asset)
+        if result:
+            return f"Result: Target {result}.", float(value)
+
+    manual_target_ratchet = settlement.get("manual_target_ratchet")
+    if isinstance(manual_target_ratchet, dict):
+        value = manual_target_ratchet.get("target_delta_quantity")
+        result = _signed_quantity(value, asset)
+        if result:
+            return f"Result: Target {result}.", float(value)
+
+    return None, None
+
+
 def _custody_name(value: Any) -> str:
     return {
         "binance": "Binance",
@@ -178,8 +287,15 @@ def treasury_transaction_presentation(transaction: dict[str, Any]) -> tuple[str,
     return f"treasury_{tx_type}", tone, message
 
 
-def project_portfolio_transaction(transaction: dict[str, Any], *, path: Path | None = None) -> bool:
+def project_portfolio_transaction(
+    transaction: dict[str, Any],
+    *,
+    settlement: dict[str, Any] | None = None,
+    path: Path | None = None,
+) -> bool:
     if transaction.get("spot_quote_leg") or transaction.get("spot_reserve_funding"):
+        return False
+    if transaction.get("ledger_projection_deferred") and settlement is None:
         return False
     transaction_id = str(transaction.get("transaction_id") or "").strip()
     if not transaction_id:
@@ -188,6 +304,16 @@ def project_portfolio_transaction(transaction: dict[str, Any], *, path: Path | N
         "%Y-%m-%d %H:%M:%S"
     )
     code, tone, message = treasury_transaction_presentation(transaction)
+    context = dict(transaction)
+    if settlement is not None:
+        message = spot_order_settlement_message(transaction, settlement)
+        context["settlement"] = settlement
+        _, result_value = _spot_order_settlement_result(
+            settlement,
+            str(transaction.get("asset_symbol") or "asset").strip().upper(),
+        )
+        if result_value is not None:
+            tone = "positive" if result_value > 0 else "negative" if result_value < 0 else "neutral"
     source_ref = f"portfolio_transaction:{transaction_id}"
     return append_ui_log_entry(
         timestamp,
@@ -199,7 +325,7 @@ def project_portfolio_transaction(transaction: dict[str, Any], *, path: Path | N
         tone=tone,
         message=message,
         source_ref=source_ref,
-        context=dict(transaction),
+        context=context,
     )
 
 

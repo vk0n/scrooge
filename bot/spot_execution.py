@@ -35,7 +35,7 @@ from shared.spot_execution_rules import (
 )
 from shared.spot_progression import ProgressiveSwingConfig
 from shared.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics
-from shared.treasury_ledger import append_treasury_event, project_portfolio_transaction
+from shared.treasury_ledger import project_portfolio_transaction
 
 
 class SpotOrderUncertainError(RuntimeError):
@@ -558,7 +558,14 @@ class SpotOrderExecutor:
             "reason": intent.get("reason") if isinstance(intent.get("reason"), dict) else {},
             "strategy_action_type": request.get("strategy_action_type"),
             "treasury_intake": bool(request.get("treasury_intake")),
+            "ledger_projection_deferred": True,
         }
+        protected_use = None
+        cash_retention = None
+        target_ratchet = None
+        accumulation_ratchet = None
+        manual_target_ratchet = None
+        swing_economics = None
         try:
             existing = list_portfolio_transactions(account_key=intent["account_key"], path=self.db_path)
             persisted_transaction = next(
@@ -568,9 +575,7 @@ class SpotOrderExecutor:
             if persisted_transaction is None:
                 persisted_transaction = append_portfolio_transaction(transaction, path=self.db_path)
             ensure_spot_quote_leg(persisted_transaction, path=self.db_path)
-            project_portfolio_transaction(persisted_transaction, path=self.db_path)
 
-            protected_use = None
             validation = summary.get("protected_cash_validation")
             if (
                 intent["source"] == "manual"
@@ -593,17 +598,6 @@ class SpotOrderExecutor:
                             "quote_fee": quote_fee,
                             "nonprotected_budget_quote": nonprotected_budget,
                         },
-                        path=self.db_path,
-                    )
-                    append_treasury_event(
-                        code="treasury_protected_cash_used",
-                        tone="neutral",
-                        message=(
-                            f"Used ${protected_use['consumed_quote']:,.2f} of Protected Cash for "
-                            f"{'a manual Bargain close' if intent.get('swing_id') else 'a manual Spot buy'}."
-                        ),
-                        source_ref=protected_use["reference_id"],
-                        context=protected_use,
                         path=self.db_path,
                     )
             if bool(request.get("treasury_intake")):
@@ -629,7 +623,7 @@ class SpotOrderExecutor:
                 and not intent.get("swing_id")
                 and not bool(request.get("treasury_intake"))
             ):
-                apply_manual_spot_target_ratchet(
+                manual_target_ratchet = apply_manual_spot_target_ratchet(
                     intent["intent_id"],
                     transaction_id,
                     path=self.db_path,
@@ -685,31 +679,14 @@ class SpotOrderExecutor:
                     intent["swing_id"],
                     path=self.db_path,
                 )
-                if cash_retention is not None and cash_retention["retained_quote"] > 0:
-                    append_treasury_event(
-                        code="treasury_cash_retention_accrued",
-                        tone="positive",
-                        message=(
-                            f"I retained ${cash_retention['retained_quote']:,.2f} "
-                            f"from ${cash_retention['eligible_cash_gain_quote']:,.2f} of realized cash profit."
-                        ),
-                        source_ref=f"spot_swing_cash_retention:{intent['swing_id']}",
-                        context=cash_retention,
-                        path=self.db_path,
-                    )
-                ratchet = apply_spot_swing_target_ratchet(intent["swing_id"], path=self.db_path)
-                if ratchet is not None:
-                    append_treasury_event(
-                        code="treasury_target_ratchet_applied",
-                        tone="positive",
-                        message=(
-                            f"I secured {ratchet['applied_gain_quantity']:,.8f} {intent['asset_symbol']} "
-                            "of Swing profit inside the protected hoard."
-                        ),
-                        source_ref=f"spot_swing_target_ratchet:{intent['swing_id']}",
-                        context=ratchet,
-                        path=self.db_path,
-                    )
+                target_ratchet = apply_spot_swing_target_ratchet(
+                    intent["swing_id"],
+                    path=self.db_path,
+                )
+                swing_economics = calculate_swing_economics(
+                    swing,
+                    list_spot_swing_executions(intent["swing_id"], path=self.db_path),
+                )
             elif (
                 intent["source"] == "strategy"
                 and intent["side"] == "buy"
@@ -717,7 +694,7 @@ class SpotOrderExecutor:
                 == "accumulate_asset"
             ):
                 action_key = str(request.get("strategy_action_key") or "").strip()
-                ratchet = apply_spot_accumulation_target_ratchet(
+                accumulation_ratchet = apply_spot_accumulation_target_ratchet(
                     action_key,
                     intent_id=intent["intent_id"],
                     net_acquired_quantity=ledger_quantity,
@@ -727,18 +704,18 @@ class SpotOrderExecutor:
                     fee_asset=str(summary.get("fee_asset") or "").strip().upper() or None,
                     path=self.db_path,
                 )
-                append_treasury_event(
-                    code="treasury_accumulation_completed",
-                    tone="positive",
-                    message=(
-                        f"I deployed ${ratchet['deployed_quote_quantity']:,.2f} from Free Vault Reserve "
-                        f"and protected {ratchet['applied_gain_quantity']:,.8f} "
-                        f"{intent['asset_symbol']} in Target."
-                    ),
-                    source_ref=f"spot_accumulation_target_ratchet:{action_key}",
-                    context=ratchet,
-                    path=self.db_path,
-                )
+            project_portfolio_transaction(
+                persisted_transaction,
+                settlement={
+                    "protected_cash_use": protected_use,
+                    "cash_retention": cash_retention,
+                    "target_ratchet": target_ratchet,
+                    "accumulation_ratchet": accumulation_ratchet,
+                    "manual_target_ratchet": manual_target_ratchet,
+                    "swing_economics": swing_economics,
+                },
+                path=self.db_path,
+            )
         except Exception as accounting_error:  # noqa: BLE001
             self._safe_error_state(
                 intent["intent_id"],
