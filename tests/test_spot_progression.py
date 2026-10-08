@@ -688,6 +688,16 @@ class SpotStrategyCampaignTests(unittest.TestCase):
                 },
                 path=db_path,
             )
+            complete_spot_strategy_campaign_level(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                campaign_id="legacy-campaign",
+                signal_level=1,
+                consumed_quantity=10,
+                action_key=action["action_key"],
+                path=db_path,
+            )
             with closing(sqlite3.connect(db_path)) as connection:
                 connection.executescript(
                     """
@@ -722,6 +732,16 @@ class SpotStrategyCampaignTests(unittest.TestCase):
 
             bootstrap_runtime_db(db_path)
             migrated = list_spot_strategy_actions(path=db_path)
+            complete_spot_strategy_campaign_level(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                campaign_id="legacy-campaign",
+                signal_level=1,
+                consumed_quantity=10,
+                action_key=action["action_key"],
+                path=db_path,
+            )
             nullable_swing = ensure_spot_strategy_action(
                 {
                     "action_key": "campaign_only:new-campaign:level:1",
@@ -738,10 +758,91 @@ class SpotStrategyCampaignTests(unittest.TestCase):
                 },
                 path=db_path,
             )
+            with closing(sqlite3.connect(db_path)) as connection:
+                action_fk_targets = {
+                    str(row[2])
+                    for row in connection.execute(
+                        "PRAGMA foreign_key_list(spot_strategy_campaign_consumptions)"
+                    ).fetchall()
+                    if str(row[3]) == "action_key"
+                }
+                consumption_count = connection.execute(
+                    "SELECT COUNT(*) FROM spot_strategy_campaign_consumptions"
+                ).fetchone()[0]
+                foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
 
             self.assertEqual(migrated[0]["action_key"], action["action_key"])
             self.assertEqual(migrated[0]["swing_id"], "legacy-swing")
             self.assertIsNone(nullable_swing["swing_id"])
+            self.assertEqual(action_fk_targets, {"spot_strategy_actions"})
+            self.assertEqual(consumption_count, 1)
+            self.assertEqual(foreign_key_errors, [])
+
+    def test_bootstrap_repairs_stale_campaign_consumption_foreign_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "runtime.sqlite3"
+            bootstrap_runtime_db(db_path)
+            action = ensure_spot_strategy_action(
+                {
+                    "action_key": "open:stale-fk-campaign:level:1",
+                    "account_key": "manual_spot",
+                    "asset_symbol": "NEAR",
+                    "quote_symbol": "USDT",
+                    "campaign_id": "stale-fk-campaign",
+                    "action_type": "open",
+                    "side": "sell",
+                    "signal_level": 1,
+                    "swing_id": "stale-fk-swing",
+                    "requested_quantity": 10,
+                    "reason": {"action_type": "open"},
+                },
+                path=db_path,
+            )
+            complete_spot_strategy_campaign_level(
+                account_key="manual_spot",
+                asset_symbol="NEAR",
+                quote_symbol="USDT",
+                campaign_id="stale-fk-campaign",
+                signal_level=1,
+                consumed_quantity=10,
+                action_key=action["action_key"],
+                path=db_path,
+            )
+            with closing(sqlite3.connect(db_path)) as connection:
+                action_table_sql = connection.execute(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'spot_strategy_actions'"
+                ).fetchone()[0]
+                connection.execute(
+                    "ALTER TABLE spot_strategy_actions RENAME TO spot_strategy_actions_legacy"
+                )
+                connection.execute(action_table_sql)
+                connection.execute(
+                    "INSERT INTO spot_strategy_actions "
+                    "SELECT * FROM spot_strategy_actions_legacy"
+                )
+                connection.execute("DROP TABLE spot_strategy_actions_legacy")
+                stale_fk_target = connection.execute(
+                    "PRAGMA foreign_key_list(spot_strategy_campaign_consumptions)"
+                ).fetchone()[2]
+                connection.commit()
+
+            self.assertEqual(stale_fk_target, "spot_strategy_actions_legacy")
+
+            bootstrap_runtime_db(db_path)
+
+            with closing(sqlite3.connect(db_path)) as connection:
+                repaired_fk_target = connection.execute(
+                    "PRAGMA foreign_key_list(spot_strategy_campaign_consumptions)"
+                ).fetchone()[2]
+                consumption_count = connection.execute(
+                    "SELECT COUNT(*) FROM spot_strategy_campaign_consumptions"
+                ).fetchone()[0]
+                foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+
+            self.assertEqual(repaired_fk_target, "spot_strategy_actions")
+            self.assertEqual(consumption_count, 1)
+            self.assertEqual(foreign_key_errors, [])
 
 
 class RecordingProgressiveExecutor(ProgressiveSpotSwingExecutor):

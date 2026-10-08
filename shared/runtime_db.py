@@ -24,8 +24,8 @@ from shared.spot_strategy import transition_spot_strategy_campaign
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 20
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Manual Spot trades ratchet the asset Target Holding"
+RUNTIME_DB_SCHEMA_VERSION = 21
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Repair Spot strategy action foreign keys after table migration"
 
 
 class RuntimeDbError(OSError):
@@ -222,6 +222,112 @@ def _configure_connection(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA foreign_keys=ON")
+
+
+def _action_foreign_key_is_stale(connection: sqlite3.Connection, table_name: str) -> bool:
+    rows = connection.execute(f"PRAGMA foreign_key_list({table_name})").fetchall()
+    return any(
+        str(row["from"]) == "action_key"
+        and str(row["table"]) != "spot_strategy_actions"
+        for row in rows
+    )
+
+
+def _repair_spot_strategy_action_foreign_keys(connection: sqlite3.Connection) -> None:
+    if _action_foreign_key_is_stale(connection, "spot_strategy_campaign_consumptions"):
+        connection.execute("SAVEPOINT repair_campaign_consumption_fk")
+        try:
+            connection.execute(
+                "CREATE TEMP TABLE spot_strategy_campaign_consumptions_fk_repair "
+                "AS SELECT * FROM spot_strategy_campaign_consumptions"
+            )
+            connection.execute("DROP TABLE spot_strategy_campaign_consumptions")
+            connection.execute(
+                """
+                CREATE TABLE spot_strategy_campaign_consumptions (
+                    action_key TEXT PRIMARY KEY,
+                    account_key TEXT NOT NULL,
+                    asset_symbol TEXT NOT NULL,
+                    quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+                    campaign_id TEXT NOT NULL,
+                    consumed_quantity REAL NOT NULL CHECK (consumed_quantity >= 0),
+                    recorded_at_ms INTEGER NOT NULL,
+                    FOREIGN KEY(action_key) REFERENCES spot_strategy_actions(action_key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO spot_strategy_campaign_consumptions (
+                    action_key, account_key, asset_symbol, quote_symbol,
+                    campaign_id, consumed_quantity, recorded_at_ms
+                )
+                SELECT
+                    action_key, account_key, asset_symbol, quote_symbol,
+                    campaign_id, consumed_quantity, recorded_at_ms
+                FROM spot_strategy_campaign_consumptions_fk_repair
+                """
+            )
+            connection.execute("DROP TABLE spot_strategy_campaign_consumptions_fk_repair")
+            connection.execute("RELEASE SAVEPOINT repair_campaign_consumption_fk")
+        except sqlite3.Error:
+            connection.execute("ROLLBACK TO SAVEPOINT repair_campaign_consumption_fk")
+            connection.execute("RELEASE SAVEPOINT repair_campaign_consumption_fk")
+            raise
+
+    if _action_foreign_key_is_stale(connection, "spot_accumulation_target_ratchets"):
+        connection.execute("SAVEPOINT repair_accumulation_ratchet_fk")
+        try:
+            connection.execute(
+                "CREATE TEMP TABLE spot_accumulation_target_ratchets_fk_repair "
+                "AS SELECT * FROM spot_accumulation_target_ratchets"
+            )
+            connection.execute("DROP TABLE spot_accumulation_target_ratchets")
+            connection.execute(
+                """
+                CREATE TABLE spot_accumulation_target_ratchets (
+                    action_key TEXT PRIMARY KEY,
+                    intent_id TEXT NOT NULL UNIQUE,
+                    account_key TEXT NOT NULL,
+                    asset_symbol TEXT NOT NULL,
+                    quote_symbol TEXT NOT NULL DEFAULT 'USDT',
+                    campaign_id TEXT NOT NULL,
+                    signal_level INTEGER NOT NULL,
+                    previous_target_quantity REAL NOT NULL,
+                    applied_gain_quantity REAL NOT NULL,
+                    next_target_quantity REAL NOT NULL,
+                    deployed_quote_quantity REAL NOT NULL,
+                    average_price REAL NOT NULL,
+                    fee_amount REAL,
+                    fee_asset TEXT,
+                    applied_at_ms INTEGER NOT NULL,
+                    FOREIGN KEY(account_key) REFERENCES portfolio_accounts(account_key),
+                    FOREIGN KEY(action_key) REFERENCES spot_strategy_actions(action_key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO spot_accumulation_target_ratchets (
+                    action_key, intent_id, account_key, asset_symbol, quote_symbol,
+                    campaign_id, signal_level, previous_target_quantity,
+                    applied_gain_quantity, next_target_quantity, deployed_quote_quantity,
+                    average_price, fee_amount, fee_asset, applied_at_ms
+                )
+                SELECT
+                    action_key, intent_id, account_key, asset_symbol, quote_symbol,
+                    campaign_id, signal_level, previous_target_quantity,
+                    applied_gain_quantity, next_target_quantity, deployed_quote_quantity,
+                    average_price, fee_amount, fee_asset, applied_at_ms
+                FROM spot_accumulation_target_ratchets_fk_repair
+                """
+            )
+            connection.execute("DROP TABLE spot_accumulation_target_ratchets_fk_repair")
+            connection.execute("RELEASE SAVEPOINT repair_accumulation_ratchet_fk")
+        except sqlite3.Error:
+            connection.execute("ROLLBACK TO SAVEPOINT repair_accumulation_ratchet_fk")
+            connection.execute("RELEASE SAVEPOINT repair_accumulation_ratchet_fk")
+            raise
 
 
 def _ensure_schema(connection: sqlite3.Connection) -> None:
@@ -751,10 +857,17 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         for row in connection.execute("PRAGMA table_info(spot_strategy_actions)").fetchall()
     }
     action_sql = str(action_table["sql"] or "") if action_table is not None else ""
+    campaign_consumptions_backed_up = False
     if (
         "accumulate_asset" not in action_sql
         or bool(action_columns.get("swing_id") and action_columns["swing_id"]["notnull"])
     ):
+        connection.execute(
+            "CREATE TEMP TABLE spot_strategy_campaign_consumptions_action_backup "
+            "AS SELECT * FROM spot_strategy_campaign_consumptions"
+        )
+        connection.execute("DROP TABLE spot_strategy_campaign_consumptions")
+        campaign_consumptions_backed_up = True
         # Version 15 introduces this empty table and then widens its parent action table.
         connection.execute("DROP TABLE spot_accumulation_target_ratchets")
         connection.execute("ALTER TABLE spot_strategy_actions RENAME TO spot_strategy_actions_legacy")
@@ -910,6 +1023,21 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    if campaign_consumptions_backed_up:
+        connection.execute(
+            """
+            INSERT INTO spot_strategy_campaign_consumptions (
+                action_key, account_key, asset_symbol, quote_symbol,
+                campaign_id, consumed_quantity, recorded_at_ms
+            )
+            SELECT
+                action_key, account_key, asset_symbol, quote_symbol,
+                campaign_id, consumed_quantity, recorded_at_ms
+            FROM spot_strategy_campaign_consumptions_action_backup
+            """
+        )
+        connection.execute("DROP TABLE spot_strategy_campaign_consumptions_action_backup")
+    _repair_spot_strategy_action_foreign_keys(connection)
     intent_columns = {
         str(row["name"])
         for row in connection.execute("PRAGMA table_info(spot_order_intents)").fetchall()
