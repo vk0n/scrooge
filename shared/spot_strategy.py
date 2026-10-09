@@ -19,6 +19,15 @@ from shared.spot_waiter_cleanup import (
     reverse_signal_satisfies,
 )
 
+SPOT_ACTION_PHASES = ("profit_close", "cleanup_close", "allocation")
+
+
+def spot_action_phase(decision: dict[str, Any]) -> str:
+    if decision.get("action_type") != "close":
+        return "allocation"
+    reason = decision.get("reason") if isinstance(decision.get("reason"), dict) else {}
+    return "profit_close" if reason.get("close_reason") == "profit_target" else "cleanup_close"
+
 
 def spot_policy_eligibility(policy: dict[str, Any], *, execution_enabled: bool) -> tuple[bool, str]:
     if not execution_enabled:
@@ -112,6 +121,35 @@ def finalize_spot_strategy_signal(
     }
 
 
+def _with_missing_level_allocation(
+    signal: dict[str, Any],
+    campaign: dict[str, Any],
+) -> dict[str, Any]:
+    reached_level = int(signal.get("level") or 0)
+    completed_level = max(0, int(campaign.get("highest_completed_level") or 0))
+    if reached_level <= completed_level:
+        return signal
+
+    start = completed_level
+    stop = reached_level
+    allocated = dict(signal)
+    for series_key, tranche_key in (
+        ("base_tranches_pct", "base_tranche_pct"),
+        ("accumulation_tranches_pct", "accumulation_tranche_pct"),
+    ):
+        series = signal.get(series_key)
+        if not isinstance(series, (list, tuple)) or len(series) < stop:
+            continue
+        try:
+            tranche = sum(float(value) for value in series[start:stop])
+        except (TypeError, ValueError):
+            continue
+        allocated[tranche_key] = tranche
+        if tranche_key == "base_tranche_pct":
+            allocated["final_tranche_pct"] = tranche
+    return allocated
+
+
 def plan_spot_strategy_action(
     signal: dict[str, Any],
     holding: dict[str, Any],
@@ -200,6 +238,7 @@ def plan_spot_strategy_action(
         and campaign.get("active_side") == opportunity
         and level > int(campaign.get("highest_completed_level") or 0)
     ):
+        allocation_signal = _with_missing_level_allocation(signal, campaign)
         objective = str(signal.get("trading_objective") or "").strip().lower()
         if opportunity == "buy" and objective == "accumulate_cash":
             new_strategy_decision = {
@@ -219,7 +258,7 @@ def plan_spot_strategy_action(
             # Reserve deployment fails closed when a caller has not projected free reserve.
             accumulation_quote = max(0.0, float(available_accumulation_quote or 0.0))
             accumulation = plan_treasury_accumulation(
-                signal,
+                allocation_signal,
                 free_reserve_quote=accumulation_quote,
                 current_price=current_price,
                 config=resolved_config,
@@ -235,16 +274,21 @@ def plan_spot_strategy_action(
                         "signal": opportunity,
                         "signal_level": level,
                         "rolling_change_pct": signal.get("rolling_change_pct"),
-                        "base_tranche_pct": signal.get("base_tranche_pct"),
-                        "accumulation_tranche_pct": signal.get("accumulation_tranche_pct"),
-                        "final_tranche_pct": signal.get("final_tranche_pct"),
+                        "base_tranche_pct": allocation_signal.get("base_tranche_pct"),
+                        "accumulation_tranche_pct": allocation_signal.get("accumulation_tranche_pct"),
+                        "final_tranche_pct": allocation_signal.get("final_tranche_pct"),
                         "campaign_id": campaign.get("campaign_id"),
                         "free_reserve_quote": accumulation.get("free_reserve_quote"),
                         "planned_quote_to_spend": accumulation.get("quote_to_spend"),
                     },
                 }
         elif opportunity == "sell":
-            opening = plan_opening_quantity(signal, holding, campaign, config=resolved_config)
+            opening = plan_opening_quantity(
+                allocation_signal,
+                holding,
+                campaign,
+                config=resolved_config,
+            )
             if opening.get("eligible"):
                 quantity = min(
                     float(opening["quantity"]),
@@ -264,8 +308,8 @@ def plan_spot_strategy_action(
                         "signal": opportunity,
                         "signal_level": level,
                         "rolling_change_pct": signal.get("rolling_change_pct"),
-                        "base_tranche_pct": signal.get("base_tranche_pct"),
-                        "final_tranche_pct": signal.get("base_tranche_pct"),
+                        "base_tranche_pct": allocation_signal.get("base_tranche_pct"),
+                        "final_tranche_pct": allocation_signal.get("base_tranche_pct"),
                         "campaign_id": campaign.get("campaign_id"),
                         "campaign_start_target_quantity": campaign_snapshot.get("campaign_start_target_quantity"),
                         "campaign_start_minimum_holding_pct": campaign_snapshot.get("campaign_start_minimum_holding_pct"),

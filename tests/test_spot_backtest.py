@@ -550,29 +550,35 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(replay.executions, [])
 
     def test_signal_batches_with_closes_run_before_new_openings_across_assets(self):
-        config = scenario((asset("EARLY"), asset("LATE")))
+        config = scenario((asset("EARLY", minimum=0), asset("LATE", minimum=0)))
         replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 90))
-        replay.swings["late-close"] = {
-            "swing_id": "late-close",
-            "asset_symbol": "LATE",
-            "quote_symbol": "USDT",
-            "origin_side": "sell",
-            "trading_objective": "accumulate_cash",
-            "status": "open",
-            "source": "strategy",
-            "opened_at_ms": replay.start_ms,
-            "executions": [
-                {
-                    "execution_id": "late-open",
-                    "side": "sell",
-                    "quantity": 1,
-                    "price": 100,
-                    "quote_quantity": 100,
-                    "fee_amount": 0,
-                    "fee_asset": "USDT",
-                }
-            ],
-        }
+        for symbol, swing_id, side, price in (
+            ("EARLY", "early-close", "buy", 80),
+            ("LATE", "late-close", "sell", 100),
+        ):
+            replay.swings[swing_id] = {
+                "swing_id": swing_id,
+                "asset_symbol": symbol,
+                "quote_symbol": "USDT",
+                "origin_side": side,
+                "trading_objective": "accumulate_cash",
+                "status": "open",
+                "source": "strategy",
+                "opened_at_ms": replay.start_ms,
+                "executions": [
+                    {
+                        "execution_id": f"{swing_id}-open",
+                        "side": side,
+                        "quantity": 1,
+                        "price": price,
+                        "quote_quantity": price,
+                        "fee_amount": 0,
+                        "fee_asset": "USDT",
+                    }
+                ],
+            }
+        replay.assets["LATE"].binance_quantity -= 1
+        replay.usdt += 100
         candles = {
             symbol: next(row for row in replay.dataset.candles[symbol] if row.open_time_ms == replay.start_ms)
             for symbol in ("EARLY", "LATE")
@@ -581,10 +587,16 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             "opportunity": "sell",
             "level": 1,
             "strategy_eligible": True,
+            "eligibility_reason": "eligible",
             "trading_objective": "accumulate_cash",
             "current_price": 90,
+            "rolling_change_pct": 10,
             "evaluated_at_ms": candles["EARLY"].close_time_ms,
             "base_tranche_pct": 10,
+            "accumulation_tranche_pct": 1,
+            "base_tranches_pct": [10, 20, 30, 40],
+            "accumulation_tranches_pct": [1, 3, 5, 10],
+            "final_tranche_pct": 10,
         }
         hold_signal = {
             **sell_signal,
@@ -592,22 +604,22 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             "level": 0,
             "base_tranche_pct": 0,
         }
-        early_campaign = initialize_sell_campaign_capacity(
-            {"campaign_id": "early", "active_side": "sell", "highest_completed_level": 0},
-            replay.assets["EARLY"].holding(90),
-            config=config.progression,
-        )
-        contexts = [
-            ("EARLY", candles["EARLY"], sell_signal, early_campaign),
-            ("LATE", candles["LATE"], hold_signal, {}),
-        ]
+        signals = {"EARLY": sell_signal, "LATE": hold_signal}
 
-        ordered = sorted(
-            enumerate(contexts),
-            key=lambda item: replay._signal_context_priority(item[1], item[0]),
-        )
+        with patch.object(
+            replay,
+            "_signal_for",
+            side_effect=lambda symbol, _candle, reference=None: signals[symbol],
+        ):
+            replay._evaluate_cycle(candles, references=candles)
 
-        self.assertEqual([context[0] for _index, context in ordered], ["LATE", "EARLY"])
+        self.assertEqual(
+            [
+                (action["asset_symbol"], action["action_type"])
+                for action in replay.actions
+            ],
+            [("EARLY", "close"), ("LATE", "close"), ("EARLY", "open")],
+        )
 
     def test_backtest_executes_all_eligible_asset_actions_in_one_signal_batch(self):
         config = scenario((asset("AAA", minimum=0),), starting_usdt=1000)
@@ -1151,13 +1163,19 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(len(result.accumulations), 2)
         first, second = result.accumulations
         self.assertEqual([first["asset_symbol"], second["asset_symbol"]], ["AAA", "BBB"])
-        self.assertAlmostEqual(first["deployed_quote_quantity"], 3, places=4)
-        self.assertAlmostEqual(second["deployed_quote_quantity"], 2.91, places=3)
-        self.assertAlmostEqual(result.final_usdt, 94.09, places=3)
+        self.assertAlmostEqual(first["deployed_quote_quantity"], 4, places=4)
+        self.assertAlmostEqual(second["deployed_quote_quantity"], 3.84, places=3)
+        self.assertAlmostEqual(result.final_usdt, 92.1601, places=3)
         self.assertAlmostEqual(
             sum(item["deployed_quote_quantity"] for item in result.accumulations),
-            5.91,
+            7.8399,
             places=3,
+        )
+        accumulation_actions = [
+            item for item in result.actions if item["action_type"] == "accumulate_asset"
+        ]
+        self.assertTrue(
+            all(item["reason"]["accumulation_tranche_pct"] == 4 for item in accumulation_actions)
         )
         self.assertTrue(all(item["origin_side"] == "sell" for item in result.swings))
 

@@ -1346,16 +1346,18 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         "scenario": scenario_as_dict(result.scenario),
         "strategy_code_revision": _git_revision(),
         "timing": (
-            "Evaluate after candle N closes using data through N; execute every eligible action sequentially "
-            "at candle N+1 open with configured slippage, refreshing simulated state after every fill. "
+            "Evaluate after candle N closes using data through N; execute every eligible action in "
+            "portfolio-wide priority phases at candle N+1 open with configured slippage, refreshing "
+            "simulated state after every fill. "
             "Warm-up candles never trade and the final close cannot create an unfillable action."
         ),
         "rolling_24h_reference": "Candle close exactly 24 hours before the evaluated candle close.",
         "missing_candles": "Fail the run; no interpolation or forward fill.",
         "cross_asset_order": {
             "rule": (
-                "assets whose first eligible action is a close run first; ties preserve asset-symbol "
-                "order, matching the live signal executor"
+                "all profit closes run before all cleanup closes; only then may openings, reserve "
+                "accumulations, and campaign-only actions run. Ties preserve asset-symbol order, "
+                "matching the live signal executor"
             ),
             "symbols": list(result.scenario.asset_order),
         },

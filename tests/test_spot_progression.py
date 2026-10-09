@@ -241,6 +241,31 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         self.assertEqual(decision["requested_quantity"], 2)
         self.assertNotIn("swing_id", decision)
 
+    def test_accumulate_asset_direct_l1_to_l4_jump_uses_all_missing_tranches(self):
+        decision = plan_spot_strategy_action(
+            {
+                "opportunity": "buy",
+                "level": 4,
+                "strategy_eligible": True,
+                "trading_objective": "accumulate_asset",
+                "current_price": 10,
+                "base_tranches_pct": [10, 20, 30, 40],
+                "accumulation_tranches_pct": [1, 3, 5, 10],
+                "accumulation_tranche_pct": 10,
+            },
+            {"target_quantity": 1000, "minimum_holding_pct": 80, "market_price": 10},
+            {"active_side": "buy", "highest_completed_level": 1, "campaign_id": "buy-campaign"},
+            [],
+            available_quote=1000,
+            available_accumulation_quote=100,
+            config=ProgressiveSwingConfig(estimated_fee_rate=0),
+        )
+
+        self.assertEqual(decision["action_type"], "accumulate_asset")
+        self.assertEqual(decision["reason"]["accumulation_tranche_pct"], 18)
+        self.assertEqual(decision["reason"]["planned_quote_to_spend"], 18)
+        self.assertEqual(decision["requested_quantity"], 1.8)
+
     def test_accumulation_fails_closed_without_an_explicit_free_reserve_projection(self):
         decision = plan_spot_strategy_action(
             {
@@ -344,6 +369,8 @@ class SpotStrategyCampaignTests(unittest.TestCase):
                 "level": level,
                 "strategy_eligible": True,
                 "trading_objective": "accumulate_cash",
+                "base_tranche_pct": level * 10,
+                "base_tranches_pct": [10, 20, 30, 40],
                 "final_tranche_pct": level * 10,
                 "current_price": 10,
             },
@@ -396,12 +423,24 @@ class SpotStrategyCampaignTests(unittest.TestCase):
         self.assertEqual(decision["action_type"], "open")
         self.assertEqual(decision["signal_level"], 3)
 
-    def test_direct_l3_jump_executes_only_l3_allocation(self):
-        campaign = self.transition(None, "sell", 3, 1)
+    def test_direct_sell_jumps_use_all_missing_tranches(self):
+        expected = (
+            (0, 2, 30, 15),
+            (0, 4, 100, 50),
+            (1, 4, 90, 45),
+            (2, 4, 70, 35),
+        )
+        for completed_level, reached_level, allocation_pct, quantity in expected:
+            with self.subTest(completed_level=completed_level, reached_level=reached_level):
+                campaign = {
+                    **self.transition(None, "sell", reached_level, 1),
+                    "highest_completed_level": completed_level,
+                }
 
-        decision = self.opening(campaign, "sell", 3)
+                decision = self.opening(campaign, "sell", reached_level)
 
-        self.assertEqual(decision["requested_quantity"], 15)
+                self.assertEqual(decision["reason"]["level_allocation_pct"], allocation_pct)
+                self.assertEqual(decision["requested_quantity"], quantity)
 
     def test_opposite_actionable_signal_starts_new_campaign(self):
         sell = self.complete(self.transition(None, "sell", 1, 1), 1)
@@ -849,6 +888,14 @@ class RecordingProgressiveExecutor(ProgressiveSpotSwingExecutor):
     def _execute_action(self, action):
         self.executed_action_types = getattr(self, "executed_action_types", [])
         self.executed_action_types.append(action["action_type"])
+        self.executed_actions = getattr(self, "executed_actions", [])
+        self.executed_actions.append(
+            (
+                action["asset_symbol"],
+                action["action_type"],
+                (action.get("reason") or {}).get("close_reason"),
+            )
+        )
         updated = update_spot_strategy_action(
             action["action_key"],
             {"status": "completed", "completed_at_ms": action["updated_at_ms"]},
@@ -914,6 +961,8 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             "reference_price": 4.5,
             "rolling_change_pct": 11.1,
             "base_tranche_pct": tranche,
+            "base_tranches_pct": [10, 20, 30, 40],
+            "accumulation_tranches_pct": [1, 3, 5, 10],
             "final_tranche_pct": tranche,
             "evaluated_at_ms": 1_800_000_000_000,
         }
@@ -935,6 +984,66 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             },
             [],
         )
+
+    def test_direct_l4_sell_jump_persists_one_cumulative_action(self):
+        executor = RecordingProgressiveExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+
+        with patch("bot.spot_strategy.load_portfolio_snapshot", side_effect=self.portfolio):
+            result = executor.handle_signal(self.signal(4, 40))
+
+        campaign = load_spot_strategy_campaign("NEAR", path=self.db_path)
+        actions = list_spot_strategy_actions(path=self.db_path)
+        self.assertEqual(result["action_type"], "open")
+        self.assertEqual(result["reason"]["level_allocation_pct"], 100)
+        self.assertEqual(result["requested_quantity"], 100)
+        self.assertEqual(campaign["highest_completed_level"], 4)
+        self.assertEqual(len(actions), 1)
+        self.assertTrue(actions[0]["action_key"].endswith(":level:4"))
+
+    def test_direct_l4_accumulation_jump_persists_one_cumulative_action(self):
+        upsert_portfolio_asset_policy(
+            {
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "target_quantity": 1000,
+                "minimum_holding_pct": 80,
+                "trading_objective": "accumulate_asset",
+            },
+            path=self.db_path,
+        )
+        executor = RecordingProgressiveExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+            config=ProgressiveSwingConfig(estimated_fee_rate=0),
+        )
+        portfolio = self.portfolio()[0]
+        portfolio["summary"] = {
+            "vault_reserve": 1000,
+            "vault_reserve_spendable": 100,
+        }
+        signal = {
+            **self.signal(4, 40),
+            "opportunity": "buy",
+            "trading_objective": "accumulate_asset",
+            "accumulation_tranche_pct": 10,
+        }
+
+        with patch("bot.spot_strategy.load_portfolio_snapshot", return_value=(portfolio, [])):
+            result = executor.handle_signal(signal)
+
+        campaign = load_spot_strategy_campaign("NEAR", path=self.db_path)
+        actions = list_spot_strategy_actions(path=self.db_path)
+        self.assertEqual(result["action_type"], "accumulate_asset")
+        self.assertEqual(result["reason"]["accumulation_tranche_pct"], 19)
+        self.assertEqual(result["reason"]["planned_quote_to_spend"], 19)
+        self.assertEqual(campaign["highest_completed_level"], 4)
+        self.assertEqual(len(actions), 1)
+        self.assertTrue(actions[0]["action_key"].endswith(":level:4"))
 
     def test_action_is_not_marked_completed_before_campaign_progress(self):
         campaign = sync_spot_strategy_campaign(
@@ -1453,53 +1562,99 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
         self.assertEqual(replanned["requested_quantity"], 5.0)
         self.assertEqual(replanned["reason"]["quantity_basis"], "remaining_asset")
 
-    def test_live_signal_batch_prioritizes_close_before_other_asset_opening(self):
-        executor = ProgressiveSpotSwingExecutor(
+    def test_live_signal_cycle_closes_every_asset_before_opening(self):
+        upsert_portfolio_asset_policy(
+            {
+                "asset_symbol": "XRP",
+                "quote_symbol": "USDT",
+                "target_quantity": 1000,
+                "minimum_holding_pct": 80,
+                "trading_objective": "accumulate_cash",
+            },
+            path=self.db_path,
+        )
+        executor = RecordingProgressiveExecutor(
             object(),
             logger=logging.getLogger("test.spot-progression"),
             db_path=self.db_path,
         )
-        create_spot_swing(
-            {
-                "swing_id": "swing-near-close",
-                "account_key": "manual_spot",
-                "asset_symbol": "NEAR",
-                "quote_symbol": "USDT",
-                "origin_side": "sell",
-                "trading_objective": "accumulate_cash",
-                "source": "strategy",
-            },
-            path=self.db_path,
-        )
-        append_spot_swing_execution(
-            {
-                "execution_id": "open-near-close",
-                "swing_id": "swing-near-close",
-                "symbol": "NEARUSDT",
-                "side": "sell",
-                "quantity": 10,
-                "price": 10,
-                "source": "strategy",
-            },
-            path=self.db_path,
-        )
+        for asset_symbol, swing_id, side, price in (
+            ("NEAR", "swing-near-close", "buy", 4),
+            ("XRP", "swing-xrp-close", "sell", 2),
+        ):
+            create_spot_swing(
+                {
+                    "swing_id": swing_id,
+                    "account_key": "manual_spot",
+                    "asset_symbol": asset_symbol,
+                    "quote_symbol": "USDT",
+                    "origin_side": side,
+                    "trading_objective": "accumulate_cash",
+                    "source": "strategy",
+                },
+                path=self.db_path,
+            )
+            append_spot_swing_execution(
+                {
+                    "execution_id": f"open-{swing_id}",
+                    "swing_id": swing_id,
+                    "symbol": f"{asset_symbol}USDT",
+                    "side": side,
+                    "quantity": 10,
+                    "price": price,
+                    "source": "strategy",
+                },
+                path=self.db_path,
+            )
         portfolio = {
             "holdings": [
-                {"asset_symbol": "XRP", "quote_symbol": "USDT", "market_price": 1},
-                {"asset_symbol": "NEAR", "quote_symbol": "USDT", "market_price": 5},
+                {
+                    "asset_symbol": asset_symbol,
+                    "quote_symbol": "USDT",
+                    "target_quantity": 1000,
+                    "minimum_holding_pct": 80,
+                    "immediately_sellable_quantity": 200,
+                    "market_price": price,
+                }
+                for asset_symbol, price in (("NEAR", 5), ("XRP", 1))
             ],
             "exchange": {"usdt_free": 1000},
-            "summary": {"vault_reserve": 1000},
+            "summary": {"vault_reserve": 1000, "vault_reserve_spendable": 1000},
         }
         signals = [
-            {"asset_symbol": "XRP", "quote_symbol": "USDT", "opportunity": "buy", "current_price": 1},
-            {"asset_symbol": "NEAR", "quote_symbol": "USDT", "opportunity": "hold", "current_price": 5},
+            {
+                **self.signal(1, 10),
+                "asset_symbol": "NEAR",
+                "current_price": 5,
+                "base_tranches_pct": [10, 20, 30, 40],
+            },
+            {
+                **self.signal(1, 10),
+                "asset_symbol": "XRP",
+                "opportunity": "buy",
+                "current_price": 1,
+                "rolling_change_pct": -10,
+                "base_tranches_pct": [10, 20, 30, 40],
+            },
         ]
 
         with patch("bot.spot_strategy.load_portfolio_snapshot", return_value=(portfolio, [])):
             ordered = executor.order_signals_for_execution(signals)
+            for signal in ordered:
+                executor.handle_signal(signal)
 
-        self.assertEqual([item["asset_symbol"] for item in ordered], ["NEAR", "XRP"])
+        self.assertEqual(
+            [item["_execution_phase"] for item in ordered],
+            [phase for phase in ("profit_close", "cleanup_close", "allocation") for _ in signals],
+        )
+        self.assertEqual(
+            executor.executed_actions,
+            [
+                ("NEAR", "close", "profit_target"),
+                ("XRP", "close", "profit_target"),
+                ("NEAR", "open", None),
+            ],
+        )
 
     def test_signal_batch_reuses_one_portfolio_snapshot_for_idle_assets(self):
         executor = ProgressiveSpotSwingExecutor(
@@ -1539,6 +1694,25 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
                 executor.handle_signal(signal)
 
         load_snapshot.assert_called_once_with()
+
+    def test_staged_cycle_reconciles_pending_action_only_once(self):
+        executor = RecordingProgressiveExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+        pending = {"status": "executing", "action_key": "pending-action"}
+
+        with (
+            patch("bot.spot_strategy.load_portfolio_snapshot", side_effect=self.portfolio),
+            patch.object(executor, "_reconcile_actions", return_value=pending) as reconcile,
+        ):
+            ordered = executor.order_signals_for_execution([self.signal(1, 10)])
+            results = [executor.handle_signal(signal) for signal in ordered]
+
+        reconcile.assert_called_once_with("NEAR", "USDT")
+        self.assertEqual(results, [pending, pending, pending])
+        self.assertFalse(hasattr(executor, "executed_actions"))
 
     def test_blocked_dust_close_falls_through_to_next_profitable_swing(self):
         executor = BlockingFirstProgressiveExecutor(

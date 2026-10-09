@@ -16,8 +16,10 @@ from shared.spot_policy import calculate_spot_inventory_policy
 from shared.spot_progression import initialize_sell_campaign_capacity
 from shared.spot_signal import ROLLING_WINDOW_MS, evaluate_rolling_24h_opportunity
 from shared.spot_strategy import (
+    SPOT_ACTION_PHASES,
     finalize_spot_strategy_signal,
     plan_spot_strategy_action,
+    spot_action_phase,
     transition_spot_strategy_campaign,
 )
 from shared.spot_swing import (
@@ -431,48 +433,25 @@ class SpotPortfolioBacktester:
             self.campaigns[symbol] = campaign
             contexts.append((symbol, candle, signal, campaign))
 
-        ordered = sorted(
-            enumerate(contexts),
-            key=lambda item: self._signal_context_priority(item[1], item[0]),
-        )
-        for _index, (symbol, candle, signal, campaign) in ordered:
-            execution_candle = fills[symbol]
-            if not self._is_market_available(symbol, execution_candle.open_time_ms):
-                continue
-            self._execute_signal_batch(
-                symbol,
-                candle,
-                signal,
-                campaign,
-                execution_price=execution_candle.open,
-                execution_timestamp_ms=execution_candle.open_time_ms,
-            )
-
-    def _signal_context_priority(
-        self,
-        context: tuple[str, SpotCandle, dict[str, Any], dict[str, Any]],
-        index: int,
-    ) -> tuple[int, int, float, int]:
-        symbol, candle, signal, campaign = context
-        committed_quote = self._committed_quote_reserve()
-        free_quote = self._spendable_free_reserve_quote(committed_quote=committed_quote)
-        decision = plan_spot_strategy_action(
-            signal,
-            self.assets[symbol].holding(candle.close),
-            campaign,
-            self._active_swing_states(symbol, current_price=candle.close),
-            available_quote=self.usdt,
-            free_quote_reserve=free_quote,
-            available_accumulation_quote=free_quote,
-            config=self.scenario.progression,
-            cleanup_config=self.scenario.waiter_cleanup,
-            excluded_close_swing_ids=self.permanently_blocked_close_swings,
-        )
-        reason = decision.get("reason") if isinstance(decision, dict) else {}
-        is_close = isinstance(decision, dict) and decision.get("action_type") == "close"
-        is_profit = is_close and reason.get("close_reason") == "profit_target"
-        favorable = float(reason.get("favorable_move_pct") or 0.0)
-        return (0 if is_close else 1, 0 if is_profit else 1, -favorable, index)
+        excluded_closes = {
+            symbol: set(self.permanently_blocked_close_swings)
+            for symbol, _candle, _signal, _campaign in contexts
+        }
+        for execution_phase in SPOT_ACTION_PHASES:
+            for symbol, candle, signal, campaign in contexts:
+                execution_candle = fills[symbol]
+                if not self._is_market_available(symbol, execution_candle.open_time_ms):
+                    continue
+                self._execute_signal_batch(
+                    symbol,
+                    candle,
+                    signal,
+                    campaign,
+                    execution_price=execution_candle.open,
+                    execution_timestamp_ms=execution_candle.open_time_ms,
+                    execution_phase=execution_phase,
+                    excluded_close_swing_ids=excluded_closes[symbol],
+                )
 
     def _execute_signal_batch(
         self,
@@ -483,6 +462,8 @@ class SpotPortfolioBacktester:
         *,
         execution_price: float | None = None,
         execution_timestamp_ms: int | None = None,
+        execution_phase: str | None = None,
+        excluded_close_swing_ids: set[str] | None = None,
     ) -> None:
         fill_price = candle.close if execution_price is None else float(execution_price)
         fill_timestamp_ms = (
@@ -490,7 +471,11 @@ class SpotPortfolioBacktester:
             if execution_timestamp_ms is None
             else int(execution_timestamp_ms)
         )
-        excluded_close_swing_ids = set(self.permanently_blocked_close_swings)
+        excluded_closes = (
+            excluded_close_swing_ids
+            if excluded_close_swing_ids is not None
+            else set(self.permanently_blocked_close_swings)
+        )
         while True:
             committed_quote = self._committed_quote_reserve()
             free_quote = self._spendable_free_reserve_quote(committed_quote=committed_quote)
@@ -504,13 +489,16 @@ class SpotPortfolioBacktester:
                 available_accumulation_quote=free_quote,
                 timestamp_ms=fill_timestamp_ms,
                 execution_price=fill_price,
-                excluded_close_swing_ids=excluded_close_swing_ids,
+                excluded_close_swing_ids=excluded_closes,
             )
             if decision is None:
                 return
             action_type = str(decision["action_type"])
             if action_type == "hold":
-                self._record_non_order_action(symbol, candle, signal, decision)
+                if execution_phase in {None, "allocation"}:
+                    self._record_non_order_action(symbol, candle, signal, decision)
+                return
+            if execution_phase is not None and spot_action_phase(decision) != execution_phase:
                 return
             if action_type == "campaign_only":
                 campaign["highest_completed_level"] = max(
@@ -528,7 +516,7 @@ class SpotPortfolioBacktester:
                 fill_timestamp_ms,
             )
             if action_type == "close":
-                excluded_close_swing_ids.add(str(decision["swing_id"]))
+                excluded_closes.add(str(decision["swing_id"]))
                 continue
             if not completed:
                 return
@@ -568,9 +556,14 @@ class SpotPortfolioBacktester:
         campaign: dict[str, Any],
         decision: dict[str, Any],
     ) -> dict[str, Any]:
+        action_signal = dict(signal)
+        reason = decision.get("reason") if isinstance(decision.get("reason"), dict) else {}
+        for field in ("base_tranche_pct", "accumulation_tranche_pct", "final_tranche_pct"):
+            if reason.get(field) is not None:
+                action_signal[field] = reason[field]
         action = {
             **decision,
-            "signal": signal,
+            "signal": action_signal,
             "campaign_id": campaign.get("campaign_id"),
             "action_key": (
                 f"{decision['action_type']}:{campaign.get('campaign_id')}:"

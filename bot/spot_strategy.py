@@ -29,7 +29,11 @@ from shared.spot_progression import (
     ProgressiveSwingConfig,
     initialize_sell_campaign_capacity,
 )
-from shared.spot_strategy import plan_spot_strategy_action
+from shared.spot_strategy import (
+    SPOT_ACTION_PHASES,
+    plan_spot_strategy_action,
+    spot_action_phase,
+)
 from shared.spot_waiter_cleanup import WaiterCleanupConfig, is_cleanup_reason
 
 ACTIVE_INTENT_STATUSES = {
@@ -82,69 +86,35 @@ class ProgressiveSpotSwingExecutor:
         self.cleanup_config = cleanup_config or WaiterCleanupConfig()
         self.account_key = str(account_key or "manual_spot").strip() or "manual_spot"
         self._batch_portfolio: dict[str, Any] | None = None
-        self._batch_signal_keys: set[tuple[str, str, int]] = set()
+        self._batch_signal_keys: set[tuple[str, str, int, str]] = set()
+        self._batch_excluded_closes: dict[tuple[str, str, int], set[str]] = {}
+        self._batch_reconciliation_results: dict[
+            tuple[str, str, int], dict[str, Any] | None
+        ] = {}
 
     def order_signals_for_execution(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Prioritize portfolio closes before any new openings consume shared quote."""
+        """Schedule one live snapshot in portfolio-wide action phases."""
         self._batch_portfolio = None
         self._batch_signal_keys = set()
+        self._batch_excluded_closes = {}
+        self._batch_reconciliation_results = {}
         portfolio, _ = load_portfolio_snapshot()
         self._batch_portfolio = portfolio
+        staged = [
+            {**signal, "_execution_phase": phase}
+            for phase in SPOT_ACTION_PHASES
+            for signal in signals
+        ]
         self._batch_signal_keys = {
             (
                 str(signal.get("asset_symbol") or "").strip().upper(),
                 str(signal.get("quote_symbol") or "USDT").strip().upper() or "USDT",
                 int(signal.get("evaluated_at_ms") or signal.get("current_at_ms") or 0),
+                str(signal.get("_execution_phase") or ""),
             )
-            for signal in signals
+            for signal in staged
         }
-        holdings = {
-            (item.get("asset_symbol"), item.get("quote_symbol")): item
-            for item in portfolio.get("holdings", [])
-        }
-        exchange = portfolio.get("exchange") if isinstance(portfolio.get("exchange"), dict) else {}
-        summary = portfolio.get("summary") if isinstance(portfolio.get("summary"), dict) else {}
-        available_quote = min(
-            max(0.0, float(exchange.get("usdt_free") or 0.0)),
-            max(0.0, float(summary.get("vault_reserve") or summary.get("dry_powder") or 0.0)),
-        )
-        free_quote_reserve = min(
-            max(0.0, float(exchange.get("usdt_free") or 0.0)),
-            max(
-                0.0,
-                float(
-                    summary.get(
-                        "vault_reserve_spendable",
-                        summary.get("vault_reserve_available"),
-                    )
-                    or 0.0
-                ),
-            ),
-        )
-        prioritized: list[tuple[tuple[int, int, float, int], dict[str, Any]]] = []
-        for index, signal in enumerate(signals):
-            asset = str(signal.get("asset_symbol") or "").strip().upper()
-            quote = str(signal.get("quote_symbol") or "USDT").strip().upper() or "USDT"
-            holding = holdings.get((asset, quote))
-            decision = None
-            if holding is not None:
-                decision = plan_spot_strategy_action(
-                    signal,
-                    holding,
-                    {},
-                    self._swing_states(asset, quote),
-                    available_quote=available_quote,
-                    free_quote_reserve=free_quote_reserve,
-                    config=self.config,
-                    cleanup_config=self.cleanup_config,
-                )
-            reason = decision.get("reason") if isinstance(decision, dict) else {}
-            is_close = isinstance(decision, dict) and decision.get("action_type") == "close"
-            is_profit = is_close and reason.get("close_reason") == "profit_target"
-            favorable = float(reason.get("favorable_move_pct") or 0.0)
-            prioritized.append(((0 if is_close else 1, 0 if is_profit else 1, -favorable, index), signal))
-        prioritized.sort(key=lambda item: item[0])
-        return [signal for _priority, signal in prioritized]
+        return staged
 
     def handle_signal(self, signal: dict[str, Any]) -> dict[str, Any] | None:
         asset = str(signal.get("asset_symbol") or "").strip().upper()
@@ -152,11 +122,18 @@ class ProgressiveSpotSwingExecutor:
         opportunity = str(signal.get("opportunity") or "hold").strip().lower()
         level = int(signal.get("level") or 0)
         signal_at_ms = int(signal.get("evaluated_at_ms") or signal.get("current_at_ms") or 0)
+        execution_phase = str(signal.get("_execution_phase") or "").strip() or None
         if not asset or opportunity not in {"hold", "buy", "sell"} or signal_at_ms <= 0:
             return None
-        batch_signal_key = (asset, quote, signal_at_ms)
-        use_batch_context = batch_signal_key in self._batch_signal_keys
-        self._batch_signal_keys.discard(batch_signal_key)
+        batch_key = (asset, quote, signal_at_ms)
+        staged_signal_key = (*batch_key, execution_phase or "")
+        use_batch_context = staged_signal_key in self._batch_signal_keys
+        self._batch_signal_keys.discard(staged_signal_key)
+        excluded_close_swing_ids = (
+            self._batch_excluded_closes.setdefault(batch_key, set())
+            if execution_phase is not None
+            else set()
+        )
 
         campaign = sync_spot_strategy_campaign(
             account_key=self.account_key,
@@ -167,7 +144,15 @@ class ProgressiveSpotSwingExecutor:
             signal_at_ms=signal_at_ms,
             path=self.db_path,
         )
-        pending = self._reconcile_actions(asset, quote)
+        if execution_phase is not None:
+            if batch_key not in self._batch_reconciliation_results:
+                self._batch_reconciliation_results[batch_key] = self._reconcile_actions(
+                    asset,
+                    quote,
+                )
+            pending = self._batch_reconciliation_results[batch_key]
+        else:
+            pending = self._reconcile_actions(asset, quote)
         if pending is not None:
             return pending
         reconciled_campaign = reconcile_spot_strategy_campaign_progress(
@@ -214,7 +199,6 @@ class ProgressiveSpotSwingExecutor:
         if not math.isfinite(current_price) or current_price <= 0:
             return None
 
-        excluded_close_swing_ids: set[str] = set()
         completed_actions: list[dict[str, Any]] = []
         while True:
             swing_states = self._swing_states(asset, quote)
@@ -231,6 +215,8 @@ class ProgressiveSpotSwingExecutor:
                 excluded_close_swing_ids=excluded_close_swing_ids,
             )
             if decision is None or decision["action_type"] == "hold":
+                return self._signal_batch_result(asset, completed_actions)
+            if execution_phase is not None and spot_action_phase(decision) != execution_phase:
                 return self._signal_batch_result(asset, completed_actions)
 
             action_type = str(decision["action_type"])
