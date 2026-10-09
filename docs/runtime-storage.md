@@ -100,7 +100,7 @@ Target Holding changes are stored as separate idempotent projections:
 - `spot_swing_target_ratchets` for finalized `accumulate_asset` Bargains;
 - `spot_manual_target_ratchets` for confirmed standalone manual Binance BUY/SELL orders.
 
-Manual BUY increases Target by net asset received. Manual SELL decreases Target by total asset debit. A Swing close and a Treasury-intake operation are excluded from the generic manual ratchet path to prevent double application. Deposits, withdrawals, adjustments, and custody transfers do not infer Target changes.
+Manual BUY increases Target by net asset received. Manual SELL decreases Target by total asset debit, never below zero. A Swing close and a Treasury-intake operation are excluded from the generic manual ratchet path to prevent double application. Ratchets are idempotent across retries and restarts. Deposits, withdrawals, adjustments, and custody transfers do not infer Target changes.
 
 ## Cash Protection
 

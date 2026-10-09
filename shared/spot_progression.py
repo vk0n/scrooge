@@ -38,7 +38,7 @@ def initialize_sell_campaign_capacity(
     *,
     config: ProgressiveSwingConfig | None = None,
 ) -> dict[str, Any]:
-    """Freeze the current policy sellable budget when a SELL campaign starts."""
+    """Freeze the custody-manageable sellable budget when a SELL campaign starts."""
     if str(campaign.get("active_side") or "").lower() != "sell":
         return dict(campaign)
     if campaign.get("campaign_capacity_quantity") is not None:
@@ -49,10 +49,21 @@ def initialize_sell_campaign_capacity(
     minimum_raw = holding.get("minimum_holding_pct")
     minimum = 100.0 if minimum_raw is None else float(minimum_raw)
     reference = policy_sellable_reference(target, minimum)
-    remaining_raw = holding.get("policy_sellable_quantity")
+    remaining_raw = holding.get("custody_sellable_quantity")
     if remaining_raw is None:
-        current = max(0.0, float(holding.get("quantity", target) or 0.0))
-        remaining_raw = max(0.0, current - target * min(100.0, max(0.0, minimum)) / 100.0)
+        policy_raw = holding.get("policy_sellable_quantity")
+        if policy_raw is None:
+            current = max(0.0, float(holding.get("quantity", target) or 0.0))
+            policy_raw = max(
+                0.0,
+                current - target * min(100.0, max(0.0, minimum)) / 100.0,
+            )
+        binance_raw = holding.get("binance_quantity")
+        remaining_raw = (
+            min(max(0.0, float(policy_raw or 0.0)), max(0.0, float(binance_raw or 0.0)))
+            if binance_raw is not None
+            else policy_raw
+        )
     remaining = max(0.0, float(remaining_raw or 0.0))
     ratio = remaining / reference if reference > 0 else 0.0
     full_deploy = reference > 0 and ratio <= resolved.full_deploy_threshold_pct / 100.0

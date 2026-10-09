@@ -26,39 +26,6 @@ AGE_BUCKETS = (
 )
 
 
-def _maximum_drawdown(values: list[float]) -> float:
-    peak = 0.0
-    worst = 0.0
-    for value in values:
-        peak = max(peak, value)
-        if peak > 0:
-            worst = min(worst, ((value / peak) - 1.0) * 100.0)
-    return worst
-
-
-def _relative_wealth_metrics(equity: list[dict[str, Any]]) -> dict[str, float]:
-    ratios = [
-        float(item["treasury_value"]) / float(item["hodl_value"])
-        for item in equity
-        if float(item.get("hodl_value") or 0.0) > 0.0
-    ]
-    if not ratios:
-        return {
-            "minimum": 1.0,
-            "maximum": 1.0,
-            "terminal": 1.0,
-            "maximum_drawdown_pct": 0.0,
-        }
-    start = ratios[0]
-    normalized = [value / start for value in ratios]
-    return {
-        "minimum": min(normalized),
-        "maximum": max(normalized),
-        "terminal": normalized[-1],
-        "maximum_drawdown_pct": _maximum_drawdown(normalized),
-    }
-
-
 def _maximum_concurrent(swings: list[dict[str, Any]]) -> int:
     events: list[tuple[int, int]] = []
     for swing in swings:
@@ -257,38 +224,51 @@ def _level_metrics(result: SpotBacktestResult, symbol: str) -> dict[str, Any]:
 
 def _campaign_metrics(result: SpotBacktestResult) -> dict[str, Any]:
     campaigns = result.sell_campaigns
-    capacities = [float(item.get("campaign_capacity_quantity") or 0.0) for item in campaigns]
-    utilizations = [
-        float(item.get("campaign_consumed_quantity") or 0.0) / capacity * 100.0
-        if capacity > 0 else 0.0
-        for item, capacity in zip(campaigns, capacities)
-    ]
 
     def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
-        row_capacities = [float(item.get("campaign_capacity_quantity") or 0.0) for item in rows]
+        executable = [
+            item
+            for item in rows
+            if float(item.get("campaign_capacity_quantity") or 0.0) > 0.0
+        ]
+        row_capacities = [
+            float(item.get("campaign_capacity_quantity") or 0.0)
+            for item in executable
+        ]
         row_utilizations = [
             float(item.get("campaign_consumed_quantity") or 0.0) / capacity * 100.0
-            if capacity > 0 else 0.0
-            for item, capacity in zip(rows, row_capacities)
+            for item, capacity in zip(executable, row_capacities)
         ]
+        normal_executable = sum(
+            1 for item in executable if item.get("campaign_capacity_mode") == "normal"
+        )
+        full_deploy_executable = sum(
+            1
+            for item in executable
+            if item.get("campaign_capacity_mode") == "full_deploy"
+        )
         return {
             "count": len(rows),
+            "total_signal_sell_campaigns": len(rows),
+            "executable_sell_campaigns": len(executable),
+            "zero_capacity_sell_campaigns": len(rows) - len(executable),
             "average_capacity_quantity": mean(row_capacities) if row_capacities else 0.0,
             "median_capacity_quantity": median(row_capacities) if row_capacities else 0.0,
             "average_utilization_pct": mean(row_utilizations) if row_utilizations else 0.0,
             "median_utilization_pct": median(row_utilizations) if row_utilizations else 0.0,
-            "normal_capacity_campaigns": sum(
-                1 for item in rows if item.get("campaign_capacity_mode") == "normal"
-            ),
-            "full_deploy_campaigns": sum(
-                1 for item in rows if item.get("campaign_capacity_mode") == "full_deploy"
-            ),
+            "normal_executable_campaigns": normal_executable,
+            "full_deploy_executable_campaigns": full_deploy_executable,
+            # Compatibility aliases now describe executable campaigns only.
+            "normal_capacity_campaigns": normal_executable,
+            "full_deploy_campaigns": full_deploy_executable,
             "interrupted_by_opposite_signal": sum(
                 1 for item in rows if item.get("ended_by_opposite_signal")
             ),
             **{
                 f"campaigns_reaching_l{level}": sum(
-                    1 for item in rows if int(item.get("highest_completed_level") or 0) >= level
+                    1
+                    for item in executable
+                    if int(item.get("highest_completed_level") or 0) >= level
                 )
                 for level in range(1, 5)
             },
@@ -300,14 +280,15 @@ def _campaign_metrics(result: SpotBacktestResult) -> dict[str, Any]:
     }
     return {
         **summarize(campaigns),
-        "average_capacity_quantity": mean(capacities) if capacities else 0.0,
-        "median_capacity_quantity": median(capacities) if capacities else 0.0,
-        "average_utilization_pct": mean(utilizations) if utilizations else 0.0,
-        "median_utilization_pct": median(utilizations) if utilizations else 0.0,
         "per_asset": per_asset,
         "campaigns": [
             {
                 **item,
+                "analytics_category": (
+                    "executable"
+                    if float(item.get("campaign_capacity_quantity") or 0.0) > 0.0
+                    else "zero_capacity"
+                ),
                 "campaign_remaining_quantity": max(
                     0.0,
                     float(item.get("campaign_capacity_quantity") or 0.0)
@@ -551,26 +532,26 @@ def _asset_recovery_metrics(
 def _cleanup_accounting_rows(cleanup_swings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cleanup_accounting_rows: list[dict[str, Any]] = []
     for swing in cleanup_swings:
-        cleanup_execution = next(
-            (
-                execution
-                for execution in reversed(swing.get("executions") or [])
-                if is_cleanup_reason((execution.get("reason") or {}).get("close_reason"))
-            ),
-            None,
-        )
-        if cleanup_execution is None:
+        executions = list(swing.get("executions") or [])
+        cleanup_indexes = [
+            index
+            for index, execution in enumerate(executions)
+            if is_cleanup_reason((execution.get("reason") or {}).get("close_reason"))
+        ]
+        if not cleanup_indexes:
             continue
+        cleanup_index = cleanup_indexes[-1]
+        cleanup_execution = executions[cleanup_index]
         economics = calculate_swing_economics(
             swing,
-            swing.get("executions") or [],
+            executions,
             current_price=swing.get("current_market_price"),
         )
         origin_side = str(swing.get("origin_side") or "").lower()
         quote_symbol = str(swing.get("quote_symbol") or "USDT").upper()
         opening_cash_flow = 0.0
         closing_cash_flow = 0.0
-        for execution in swing.get("executions") or []:
+        for execution in executions:
             side = str(execution.get("side") or "").lower()
             quote_quantity = float(
                 execution.get("quote_quantity")
@@ -587,6 +568,15 @@ def _cleanup_accounting_rows(cleanup_swings: list[dict[str, Any]]) -> list[dict[
         cash_change = float(economics.get("realized_cash_gain_quote") or 0.0)
         asset_quantity_change = float(economics.get("realized_net_asset_change") or 0.0)
         close_price = float(cleanup_execution.get("price") or 0.0)
+        pre_cleanup_economics = calculate_swing_economics(
+            swing,
+            executions[:cleanup_index],
+            current_price=close_price,
+        )
+        pre_cleanup_mark_to_market_pnl = (
+            float(pre_cleanup_economics.get("realized_pnl_quote") or 0.0)
+            + float(pre_cleanup_economics.get("unrealized_pnl_quote") or 0.0)
+        )
         asset_value_change = asset_quantity_change * close_price
         realized_pnl = float(economics.get("realized_pnl_quote") or 0.0)
         inventory_residual_pnl = float(
@@ -608,10 +598,27 @@ def _cleanup_accounting_rows(cleanup_swings: list[dict[str, Any]]) -> list[dict[
                 "cash_released_quote": max(0.0, cash_change),
                 "asset_quantity_change": asset_quantity_change,
                 "asset_value_change_quote": asset_value_change,
+                "restored_inventory_quantity": (
+                    min(
+                        float(economics.get("opening_inventory_quantity") or 0.0),
+                        float(economics.get("closing_inventory_quantity") or 0.0),
+                    )
+                    if origin_side == "sell"
+                    else 0.0
+                ),
                 "unrecovered_quantity": unrecovered_quantity,
                 "unrecovered_market_value_quote": unrecovered_quantity * close_price,
                 "restored_inventory_pnl_quote": realized_pnl - inventory_residual_pnl,
                 "inventory_residual_pnl_quote": inventory_residual_pnl,
+                "lifecycle_pnl_quote": realized_pnl,
+                "pre_cleanup_mark_to_market_pnl_quote": pre_cleanup_mark_to_market_pnl,
+                "cleanup_settlement_delta_quote": (
+                    realized_pnl - pre_cleanup_mark_to_market_pnl
+                ),
+                "cleanup_turnover_quote": float(
+                    cleanup_execution.get("quote_quantity")
+                    or float(cleanup_execution.get("quantity") or 0.0) * close_price
+                ),
                 "economic_pnl_quote": realized_pnl,
                 "reported_realized_pnl_quote": realized_pnl,
             }
@@ -623,6 +630,12 @@ def _cleanup_accounting_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     cash_changes = [float(row["cash_change_quote"]) for row in rows]
     asset_changes = [float(row["asset_value_change_quote"]) for row in rows]
     economic_results = [float(row["economic_pnl_quote"]) for row in rows]
+    pre_cleanup_results = [
+        float(row["pre_cleanup_mark_to_market_pnl_quote"]) for row in rows
+    ]
+    settlement_deltas = [
+        float(row["cleanup_settlement_delta_quote"]) for row in rows
+    ]
     restored_results = [float(row["restored_inventory_pnl_quote"]) for row in rows]
     residual_results = [float(row["inventory_residual_pnl_quote"]) for row in rows]
     repurchase_spends = [
@@ -657,6 +670,9 @@ def _cleanup_accounting_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if quantity > 1e-12
     }
     return {
+        "lifecycle_pnl_quote": sum(economic_results),
+        "pre_cleanup_mark_to_market_pnl_quote": sum(pre_cleanup_results),
+        "cleanup_settlement_delta_quote": sum(settlement_deltas),
         "economic_pnl_quote": sum(economic_results),
         "economic_loss_quote": sum(value for value in economic_results if value < 0),
         "economic_profit_quote": sum(value for value in economic_results if value > 0),
@@ -667,6 +683,7 @@ def _cleanup_accounting_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             float(row["committed_proceeds_quote"]) for row in rows
         ),
         "repurchase_spend_quote": sum(float(row["repurchase_spend_quote"]) for row in rows),
+        "cleanup_turnover_quote": sum(float(row["cleanup_turnover_quote"]) for row in rows),
         "repurchase_count": len(repurchase_spends),
         "average_repurchase_spend_quote": (
             mean(repurchase_spends) if repurchase_spends else None
@@ -683,6 +700,14 @@ def _cleanup_accounting_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "asset_value_loss_quote": sum(value for value in asset_changes if value < 0),
         "asset_value_gain_quote": sum(value for value in asset_changes if value > 0),
         "asset_quantity_change_by_asset": quantities,
+        "restored_inventory_quantity_by_asset": {
+            symbol: sum(
+                float(row["restored_inventory_quantity"])
+                for row in rows
+                if row["asset_symbol"] == symbol
+            )
+            for symbol in sorted({str(row["asset_symbol"]) for row in rows})
+        },
         "restored_inventory_pnl_quote": sum(restored_results),
         "restored_inventory_loss_quote": sum(
             value for value in restored_results if value < 0
@@ -795,6 +820,22 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
         for action in pressure_cleanup_actions
         if (action.get("reason") or {}).get("close_reason") == "capacity_cleanup"
     ]
+    capacity_blocked_actions = capacity_holds + pressure_cleanup_actions
+
+    def blocked_cycle_identity(action: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            int(action.get("timestamp_ms") or 0),
+            str(action.get("asset_symbol") or ""),
+            str(action.get("campaign_id") or ""),
+            int(action.get("signal_level") or 0),
+        )
+
+    def blocked_opportunity_identity(action: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            str(action.get("asset_symbol") or ""),
+            str(action.get("campaign_id") or ""),
+            int(action.get("signal_level") or 0),
+        )
     open_swings = [swing for swing in result.swings if swing.get("status") != "closed"]
     open_ages = [float(swing.get("age_seconds") or 0.0) / 86400.0 for swing in open_swings]
     underwater_open = [
@@ -837,13 +878,19 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
             "accounting": _cleanup_accounting_summary(
                 [item for item in cleanup_accounting_rows if item["asset_symbol"] == symbol]
             ),
-            "open_bargains_prevented_by_cap": sum(
-                1
-                for action in capacity_holds + pressure_cleanup_actions
-                if action.get("asset_symbol") == symbol
+            "capacity_blocked_cycles": len(
+                {
+                    blocked_cycle_identity(action)
+                    for action in capacity_blocked_actions
+                    if action.get("asset_symbol") == symbol
+                }
             ),
-            "capacity_forced_hold_cycles": sum(
-                1 for action in capacity_holds if action.get("asset_symbol") == symbol
+            "unique_capacity_blocked_opportunities": len(
+                {
+                    blocked_opportunity_identity(action)
+                    for action in capacity_blocked_actions
+                    if action.get("asset_symbol") == symbol
+                }
             ),
             "average_open_bargain_count": mean(counts) if counts else 0.0,
             "maximum_open_bargain_count": max(counts, default=0),
@@ -896,8 +943,15 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
         "cleanup_fees_by_asset": cleanup_fees,
         "by_reason": reason_breakdown,
         "capacity": {
-            "open_bargains_prevented_by_cap": len(capacity_holds) + len(pressure_cleanup_actions),
-            "capacity_forced_hold_cycles": len(capacity_holds),
+            "capacity_blocked_cycles": len(
+                {blocked_cycle_identity(action) for action in capacity_blocked_actions}
+            ),
+            "unique_capacity_blocked_opportunities": len(
+                {
+                    blocked_opportunity_identity(action)
+                    for action in capacity_blocked_actions
+                }
+            ),
             "capacity_cleanup_actions": len(capacity_cleanup_actions),
             "cleanup_actions_under_capacity_pressure": len(pressure_cleanup_actions),
         },
@@ -1085,10 +1139,15 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 "executed_notional", "lifecycle_pnl_quote",
             )
         }
-    recovery_pct_values = [
+    effective_recovery_pct_values = [
         float(item["asset_recovery"]["effective_final_quantity_pct"])
         for item in per_asset.values()
         if item["asset_recovery"]["effective_final_quantity_pct"] is not None
+    ]
+    actual_recovery_pct_values = [
+        float(item["asset_recovery"]["actual_final_quantity_pct"])
+        for item in per_asset.values()
+        if item["asset_recovery"]["actual_final_quantity_pct"] is not None
     ]
     recovery_weights = {
         symbol: (
@@ -1097,18 +1156,27 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
         )
         for symbol in result.scenario.asset_order
     }
-    recovery_weight_total = sum(recovery_weights.values())
-    weighted_recovery_pct = (
-        sum(
-            recovery_weights[symbol]
-            * float(per_asset[symbol]["asset_recovery"]["effective_final_quantity_pct"])
+
+    def weighted_recovery(metric: str) -> float | None:
+        weighted = [
+            (
+                recovery_weights[symbol],
+                per_asset[symbol]["asset_recovery"].get(metric),
+            )
             for symbol in result.scenario.asset_order
-        )
-        / recovery_weight_total
-        if recovery_weight_total > 0
-        else None
+            if recovery_weights[symbol] > 0
+            and per_asset[symbol]["asset_recovery"].get(metric) is not None
+        ]
+        total_weight = sum(weight for weight, _value in weighted)
+        if total_weight <= 0:
+            return None
+        return sum(weight * float(value) for weight, value in weighted) / total_weight
+
+    weighted_effective_recovery_pct = weighted_recovery(
+        "effective_final_quantity_pct"
     )
-    relative_wealth = _relative_wealth_metrics(result.equity)
+    weighted_actual_recovery_pct = weighted_recovery("actual_final_quantity_pct")
+    relative_wealth = dict(result.risk_metrics["relative_wealth"])
     return {
         "scenario": {
             "name": result.scenario.name,
@@ -1142,12 +1210,12 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 if hodl_final > 0
                 else None
             ),
-            "maximum_treasury_drawdown_pct": _maximum_drawdown(
-                [float(item["treasury_value"]) for item in result.equity]
-            ),
-            "maximum_hodl_drawdown_pct": _maximum_drawdown(
-                [float(item["hodl_value"]) for item in result.equity]
-            ),
+            "maximum_treasury_drawdown_pct": result.risk_metrics[
+                "maximum_treasury_drawdown_pct"
+            ],
+            "maximum_hodl_drawdown_pct": result.risk_metrics[
+                "maximum_hodl_drawdown_pct"
+            ],
             "relative_wealth": relative_wealth,
             "final_allocation_pct": final_allocations,
         },
@@ -1216,10 +1284,18 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
                 "total_usdt": result.final_usdt,
             },
             "asset_recovery": {
-                "average_effective_quantity_pct": (
-                    mean(recovery_pct_values) if recovery_pct_values else None
+                "average_actual_quantity_pct": (
+                    mean(actual_recovery_pct_values)
+                    if actual_recovery_pct_values
+                    else None
                 ),
-                "weighted_effective_quantity_pct": weighted_recovery_pct,
+                "average_effective_quantity_pct": (
+                    mean(effective_recovery_pct_values)
+                    if effective_recovery_pct_values
+                    else None
+                ),
+                "weighted_actual_quantity_pct": weighted_actual_recovery_pct,
+                "weighted_effective_quantity_pct": weighted_effective_recovery_pct,
                 "per_asset": {
                     symbol: item["asset_recovery"]
                     for symbol, item in per_asset.items()
@@ -1447,7 +1523,9 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         f"- HODL Return: {portfolio['hodl_return_pct']:.2f}%",
         f"- Edge vs HODL: {edge_metrics['difference_pct_points']:.2f} pp ({edge_metrics['relative_outperformance_pct']:.2f}% relative)",
         f"- Free Reserve: ${reserve_metrics['quote']:,.2f} ({reserve_metrics['pct_of_initial_invested_capital']:.2f}% of initial invested capital)",
-        f"- Average Nominal Asset Recovery: {recovery_metrics['average_effective_quantity_pct']:.2f}%",
+        f"- Weighted Physical Asset Recovery: {recovery_metrics['weighted_actual_quantity_pct']:.2f}%",
+        f"- Weighted Effective Asset Recovery: {recovery_metrics['weighted_effective_quantity_pct']:.2f}% (includes hypothetical buyback of open SELL inventory from its committed cash)",
+        f"- Equal-weight Effective Asset Recovery: {recovery_metrics['average_effective_quantity_pct']:.2f}%",
         f"- Maximum Treasury Drawdown: {portfolio['maximum_treasury_drawdown_pct']:.2f}%",
         "",
         "## Bargains",
@@ -1481,18 +1559,22 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         "",
         "## SELL Campaign Capacity",
         "",
-        f"- Campaigns: {campaign_metrics['count']}",
+        f"- Total signal SELL campaigns: {campaign_metrics['total_signal_sell_campaigns']}",
+        f"- Executable SELL campaigns: {campaign_metrics['executable_sell_campaigns']}",
+        f"- Zero-capacity SELL campaigns: {campaign_metrics['zero_capacity_sell_campaigns']}",
         f"- Average utilization: {campaign_metrics['average_utilization_pct']:.2f}%",
         f"- Median utilization: {campaign_metrics['median_utilization_pct']:.2f}%",
-        f"- Normal-capacity campaigns: {campaign_metrics['normal_capacity_campaigns']}",
-        f"- Full-deploy campaigns: {campaign_metrics['full_deploy_campaigns']}",
+        f"- Normal executable campaigns: {campaign_metrics['normal_executable_campaigns']}",
+        f"- Full-deploy executable campaigns: {campaign_metrics['full_deploy_executable_campaigns']}",
         f"- Interrupted by opposite signal: {campaign_metrics['interrupted_by_opposite_signal']}",
         "",
         "## Waiter Cleanup",
         "",
         f"- Enabled: {'yes' if cleanup_metrics['enabled'] else 'no'}",
         f"- Cleanup closes: {cleanup_metrics['cleanup_closes_total']}",
-        f"- Cleanup net PnL: ${cleanup_metrics['accounting']['economic_pnl_quote']:,.2f}",
+        f"- Lifecycle PnL of cleanup-resolved Bargains: ${cleanup_metrics['accounting']['lifecycle_pnl_quote']:,.2f}",
+        f"- Pre-cleanup mark-to-market PnL: ${cleanup_metrics['accounting']['pre_cleanup_mark_to_market_pnl_quote']:,.2f}",
+        f"- Cleanup settlement delta: ${cleanup_metrics['accounting']['cleanup_settlement_delta_quote']:,.2f}",
         (
             "- Restored inventory PnL: "
             f"${cleanup_metrics['accounting']['restored_inventory_pnl_quote']:,.2f}"
@@ -1531,9 +1613,11 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         f"- Gross cleanup losses: ${cleanup_metrics['realized_cleanup_loss_quote']:,.2f}",
         f"- Gross cleanup gains: ${cleanup_metrics['realized_cleanup_profit_quote']:,.2f}",
         (
-            "- Open Bargains prevented by cap: "
-            f"{cleanup_metrics['capacity']['open_bargains_prevented_by_cap']}"
+            "- Capacity-blocked cycles: "
+            f"{cleanup_metrics['capacity']['capacity_blocked_cycles']}"
         ),
+        f"- Unique capacity-blocked opportunities: {cleanup_metrics['capacity']['unique_capacity_blocked_opportunities']}",
+        f"- Capacity cleanup actions: {cleanup_metrics['capacity']['capacity_cleanup_actions']}",
         f"- Open Bargains at end: {cleanup_metrics['open_bargains']['at_end']}",
         f"- Underwater open Bargains: {cleanup_metrics['open_bargains']['underwater_at_end']}",
         f"- 90+ day open Bargains: {cleanup_metrics['open_bargains']['age_90_plus']}",

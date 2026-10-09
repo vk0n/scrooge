@@ -119,6 +119,28 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         )
         self.assertEqual(plan["quantity"], 25)
 
+    def test_campaign_capacity_uses_custody_sellable_and_order_uses_immediate_inventory(self):
+        campaign = initialize_sell_campaign_capacity(
+            {"active_side": "sell", "campaign_id": "sell-cold-storage"},
+            {
+                "target_quantity": 1000,
+                "minimum_holding_pct": 20,
+                "policy_sellable_quantity": 800,
+                "custody_sellable_quantity": 300,
+                "immediately_sellable_quantity": 100,
+            },
+        )
+        plan = plan_opening_quantity(
+            {"opportunity": "sell", "base_tranche_pct": 100},
+            {"immediately_sellable_quantity": 100},
+            campaign,
+        )
+
+        self.assertEqual(campaign["campaign_start_remaining_sellable_quantity"], 300)
+        self.assertEqual(campaign["campaign_capacity_quantity"], 150)
+        self.assertEqual(plan["requested_level_quantity"], 150)
+        self.assertEqual(plan["quantity"], 100)
+
     def test_sell_tranche_uses_frozen_campaign_capacity(self):
         plan = plan_opening_quantity(
             {

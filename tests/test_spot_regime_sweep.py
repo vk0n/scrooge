@@ -110,6 +110,7 @@ def regime_report(edge: float, *, recovery: float = 100.0) -> dict:
             "cleanup_closes_total": 1,
             "accounting": {
                 "economic_pnl_quote": -5,
+                "lifecycle_pnl_quote": -5,
                 "restored_inventory_pnl_quote": -4,
                 "inventory_residual_pnl_quote": -1,
                 "inventory_deficit_market_value_quote": 3,
@@ -196,7 +197,7 @@ spot_sweep:
                     "duration_seconds": 1,
                     "difference_vs_hodl": dollars,
                     "maximum_relative_drawdown_pct": -1,
-                    "cleanup_net_pnl": 0,
+                    "cleanup_lifecycle_pnl": 0,
                     "retained_reserve_quote": 0,
                 }
             )

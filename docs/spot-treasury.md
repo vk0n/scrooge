@@ -22,8 +22,8 @@ Portfolio entries and exchange balances answer different questions. Settled Trea
 | Cash campaign stakes | `10% / 20% / 30% / 40%` of frozen campaign capacity |
 | Asset campaign stakes | `1% / 3% / 5% / 10%` of Spendable Vault Reserve |
 | Bargain Goal | close at a `10%` gross favorable move from the Bargain basis |
-| Campaign capacity | freeze `50%` of current policy-sellable inventory |
-| Full deployment | freeze all remaining sellable inventory when at most `25%` of policy allowance remains |
+| Campaign capacity | freeze `50%` of current custody-sellable Binance inventory |
+| Full deployment | freeze all remaining custody-sellable inventory when at most `25%` of policy allowance remains |
 | Waiter limit | at most `10` open Bargains per asset |
 | Deep-loss relief | age `15d`, unrealized PnL at or below `-25%`, L1 reverse signal |
 | Aging relief | age `30d` needs L3, `60d` needs L2, `90d` needs L1 |
@@ -40,9 +40,9 @@ The signal is the percentage move from an approximately 24-hour-old reference pr
 - A negative qualifying move is a `BUY` opportunity.
 - Treasury does not use the Futures Bollinger Bands, RSI, EMA, or ATR indicators.
 
-Each asset has a durable directional campaign. Repeated polls at an already-consumed level do not spend again. Reaching a new level permits that level's action only; a direct jump to L3 does not backfill L1 or L2. `HOLD` preserves campaign state, while an actionable opposite direction starts a new campaign.
+Each asset has a durable directional campaign. Repeated polls at an already-consumed level do not spend again. Reaching a new level applies the cumulative allocation for every newly crossed level without creating synthetic intermediate actions. `HOLD` preserves campaign state, while an actionable opposite direction starts a new campaign.
 
-A SELL campaign freezes its capacity when it starts. Later Target or Minimum Holding changes affect future campaigns, not the frozen budget of the active one. Actual execution remains capped by current policy sellable quantity, Binance free balance, and venue filters.
+A SELL campaign freezes its capacity from inventory that is both policy-sellable and recorded in Binance custody. Cold Storage contributes to total ownership and Protected Floor economics, but never enlarges automated campaign capacity. Later Target, Minimum Holding, or custody changes affect future campaigns, not the frozen budget of the active one. Actual execution remains capped by the current Protected Floor, verified Binance free balance, and venue filters.
 
 ## Objectives
 
@@ -84,7 +84,11 @@ The runtime refreshes balances, reserve, Swing state, and campaign state after e
 
 ## Policy And Target Holding
 
-Minimum Holding protects a percentage of Target from automatic SELL campaigns. Policy-sellable inventory is bounded by current managed quantity, Target, Minimum Holding, custody, and exchange availability.
+Minimum Holding protects a percentage of Target from automatic SELL campaigns. The inventory limits remain distinct:
+
+- **Policy Sellable** is the economic surplus above the Protected Floor across all custody.
+- **Custody Sellable** is the lesser of Policy Sellable and the quantity recorded in Binance custody; it initializes SELL campaign capacity.
+- **Immediately Sellable** additionally applies the verified Binance free balance and is the execution-time order cap.
 
 Target changes are intentional and durable:
 

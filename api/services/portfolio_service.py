@@ -645,6 +645,7 @@ def _attach_asset_policies(holdings: list[dict[str, Any]]) -> None:
                     "amount_above_protected_floor": 0.0,
                     "amount_below_protected_floor": 0.0,
                     "policy_sellable_quantity": 0.0,
+                    "custody_sellable_quantity": 0.0,
                     "immediately_sellable_quantity": 0.0,
                     "sellable_inventory_is_exchange_verified": False,
                     "target_delta_quantity": None,
@@ -677,9 +678,8 @@ def _attach_inventory_state(holding: dict[str, Any]) -> None:
             "protected_holding_quantity": policy["protected_holding_quantity"],
             "amount_above_protected_floor": policy["amount_above_protected_floor"],
             "amount_below_protected_floor": policy["amount_below_protected_floor"],
-            # This legacy field includes recorded custody; the shared projection also
-            # exposes the economic policy capacity separately for research.
-            "policy_sellable_quantity": policy["custody_sellable_quantity"],
+            "policy_sellable_quantity": policy["policy_sellable_quantity"],
+            "custody_sellable_quantity": policy["custody_sellable_quantity"],
             "immediately_sellable_quantity": 0.0,
             "sellable_inventory_is_exchange_verified": False,
             "target_delta_quantity": policy["target_delta_quantity"],

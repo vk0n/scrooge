@@ -16,8 +16,10 @@ from backtest.spot_market_data import (
 )
 from backtest.spot_reporting import (
     _accumulation_metrics,
+    _campaign_metrics,
     _cleanup_accounting_rows,
     _cleanup_accounting_summary,
+    _waiter_cleanup_metrics,
     build_spot_backtest_report,
     write_spot_backtest_artifacts,
 )
@@ -163,6 +165,39 @@ def dataset(
     )
 
 
+def minute_dataset(config: SpotBacktestScenario, price_by_symbol) -> SpotHistoricalDataset:
+    interval_ms = 60 * 1000
+    candle_map = {}
+    for item in config.assets:
+        rows = []
+        first_open = config.start - timedelta(minutes=config.warmup_candles)
+        replay_minutes = int((config.end - config.start).total_seconds() // 60)
+        for index in range(config.warmup_candles + replay_minutes):
+            replay_index = index - config.warmup_candles
+            price = float(price_by_symbol(item.symbol, replay_index))
+            open_at = first_open + timedelta(minutes=index)
+            open_ms = int(open_at.timestamp() * 1000)
+            rows.append(
+                SpotCandle(
+                    open_time_ms=open_ms,
+                    close_time_ms=open_ms + interval_ms - 1,
+                    open=price,
+                    high=price,
+                    low=price,
+                    close=price,
+                    volume=100,
+                )
+            )
+        candle_map[item.symbol] = tuple(rows)
+    return SpotHistoricalDataset(
+        candles=candle_map,
+        symbol_info={item.symbol: SYMBOL_INFO for item in config.assets},
+        interval="1m",
+        interval_ms=interval_ms,
+        source="synthetic-minute",
+    )
+
+
 class SpotBacktestFrameworkTests(unittest.TestCase):
     def run_scenario(self, config, prices, **dataset_kwargs):
         return SpotPortfolioBacktester(config, dataset(config, prices, **dataset_kwargs)).run()
@@ -293,6 +328,188 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(accounting["inventory_deficit_market_value_quote"], 240)
         self.assertEqual(accounting["economic_pnl_quote"], -250)
         self.assertEqual(accounting["reconciliation_delta_quote"], 0)
+
+    def test_cleanup_settlement_delta_is_distinct_from_pre_cleanup_mark(self):
+        rows = _cleanup_accounting_rows(
+            [
+                {
+                    "asset_symbol": "AAA",
+                    "quote_symbol": "USDT",
+                    "origin_side": "sell",
+                    "close_reason": "deep_loss_cleanup",
+                    "executions": [
+                        {
+                            "side": "sell",
+                            "quantity": 10,
+                            "price": 100,
+                            "quote_quantity": 1000,
+                            "fee_amount": 0,
+                            "fee_asset": "USDT",
+                        },
+                        {
+                            "side": "buy",
+                            "quantity": 10,
+                            "price": 110,
+                            "quote_quantity": 1100,
+                            "fee_amount": 5,
+                            "fee_asset": "USDT",
+                            "reason": {"close_reason": "deep_loss_cleanup"},
+                        },
+                    ],
+                }
+            ]
+        )
+        accounting = _cleanup_accounting_summary(rows)
+
+        self.assertEqual(accounting["pre_cleanup_mark_to_market_pnl_quote"], -100)
+        self.assertEqual(accounting["lifecycle_pnl_quote"], -105)
+        self.assertEqual(accounting["cleanup_settlement_delta_quote"], -5)
+        self.assertEqual(accounting["cleanup_turnover_quote"], 1100)
+
+    def test_per_candle_drawdown_captures_intrahour_trough(self):
+        base = scenario((asset("AAA", objective=None),), hours=2, starting_usdt=0)
+        config = replace(base, interval="1m", warmup_candles=24 * 60)
+        replay = SpotPortfolioBacktester(
+            config,
+            minute_dataset(
+                config,
+                lambda _symbol, index: 50 if index == 30 else 100,
+            ),
+        )
+
+        report = build_spot_backtest_report(replay.run())
+
+        self.assertEqual(report["portfolio"]["maximum_treasury_drawdown_pct"], -50)
+        self.assertEqual(report["portfolio"]["maximum_hodl_drawdown_pct"], -50)
+
+    def test_per_candle_relative_drawdown_captures_intrahour_underperformance(self):
+        base = scenario((asset("AAA", objective=None),), hours=2, starting_usdt=0)
+        config = replace(base, interval="1m", warmup_candles=24 * 60)
+        replay = SpotPortfolioBacktester(
+            config,
+            minute_dataset(
+                config,
+                lambda _symbol, index: 2 if index == 30 else 1,
+            ),
+        )
+        replay.assets["AAA"].binance_quantity = 50
+        replay.usdt = 50
+
+        result = replay.run()
+        report = build_spot_backtest_report(result)
+        relative = report["portfolio"]["relative_wealth"]
+
+        self.assertEqual(len(result.equity), 3)
+        self.assertAlmostEqual(relative["minimum"], 0.75)
+        self.assertAlmostEqual(relative["maximum"], 1.0)
+        self.assertAlmostEqual(relative["terminal"], 1.0)
+        self.assertAlmostEqual(relative["maximum_drawdown_pct"], -25.0)
+
+    def test_repeated_capacity_blocks_are_one_unique_opportunity(self):
+        config = scenario((asset("AAA", objective=None),), hours=2)
+        result = self.run_scenario(config, lambda _symbol, _index: 100)
+        result.actions = [
+            {
+                "timestamp_ms": timestamp,
+                "asset_symbol": "AAA",
+                "campaign_id": campaign_id,
+                "signal_level": level,
+                "action_type": "hold",
+                "reason": {"hold_reason": "max_open_bargains_per_asset"},
+            }
+            for timestamp, campaign_id, level in (
+                (1, "campaign-a", 2),
+                (2, "campaign-a", 2),
+                (3, "campaign-b", 1),
+            )
+        ]
+
+        capacity = _waiter_cleanup_metrics(result)["capacity"]
+
+        self.assertEqual(capacity["capacity_blocked_cycles"], 3)
+        self.assertEqual(capacity["unique_capacity_blocked_opportunities"], 2)
+        self.assertEqual(capacity["capacity_cleanup_actions"], 0)
+
+    def test_zero_capacity_campaign_does_not_distort_executable_utilization(self):
+        config = scenario((asset("AAA", objective=None),), hours=2)
+        result = self.run_scenario(config, lambda _symbol, _index: 100)
+        zero_capacity = initialize_sell_campaign_capacity(
+            {"active_side": "sell", "campaign_id": "at-policy-floor"},
+            {
+                "target_quantity": 1000,
+                "minimum_holding_pct": 20,
+                "policy_sellable_quantity": 0,
+            },
+        )
+        result.sell_campaigns = [
+            {**zero_capacity, "asset_symbol": "AAA", "highest_completed_level": 0},
+            {
+                "campaign_id": "executable",
+                "asset_symbol": "AAA",
+                "campaign_capacity_quantity": 100,
+                "campaign_consumed_quantity": 50,
+                "campaign_capacity_mode": "normal",
+                "highest_completed_level": 2,
+            },
+        ]
+
+        metrics = _campaign_metrics(result)
+
+        self.assertEqual(metrics["total_signal_sell_campaigns"], 2)
+        self.assertEqual(metrics["executable_sell_campaigns"], 1)
+        self.assertEqual(metrics["zero_capacity_sell_campaigns"], 1)
+        self.assertEqual(metrics["normal_executable_campaigns"], 1)
+        self.assertEqual(metrics["full_deploy_executable_campaigns"], 0)
+        self.assertEqual(metrics["average_utilization_pct"], 50)
+        self.assertEqual(metrics["median_utilization_pct"], 50)
+
+    def test_backtest_cold_storage_limits_campaign_to_binance_custody(self):
+        config = scenario(
+            (
+                asset(
+                    "AAA",
+                    quantity=1000,
+                    binance=300,
+                    cold=700,
+                    target=1000,
+                    minimum=20,
+                ),
+            ),
+            hours=2,
+        )
+        replay = SpotPortfolioBacktester(
+            config,
+            dataset(config, lambda _symbol, _index: 100),
+        )
+
+        holding = replay.assets["AAA"].holding(100)
+        campaign = initialize_sell_campaign_capacity(
+            {"active_side": "sell", "campaign_id": "cold-storage"},
+            holding,
+        )
+
+        self.assertEqual(holding["policy_sellable_quantity"], 800)
+        self.assertEqual(holding["custody_sellable_quantity"], 300)
+        self.assertEqual(holding["immediately_sellable_quantity"], 300)
+        self.assertEqual(campaign["campaign_capacity_quantity"], 150)
+
+    def test_asset_recovery_exposes_weighted_physical_and_effective_inventory(self):
+        config = scenario(
+            (asset("HEAVY", objective=None), asset("LIGHT", objective=None)),
+            hours=2,
+            starting_usdt=0,
+        )
+        result = self.run_scenario(
+            config,
+            lambda symbol, _index: 100 if symbol == "HEAVY" else 10,
+        )
+        result.assets["HEAVY"].binance_quantity = 50
+
+        recovery = build_spot_backtest_report(result)["success_metrics"]["asset_recovery"]
+
+        self.assertEqual(recovery["average_actual_quantity_pct"], 75)
+        self.assertAlmostEqual(recovery["weighted_actual_quantity_pct"], 54.5454545)
+        self.assertAlmostEqual(recovery["weighted_effective_quantity_pct"], 54.5454545)
 
     def test_live_and_backtest_reference_the_same_decision_function(self):
         self.assertIs(

@@ -110,6 +110,9 @@ class SimulatedAssetState:
             "trading_objective": self.scenario.trading_objective,
             "protected_floor_quantity": self.protected_floor,
             "policy_sellable_quantity": self.policy_sellable,
+            "custody_sellable_quantity": float(
+                self.policy_inventory["custody_sellable_quantity"]
+            ),
             "immediately_sellable_quantity": self.immediately_sellable,
             "market_price": market_price,
         }
@@ -155,6 +158,64 @@ class SpotBacktestResult:
     inventory_history: list[dict[str, Any]]
     rejections: list[dict[str, Any]]
     sell_campaigns: list[dict[str, Any]]
+    risk_metrics: dict[str, Any]
+
+
+class _StreamingRiskMetrics:
+    """Track exact candle-level drawdowns without retaining candle-level equity."""
+
+    def __init__(self, treasury_value: float, hodl_value: float) -> None:
+        self._treasury_peak = float(treasury_value)
+        self._hodl_peak = float(hodl_value)
+        self._treasury_drawdown_pct = 0.0
+        self._hodl_drawdown_pct = 0.0
+        self._initial_relative_wealth = (
+            float(treasury_value) / float(hodl_value) if hodl_value > 0 else 1.0
+        )
+        self._relative_peak = 1.0
+        self._relative_minimum = 1.0
+        self._relative_maximum = 1.0
+        self._relative_terminal = 1.0
+        self._relative_drawdown_pct = 0.0
+
+    def observe(self, treasury_value: float, hodl_value: float) -> None:
+        treasury = float(treasury_value)
+        hodl = float(hodl_value)
+        self._treasury_peak = max(self._treasury_peak, treasury)
+        self._hodl_peak = max(self._hodl_peak, hodl)
+        if self._treasury_peak > 0:
+            self._treasury_drawdown_pct = min(
+                self._treasury_drawdown_pct,
+                (treasury / self._treasury_peak - 1.0) * 100.0,
+            )
+        if self._hodl_peak > 0:
+            self._hodl_drawdown_pct = min(
+                self._hodl_drawdown_pct,
+                (hodl / self._hodl_peak - 1.0) * 100.0,
+            )
+        if hodl <= 0 or self._initial_relative_wealth <= 0:
+            return
+        normalized_relative = (treasury / hodl) / self._initial_relative_wealth
+        self._relative_peak = max(self._relative_peak, normalized_relative)
+        self._relative_minimum = min(self._relative_minimum, normalized_relative)
+        self._relative_maximum = max(self._relative_maximum, normalized_relative)
+        self._relative_terminal = normalized_relative
+        self._relative_drawdown_pct = min(
+            self._relative_drawdown_pct,
+            (normalized_relative / self._relative_peak - 1.0) * 100.0,
+        )
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "maximum_treasury_drawdown_pct": self._treasury_drawdown_pct,
+            "maximum_hodl_drawdown_pct": self._hodl_drawdown_pct,
+            "relative_wealth": {
+                "minimum": self._relative_minimum,
+                "maximum": self._relative_maximum,
+                "terminal": self._relative_terminal,
+                "maximum_drawdown_pct": self._relative_drawdown_pct,
+            },
+        }
 
 
 class SpotPortfolioBacktester:
@@ -231,6 +292,8 @@ class SpotPortfolioBacktester:
             for symbol in self.scenario.asset_order
         )
         equity = [self._equity_point(self.start_ms, initial_prices, starting_value)]
+        initial_treasury_value, initial_hodl_value = self._portfolio_values(initial_prices)
+        risk_metrics = _StreamingRiskMetrics(initial_treasury_value, initial_hodl_value)
 
         step_count = replay_count
         if progress is not None:
@@ -261,6 +324,8 @@ class SpotPortfolioBacktester:
                     execution_candles=candles,
                 )
             timestamp_ms = candles[self.scenario.asset_order[0]].close_time_ms
+            treasury_value, hodl_value = self._portfolio_values(prices)
+            risk_metrics.observe(treasury_value, hodl_value)
             if (timestamp_ms + 1) % HOUR_MS == 0 or step + 1 == step_count:
                 equity.append(self._equity_point(timestamp_ms, prices, starting_value))
                 self._record_inventory(timestamp_ms, prices)
@@ -271,6 +336,8 @@ class SpotPortfolioBacktester:
             self._economics_cache.clear()
             self._force_close(final_prices, self.end_ms)
             equity.append(self._equity_point(self.end_ms, final_prices, starting_value))
+            treasury_value, hodl_value = self._portfolio_values(final_prices)
+            risk_metrics.observe(treasury_value, hodl_value)
 
         self._economics_cache.clear()
         swings = self._final_swings(final_prices)
@@ -300,6 +367,7 @@ class SpotPortfolioBacktester:
             inventory_history=list(self.inventory_history),
             rejections=list(self.rejections),
             sell_campaigns=[dict(item) for item in self.sell_campaigns],
+            risk_metrics=risk_metrics.snapshot(),
         )
 
     def _validate_dataset(self) -> None:
@@ -496,7 +564,9 @@ class SpotPortfolioBacktester:
             action_type = str(decision["action_type"])
             if action_type == "hold":
                 if execution_phase in {None, "allocation"}:
-                    self._record_non_order_action(symbol, candle, signal, decision)
+                    self._record_non_order_action(
+                        symbol, candle, signal, campaign, decision
+                    )
                 return
             if execution_phase is not None and spot_action_phase(decision) != execution_phase:
                 return
@@ -505,7 +575,9 @@ class SpotPortfolioBacktester:
                     int(campaign.get("highest_completed_level") or 0),
                     int(signal.get("level") or 0),
                 )
-                self._record_non_order_action(symbol, candle, signal, decision)
+                self._record_non_order_action(
+                    symbol, candle, signal, campaign, decision
+                )
                 continue
 
             action = self._prepare_action(symbol, candle, signal, campaign, decision)
@@ -526,6 +598,7 @@ class SpotPortfolioBacktester:
         symbol: str,
         candle: SpotCandle,
         signal: dict[str, Any],
+        campaign: dict[str, Any],
         decision: dict[str, Any],
     ) -> None:
         self.actions.append(
@@ -533,6 +606,7 @@ class SpotPortfolioBacktester:
                 "timestamp_ms": candle.close_time_ms,
                 "timestamp": self._timestamp(candle.close_time_ms),
                 "asset_symbol": symbol,
+                "campaign_id": campaign.get("campaign_id"),
                 "action_type": decision["action_type"],
                 "side": decision.get("side"),
                 "swing_id": None,
@@ -905,6 +979,7 @@ class SpotPortfolioBacktester:
                     "timestamp_ms": timestamp_ms,
                     "timestamp": self._timestamp(timestamp_ms),
                     "asset_symbol": symbol,
+                    "campaign_id": action.get("campaign_id"),
                     "action_type": "accumulate_asset",
                     "side": "buy",
                     "swing_id": None,
@@ -1014,6 +1089,7 @@ class SpotPortfolioBacktester:
                 "timestamp_ms": timestamp_ms,
                 "timestamp": self._timestamp(timestamp_ms),
                 "asset_symbol": symbol,
+                "campaign_id": action.get("campaign_id"),
                 "action_type": action["action_type"],
                 "side": side,
                 "swing_id": swing_id,
@@ -1178,14 +1254,7 @@ class SpotPortfolioBacktester:
         prices: dict[str, float],
         starting_value: float,
     ) -> dict[str, Any]:
-        treasury_value = self.usdt + sum(
-            self.assets[symbol].quantity * prices[symbol]
-            for symbol in self.scenario.asset_order
-        )
-        hodl_value = self.scenario.starting_usdt + sum(
-            self.assets[symbol].scenario.quantity * prices[symbol]
-            for symbol in self.scenario.asset_order
-        )
+        treasury_value, hodl_value = self._portfolio_values(prices)
         open_unrealized = 0.0
         realized = self.realized_swing_pnl
         open_count = 0
@@ -1229,6 +1298,17 @@ class SpotPortfolioBacktester:
             "open_swings": open_count,
             "return_pct": ((treasury_value / starting_value) - 1.0) * 100.0 if starting_value > 0 else 0.0,
         }
+
+    def _portfolio_values(self, prices: dict[str, float]) -> tuple[float, float]:
+        treasury_value = self.usdt + sum(
+            self.assets[symbol].quantity * prices[symbol]
+            for symbol in self.scenario.asset_order
+        )
+        hodl_value = self.scenario.starting_usdt + sum(
+            self.assets[symbol].scenario.quantity * prices[symbol]
+            for symbol in self.scenario.asset_order
+        )
+        return treasury_value, hodl_value
 
     def _swing_committed_quote(self, swing: dict[str, Any]) -> float:
         swing_id = str(swing.get("swing_id") or id(swing))

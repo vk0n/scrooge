@@ -167,6 +167,7 @@ type PortfolioHolding = {
   amount_above_protected_floor: number;
   amount_below_protected_floor: number;
   policy_sellable_quantity: number;
+  custody_sellable_quantity: number;
   immediately_sellable_quantity: number;
   sellable_inventory_is_exchange_verified: boolean;
   exchange_binance_free_quantity: number;
@@ -1287,7 +1288,7 @@ function TreasuryRulesPanel(): JSX.Element {
                 <p>2. <span className="contract-term">Signal ladder.</span> Moves of <span className="contract-value">{levelText}</span> shall open Levels 1 through {rules.signal.levels_pct.length}. The farther a coin travels, the stronger the signal I shall act upon.</p>
                 <p>3. <span className="contract-term">Campaign stakes.</span> When I am building cash, Levels 1 through {rules.signal.base_tranches_pct.length} shall commit <span className="contract-value">{sellText}</span> of the campaign purse. When I am gathering more of the asset, those levels shall commit <span className="contract-value">{buyText}</span> of spendable reserve.</p>
                 <p>4. <span className="contract-term">Bargain goal.</span> I shall settle every profitable Bargain once its gross return reaches <span className="contract-value">{rules.progression.close_profit_pct}%</span>.</p>
-                <p>5. <span className="contract-term">Inventory discipline.</span> A new selling campaign may command <span className="contract-value">{rules.progression.campaign_capacity_pct}%</span> of the inventory that policy leaves sellable. Once no more than <span className="contract-value">{rules.progression.full_deploy_threshold_pct}%</span> of that allowance remains, I may deploy all of it.</p>
+                <p>5. <span className="contract-term">Inventory discipline.</span> A new selling campaign may command <span className="contract-value">{rules.progression.campaign_capacity_pct}%</span> of the policy-sellable inventory kept in my Binance custody. Cold Storage stays beyond my reach. Once no more than <span className="contract-value">{rules.progression.full_deploy_threshold_pct}%</span> of that allowance remains, I may deploy all of it.</p>
                 <p>6. <span className="contract-term">Patient waiters.</span> Cleanup is <span className="contract-value">{rules.waiter_cleanup.enabled ? "active" : "paused"}</span>, and I shall keep no more than <span className="contract-value">{rules.waiter_cleanup.max_open_bargains_per_asset}</span> open Bargains for one asset. For aging positions, {agingText}.</p>
                 <p>7. <span className="contract-term">Loss and capacity relief.</span> After <span className="contract-value">{rules.waiter_cleanup.deep_loss.min_age_days}d</span> at or below <span className="contract-value">{rules.waiter_cleanup.deep_loss.unrealized_pnl_pct}%</span>, a Level <span className="contract-value">{rules.waiter_cleanup.deep_loss.required_reverse_level}</span> reverse signal may release the position. Capacity relief is <span className="contract-value">{rules.waiter_cleanup.capacity_cleanup.enabled ? "active" : "paused"}</span> after <span className="contract-value">{rules.waiter_cleanup.capacity_cleanup.min_age_days}d</span>.</p>
               </div>
@@ -1624,6 +1625,10 @@ function AssetPolicyPanel({
           <div>
             <span>Policy Sellable</span>
             <strong>{formatNumber(holding.policy_sellable_quantity, 8)} {holding.asset_symbol}</strong>
+          </div>
+          <div>
+            <span>Custody Sellable</span>
+            <strong>{formatNumber(holding.custody_sellable_quantity, 8)} {holding.asset_symbol}</strong>
           </div>
           <div className={`treasury-policy-metric-sellable${
             holding.amount_below_protected_floor > 0

@@ -23,6 +23,7 @@ from shared.runtime_db import (
     save_exchange_account_snapshot,
     save_spot_signal_snapshot,
 )
+from shared.spot_progression import initialize_sell_campaign_capacity
 
 
 class PortfolioPhaseOneTests(unittest.TestCase):
@@ -1254,7 +1255,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertFalse(holding["sellable_inventory_is_exchange_verified"])
         self.assertEqual(holding["target_delta_quantity"], 100)
 
-    def test_sellable_inventory_is_capped_by_binance_custody(self):
+    def test_policy_and_custody_sellable_inventory_are_reported_separately(self):
         self.add("BTC", 100, 90, "binance")
         self.add("BTC", 1000, 90, "cold_storage")
 
@@ -1265,7 +1266,8 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         holding = result["portfolio"]["holdings"][0]
         self.assertEqual(holding["amount_above_protected_floor"], 300)
-        self.assertEqual(holding["policy_sellable_quantity"], 100)
+        self.assertEqual(holding["policy_sellable_quantity"], 300)
+        self.assertEqual(holding["custody_sellable_quantity"], 100)
         self.assertEqual(holding["immediately_sellable_quantity"], 0)
 
     def test_holding_below_protected_floor_has_no_sellable_inventory(self):
@@ -1304,8 +1306,37 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(before_holding["amount_above_protected_floor"], 200)
         self.assertEqual(before_holding["immediately_sellable_quantity"], 0)
         self.assertEqual(holding["amount_above_protected_floor"], 200)
-        self.assertEqual(holding["policy_sellable_quantity"], 150)
+        self.assertEqual(holding["policy_sellable_quantity"], 200)
+        self.assertEqual(holding["custody_sellable_quantity"], 150)
         self.assertEqual(holding["immediately_sellable_quantity"], 0)
+
+    def test_live_cold_storage_limits_campaign_to_binance_custody(self):
+        self.add("BTC", 300, 90, "binance")
+        self.add("BTC", 700, 90, "cold_storage")
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1000, "minimum_holding_pct": 20},
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [{"asset_symbol": "BTC", "free": 250, "locked": 50}],
+            }
+        )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+
+        holding = snapshot["holdings"][0]
+        campaign = initialize_sell_campaign_capacity(
+            {"active_side": "sell", "campaign_id": "mixed-custody"},
+            holding,
+        )
+        self.assertEqual(holding["protected_floor_quantity"], 200)
+        self.assertEqual(holding["policy_sellable_quantity"], 800)
+        self.assertEqual(holding["custody_sellable_quantity"], 300)
+        self.assertEqual(holding["immediately_sellable_quantity"], 250)
+        self.assertEqual(campaign["campaign_capacity_quantity"], 150)
 
     def test_fresh_exchange_snapshot_caps_immediate_inventory_by_free_balance(self):
         self.add("BTC", 300, 90, "binance")
@@ -1329,6 +1360,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         holding = snapshot["holdings"][0]
         self.assertEqual(holding["policy_sellable_quantity"], 300)
+        self.assertEqual(holding["custody_sellable_quantity"], 300)
         self.assertEqual(holding["exchange_binance_free_quantity"], 220)
         self.assertEqual(holding["exchange_binance_locked_quantity"], 80)
         self.assertEqual(holding["immediately_sellable_quantity"], 220)

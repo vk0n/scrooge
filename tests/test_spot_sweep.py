@@ -56,6 +56,7 @@ def report(edge: float) -> dict:
             },
             "asset_recovery": {
                 "average_effective_quantity_pct": 101,
+                "weighted_effective_quantity_pct": 101,
             },
         },
         "swings": {
@@ -73,6 +74,7 @@ def report(edge: float) -> dict:
             "cleanup_closes_total": 1,
             "accounting": {
                 "economic_pnl_quote": -5,
+                "lifecycle_pnl_quote": -5,
                 "restored_inventory_pnl_quote": -4,
                 "inventory_residual_pnl_quote": -1,
                 "inventory_deficit_market_value_quote": 3,
@@ -230,14 +232,14 @@ spot_sweep:
                 "name": "lower",
                 "status": "ok",
                 "edge_vs_hodl_pct_points": 1,
-                "average_effective_assets_pct": 110,
+                "weighted_effective_assets_pct": 110,
                 "free_reserve_pct": 10,
             },
             {
                 "name": "winner",
                 "status": "ok",
                 "edge_vs_hodl_pct_points": 2,
-                "average_effective_assets_pct": 90,
+                "weighted_effective_assets_pct": 90,
                 "free_reserve_pct": 1,
             },
         ]
