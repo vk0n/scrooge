@@ -1,3 +1,5 @@
+"""Exchange filters and quantization rules for Spot execution."""
+
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP

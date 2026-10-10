@@ -1,3 +1,5 @@
+"""Aging, loss, and capacity cleanup rules for Spot Bargains."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

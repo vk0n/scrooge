@@ -7,22 +7,22 @@ from typing import Any, Callable
 
 from backtest.spot_market_data import SpotCandle, SpotHistoricalDataset
 from backtest.spot_scenario import SpotBacktestAsset, SpotBacktestScenario
-from shared.spot_execution_rules import (
+from core.spot_execution_rules import (
     normalize_market_quantity,
     validate_market_notional,
     validate_sell_opening_round_trip,
 )
-from shared.spot_policy import calculate_spot_inventory_policy
-from shared.spot_progression import initialize_sell_campaign_capacity
-from shared.spot_signal import ROLLING_WINDOW_MS, evaluate_rolling_24h_opportunity
-from shared.spot_strategy import (
+from core.spot_policy import calculate_spot_inventory_policy
+from core.spot_progression import initialize_sell_campaign_capacity
+from core.spot_signal import ROLLING_WINDOW_MS, evaluate_rolling_24h_opportunity
+from core.spot_strategy import (
     SPOT_ACTION_PHASES,
     finalize_spot_strategy_signal,
     plan_spot_strategy_action,
     spot_action_phase,
     transition_spot_strategy_campaign,
 )
-from shared.spot_swing import (
+from core.spot_swing import (
     calculate_cash_retention,
     calculate_sell_origin_committed_quote,
     calculate_swing_economics,

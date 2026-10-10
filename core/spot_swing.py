@@ -1,3 +1,5 @@
+"""Bargain lifecycle economics and Target adjustments."""
+
 from __future__ import annotations
 
 import math

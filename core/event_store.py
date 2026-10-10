@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator, Protocol, TypedDict
 from uuid import uuid4
 
-from shared.runtime_db import (
+from core.runtime_db import (
     append_event_record as append_event_db_record,
     event_history_row_count as get_event_history_db_row_count,
     list_event_records as list_event_db_records,

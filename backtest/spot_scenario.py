@@ -7,9 +7,9 @@ from typing import Any
 
 import yaml
 
-from shared.spot_progression import ProgressiveSwingConfig
-from shared.spot_signal import SpotSignalConfig
-from shared.spot_waiter_cleanup import WaiterCleanupConfig, waiter_cleanup_config_from_mapping
+from core.spot_progression import ProgressiveSwingConfig
+from core.spot_signal import SpotSignalConfig
+from core.spot_waiter_cleanup import WaiterCleanupConfig, waiter_cleanup_config_from_mapping
 
 
 VALID_OBJECTIVES = {None, "accumulate_cash", "accumulate_asset"}

@@ -12,7 +12,7 @@ _PROJECT_ROOT = _project_root()
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.append(str(_PROJECT_ROOT))
 
-from shared.runtime_db import list_ui_log_lines, runtime_db_path  # noqa: E402
+from core.runtime_db import list_ui_log_lines, runtime_db_path  # noqa: E402
 
 
 RUNTIME_DB_PATH = runtime_db_path()

@@ -37,13 +37,13 @@ from backtest.spot_scenario import (
     load_spot_backtest_scenario,
 )
 from bot.spot_strategy import ProgressiveSpotSwingExecutor
-from shared.spot_progression import ProgressiveSwingConfig, initialize_sell_campaign_capacity
-from shared.spot_execution_rules import (
+from core.spot_progression import ProgressiveSwingConfig, initialize_sell_campaign_capacity
+from core.spot_execution_rules import (
     normalize_market_quantity,
     validate_sell_opening_round_trip,
 )
-from shared.spot_signal import SpotSignalConfig, evaluate_rolling_24h_opportunity
-from shared.spot_strategy import plan_spot_strategy_action
+from core.spot_signal import SpotSignalConfig, evaluate_rolling_24h_opportunity
+from core.spot_strategy import plan_spot_strategy_action
 
 
 HOUR_MS = 60 * 60 * 1000

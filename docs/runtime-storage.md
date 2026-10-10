@@ -27,11 +27,11 @@ On a clean instance the bot or API resolves `SCROOGE_DB_PATH`, creates the datab
 
 Current schema version: **20**.
 
-Schema changes belong in explicit, forward-safe migration steps in `shared/runtime_db.py`. Services may start against an older database and migrate it; they must not require an operator to edit tables manually.
+Schema changes belong in explicit, forward-safe migration steps in `core/runtime_db.py`. Services may start against an older database and migrate it; they must not require an operator to edit tables manually.
 
 ## Tables
 
-### Futures And Shared Runtime
+### Futures And Common Runtime
 
 - `schema_migrations`
 - `runtime_state_snapshot`

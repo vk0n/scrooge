@@ -23,7 +23,7 @@ _PROJECT_ROOT = _project_root()
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.append(str(_PROJECT_ROOT))
 
-from shared.runtime_db import (  # noqa: E402
+from core.runtime_db import (  # noqa: E402
     append_portfolio_transaction,
     consume_portfolio_retained_cash,
     count_portfolio_transactions,
@@ -47,10 +47,10 @@ from shared.runtime_db import (  # noqa: E402
     upsert_portfolio_daily_snapshot,
     update_portfolio_transaction_status,
 )
-from shared.spot_accounting import backfill_spot_quote_legs  # noqa: E402
-from shared.spot_policy import calculate_spot_inventory_policy  # noqa: E402
-from shared.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics  # noqa: E402
-from shared.treasury_ledger import (  # noqa: E402
+from core.spot_accounting import backfill_spot_quote_legs  # noqa: E402
+from core.spot_policy import calculate_spot_inventory_policy  # noqa: E402
+from core.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics  # noqa: E402
+from core.treasury_ledger import (  # noqa: E402
     append_treasury_event,
     project_portfolio_transaction,
     spot_order_presentation_message,

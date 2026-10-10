@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bot.spot_account import SpotBalanceMonitor, normalize_spot_account_snapshot
-from shared.runtime_db import load_exchange_account_snapshot
+from core.runtime_db import load_exchange_account_snapshot
 
 
 class FakeSpotClient:

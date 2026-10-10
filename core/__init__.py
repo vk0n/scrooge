@@ -1,1 +1,1 @@
-"""Shared core package for Scrooge."""
+"""Common application kernel for Scrooge Office and Treasury systems."""

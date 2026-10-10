@@ -40,8 +40,8 @@ from core.market_events import (
     PriceTickEvent,
     market_event_to_dict,
 )
-from shared.runtime_db import append_ui_log_entry
-from shared.time_utils import utc_now_text, utc_text_from_timestamp
+from core.runtime_db import append_ui_log_entry
+from core.time_utils import utc_now_text, utc_text_from_timestamp
 
 
 UI_LOG_BUFFER_LINE_PATTERN = re.compile(r"^\[(?P<ts>[^\]]+)\]\s?(?P<message>.*)$")

@@ -6,13 +6,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.binance_retry import run_binance_with_retries
-from shared.runtime_db import (
+from core.runtime_db import (
     list_portfolio_asset_policies,
     mark_spot_signal_snapshot_error,
     save_spot_signal_snapshot,
 )
-from shared.spot_signal import SpotSignalConfig, evaluate_rolling_24h_opportunity
-from shared.spot_strategy import finalize_spot_strategy_signal, spot_policy_eligibility
+from core.spot_signal import SpotSignalConfig, evaluate_rolling_24h_opportunity
+from core.spot_strategy import finalize_spot_strategy_signal, spot_policy_eligibility
 
 DEFAULT_ACCOUNT_KEY = "manual_spot"
 

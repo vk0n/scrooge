@@ -1,3 +1,5 @@
+"""Spot campaign capacity, tranche sizing, and Bargain goals."""
+
 from __future__ import annotations
 
 import math

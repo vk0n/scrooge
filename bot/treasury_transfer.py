@@ -8,7 +8,7 @@ from api.services.portfolio_service import (
     record_confirmed_office_transfer,
     treasury_transfer_enabled,
 )
-from shared.runtime_db import consume_portfolio_retained_cash, credit_portfolio_retained_cash
+from core.runtime_db import consume_portfolio_retained_cash, credit_portfolio_retained_cash
 
 
 def _number(value: Any) -> float:

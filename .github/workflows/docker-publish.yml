@@ -43,7 +43,6 @@ jobs:
               - 'backtest/**'
               - 'core/**'
               - 'data/**'
-              - 'shared/**'
             backtest:
               - '.dockerignore'
               - 'docker/backtest.Dockerfile'
@@ -55,13 +54,12 @@ jobs:
               - 'backtest/**'
               - 'core/**'
               - 'data/**'
-              - 'shared/**'
             api:
               - '.dockerignore'
               - '.github/workflows/docker-publish.yml'
               - 'docker/api.Dockerfile'
               - 'api/**'
-              - 'shared/**'
+              - 'core/**'
             frontend:
               - '.dockerignore'
               - 'docker/frontend.Dockerfile'

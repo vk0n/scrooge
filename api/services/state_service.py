@@ -14,7 +14,7 @@ _PROJECT_ROOT = _project_root()
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.append(str(_PROJECT_ROOT))
 
-from shared.runtime_db import load_runtime_state_snapshot  # noqa: E402
+from core.runtime_db import load_runtime_state_snapshot  # noqa: E402
 
 
 SEARCH_STATUS_LABELS = {

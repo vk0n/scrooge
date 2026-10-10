@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from shared.treasury_strategy_config import (
+from core.treasury_strategy_config import (
     TreasuryStrategyConfig,
     treasury_strategy_config_from_mapping,
 )

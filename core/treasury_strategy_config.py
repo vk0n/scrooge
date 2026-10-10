@@ -1,12 +1,14 @@
+"""Validated Treasury strategy configuration."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
 from typing import Any
 
-from shared.spot_progression import ProgressiveSwingConfig
-from shared.spot_signal import SpotSignalConfig
-from shared.spot_waiter_cleanup import AgingCleanupRule, WaiterCleanupConfig
+from core.spot_progression import ProgressiveSwingConfig
+from core.spot_signal import SpotSignalConfig
+from core.spot_waiter_cleanup import AgingCleanupRule, WaiterCleanupConfig
 
 
 _TREASURY_KEYS = {"signal_refresh_seconds", "signal", "progression", "waiter_cleanup"}

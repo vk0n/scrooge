@@ -13,7 +13,7 @@ _PROJECT_ROOT = _project_root()
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.append(str(_PROJECT_ROOT))
 
-from shared.runtime_db import (  # noqa: E402
+from core.runtime_db import (  # noqa: E402
     count_trade_history_rows as get_trade_history_db_total_count,
     list_balance_history_values as list_balance_history_db_values,
     list_trade_history_rows as list_trade_history_db_rows,

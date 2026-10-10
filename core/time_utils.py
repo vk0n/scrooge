@@ -1,3 +1,5 @@
+"""Canonical UTC time helpers used across Scrooge."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

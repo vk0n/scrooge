@@ -1,3 +1,5 @@
+"""Rolling Spot signals and progressive level allocation."""
+
 from __future__ import annotations
 
 import math

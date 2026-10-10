@@ -16,8 +16,8 @@ _PROJECT_ROOT = _project_root()
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.append(str(_PROJECT_ROOT))
 
-from shared.runtime_db import count_ledger_entries, list_ledger_entries, runtime_db_path  # noqa: E402
-from shared.treasury_ledger import project_portfolio_transactions  # noqa: E402
+from core.runtime_db import count_ledger_entries, list_ledger_entries, runtime_db_path  # noqa: E402
+from core.treasury_ledger import project_portfolio_transactions  # noqa: E402
 
 
 def _encode_cursor(cursor: tuple[int, int] | None) -> str | None:

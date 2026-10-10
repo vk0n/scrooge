@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 from bot.event_log import get_technical_logger
-from shared.runtime_db import (
+from core.runtime_db import (
     append_balance_history_row as append_balance_history_db_row,
     append_trade_history_row as append_trade_history_db_row,
     list_balance_history_values as list_balance_history_db_values,
@@ -13,7 +13,7 @@ from shared.runtime_db import (
     replace_trade_history_snapshot as replace_trade_history_db_snapshot,
     save_runtime_state_snapshot as save_runtime_state_db_snapshot,
 )
-from shared.time_utils import utc_now_ms, utc_now_text
+from core.time_utils import utc_now_ms, utc_now_text
 
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 

@@ -1,3 +1,5 @@
+"""Role-styled Treasury Ledger messages and durable projections."""
+
 from __future__ import annotations
 
 import uuid
@@ -5,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from shared.runtime_db import append_ui_log_entry, list_ledger_source_refs, list_portfolio_transactions
+from core.runtime_db import append_ui_log_entry, list_ledger_source_refs, list_portfolio_transactions
 
 
 def _number(value: Any, *, decimals: int = 8) -> str:

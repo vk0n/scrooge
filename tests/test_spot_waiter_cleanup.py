@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from shared.spot_progression import ProgressiveSwingConfig
-from shared.spot_strategy import plan_spot_strategy_action
-from shared.spot_swing import calculate_swing_economics
-from shared.spot_waiter_cleanup import (
+from core.spot_progression import ProgressiveSwingConfig
+from core.spot_strategy import plan_spot_strategy_action
+from core.spot_swing import calculate_swing_economics
+from core.spot_waiter_cleanup import (
     DAY_MS,
     WaiterCleanupConfig,
     remaining_unrealized_pnl_pct,

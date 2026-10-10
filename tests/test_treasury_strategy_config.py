@@ -6,7 +6,7 @@ from unittest.mock import patch
 import yaml
 
 from api.services import config_service
-from shared.treasury_strategy_config import treasury_strategy_config_from_mapping
+from core.treasury_strategy_config import treasury_strategy_config_from_mapping
 
 
 def treasury_rules() -> dict:

@@ -10,7 +10,7 @@ COPY api/requirements.txt /app/api/requirements.txt
 RUN pip install --no-cache-dir -r /app/api/requirements.txt
 
 COPY api /app/api
-COPY shared /app/shared
+COPY core /app/core
 
 EXPOSE 8000
 

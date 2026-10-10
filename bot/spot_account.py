@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from core.binance_retry import run_binance_with_retries
-from shared.runtime_db import mark_exchange_account_snapshot_error, save_exchange_account_snapshot
+from core.runtime_db import mark_exchange_account_snapshot_error, save_exchange_account_snapshot
 
 
 def normalize_spot_account_snapshot(payload: Any, *, captured_at_ms: int | None = None) -> dict[str, Any]:

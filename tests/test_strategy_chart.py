@@ -14,7 +14,7 @@ from core.engine import DiscreteRowSnapshot, RealtimeStrategyProcessor, _build_r
 from core.feature_engine import EMAFeature
 from core.indicator_inputs import indicator_selection_plan
 from services import chart_service
-from shared.runtime_db import list_strategy_chart_snapshots
+from core.runtime_db import list_strategy_chart_snapshots
 
 
 def snapshot(ts="2026-09-01 11:00:10", *, ema=77_410.0):

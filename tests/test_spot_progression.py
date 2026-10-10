@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bot.spot_strategy import ProgressiveSpotSwingExecutor
-from shared.runtime_db import (
+from core.runtime_db import (
     append_spot_swing_execution,
     apply_spot_accumulation_target_ratchet,
     apply_spot_swing_target_ratchet,
@@ -28,7 +28,7 @@ from shared.runtime_db import (
     upsert_portfolio_asset_policy,
     update_spot_strategy_action,
 )
-from shared.spot_progression import (
+from core.spot_progression import (
     ProgressiveSwingConfig,
     initialize_sell_campaign_capacity,
     plan_opening_quantity,
@@ -36,9 +36,9 @@ from shared.spot_progression import (
     plan_treasury_accumulation,
     policy_sellable_reference,
 )
-from shared.spot_strategy import plan_spot_strategy_action, transition_spot_strategy_campaign
-from shared.spot_swing import calculate_swing_economics
-from shared.spot_waiter_cleanup import WaiterCleanupConfig
+from core.spot_strategy import plan_spot_strategy_action, transition_spot_strategy_campaign
+from core.spot_swing import calculate_swing_economics
+from core.spot_waiter_cleanup import WaiterCleanupConfig
 
 
 class ProgressiveSwingDomainTests(unittest.TestCase):

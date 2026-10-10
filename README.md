@@ -5,7 +5,7 @@ Scrooge is a live Binance trading and treasury system with two primary parts:
 - **Office / Futures** - event-driven Binance USD-M Futures trading, supervision, and risk management.
 - **Treasury / Spot** - Spot holdings, custody, policies, progressive Bargains, and protected cash.
 
-The live systems share the control plane, SQLite runtime storage, Redis command channel, and Ledger, while keeping their strategy state and accounting separate. Shared Futures logic lives in `core/`; shared Spot Treasury logic lives in `shared/`.
+The live systems share the control plane, SQLite runtime storage, Redis command channel, Ledger, and the common `core/` package while keeping their strategy state and accounting separate. `core/` is Scrooge's application kernel for both Office / Futures and Treasury / Spot across live and research modes; live exchange orchestration remains in `bot/`.
 
 Backtesting is a separate, auxiliary research mode. The `backtest/` package replays Futures and Spot strategies, compares candidates, runs parameter and regime sweeps, and generates reports without becoming part of live execution.
 
@@ -15,9 +15,8 @@ Backtesting is a separate, auxiliary research mode. The `backtest/` package repl
 scrooge/
 ├── api/                     # FastAPI control plane backend
 ├── frontend/                # Next.js control plane frontend
-├── bot/                     # Live runtime, control polling, state persistence, exchange adapters
-├── core/                    # Shared engine, event model, indicator-input selection, event store
-├── shared/                  # Spot Treasury domain, accounting, config, and SQLite contract
+├── bot/                     # Live runtime, control polling, and exchange adapters
+├── core/                    # Office and Treasury rules, accounting, persistence, events, and Ledger
 ├── backtest/                # Auxiliary Futures and Spot research mode
 ├── config/                  # Live/backtest/compare/grid configs
 ├── docs/                    # Runtime, Spot Treasury, and backtest contracts
@@ -415,7 +414,7 @@ Both live books use the same control plane, queued commands, runtime database, a
 
 Research is a supporting mode around those live systems:
 - Futures can replay stored or reconstructed `market_events.jsonl`; `5s` replay is used for tuning and `1s` for higher-fidelity validation
-- Spot can replay the shared Treasury domain over historical candles and run parameter or frozen-regime sweeps
+- Spot can replay the core Treasury domain over historical candles and run parameter or frozen-regime sweeps
 - all research runs use isolated state and produce reports for validation; they never become a third live trading book
 
 ## Disclaimer

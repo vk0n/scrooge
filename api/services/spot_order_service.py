@@ -5,7 +5,7 @@ from typing import Any
 
 from services.command_service import enqueue_control_command
 from services.portfolio_service import get_spot_order_intent
-from shared.runtime_db import reserve_spot_order_intent, update_spot_order_intent
+from core.runtime_db import reserve_spot_order_intent, update_spot_order_intent
 
 
 def queue_spot_order_intent(intent_id: str, *, requested_by: str) -> dict[str, Any]:

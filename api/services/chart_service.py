@@ -15,7 +15,7 @@ from typing import Any
 from services.config_service import load_config
 from services.history_service import load_balance_history, load_trade_history
 from services.state_service import load_state
-from shared.runtime_db import list_strategy_chart_snapshots
+from core.runtime_db import list_strategy_chart_snapshots
 
 
 BINANCE_FUTURES_KLINES_URL = os.getenv("SCROOGE_CHART_KLINES_URL", "https://fapi.binance.com/fapi/v1/klines")

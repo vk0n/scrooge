@@ -6,12 +6,12 @@ The Spot research engine replays the production Treasury domain over an isolated
 
 Live and research call the same implementations for:
 
-- rolling 24-hour levels and tranches in `shared/spot_signal.py`;
-- Policy eligibility and action selection in `shared/spot_strategy.py`;
-- campaign capacity and profitable-close planning in `shared/spot_progression.py`;
-- Bargain economics and Target proposals in `shared/spot_swing.py`;
-- waiter/capacity cleanup in `shared/spot_waiter_cleanup.py`;
-- Binance quantity and notional rules in `shared/spot_execution_rules.py`.
+- rolling 24-hour levels and tranches in `core/spot_signal.py`;
+- Policy eligibility and action selection in `core/spot_strategy.py`;
+- campaign capacity and profitable-close planning in `core/spot_progression.py`;
+- Bargain economics and Target proposals in `core/spot_swing.py`;
+- waiter/capacity cleanup in `core/spot_waiter_cleanup.py`;
+- Binance quantity and notional rules in `core/spot_execution_rules.py`.
 
 Replay replaces the clock, market source, executor, persistence adapter, and reporting. The documented live baseline is `2/3/4/5%` signal levels and a `10%` Bargain Goal. A scenario or sweep may deliberately override those values; research files are not live configuration.
 
@@ -43,7 +43,7 @@ SELL-origin closes may use the Bargain's committed quote plus the reserve allowe
 
 `free_cash_retention_pct` is an accrual policy. It protects that share of eligible positive `accumulate_cash` settlement gain, not that share of the entire current reserve. `accumulate_asset` gain is finalized in asset units and ratchets Target exactly once.
 
-The V1 simulator charges its configured fee in USDT. Shared accounting preserves native third-asset fee data when supplied, but replay does not invent historical BNB conversion rates.
+The V1 simulator charges its configured fee in USDT. Core accounting preserves native third-asset fee data when supplied, but replay does not invent historical BNB conversion rates.
 
 ## Export And Run
 

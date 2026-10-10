@@ -21,7 +21,7 @@ def calculate_spot_inventory_policy(
     minimum_holding_pct: float,
     binance_quantity: float,
 ) -> dict[str, float | None]:
-    """Project the shared live/backtest Protected Floor and custody capacity."""
+    """Project the canonical live/backtest Protected Floor and custody capacity."""
     current = _non_negative(current_quantity, field_name="Current quantity")
     target = _non_negative(target_quantity, field_name="Target quantity")
     minimum_pct = min(

@@ -1,3 +1,5 @@
+"""Canonical SQLite persistence for Scrooge runtime state."""
+
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from shared.spot_swing import (
+from core.spot_swing import (
     SWING_OBJECTIVES,
     SWING_SIDES,
     SWING_SOURCES,
@@ -19,7 +21,7 @@ from shared.spot_swing import (
     calculate_swing_economics,
     calculate_target_ratchet,
 )
-from shared.spot_strategy import transition_spot_strategy_campaign
+from core.spot_strategy import transition_spot_strategy_campaign
 
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"

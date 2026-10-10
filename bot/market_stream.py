@@ -34,7 +34,7 @@ from core.market_events import (
     PriceTickEvent,
     PositionSnapshotEvent,
 )
-from shared.time_utils import utc_now_text, utc_text_from_timestamp
+from core.time_utils import utc_now_text, utc_text_from_timestamp
 
 try:
     import websocket

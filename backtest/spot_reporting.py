@@ -12,9 +12,9 @@ from backtest.spot_bargain_analysis import build_bargain_analysis
 from backtest.spot_engine import SpotBacktestResult
 from backtest.spot_report_html import display_spot_report_title, write_spot_backtest_html
 from backtest.spot_scenario import scenario_as_dict, write_scenario_snapshot
-from shared.spot_progression import policy_sellable_reference
-from shared.spot_swing import calculate_swing_economics
-from shared.spot_waiter_cleanup import CLEANUP_REASONS, is_cleanup_reason
+from core.spot_progression import policy_sellable_reference
+from core.spot_swing import calculate_swing_economics
+from core.spot_waiter_cleanup import CLEANUP_REASONS, is_cleanup_reason
 
 
 AGE_BUCKETS = (

@@ -8,13 +8,13 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from shared.runtime_db import (
+from core.runtime_db import (
     append_portfolio_transaction,
     append_ui_log_entry,
     count_ledger_entries,
     list_ledger_entries,
 )
-from shared.treasury_ledger import (
+from core.treasury_ledger import (
     project_portfolio_transaction,
     project_portfolio_transactions,
     spot_order_settlement_message,

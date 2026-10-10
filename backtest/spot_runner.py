@@ -12,7 +12,7 @@ from backtest.spot_engine import SpotPortfolioBacktester
 from backtest.spot_market_data import BinanceSpotHistoricalAdapter
 from backtest.spot_reporting import write_spot_backtest_artifacts
 from backtest.spot_scenario import export_current_treasury_scenario, load_spot_backtest_scenario
-from shared.spot_signal import parse_percentage_series
+from core.spot_signal import parse_percentage_series
 
 
 class SpotMarketDataProgressBars:

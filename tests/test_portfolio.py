@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 from services import portfolio_service
-from shared.runtime_db import (
+from core.runtime_db import (
     apply_spot_swing_cash_retention,
     append_portfolio_transaction,
     append_spot_swing_execution,
@@ -23,7 +23,7 @@ from shared.runtime_db import (
     save_exchange_account_snapshot,
     save_spot_signal_snapshot,
 )
-from shared.spot_progression import initialize_sell_campaign_capacity
+from core.spot_progression import initialize_sell_campaign_capacity
 
 
 class PortfolioPhaseOneTests(unittest.TestCase):

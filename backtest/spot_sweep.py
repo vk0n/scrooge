@@ -26,8 +26,8 @@ from backtest.spot_scenario import (
     load_spot_backtest_scenario,
     scenario_as_dict,
 )
-from shared.spot_signal import SpotSignalConfig
-from shared.spot_waiter_cleanup import AgingCleanupRule
+from core.spot_signal import SpotSignalConfig
+from core.spot_waiter_cleanup import AgingCleanupRule
 
 
 @dataclass(frozen=True)

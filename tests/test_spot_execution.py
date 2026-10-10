@@ -14,7 +14,7 @@ from bot.spot_execution import (
     SpotOrderUncertainError,
     SpotOrderValidationError,
 )
-from shared.runtime_db import (
+from core.runtime_db import (
     apply_spot_swing_cash_retention,
     append_spot_swing_execution,
     create_spot_swing,
@@ -35,7 +35,7 @@ from shared.runtime_db import (
     update_spot_strategy_action,
     upsert_portfolio_cash_policy,
 )
-from shared.spot_swing import calculate_swing_economics
+from core.spot_swing import calculate_swing_economics
 
 
 class FakeSpotExecutionClient:

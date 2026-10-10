@@ -17,7 +17,7 @@ if "redis" not in sys.modules:
     sys.modules["redis"] = redis_stub
 
 from services import portfolio_service, spot_order_service
-from shared.runtime_db import save_exchange_account_snapshot
+from core.runtime_db import save_exchange_account_snapshot
 
 
 class SpotOrderServiceTests(unittest.TestCase):

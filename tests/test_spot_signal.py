@@ -5,12 +5,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bot.spot_signal import RollingSpotSignalMonitor
-from shared.runtime_db import (
+from core.runtime_db import (
     bootstrap_runtime_db,
     load_spot_signal_snapshot,
     upsert_portfolio_asset_policy,
 )
-from shared.spot_signal import ROLLING_WINDOW_MS, SpotSignalConfig, evaluate_rolling_24h_opportunity
+from core.spot_signal import ROLLING_WINDOW_MS, SpotSignalConfig, evaluate_rolling_24h_opportunity
 
 
 class FakeTickerClient:

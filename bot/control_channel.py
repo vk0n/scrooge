@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Callable
 from bot.event_log import emit_event, get_technical_logger
 from core.engine import sanitize_trade_for_history
-from shared.time_utils import utc_now_iso, utc_now_text, utc_text_from_timestamp
+from core.time_utils import utc_now_iso, utc_now_text, utc_text_from_timestamp
 
 try:
     import redis

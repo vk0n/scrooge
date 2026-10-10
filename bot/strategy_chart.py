@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from core.engine import DiscreteRowSnapshot, StrategyRuntime
-from shared.runtime_db import save_strategy_chart_snapshots
+from core.runtime_db import save_strategy_chart_snapshots
 
 
 class StrategyChartRecorder:

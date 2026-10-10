@@ -6,7 +6,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from shared.runtime_db import (
+from core.runtime_db import (
     apply_spot_swing_cash_retention,
     append_spot_swing_execution,
     bootstrap_runtime_db,
@@ -24,7 +24,7 @@ from shared.runtime_db import (
     upsert_portfolio_asset_policy,
     upsert_portfolio_cash_policy,
 )
-from shared.spot_swing import calculate_swing_economics, calculate_target_ratchet
+from core.spot_swing import calculate_swing_economics, calculate_target_ratchet
 
 
 class SpotSwingDomainTests(unittest.TestCase):
