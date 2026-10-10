@@ -348,7 +348,8 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(len(settlement_entries), 1)
         self.assertIn("The fill used $25", settlement_entries[0]["message"])
         self.assertIn("raised Target by 0.24 BTC to 1.24 BTC", settlement_entries[0]["message"])
-        self.assertTrue(settlement_entries[0]["message"].endswith("Result: Target +0.24 BTC."))
+        self.assertTrue(settlement_entries[0]["message"].endswith("to 1.24 BTC."))
+        self.assertNotIn("Result:", settlement_entries[0]["message"])
         self.assertEqual(settlement_entries[0]["tone"], "positive")
 
     def test_accumulation_execution_requires_no_separate_feature_gate(self):

@@ -267,7 +267,7 @@ class LedgerProjectionTests(unittest.TestCase):
             entries[0]["message"],
             "I bought 5.2 XRP at $1.343 on Binance Spot. L4 dip -5.23%; I deployed 10% of "
             "Spendable Reserve. The fill used $6.98 from Free Vault Reserve and raised Target "
-            "by 5.2 XRP to 2,006.8 XRP. Result: Target +5.2 XRP.",
+            "by 5.2 XRP to 2,006.8 XRP.",
         )
 
     def test_close_settlement_combines_retention_and_target_effects(self) -> None:
@@ -328,6 +328,27 @@ class LedgerProjectionTests(unittest.TestCase):
             "against 6%. I secured 0.52 FIL of Swing profit in Target, now 1,928.52 FIL. "
             "Result: +0.52 FIL (+6.27%).",
         )
+
+    def test_manual_target_move_has_no_result_suffix(self) -> None:
+        message = spot_order_settlement_message(
+            {
+                "tx_type": "buy",
+                "asset_symbol": "TIA",
+                "quantity": 21.37,
+                "price": 0.4644,
+                "source": "binance_manual",
+            },
+            {
+                "manual_target_ratchet": {
+                    "previous_target_quantity": 3_073.31,
+                    "next_target_quantity": 3_094.68,
+                    "target_delta_quantity": 21.37,
+                }
+            },
+        )
+
+        self.assertIn("I moved Target from 3,073.31 TIA to 3,094.68 TIA.", message)
+        self.assertNotIn("Result:", message)
 
 
 if __name__ == "__main__":

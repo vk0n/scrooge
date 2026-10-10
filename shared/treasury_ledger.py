@@ -212,20 +212,6 @@ def _spot_order_settlement_result(
             percentage_suffix = f" ({percentage})" if percentage else ""
             return f"Result: {result}{percentage_suffix}.", numeric
 
-    accumulation_ratchet = settlement.get("accumulation_ratchet")
-    if isinstance(accumulation_ratchet, dict):
-        value = accumulation_ratchet.get("applied_gain_quantity")
-        result = _signed_quantity(value, asset)
-        if result:
-            return f"Result: Target {result}.", float(value)
-
-    manual_target_ratchet = settlement.get("manual_target_ratchet")
-    if isinstance(manual_target_ratchet, dict):
-        value = manual_target_ratchet.get("target_delta_quantity")
-        result = _signed_quantity(value, asset)
-        if result:
-            return f"Result: Target {result}.", float(value)
-
     return None, None
 
 
