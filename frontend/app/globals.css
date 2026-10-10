@@ -2732,6 +2732,8 @@ button.treasury-summary-card-swings:focus-visible,
 .treasury-timeline-flip-face {
   grid-area: 1 / 1;
   min-width: 0;
+  border-radius: 11px;
+  background: #090e15;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
 }
@@ -2820,7 +2822,8 @@ button.treasury-summary-card-swings:focus-visible,
   stroke: #dcb449;
 }
 
-.treasury-bargain-flow-legend {
+.treasury-timeline-series > footer.treasury-bargain-flow-legend {
+  align-items: center;
   justify-content: flex-start !important;
   gap: 0.9rem !important;
 }

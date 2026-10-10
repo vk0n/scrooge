@@ -823,13 +823,19 @@ function BargainFlowSeries({ timeline }: { timeline: PortfolioTimelinePoint[] })
             <path d={openArea} className="treasury-bargain-open-area" />
             <path d={closedLine} className="treasury-bargain-closed-line" />
             <path d={totalLine} className="treasury-bargain-total-line" />
-            {coordinates.map(({ x, totalY, point }) => (
-              <circle key={point.snapshot_date} cx={x} cy={totalY} r={coordinates.length === 1 ? 5 : 3}>
-                <title>
-                  {formatTimelineDate(point.snapshot_date)}: Open {point.open_bargain_count}, Closed {point.closed_bargain_count}, Total {point.total_bargain_count}
-                </title>
-              </circle>
-            ))}
+            {coordinates.map(({ x, totalY, point }, index) => {
+              const previous = timeline[index - 1];
+              const dailyChange = previous
+                ? `Open ${formatSignedCount(point.open_bargain_count - previous.open_bargain_count)}, `
+                  + `Closed ${formatSignedCount(point.closed_bargain_count - previous.closed_bargain_count)}, `
+                  + `Total ${formatSignedCount(point.total_bargain_count - previous.total_bargain_count)}`
+                : "Baseline";
+              return (
+                <circle key={point.snapshot_date} cx={x} cy={totalY} r={coordinates.length === 1 ? 5 : 3}>
+                  <title>{formatTimelineDate(point.snapshot_date)}: {dailyChange}</title>
+                </circle>
+              );
+            })}
           </svg>
         ) : (
           <span>Awaiting the first Bargain mark.</span>
