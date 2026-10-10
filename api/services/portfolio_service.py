@@ -839,7 +839,52 @@ def _bargain_count_day_changes(
     }
 
 
-def _portfolio_timeline(summary: dict[str, Any], holdings: list[dict[str, Any]], warnings: list[str]) -> list[dict[str, Any]]:
+def _attach_bargain_timeline_counts(
+    timeline: list[dict[str, Any]],
+    swings: list[dict[str, Any]],
+    *,
+    now_ms: int,
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for point in timeline:
+        try:
+            day_start = datetime.strptime(str(point.get("snapshot_date")), "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except (TypeError, ValueError):
+            cutoff_ms = min(int(point.get("captured_at_ms") or now_ms), now_ms)
+        else:
+            cutoff_ms = min(int(day_start.timestamp() * 1000) + 86_400_000 - 1, now_ms)
+
+        opened = [
+            swing
+            for swing in swings
+            if int(swing.get("opened_at_ms") or 0) <= cutoff_ms
+        ]
+        closed_count = sum(
+            1
+            for swing in opened
+            if swing.get("closed_at_ms") is not None
+            and int(swing["closed_at_ms"]) <= cutoff_ms
+        )
+        total_count = len(opened)
+        enriched.append(
+            {
+                **point,
+                "open_bargain_count": total_count - closed_count,
+                "closed_bargain_count": closed_count,
+                "total_bargain_count": total_count,
+            }
+        )
+    return enriched
+
+
+def _portfolio_timeline(
+    summary: dict[str, Any],
+    holdings: list[dict[str, Any]],
+    swings: list[dict[str, Any]],
+    warnings: list[str],
+) -> list[dict[str, Any]]:
     captured_at = datetime.now(timezone.utc)
     captured_at_ms = int(captured_at.timestamp() * 1000)
     snapshot_date, day_start_ms = _portfolio_day_boundary(captured_at_ms)
@@ -900,7 +945,7 @@ def _portfolio_timeline(summary: dict[str, Any], holdings: list[dict[str, Any]],
     elif holdings:
         warnings.append("Treasury Timeline was not updated because one or more assets are awaiting a market price.")
     timeline = list_portfolio_daily_snapshots(account_key=DEFAULT_ACCOUNT_KEY, limit=PORTFOLIO_TIMELINE_DAYS)
-    return [
+    financial_timeline = [
         {
             **point,
             "total_gain": point["unrealized_pnl"],
@@ -908,6 +953,11 @@ def _portfolio_timeline(summary: dict[str, Any], holdings: list[dict[str, Any]],
         }
         for point in timeline
     ]
+    return _attach_bargain_timeline_counts(
+        financial_timeline,
+        swings,
+        now_ms=captured_at_ms,
+    )
 
 
 def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, Any], list[str]]:
@@ -964,7 +1014,7 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
     summary["realized_accumulated_cash"] = realized_accumulated_cash
     summary["binance_spot_usdt_free"] = exchange["usdt_free"]
     summary["binance_spot_usdt_locked"] = exchange["usdt_locked"]
-    timeline = _portfolio_timeline(summary, holdings, warnings)
+    timeline = _portfolio_timeline(summary, holdings, swings, warnings)
     newest_transactions = list_portfolio_transactions(
         limit=PORTFOLIO_TRANSACTION_PAGE_SIZE,
         offset=normalized_offset,

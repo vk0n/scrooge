@@ -850,6 +850,42 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             [holding["asset_symbol"] for holding in point["holdings"]],
             ["BTC", "ETH"],
         )
+        self.assertEqual(point["open_bargain_count"], 0)
+        self.assertEqual(point["closed_bargain_count"], 0)
+        self.assertEqual(point["total_bargain_count"], 0)
+
+    def test_bargain_timeline_reconstructs_daily_lifecycle_counts(self):
+        def at(day: int, hour: int = 12) -> int:
+            return int(datetime(2026, 1, day, hour, tzinfo=timezone.utc).timestamp() * 1000)
+
+        timeline = [
+            {"snapshot_date": "2026-01-01", "captured_at_ms": at(1)},
+            {"snapshot_date": "2026-01-02", "captured_at_ms": at(2)},
+            {"snapshot_date": "2026-01-03", "captured_at_ms": at(3)},
+        ]
+        swings = [
+            {"swing_id": "still-open", "opened_at_ms": at(1, 8), "closed_at_ms": None},
+            {"swing_id": "closed-next-day", "opened_at_ms": at(1, 10), "closed_at_ms": at(2, 9)},
+            {"swing_id": "same-day", "opened_at_ms": at(3, 7), "closed_at_ms": at(3, 11)},
+        ]
+
+        result = portfolio_service._attach_bargain_timeline_counts(
+            timeline,
+            swings,
+            now_ms=at(3, 15),
+        )
+
+        self.assertEqual(
+            [
+                (
+                    point["open_bargain_count"],
+                    point["closed_bargain_count"],
+                    point["total_bargain_count"],
+                )
+                for point in result
+            ],
+            [(2, 0, 2), (1, 1, 2), (1, 2, 3)],
+        )
 
     def test_timeline_skips_incomplete_market_valuation(self):
         self.prices.stop()

@@ -228,6 +228,9 @@ type PortfolioTimelinePoint = {
   unrealized_pnl: number;
   vault_reserve: number;
   dry_powder: number;
+  open_bargain_count: number;
+  closed_bargain_count: number;
+  total_bargain_count: number;
 };
 
 type PortfolioPayload = {
@@ -715,6 +718,128 @@ function TimelineSeries({
           <span>High {formatValue(Math.max(...values))}</span>
         </footer>
       ) : null}
+    </div>
+  );
+}
+
+function FlippableTimelineSeries({
+  timeline,
+  gainTone,
+}: {
+  timeline: PortfolioTimelinePoint[];
+  gainTone: "positive" | "negative" | "neutral";
+}): JSX.Element {
+  const [showGain, setShowGain] = useState<boolean>(false);
+  const toggle = (): void => setShowGain((current) => !current);
+
+  return (
+    <div
+      className={`treasury-timeline-flip${showGain ? " treasury-timeline-flip-gain" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-label={showGain ? "Show Treasure Value timeline" : "Show Total Gain timeline"}
+      aria-pressed={showGain}
+      onClick={toggle}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggle();
+      }}
+    >
+      <div className="treasury-timeline-flip-inner">
+        <div className="treasury-timeline-flip-face treasury-timeline-flip-front" aria-hidden={showGain}>
+          <TimelineSeries title="Treasure Value" timeline={timeline} valueKey="total_value" tone="gold" />
+        </div>
+        <div className="treasury-timeline-flip-face treasury-timeline-flip-back" aria-hidden={!showGain}>
+          <TimelineSeries title="Total Gain" timeline={timeline} valueKey="total_gain" tone={gainTone} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type BargainTimelineCoordinate = {
+  x: number;
+  closedY: number;
+  totalY: number;
+  point: PortfolioTimelinePoint;
+};
+
+function bargainStepLine(
+  coordinates: BargainTimelineCoordinate[],
+  valueKey: "closedY" | "totalY"
+): string {
+  if (!coordinates.length) return "";
+  return coordinates.slice(1).reduce(
+    (path, coordinate) => `${path} H ${coordinate.x} V ${coordinate[valueKey]}`,
+    `M ${coordinates[0].x} ${coordinates[0][valueKey]}`
+  );
+}
+
+function bargainOpenBand(coordinates: BargainTimelineCoordinate[]): string {
+  if (!coordinates.length) return "";
+  let path = bargainStepLine(coordinates, "totalY");
+  const last = coordinates[coordinates.length - 1];
+  path += ` L ${last.x} ${last.closedY}`;
+  for (let index = coordinates.length - 1; index > 0; index -= 1) {
+    const previous = coordinates[index - 1];
+    path += ` V ${previous.closedY} H ${previous.x}`;
+  }
+  return `${path} Z`;
+}
+
+function BargainFlowSeries({ timeline }: { timeline: PortfolioTimelinePoint[] }): JSX.Element {
+  const width = 600;
+  const height = 150;
+  const paddingX = 14;
+  const paddingY = 16;
+  const baselineY = height - paddingY;
+  const maximum = Math.max(1, ...timeline.map((point) => point.total_bargain_count));
+  const y = (value: number): number =>
+    paddingY + ((maximum - value) / maximum) * (height - paddingY * 2);
+  const coordinates: BargainTimelineCoordinate[] = timeline.map((point, index) => ({
+    x: timeline.length === 1
+      ? width / 2
+      : paddingX + (index / (timeline.length - 1)) * (width - paddingX * 2),
+    closedY: y(point.closed_bargain_count),
+    totalY: y(point.total_bargain_count),
+    point,
+  }));
+  const closedLine = bargainStepLine(coordinates, "closedY");
+  const totalLine = bargainStepLine(coordinates, "totalY");
+  const closedArea = coordinates.length
+    ? `${closedLine} L ${coordinates[coordinates.length - 1].x} ${baselineY} H ${coordinates[0].x} Z`
+    : "";
+  const openArea = bargainOpenBand(coordinates);
+
+  return (
+    <div className="treasury-timeline-series treasury-bargain-flow-series">
+      <header><span>Bargain Flow</span></header>
+      <div className="treasury-timeline-chart treasury-bargain-flow-chart">
+        {coordinates.length ? (
+          <svg viewBox="0 0 600 150" role="img" aria-label="Daily Open, Closed, and Total Bargain timeline" preserveAspectRatio="none">
+            <line x1="0" y1="75" x2="600" y2="75" className="treasury-timeline-gridline" />
+            <path d={closedArea} className="treasury-bargain-closed-area" />
+            <path d={openArea} className="treasury-bargain-open-area" />
+            <path d={closedLine} className="treasury-bargain-closed-line" />
+            <path d={totalLine} className="treasury-bargain-total-line" />
+            {coordinates.map(({ x, totalY, point }) => (
+              <circle key={point.snapshot_date} cx={x} cy={totalY} r={coordinates.length === 1 ? 5 : 3}>
+                <title>
+                  {formatTimelineDate(point.snapshot_date)}: Open {point.open_bargain_count}, Closed {point.closed_bargain_count}, Total {point.total_bargain_count}
+                </title>
+              </circle>
+            ))}
+          </svg>
+        ) : (
+          <span>Awaiting the first Bargain mark.</span>
+        )}
+      </div>
+      <footer className="treasury-bargain-flow-legend" aria-label="Bargain Flow legend">
+        <span><i className="treasury-bargain-legend-open" aria-hidden="true" />Open</span>
+        <span><i className="treasury-bargain-legend-closed" aria-hidden="true" />Closed</span>
+        <span><i className="treasury-bargain-legend-total" aria-hidden="true" />Total</span>
+      </footer>
     </div>
   );
 }
@@ -2303,7 +2428,7 @@ function PortfolioBargainLedger({
           <h2>Bargains Ledger</h2>
           <p>Every active and settled Bargain across the vault.</p>
         </div>
-        <span>{ledger ? `${count} ${count === 1 ? "entry" : "entries"}` : "Loading"}</span>
+        {ledger ? <span>{count} {count === 1 ? "entry" : "entries"}</span> : null}
       </header>
       <div className="treasury-bargain-ledger-controls">
         <div className="treasury-ledger-filter" aria-label="Bargains Ledger filter">
@@ -3001,9 +3126,8 @@ export default function TreasuryPage(): JSX.Element {
               : "My vault is under lock. I can count every coin, but none leaves my treasury."}
         </p>
 
-        <section className="treasury-overview">
+        <section className="treasury-overview" aria-busy={loading}>
           {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
-          {loading ? <p className="status-performance-note">I am counting the vault...</p> : null}
 
           <div className="treasury-summary-grid">
             <div className="treasury-summary-card treasury-summary-card-hero">
@@ -3185,27 +3309,25 @@ export default function TreasuryPage(): JSX.Element {
               <header className="treasury-insight-head">
                 <div>
                   <h2>Treasury Timeline</h2>
-                  <p className="muted">Daily valuation marks from the Control Plane.</p>
+                  <p className="muted">Daily valuation and Bargain marks from the Control Plane.</p>
                 </div>
                 <span className="treasury-insight-count">
                   {timeline.length} {timeline.length === 1 ? "day" : "days"}
                 </span>
               </header>
               <div className="treasury-timeline-grid">
-                <TimelineSeries title="Treasure Value" timeline={timeline} valueKey="total_value" tone="gold" />
-                <TimelineSeries title="Total Gain" timeline={timeline} valueKey="total_gain" tone={timelinePnlTone} />
+                <FlippableTimelineSeries timeline={timeline} gainTone={timelinePnlTone} />
+                <BargainFlowSeries timeline={timeline} />
               </div>
-              <footer className="treasury-timeline-range">
-                {timeline.length ? (
+              {timeline.length ? (
+                <footer className="treasury-timeline-range">
                   <>
                     <span>{formatTimelineDate(timeline[0].snapshot_date)}</span>
                     <span>Daily marks</span>
                     <span>{formatTimelineDate(timeline[timeline.length - 1].snapshot_date)}</span>
                   </>
-                ) : (
-                  <span>The first daily mark will appear automatically.</span>
-                )}
-              </footer>
+                </footer>
+              ) : null}
             </article>
           </div>
 
