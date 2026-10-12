@@ -48,6 +48,7 @@ class FakeSpotExecutionClient:
         commission_amount: float = 0.05,
         commission_asset: str = "USDT",
         executed_at_ms: int = 1_790_120_000_000,
+        market_price: float = 100.0,
     ):
         self.btc_free = btc_free
         self.usdt_free = usdt_free
@@ -55,6 +56,7 @@ class FakeSpotExecutionClient:
         self.commission_amount = commission_amount
         self.commission_asset = commission_asset
         self.executed_at_ms = executed_at_ms
+        self.market_price = market_price
         self.create_calls = 0
 
     def get_account(self, **kwargs):
@@ -67,7 +69,7 @@ class FakeSpotExecutionClient:
         }
 
     def get_symbol_ticker(self, **kwargs):
-        return {"symbol": kwargs["symbol"], "price": "100"}
+        return {"symbol": kwargs["symbol"], "price": str(self.market_price)}
 
     def get_symbol_info(self, symbol):
         base_asset = symbol.removesuffix("USDT")
@@ -78,6 +80,12 @@ class FakeSpotExecutionClient:
             "quoteAsset": "USDT",
             "filters": [
                 {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "100", "stepSize": "0.001"},
+                {
+                    "filterType": "PRICE_FILTER",
+                    "minPrice": "0.01",
+                    "maxPrice": "1000000",
+                    "tickSize": "0.01",
+                },
                 {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
             ],
         }
@@ -714,6 +722,114 @@ class SpotExecutionTests(unittest.TestCase):
             len([item for item in list_portfolio_transactions(path=self.db_path) if item.get("spot_quote_leg")]),
             1,
         )
+
+    def test_higher_strategy_sell_level_uses_strict_fok_price_guard(self):
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1, "minimum_holding_pct": 50},
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "swing-btc-sell-l2",
+                "account_key": "manual_spot",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "planned_quantity": 0.1,
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        preview = portfolio_service.create_strategy_spot_order_intent(
+            {
+                "asset_symbol": "BTC",
+                "side": "sell",
+                "quantity": 0.1,
+                "swing_id": "swing-btc-sell-l2",
+                "strategy_action_type": "open",
+                "minimum_opening_price_exclusive": 99.001,
+                "reason": {"action_type": "open", "signal_level": 2},
+            }
+        )
+        self._queue_preview(preview)
+        client = FakeSpotExecutionClient()
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        executor.execute(preview["intent_id"])
+
+        self.assertEqual(client.order_params["type"], "LIMIT")
+        self.assertEqual(client.order_params["timeInForce"], "FOK")
+        self.assertEqual(client.order_params["price"], "99.01")
+
+    def test_higher_strategy_sell_level_waits_below_required_tick(self):
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {"target_quantity": 1, "minimum_holding_pct": 50},
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 100, "locked": 0},
+                ],
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "swing-btc-sell-wait",
+                "account_key": "manual_spot",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "planned_quantity": 0.1,
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        preview = portfolio_service.create_strategy_spot_order_intent(
+            {
+                "asset_symbol": "BTC",
+                "side": "sell",
+                "quantity": 0.1,
+                "swing_id": "swing-btc-sell-wait",
+                "strategy_action_type": "open",
+                "minimum_opening_price_exclusive": 100,
+                "reason": {"action_type": "open", "signal_level": 2},
+            }
+        )
+        self._queue_preview(preview)
+        client = FakeSpotExecutionClient(market_price=100)
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        with self.assertRaisesRegex(
+            SpotOrderValidationError,
+            "waiting for a price above",
+        ):
+            executor.execute(preview["intent_id"])
+
+        self.assertEqual(client.create_calls, 0)
 
     def test_manual_bargain_close_uses_executor_and_closes_linked_swing(self):
         portfolio_service.update_portfolio_asset_policy(

@@ -737,6 +737,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             campaign_capacity_mode TEXT CHECK (
                 campaign_capacity_mode IS NULL OR campaign_capacity_mode IN ('normal', 'full_deploy')
             ),
+            last_opening_price REAL,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
             PRIMARY KEY (account_key, asset_symbol, quote_symbol),
@@ -1006,6 +1007,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         ("campaign_capacity_quantity", "REAL"),
         ("campaign_consumed_quantity", "REAL NOT NULL DEFAULT 0"),
         ("campaign_capacity_mode", "TEXT"),
+        ("last_opening_price", "REAL"),
     ):
         if column_name not in campaign_columns:
             connection.execute(
@@ -2630,6 +2632,7 @@ def _spot_strategy_campaign_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "campaign_capacity_mode": (
             str(row["campaign_capacity_mode"]) if row["campaign_capacity_mode"] is not None else None
         ),
+        "last_opening_price": _as_float_or_none(row["last_opening_price"]),
         "created_at_ms": int(row["created_at_ms"]),
         "updated_at_ms": int(row["updated_at_ms"]),
     }
@@ -2699,10 +2702,10 @@ def sync_spot_strategy_campaign(
                 campaign_start_policy_sellable_reference,
                 campaign_start_remaining_sellable_quantity, remaining_sellable_ratio_at_start,
                 campaign_capacity_pct, full_deploy_threshold_pct, campaign_capacity_quantity,
-                campaign_consumed_quantity, campaign_capacity_mode,
+                campaign_consumed_quantity, campaign_capacity_mode, last_opening_price,
                 created_at_ms, updated_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_key, asset_symbol, quote_symbol) DO UPDATE SET
                 campaign_id = excluded.campaign_id,
                 active_side = excluded.active_side,
@@ -2720,6 +2723,7 @@ def sync_spot_strategy_campaign(
                 campaign_capacity_quantity = excluded.campaign_capacity_quantity,
                 campaign_consumed_quantity = excluded.campaign_consumed_quantity,
                 campaign_capacity_mode = excluded.campaign_capacity_mode,
+                last_opening_price = excluded.last_opening_price,
                 updated_at_ms = excluded.updated_at_ms
             """,
             (
@@ -2742,6 +2746,7 @@ def sync_spot_strategy_campaign(
                 transition["campaign_capacity_quantity"],
                 transition["campaign_consumed_quantity"] or 0.0,
                 transition["campaign_capacity_mode"],
+                transition["last_opening_price"],
                 now_ms,
                 now_ms,
             ),
@@ -2813,11 +2818,15 @@ def complete_spot_strategy_campaign_level(
     campaign_id: str,
     signal_level: int,
     consumed_quantity: float = 0.0,
+    opening_price: float | None = None,
     action_key: str | None = None,
     path: Path | None = None,
 ) -> None:
     with _connection(path) as connection:
         consumption = max(0.0, float(consumed_quantity))
+        normalized_opening_price = _as_float_or_none(opening_price)
+        if normalized_opening_price is not None and normalized_opening_price <= 0:
+            normalized_opening_price = None
         inserted = False
         if consumption > 0 and action_key:
             cursor = connection.execute(
@@ -2839,6 +2848,10 @@ def complete_spot_strategy_campaign_level(
             """
             UPDATE spot_strategy_campaigns
             SET highest_completed_level = MAX(highest_completed_level, ?),
+                last_opening_price = CASE
+                    WHEN ? IS NOT NULL AND ? >= highest_completed_level THEN ?
+                    ELSE last_opening_price
+                END,
                 campaign_consumed_quantity = MIN(
                     COALESCE(campaign_capacity_quantity, campaign_consumed_quantity + ?),
                     campaign_consumed_quantity + ?
@@ -2848,6 +2861,9 @@ def complete_spot_strategy_campaign_level(
             """,
             (
                 int(signal_level),
+                normalized_opening_price,
+                int(signal_level),
+                normalized_opening_price,
                 increment,
                 increment,
                 int(datetime.now(timezone.utc).timestamp() * 1000),
@@ -2879,21 +2895,43 @@ def reconcile_spot_strategy_campaign_progress(
     with _connection(path) as connection:
         completed = connection.execute(
             """
-            SELECT action_key, action_type, signal_level
-            FROM spot_strategy_actions
-            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
-              AND campaign_id = ? AND status = 'completed'
-              AND action_type IN ('open', 'accumulate_asset', 'campaign_only')
-              AND signal_level IS NOT NULL
+            SELECT actions.action_key, actions.action_type, actions.signal_level,
+                   intents.average_price
+            FROM spot_strategy_actions AS actions
+            LEFT JOIN spot_order_intents AS intents
+              ON intents.intent_id = actions.intent_id
+            WHERE actions.account_key = ? AND actions.asset_symbol = ?
+              AND actions.quote_symbol = ? AND actions.campaign_id = ?
+              AND actions.status = 'completed'
+              AND actions.action_type IN ('open', 'accumulate_asset', 'campaign_only')
+              AND actions.signal_level IS NOT NULL
             """,
             (normalized_account, normalized_asset, normalized_quote, normalized_campaign),
         ).fetchall()
         highest_level = max((int(row["signal_level"]) for row in completed), default=0)
+        completed_openings = [
+            row
+            for row in completed
+            if row["action_type"] == "open"
+            and row["average_price"] is not None
+            and float(row["average_price"]) > 0
+        ]
+        latest_opening = max(
+            completed_openings,
+            key=lambda row: (int(row["signal_level"]), str(row["action_key"])),
+            default=None,
+        )
+        recovered_opening_price = (
+            float(latest_opening["average_price"])
+            if latest_opening is not None
+            else None
+        )
         if highest_level > 0:
             connection.execute(
                 """
                 UPDATE spot_strategy_campaigns
                 SET highest_completed_level = MAX(highest_completed_level, ?),
+                    last_opening_price = COALESCE(?, last_opening_price),
                     updated_at_ms = ?
                 WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
                   AND campaign_id = ?
@@ -2901,6 +2939,7 @@ def reconcile_spot_strategy_campaign_progress(
                 """,
                 (
                     highest_level,
+                    recovered_opening_price,
                     now_ms,
                     normalized_account,
                     normalized_asset,

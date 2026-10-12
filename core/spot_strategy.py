@@ -72,7 +72,7 @@ def transition_spot_strategy_campaign(
         campaign_id = prior.get("campaign_id")
         active_side = normalized_side
         highest_level = int(prior.get("highest_completed_level") or 0)
-    sizing_fields = (
+    persistent_campaign_fields = (
         "campaign_start_target_quantity",
         "campaign_start_minimum_holding_pct",
         "campaign_start_policy_sellable_reference",
@@ -83,8 +83,9 @@ def transition_spot_strategy_campaign(
         "campaign_capacity_quantity",
         "campaign_consumed_quantity",
         "campaign_capacity_mode",
+        "last_opening_price",
     )
-    preserve_sizing = normalized_side == "hold" or prior_side == normalized_side
+    preserve_campaign = normalized_side == "hold" or prior_side == normalized_side
     return {
         "campaign_id": campaign_id,
         "active_side": active_side,
@@ -92,7 +93,10 @@ def transition_spot_strategy_campaign(
         "last_signal_side": normalized_side,
         "last_signal_level": max(0, int(signal_level)),
         "last_signal_at_ms": int(signal_at_ms),
-        **{field: prior.get(field) if preserve_sizing else None for field in sizing_fields},
+        **{
+            field: prior.get(field) if preserve_campaign else None
+            for field in persistent_campaign_fields
+        },
     }
 
 
@@ -232,6 +236,7 @@ def plan_spot_strategy_action(
     opportunity = str(signal.get("opportunity") or "hold").strip().lower()
     level = int(signal.get("level") or 0)
     new_strategy_decision: dict[str, Any] | None = None
+    opening_price_hold: dict[str, Any] | None = None
     if (
         bool(signal.get("strategy_eligible"))
         and opportunity != "hold"
@@ -283,49 +288,75 @@ def plan_spot_strategy_action(
                     },
                 }
         elif opportunity == "sell":
-            opening = plan_opening_quantity(
-                allocation_signal,
-                holding,
-                campaign,
-                config=resolved_config,
-            )
-            if opening.get("eligible"):
-                quantity = min(
-                    float(opening["quantity"]),
-                    float(holding.get("immediately_sellable_quantity") or 0.0),
+            previous_opening_price = campaign.get("last_opening_price")
+            try:
+                previous_opening_price = (
+                    float(previous_opening_price)
+                    if previous_opening_price is not None
+                    else None
                 )
-            else:
-                quantity = 0.0
-            if math.isfinite(quantity) and quantity > 0:
-                campaign_snapshot = opening.get("campaign") or campaign
-                new_strategy_decision = {
-                    "action_type": "open",
-                    "side": "sell",
-                    "signal_level": level,
-                    "requested_quantity": quantity,
+            except (TypeError, ValueError):
+                previous_opening_price = None
+            if (
+                previous_opening_price is not None
+                and math.isfinite(previous_opening_price)
+                and current_price <= previous_opening_price
+            ):
+                opening_price_hold = {
+                    "action_type": "hold",
                     "reason": {
-                        "action_type": "open",
-                        "signal": opportunity,
+                        "action_type": "hold",
+                        "hold_reason": "sell_level_price_not_improved",
                         "signal_level": level,
-                        "rolling_change_pct": signal.get("rolling_change_pct"),
-                        "base_tranche_pct": allocation_signal.get("base_tranche_pct"),
-                        "final_tranche_pct": allocation_signal.get("base_tranche_pct"),
-                        "campaign_id": campaign.get("campaign_id"),
-                        "campaign_start_target_quantity": campaign_snapshot.get("campaign_start_target_quantity"),
-                        "campaign_start_minimum_holding_pct": campaign_snapshot.get("campaign_start_minimum_holding_pct"),
-                        "campaign_start_policy_sellable_reference": campaign_snapshot.get("campaign_start_policy_sellable_reference"),
-                        "campaign_start_remaining_sellable_quantity": campaign_snapshot.get("campaign_start_remaining_sellable_quantity"),
-                        "remaining_sellable_ratio_at_start": campaign_snapshot.get("remaining_sellable_ratio_at_start"),
-                        "campaign_capacity_pct": campaign_snapshot.get("campaign_capacity_pct"),
-                        "full_deploy_threshold_pct": campaign_snapshot.get("full_deploy_threshold_pct"),
-                        "campaign_capacity_mode": campaign_snapshot.get("campaign_capacity_mode"),
-                        "campaign_capacity_quantity": opening.get("campaign_capacity_quantity"),
-                        "campaign_consumed_quantity": opening.get("campaign_consumed_quantity"),
-                        "campaign_remaining_quantity": opening.get("campaign_remaining_quantity"),
-                        "level_allocation_pct": opening.get("tranche_pct"),
-                        "requested_level_quantity": opening.get("requested_level_quantity"),
+                        "market_price": current_price,
+                        "previous_opening_price": previous_opening_price,
                     },
                 }
+            else:
+                opening = plan_opening_quantity(
+                    allocation_signal,
+                    holding,
+                    campaign,
+                    config=resolved_config,
+                )
+                if opening.get("eligible"):
+                    quantity = min(
+                        float(opening["quantity"]),
+                        float(holding.get("immediately_sellable_quantity") or 0.0),
+                    )
+                else:
+                    quantity = 0.0
+                if math.isfinite(quantity) and quantity > 0:
+                    campaign_snapshot = opening.get("campaign") or campaign
+                    new_strategy_decision = {
+                        "action_type": "open",
+                        "side": "sell",
+                        "signal_level": level,
+                        "requested_quantity": quantity,
+                        "reason": {
+                            "action_type": "open",
+                            "signal": opportunity,
+                            "signal_level": level,
+                            "rolling_change_pct": signal.get("rolling_change_pct"),
+                            "base_tranche_pct": allocation_signal.get("base_tranche_pct"),
+                            "final_tranche_pct": allocation_signal.get("base_tranche_pct"),
+                            "campaign_id": campaign.get("campaign_id"),
+                            "minimum_opening_price_exclusive": previous_opening_price,
+                            "campaign_start_target_quantity": campaign_snapshot.get("campaign_start_target_quantity"),
+                            "campaign_start_minimum_holding_pct": campaign_snapshot.get("campaign_start_minimum_holding_pct"),
+                            "campaign_start_policy_sellable_reference": campaign_snapshot.get("campaign_start_policy_sellable_reference"),
+                            "campaign_start_remaining_sellable_quantity": campaign_snapshot.get("campaign_start_remaining_sellable_quantity"),
+                            "remaining_sellable_ratio_at_start": campaign_snapshot.get("remaining_sellable_ratio_at_start"),
+                            "campaign_capacity_pct": campaign_snapshot.get("campaign_capacity_pct"),
+                            "full_deploy_threshold_pct": campaign_snapshot.get("full_deploy_threshold_pct"),
+                            "campaign_capacity_mode": campaign_snapshot.get("campaign_capacity_mode"),
+                            "campaign_capacity_quantity": opening.get("campaign_capacity_quantity"),
+                            "campaign_consumed_quantity": opening.get("campaign_consumed_quantity"),
+                            "campaign_remaining_quantity": opening.get("campaign_remaining_quantity"),
+                            "level_allocation_pct": opening.get("tranche_pct"),
+                            "requested_level_quantity": opening.get("requested_level_quantity"),
+                        },
+                    }
 
     at_capacity = (
         resolved_cleanup.enabled
@@ -448,4 +479,6 @@ def plan_spot_strategy_action(
                 "prevented_signal_level": new_strategy_decision["signal_level"],
             },
         }
+    if opening_price_hold is not None:
+        return opening_price_hold
     return new_strategy_decision

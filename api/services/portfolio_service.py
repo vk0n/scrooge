@@ -1552,6 +1552,9 @@ def _create_spot_order_intent_preview(
             "reason": normalized_reason,
             "strategy_action_type": strategy_action_type or None,
             "strategy_action_key": str(payload.get("strategy_action_key") or "").strip() or None,
+            "minimum_opening_price_exclusive": _as_float(
+                payload.get("minimum_opening_price_exclusive")
+            ),
             "treasury_intake": treasury_intake,
             "use_protected_cash": use_protected_cash,
             "estimated_protected_cash_required": protected_cash_required,

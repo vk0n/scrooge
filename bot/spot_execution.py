@@ -29,6 +29,8 @@ from core.runtime_db import (
 from core.spot_accounting import ensure_spot_quote_leg
 from core.spot_execution_rules import (
     format_decimal as _format_decimal,
+    next_sell_limit_price as _next_sell_limit_price,
+    normalize_limit_quantity as _limit_quantity,
     normalize_market_quantity as _market_quantity,
     validate_market_notional as _validate_notional,
     validate_sell_opening_round_trip as _validate_sell_opening_round_trip,
@@ -249,16 +251,25 @@ class SpotOrderExecutor:
                 persist_error,
             )
 
-    def _submit(self, intent: dict[str, Any], quantity: Decimal) -> dict[str, Any]:
+    def _submit(
+        self,
+        intent: dict[str, Any],
+        quantity: Decimal,
+        *,
+        limit_price: Decimal | None = None,
+    ) -> dict[str, Any]:
         params = {
             "symbol": intent["symbol"],
             "side": intent["side"].upper(),
-            "type": "MARKET",
+            "type": "LIMIT" if limit_price is not None else "MARKET",
             "quantity": _format_decimal(quantity),
             "newClientOrderId": intent["client_order_id"],
             "newOrderRespType": "FULL",
             "recvWindow": 5000,
         }
+        if limit_price is not None:
+            params["timeInForce"] = "FOK"
+            params["price"] = _format_decimal(limit_price)
         try:
             response = self.client.create_order(**params)
         except Exception as submit_error:
@@ -279,7 +290,10 @@ class SpotOrderExecutor:
             raise RuntimeError("Binance did not return an order response.")
         return response
 
-    def _validate_for_submission(self, intent: dict[str, Any]) -> tuple[Decimal, dict[str, Any] | None]:
+    def _validate_for_submission(
+        self,
+        intent: dict[str, Any],
+    ) -> tuple[Decimal, dict[str, Any] | None, Decimal | None]:
         request = intent.get("request") if isinstance(intent.get("request"), dict) else {}
         treasury_intake = bool(request.get("treasury_intake"))
         use_protected_cash = bool(request.get("use_protected_cash"))
@@ -318,8 +332,26 @@ class SpotOrderExecutor:
             raise ValueError("Binance symbol base asset does not match the Treasury intent.")
         if str(symbol_info.get("quoteAsset") or "").upper() != intent["quote_symbol"]:
             raise ValueError("Binance symbol quote asset does not match the Treasury intent.")
-        quantity, _ = _market_quantity(symbol_info, intent["requested_quantity"])
-        _validate_notional(symbol_info, quantity=quantity, price=market_price)
+        minimum_opening_price = _as_float(request.get("minimum_opening_price_exclusive"))
+        guarded_sell_opening = (
+            intent["source"] == "strategy"
+            and intent["side"] == "sell"
+            and strategy_action_type == "open"
+            and minimum_opening_price is not None
+            and minimum_opening_price > 0
+        )
+        limit_price = None
+        if guarded_sell_opening:
+            limit_price = _next_sell_limit_price(symbol_info, minimum_opening_price)
+            if Decimal(str(market_price)) < limit_price:
+                raise ValueError(
+                    "Strategy SELL level is waiting for a price above the previous campaign opening."
+                )
+            quantity, _ = _limit_quantity(symbol_info, intent["requested_quantity"])
+        else:
+            quantity, _ = _market_quantity(symbol_info, intent["requested_quantity"])
+        validation_price = float(limit_price) if limit_price is not None else market_price
+        _validate_notional(symbol_info, quantity=quantity, price=validation_price)
         if (
             swing is not None
             and intent["source"] == "strategy"
@@ -329,7 +361,7 @@ class SpotOrderExecutor:
             _validate_sell_opening_round_trip(
                 symbol_info,
                 quantity=quantity,
-                price=market_price,
+                price=validation_price,
                 trading_objective=str(swing.get("trading_objective") or ""),
                 close_profit_pct=self.strategy_config.close_profit_pct,
                 estimated_fee_rate=self.strategy_config.estimated_fee_rate,
@@ -428,8 +460,8 @@ class SpotOrderExecutor:
                     "nonprotected_budget_quote": nonprotected_budget,
                     "retained_available_quote": retained_reserve,
                     "required_quote": required_quote,
-                }
-        return quantity, None
+                }, limit_price
+        return quantity, None, limit_price
 
     def _recover_order(self, intent: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -797,7 +829,9 @@ class SpotOrderExecutor:
                     path=self.db_path,
                 )
                 try:
-                    quantity, protected_cash_validation = self._validate_for_submission(intent)
+                    quantity, protected_cash_validation, limit_price = (
+                        self._validate_for_submission(intent)
+                    )
                     if protected_cash_validation is not None:
                         intent["protected_cash_validation"] = protected_cash_validation
                 except ValueError as exc:
@@ -816,7 +850,7 @@ class SpotOrderExecutor:
                     expected_statuses={"processing", "validated"},
                     path=self.db_path,
                 )
-                order = self._submit(intent, quantity)
+                order = self._submit(intent, quantity, limit_price=limit_price)
                 order_may_exist = True
                 exchange_order_id = str(order.get("orderId")) if order.get("orderId") is not None else None
                 update_spot_order_intent(

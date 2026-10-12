@@ -27,6 +27,7 @@ from core.runtime_db import (
     sync_spot_strategy_campaign,
     upsert_portfolio_asset_policy,
     update_spot_strategy_action,
+    update_spot_order_intent,
 )
 from core.spot_progression import (
     ProgressiveSwingConfig,
@@ -384,7 +385,13 @@ class SpotStrategyCampaignTests(unittest.TestCase):
         }
 
     @staticmethod
-    def opening(campaign: dict, side: str, level: int) -> dict | None:
+    def opening(
+        campaign: dict,
+        side: str,
+        level: int,
+        *,
+        current_price: float = 10,
+    ) -> dict | None:
         return plan_spot_strategy_action(
             {
                 "opportunity": side,
@@ -394,7 +401,7 @@ class SpotStrategyCampaignTests(unittest.TestCase):
                 "base_tranche_pct": level * 10,
                 "base_tranches_pct": [10, 20, 30, 40],
                 "final_tranche_pct": level * 10,
-                "current_price": 10,
+                "current_price": current_price,
             },
             {
                 "target_quantity": 100,
@@ -444,6 +451,44 @@ class SpotStrategyCampaignTests(unittest.TestCase):
 
         self.assertEqual(decision["action_type"], "open")
         self.assertEqual(decision["signal_level"], 3)
+
+    def test_higher_sell_level_waits_until_price_improves(self):
+        campaign = {
+            **self.complete(self.transition(None, "sell", 3, 1), 3),
+            "last_opening_price": 10.5,
+        }
+        campaign = self.transition(campaign, "sell", 4, 2)
+
+        equal_price = self.opening(campaign, "sell", 4, current_price=10.5)
+        lower_price = self.opening(campaign, "sell", 4, current_price=10.4)
+        improved = self.opening(campaign, "sell", 4, current_price=10.6)
+
+        self.assertEqual(equal_price["action_type"], "hold")
+        self.assertEqual(
+            equal_price["reason"]["hold_reason"],
+            "sell_level_price_not_improved",
+        )
+        self.assertEqual(lower_price["action_type"], "hold")
+        self.assertEqual(improved["action_type"], "open")
+        self.assertEqual(
+            improved["reason"]["minimum_opening_price_exclusive"],
+            10.5,
+        )
+
+    def test_opposite_campaign_resets_sell_opening_price_guard(self):
+        sell = {
+            **self.complete(self.transition(None, "sell", 2, 1), 2),
+            "last_opening_price": 10.5,
+        }
+        buy = self.transition(sell, "buy", 1, 2)
+        next_sell = self.transition(buy, "sell", 1, 3)
+
+        self.assertIsNone(buy["last_opening_price"])
+        self.assertIsNone(next_sell["last_opening_price"])
+        self.assertEqual(
+            self.opening(next_sell, "sell", 1, current_price=9)["action_type"],
+            "open",
+        )
 
     def test_direct_sell_jumps_use_all_missing_tranches(self):
         expected = (
@@ -620,6 +665,79 @@ class SpotStrategyCampaignTests(unittest.TestCase):
             self.assertEqual(lower_signal["highest_completed_level"], 4)
             self.assertIsNone(self.opening(lower_signal, "sell", 2))
 
+    def test_completed_action_repairs_last_opening_price_from_fill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "runtime.sqlite3"
+            bootstrap_runtime_db(db_path)
+            campaign = sync_spot_strategy_campaign(
+                account_key="manual_spot",
+                asset_symbol="TIA",
+                quote_symbol="USDT",
+                opportunity="sell",
+                signal_level=2,
+                signal_at_ms=1,
+                path=db_path,
+            )
+            intent = create_spot_order_intent(
+                {
+                    "intent_id": "filled-l2",
+                    "client_order_id": "filled-l2",
+                    "account_key": "manual_spot",
+                    "venue": "binance",
+                    "symbol": "TIAUSDT",
+                    "asset_symbol": "TIA",
+                    "quote_symbol": "USDT",
+                    "side": "sell",
+                    "requested_quantity": 10,
+                    "estimated_price": 0.5,
+                    "estimated_quote_value": 5,
+                    "source": "strategy",
+                    "reason": {"action_type": "open"},
+                },
+                path=db_path,
+            )
+            update_spot_order_intent(
+                intent["intent_id"],
+                {"status": "filled", "executed_quantity": 10, "average_price": 0.51},
+                path=db_path,
+            )
+            action = ensure_spot_strategy_action(
+                {
+                    "action_key": f"open:{campaign['campaign_id']}:level:2",
+                    "account_key": "manual_spot",
+                    "asset_symbol": "TIA",
+                    "quote_symbol": "USDT",
+                    "campaign_id": campaign["campaign_id"],
+                    "action_type": "open",
+                    "side": "sell",
+                    "signal_level": 2,
+                    "swing_id": "swing-tia-l2",
+                    "requested_quantity": 10,
+                    "reason": {},
+                },
+                path=db_path,
+            )
+            update_spot_strategy_action(
+                action["action_key"],
+                {
+                    "intent_id": intent["intent_id"],
+                    "status": "completed",
+                    "completed_at_ms": 2,
+                },
+                path=db_path,
+            )
+
+            repaired = reconcile_spot_strategy_campaign_progress(
+                account_key="manual_spot",
+                asset_symbol="TIA",
+                quote_symbol="USDT",
+                campaign_id=campaign["campaign_id"],
+                path=db_path,
+            )
+
+            self.assertEqual(repaired["highest_completed_level"], 2)
+            self.assertEqual(repaired["last_opening_price"], 0.51)
+
     def test_campaign_capacity_and_consumption_survive_restart_idempotently(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "runtime.sqlite3"
@@ -673,6 +791,7 @@ class SpotStrategyCampaignTests(unittest.TestCase):
                     campaign_id=opened["campaign_id"],
                     signal_level=1,
                     consumed_quantity=20,
+                    opening_price=5,
                     action_key="open:restart-safe:level:1",
                     path=db_path,
                 )
@@ -685,6 +804,7 @@ class SpotStrategyCampaignTests(unittest.TestCase):
             self.assertEqual(resumed["campaign_capacity_quantity"], 200)
             self.assertEqual(resumed["campaign_consumed_quantity"], 20)
             self.assertEqual(resumed["highest_completed_level"], 1)
+            self.assertEqual(resumed["last_opening_price"], 5)
 
     def test_campaign_migration_preserves_existing_progress(self):
         with tempfile.TemporaryDirectory() as tmp:

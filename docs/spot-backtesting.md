@@ -23,6 +23,7 @@ Replay replaces the clock, market source, executor, persistence adapter, and rep
 - Warm-up: at least 24 hours before the requested start; warm-up cannot trade or mutate balances.
 - Decision: after candle N closes, using only observations known by that close.
 - Fill: candle N+1 open, adjusted by configured slippage and fee.
+- SELL level progression: a higher level fills only when its simulated execution price is strictly above the previous SELL opening in the same campaign; otherwise it remains unconsumed.
 - Rolling reference: the close approximately 24 hours before the decision.
 - Entry cost: first candle open at scenario start; legacy scenario `entry_cost` does not control replay cost basis.
 - End: open Bargains remain marked to market unless the analysis-only `force_close_at_end` option is enabled.

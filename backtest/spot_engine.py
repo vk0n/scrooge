@@ -847,6 +847,17 @@ class SpotPortfolioBacktester:
                 price=price,
             )
             if action["action_type"] == "open" and side == "sell":
+                minimum_opening_price = (action.get("reason") or {}).get(
+                    "minimum_opening_price_exclusive"
+                )
+                if (
+                    minimum_opening_price is not None
+                    and price <= float(minimum_opening_price)
+                ):
+                    raise ValueError(
+                        "Strategy SELL level rejected because its execution price is not "
+                        "above the previous campaign opening."
+                    )
                 validate_sell_opening_round_trip(
                     self.dataset.symbol_info[symbol],
                     quantity=quantity_decimal,
@@ -1084,6 +1095,7 @@ class SpotPortfolioBacktester:
                     float(target_campaign.get("campaign_capacity_quantity") or 0.0),
                     float(target_campaign.get("campaign_consumed_quantity") or 0.0) + quantity,
                 )
+                target_campaign["last_opening_price"] = price
         self.actions.append(
             {
                 "timestamp_ms": timestamp_ms,

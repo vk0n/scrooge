@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Any
 
 
@@ -57,6 +57,72 @@ def normalize_market_quantity(
     if max_quantity > 0 and normalized > max_quantity:
         raise ValueError(f"Quantity exceeds Binance maximum {format_decimal(max_quantity)}.")
     return normalized, step_size
+
+
+def normalize_limit_quantity(
+    symbol_info: dict[str, Any],
+    requested_quantity: float,
+) -> tuple[Decimal, Decimal]:
+    """Apply Binance LOT_SIZE rules used by LIMIT orders."""
+    filters = {
+        str(item.get("filterType") or ""): item
+        for item in symbol_info.get("filters", [])
+        if isinstance(item, dict)
+    }
+    lot_filter = filters.get("LOT_SIZE")
+    if not isinstance(lot_filter, dict):
+        raise ValueError("Binance did not return a lot-size rule for this symbol.")
+    step_size = as_decimal(lot_filter.get("stepSize"))
+    min_quantity = as_decimal(lot_filter.get("minQty")) or Decimal("0")
+    max_quantity = as_decimal(lot_filter.get("maxQty")) or Decimal("0")
+    requested = as_decimal(requested_quantity)
+    if requested is None or requested <= 0:
+        raise ValueError("Spot order quantity must be greater than zero.")
+    if step_size is None or step_size <= 0:
+        normalized = requested
+        step_size = Decimal("0")
+    else:
+        step_count = requested / step_size
+        nearest_step_count = step_count.to_integral_value(rounding=ROUND_HALF_UP)
+        if abs(step_count - nearest_step_count) <= Decimal("1e-9"):
+            step_count = nearest_step_count
+        normalized = step_count.to_integral_value(rounding=ROUND_DOWN) * step_size
+    if normalized <= 0:
+        raise ValueError("Spot order quantity rounds to zero under the Binance step size.")
+    if normalized < min_quantity:
+        raise ValueError(f"Quantity is below Binance minimum {format_decimal(min_quantity)}.")
+    if max_quantity > 0 and normalized > max_quantity:
+        raise ValueError(f"Quantity exceeds Binance maximum {format_decimal(max_quantity)}.")
+    return normalized, step_size
+
+
+def next_sell_limit_price(
+    symbol_info: dict[str, Any],
+    previous_opening_price: float,
+) -> Decimal:
+    """Return the first valid Binance price tick strictly above a prior SELL fill."""
+    filters = {
+        str(item.get("filterType") or ""): item
+        for item in symbol_info.get("filters", [])
+        if isinstance(item, dict)
+    }
+    price_filter = filters.get("PRICE_FILTER")
+    if not isinstance(price_filter, dict):
+        raise ValueError("Binance did not return a price-filter rule for this symbol.")
+    tick_size = as_decimal(price_filter.get("tickSize"))
+    previous = as_decimal(previous_opening_price)
+    min_price = as_decimal(price_filter.get("minPrice")) or Decimal("0")
+    max_price = as_decimal(price_filter.get("maxPrice")) or Decimal("0")
+    if tick_size is None or tick_size <= 0:
+        raise ValueError("Binance did not return a valid price tick for this symbol.")
+    if previous is None or previous <= 0:
+        raise ValueError("Previous Spot opening price must be greater than zero.")
+    next_price = (previous / tick_size).to_integral_value(rounding=ROUND_FLOOR) * tick_size
+    next_price += tick_size
+    next_price = max(next_price, min_price)
+    if max_price > 0 and next_price > max_price:
+        raise ValueError("Required Spot opening price exceeds the Binance maximum price.")
+    return next_price
 
 
 def validate_market_notional(

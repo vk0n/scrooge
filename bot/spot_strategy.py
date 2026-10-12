@@ -542,6 +542,9 @@ class ProgressiveSpotSwingExecutor:
                             "swing_id": action["swing_id"],
                             "strategy_action_type": action["action_type"],
                             "strategy_action_key": action["action_key"],
+                            "minimum_opening_price_exclusive": (
+                                action.get("reason") or {}
+                            ).get("minimum_opening_price_exclusive"),
                             "reason_text": (
                                 "Progressive Swing opening tranche."
                                 if action["action_type"] == "open"
@@ -655,6 +658,13 @@ class ProgressiveSpotSwingExecutor:
             consumed_quantity = 0.0
             if action["action_type"] == "open" and intent is not None:
                 consumed_quantity = float(intent.get("executed_quantity") or 0.0)
+            opening_price = (
+                float(intent.get("average_price"))
+                if action["action_type"] == "open"
+                and intent is not None
+                and intent.get("average_price") is not None
+                else None
+            )
             complete_spot_strategy_campaign_level(
                 account_key=action["account_key"],
                 asset_symbol=action["asset_symbol"],
@@ -662,6 +672,7 @@ class ProgressiveSpotSwingExecutor:
                 campaign_id=action["campaign_id"],
                 signal_level=int(action["signal_level"]),
                 consumed_quantity=consumed_quantity,
+                opening_price=opening_price,
                 action_key=action["action_key"] if consumed_quantity > 0 else None,
                 path=self.db_path,
             )

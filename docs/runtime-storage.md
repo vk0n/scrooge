@@ -71,6 +71,8 @@ Schema changes belong in explicit, forward-safe migration steps in `core/runtime
 - `spot_swing_target_ratchets`
 - `spot_manual_target_ratchets`
 
+`spot_strategy_campaigns.last_opening_price` stores the confirmed average fill of the highest completed SELL opening. It is preserved across `HOLD` and restarts, recovered from completed strategy intents when necessary, and reset by an opposite directional campaign.
+
 ## Treasury Accounting Source Of Truth
 
 `portfolio_transactions` is the source of truth for managed quantity, cost basis, external capital flows, and custody. Holdings and overview totals are projections over settled transactions plus current prices; they are not copied from the Binance balance endpoint.

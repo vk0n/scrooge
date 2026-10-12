@@ -892,6 +892,56 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(len({action["timestamp_ms"] for action in replay.actions}), 1)
         self.assertTrue(all(replay.swings[swing_id]["status"] == "closed" for swing_id in ("profit-1", "profit-2")))
 
+    def test_backtest_sell_level_requires_better_execution_price(self):
+        config = scenario((asset("AAA", minimum=0),), starting_usdt=1000)
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 100))
+        campaign = initialize_sell_campaign_capacity(
+            {
+                "campaign_id": "sell-price-guard",
+                "active_side": "sell",
+                "highest_completed_level": 1,
+                "last_opening_price": 100,
+            },
+            replay.assets["AAA"].holding(100),
+            config=config.progression,
+        )
+        campaign["campaign_consumed_quantity"] = 5
+        replay.campaigns["AAA"] = campaign
+        replay.sell_campaigns.append(campaign)
+        action = {
+            "action_key": "open:sell-price-guard:level:2",
+            "action_type": "open",
+            "side": "sell",
+            "swing_id": "guarded-l2",
+            "campaign_id": "sell-price-guard",
+            "requested_quantity": 10,
+            "signal": {"level": 2, "current_price": 101},
+            "reason": {
+                "action_type": "open",
+                "minimum_opening_price_exclusive": 100,
+            },
+            "decided_at_ms": replay.start_ms,
+        }
+
+        rejected = replay._execute_action(
+            "AAA",
+            action,
+            observed_price=99,
+            timestamp_ms=replay.start_ms,
+        )
+        completed = replay._execute_action(
+            "AAA",
+            action,
+            observed_price=101,
+            timestamp_ms=replay.start_ms + 1,
+        )
+
+        self.assertFalse(rejected)
+        self.assertTrue(completed)
+        self.assertEqual(replay.campaigns["AAA"]["highest_completed_level"], 2)
+        self.assertEqual(replay.campaigns["AAA"]["last_opening_price"], 101)
+        self.assertEqual(len(replay.executions), 1)
+
     def test_report_title_uses_replay_period_instead_of_market_migration_details(self):
         legacy_name = "treasury-10-assets-real-quantities-6m-ton-to-gram"
 

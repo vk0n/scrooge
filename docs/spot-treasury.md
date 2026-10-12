@@ -42,6 +42,8 @@ The signal is the percentage move from an approximately 24-hour-old reference pr
 
 Each asset has a durable directional campaign. Repeated polls at an already-consumed level do not spend again. Reaching a new level applies the cumulative allocation for every newly crossed level without creating synthetic intermediate actions. `HOLD` preserves campaign state, while an actionable opposite direction starts a new campaign.
 
+SELL levels are also price-progressive inside one campaign. After the first opening, a higher level may open only above the previous level's confirmed average fill price. Live execution uses a fill-or-kill limit at the first valid Binance tick above that fill, so an order either receives a strictly better entry or does not execute and leaves the level unconsumed. A direct jump with no prior opening still executes once with its cumulative missing-level allocation. An opposite actionable campaign resets the price guard.
+
 A SELL campaign freezes its capacity from inventory that is both policy-sellable and recorded in Binance custody. Cold Storage contributes to total ownership and Protected Floor economics, but never enlarges automated campaign capacity. Later Target, Minimum Holding, or custody changes affect future campaigns, not the frozen budget of the active one. Actual execution remains capped by the current Protected Floor, verified Binance free balance, and venue filters.
 
 ## Objectives
