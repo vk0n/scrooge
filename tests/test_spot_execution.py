@@ -244,7 +244,12 @@ class SpotExecutionTests(unittest.TestCase):
             )
         apply_spot_swing_cash_retention("retention-source", path=self.db_path)
 
-    def _accumulation_preview(self, *, quantity: float = 0.25) -> dict:
+    def _accumulation_preview(
+        self,
+        *,
+        quantity: float = 0.25,
+        maximum_opening_price_exclusive: float | None = None,
+    ) -> dict:
         portfolio_service.create_portfolio_transaction(
             {
                 "tx_type": "deposit",
@@ -296,6 +301,7 @@ class SpotExecutionTests(unittest.TestCase):
                 "quantity": quantity,
                 "strategy_action_type": "accumulate_asset",
                 "strategy_action_key": action_key,
+                "maximum_opening_price_exclusive": maximum_opening_price_exclusive,
                 "reason": {"action_type": "accumulate_asset", "signal_level": 1},
             }
         )
@@ -397,6 +403,38 @@ class SpotExecutionTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(SpotOrderValidationError, "Binance USDT balance"):
+            executor.execute(preview["intent_id"])
+
+        self.assertEqual(client.create_calls, 0)
+
+    def test_higher_accumulation_level_uses_strict_fok_price_guard(self):
+        preview = self._accumulation_preview(maximum_opening_price_exclusive=100.001)
+        client = FakeSpotExecutionClient(market_price=100)
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        executor.execute(preview["intent_id"])
+
+        self.assertEqual(client.order_params["type"], "LIMIT")
+        self.assertEqual(client.order_params["timeInForce"], "FOK")
+        self.assertEqual(client.order_params["price"], "100")
+
+    def test_higher_accumulation_level_waits_above_required_tick(self):
+        preview = self._accumulation_preview(maximum_opening_price_exclusive=100)
+        client = FakeSpotExecutionClient(market_price=100)
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        with self.assertRaisesRegex(
+            SpotOrderValidationError,
+            "waiting for a price below",
+        ):
             executor.execute(preview["intent_id"])
 
         self.assertEqual(client.create_calls, 0)

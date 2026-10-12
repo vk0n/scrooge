@@ -289,6 +289,65 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         self.assertEqual(decision["reason"]["planned_quote_to_spend"], 18)
         self.assertEqual(decision["requested_quantity"], 1.8)
 
+    def test_higher_accumulation_level_waits_until_price_improves(self):
+        signal = {
+            "opportunity": "buy",
+            "level": 4,
+            "strategy_eligible": True,
+            "trading_objective": "accumulate_asset",
+            "base_tranches_pct": [10, 20, 30, 40],
+            "accumulation_tranches_pct": [1, 3, 5, 10],
+        }
+        holding = {
+            "target_quantity": 1000,
+            "minimum_holding_pct": 80,
+            "market_price": 10,
+        }
+        campaign = {
+            "active_side": "buy",
+            "highest_completed_level": 1,
+            "campaign_id": "buy-price-guard",
+            "last_opening_price": 10,
+        }
+
+        equal_price = plan_spot_strategy_action(
+            {**signal, "current_price": 10},
+            holding,
+            campaign,
+            [],
+            available_quote=100,
+            available_accumulation_quote=100,
+            config=ProgressiveSwingConfig(estimated_fee_rate=0),
+        )
+        higher_price = plan_spot_strategy_action(
+            {**signal, "current_price": 10.1},
+            holding,
+            campaign,
+            [],
+            available_quote=100,
+            available_accumulation_quote=100,
+            config=ProgressiveSwingConfig(estimated_fee_rate=0),
+        )
+        improved = plan_spot_strategy_action(
+            {**signal, "current_price": 9.9},
+            holding,
+            campaign,
+            [],
+            available_quote=100,
+            available_accumulation_quote=100,
+            config=ProgressiveSwingConfig(estimated_fee_rate=0),
+        )
+
+        self.assertEqual(equal_price["action_type"], "hold")
+        self.assertEqual(
+            equal_price["reason"]["hold_reason"],
+            "accumulation_level_price_not_improved",
+        )
+        self.assertEqual(higher_price["action_type"], "hold")
+        self.assertEqual(improved["action_type"], "accumulate_asset")
+        self.assertEqual(improved["reason"]["accumulation_tranche_pct"], 18)
+        self.assertEqual(improved["reason"]["maximum_opening_price_exclusive"], 10)
+
     def test_accumulation_fails_closed_without_an_explicit_free_reserve_projection(self):
         decision = plan_spot_strategy_action(
             {
@@ -738,6 +797,79 @@ class SpotStrategyCampaignTests(unittest.TestCase):
             self.assertEqual(repaired["highest_completed_level"], 2)
             self.assertEqual(repaired["last_opening_price"], 0.51)
 
+    def test_completed_accumulation_repairs_last_opening_price_from_fill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "runtime.sqlite3"
+            bootstrap_runtime_db(db_path)
+            campaign = sync_spot_strategy_campaign(
+                account_key="manual_spot",
+                asset_symbol="TIA",
+                quote_symbol="USDT",
+                opportunity="buy",
+                signal_level=2,
+                signal_at_ms=1,
+                path=db_path,
+            )
+            intent = create_spot_order_intent(
+                {
+                    "intent_id": "filled-buy-l2",
+                    "client_order_id": "filled-buy-l2",
+                    "account_key": "manual_spot",
+                    "venue": "binance",
+                    "symbol": "TIAUSDT",
+                    "asset_symbol": "TIA",
+                    "quote_symbol": "USDT",
+                    "side": "buy",
+                    "requested_quantity": 10,
+                    "estimated_price": 0.5,
+                    "estimated_quote_value": 5,
+                    "source": "strategy",
+                    "reason": {"action_type": "accumulate_asset"},
+                },
+                path=db_path,
+            )
+            update_spot_order_intent(
+                intent["intent_id"],
+                {"status": "filled", "executed_quantity": 10, "average_price": 0.49},
+                path=db_path,
+            )
+            action = ensure_spot_strategy_action(
+                {
+                    "action_key": f"accumulate_asset:{campaign['campaign_id']}:level:2",
+                    "account_key": "manual_spot",
+                    "asset_symbol": "TIA",
+                    "quote_symbol": "USDT",
+                    "campaign_id": campaign["campaign_id"],
+                    "action_type": "accumulate_asset",
+                    "side": "buy",
+                    "signal_level": 2,
+                    "swing_id": None,
+                    "requested_quantity": 10,
+                    "reason": {},
+                },
+                path=db_path,
+            )
+            update_spot_strategy_action(
+                action["action_key"],
+                {
+                    "intent_id": intent["intent_id"],
+                    "status": "completed",
+                    "completed_at_ms": 2,
+                },
+                path=db_path,
+            )
+
+            repaired = reconcile_spot_strategy_campaign_progress(
+                account_key="manual_spot",
+                asset_symbol="TIA",
+                quote_symbol="USDT",
+                campaign_id=campaign["campaign_id"],
+                path=db_path,
+            )
+
+            self.assertEqual(repaired["highest_completed_level"], 2)
+            self.assertEqual(repaired["last_opening_price"], 0.49)
+
     def test_campaign_capacity_and_consumption_survive_restart_idempotently(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "runtime.sqlite3"
@@ -1186,6 +1318,72 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
         self.assertEqual(campaign["highest_completed_level"], 4)
         self.assertEqual(len(actions), 1)
         self.assertTrue(actions[0]["action_key"].endswith(":level:4"))
+
+    def test_completed_accumulation_persists_confirmed_fill_price(self):
+        campaign = sync_spot_strategy_campaign(
+            account_key="manual_spot",
+            asset_symbol="NEAR",
+            quote_symbol="USDT",
+            opportunity="buy",
+            signal_level=2,
+            signal_at_ms=1,
+            path=self.db_path,
+        )
+        intent = create_spot_order_intent(
+            {
+                "intent_id": "accumulation-fill-price",
+                "client_order_id": "accumulation-fill-price",
+                "account_key": "manual_spot",
+                "venue": "binance",
+                "symbol": "NEARUSDT",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "side": "buy",
+                "requested_quantity": 2,
+                "estimated_price": 4.9,
+                "estimated_quote_value": 9.8,
+                "source": "strategy",
+                "reason": {"action_type": "accumulate_asset"},
+            },
+            path=self.db_path,
+        )
+        update_spot_order_intent(
+            intent["intent_id"],
+            {"status": "filled", "executed_quantity": 2, "average_price": 4.85},
+            path=self.db_path,
+        )
+        action = ensure_spot_strategy_action(
+            {
+                "action_key": f"accumulate_asset:{campaign['campaign_id']}:level:2",
+                "account_key": "manual_spot",
+                "asset_symbol": "NEAR",
+                "quote_symbol": "USDT",
+                "campaign_id": campaign["campaign_id"],
+                "action_type": "accumulate_asset",
+                "side": "buy",
+                "signal_level": 2,
+                "swing_id": None,
+                "requested_quantity": 2,
+                "reason": {},
+            },
+            path=self.db_path,
+        )
+        action = update_spot_strategy_action(
+            action["action_key"],
+            {"intent_id": intent["intent_id"]},
+            path=self.db_path,
+        )
+        executor = ProgressiveSpotSwingExecutor(
+            object(),
+            logger=logging.getLogger("test.spot-progression"),
+            db_path=self.db_path,
+        )
+
+        executor._complete_action(action)
+
+        completed = load_spot_strategy_campaign("NEAR", path=self.db_path)
+        self.assertEqual(completed["highest_completed_level"], 2)
+        self.assertEqual(completed["last_opening_price"], 4.85)
 
     def test_action_is_not_marked_completed_before_campaign_progress(self):
         campaign = sync_spot_strategy_campaign(

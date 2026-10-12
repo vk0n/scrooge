@@ -29,6 +29,7 @@ from core.runtime_db import (
 from core.spot_accounting import ensure_spot_quote_leg
 from core.spot_execution_rules import (
     format_decimal as _format_decimal,
+    next_buy_limit_price as _next_buy_limit_price,
     next_sell_limit_price as _next_sell_limit_price,
     normalize_limit_quantity as _limit_quantity,
     normalize_market_quantity as _market_quantity,
@@ -333,6 +334,7 @@ class SpotOrderExecutor:
         if str(symbol_info.get("quoteAsset") or "").upper() != intent["quote_symbol"]:
             raise ValueError("Binance symbol quote asset does not match the Treasury intent.")
         minimum_opening_price = _as_float(request.get("minimum_opening_price_exclusive"))
+        maximum_opening_price = _as_float(request.get("maximum_opening_price_exclusive"))
         guarded_sell_opening = (
             intent["source"] == "strategy"
             and intent["side"] == "sell"
@@ -340,12 +342,24 @@ class SpotOrderExecutor:
             and minimum_opening_price is not None
             and minimum_opening_price > 0
         )
+        guarded_asset_accumulation = (
+            treasury_accumulation
+            and maximum_opening_price is not None
+            and maximum_opening_price > 0
+        )
         limit_price = None
         if guarded_sell_opening:
             limit_price = _next_sell_limit_price(symbol_info, minimum_opening_price)
             if Decimal(str(market_price)) < limit_price:
                 raise ValueError(
                     "Strategy SELL level is waiting for a price above the previous campaign opening."
+                )
+            quantity, _ = _limit_quantity(symbol_info, intent["requested_quantity"])
+        elif guarded_asset_accumulation:
+            limit_price = _next_buy_limit_price(symbol_info, maximum_opening_price)
+            if Decimal(str(market_price)) > limit_price:
+                raise ValueError(
+                    "Strategy accumulation level is waiting for a price below the previous campaign opening."
                 )
             quantity, _ = _limit_quantity(symbol_info, intent["requested_quantity"])
         else:
@@ -405,7 +419,7 @@ class SpotOrderExecutor:
         else:
             quote_free = balances.get(intent["quote_symbol"], {}).get("free", 0.0)
             estimated_fee_rate = self.strategy_config.estimated_fee_rate
-            required_quote = quantity_float * market_price * (1.0 + estimated_fee_rate)
+            required_quote = quantity_float * validation_price * (1.0 + estimated_fee_rate)
             if required_quote > quote_free + 0.00000001:
                 raise ValueError("Buy rejected because Binance USDT balance changed after preview.")
             free_reserve = _as_float(

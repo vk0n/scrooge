@@ -2912,7 +2912,7 @@ def reconcile_spot_strategy_campaign_progress(
         completed_openings = [
             row
             for row in completed
-            if row["action_type"] == "open"
+            if row["action_type"] in {"open", "accumulate_asset"}
             and row["average_price"] is not None
             and float(row["average_price"]) > 0
         ]

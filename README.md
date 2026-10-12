@@ -70,7 +70,7 @@ The documented live baseline is:
 - asset campaign stakes `1% / 3% / 5% / 10%`
 - Bargain Goal `10%` gross
 - campaign capacity `50%`, with full deployment below `25%` remaining allowance
-- strictly improving SELL entry prices between completed levels of one campaign
+- strictly improving SELL and `ACCUMULATE_ASSET` BUY entry prices between completed campaign levels
 - at most `10` open Bargains per asset
 - deep-loss relief after `15d` at or below `-25%`; aging gates at `30d / 60d / 90d`
 

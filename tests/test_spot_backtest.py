@@ -942,6 +942,52 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(replay.campaigns["AAA"]["last_opening_price"], 101)
         self.assertEqual(len(replay.executions), 1)
 
+    def test_backtest_accumulation_level_requires_better_execution_price(self):
+        config = scenario(
+            (asset("AAA", minimum=0, objective="accumulate_asset"),),
+            starting_usdt=1000,
+        )
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 100))
+        replay.campaigns["AAA"] = {
+            "campaign_id": "buy-price-guard",
+            "active_side": "buy",
+            "highest_completed_level": 1,
+            "last_opening_price": 100,
+        }
+        action = {
+            "action_key": "accumulate_asset:buy-price-guard:level:2",
+            "action_type": "accumulate_asset",
+            "side": "buy",
+            "swing_id": None,
+            "campaign_id": "buy-price-guard",
+            "requested_quantity": 0.1,
+            "signal": {"level": 2, "current_price": 99},
+            "reason": {
+                "action_type": "accumulate_asset",
+                "maximum_opening_price_exclusive": 100,
+            },
+            "decided_at_ms": replay.start_ms,
+        }
+
+        rejected = replay._execute_action(
+            "AAA",
+            action,
+            observed_price=101,
+            timestamp_ms=replay.start_ms,
+        )
+        completed = replay._execute_action(
+            "AAA",
+            action,
+            observed_price=99,
+            timestamp_ms=replay.start_ms + 1,
+        )
+
+        self.assertFalse(rejected)
+        self.assertTrue(completed)
+        self.assertEqual(replay.campaigns["AAA"]["highest_completed_level"], 2)
+        self.assertEqual(replay.campaigns["AAA"]["last_opening_price"], 99)
+        self.assertEqual(len(replay.accumulations), 1)
+
     def test_report_title_uses_replay_period_instead_of_market_migration_details(self):
         legacy_name = "treasury-10-assets-real-quantities-6m-ton-to-gram"
 

@@ -1555,6 +1555,9 @@ def _create_spot_order_intent_preview(
             "minimum_opening_price_exclusive": _as_float(
                 payload.get("minimum_opening_price_exclusive")
             ),
+            "maximum_opening_price_exclusive": _as_float(
+                payload.get("maximum_opening_price_exclusive")
+            ),
             "treasury_intake": treasury_intake,
             "use_protected_cash": use_protected_cash,
             "estimated_protected_cash_required": protected_cash_required,

@@ -866,6 +866,18 @@ class SpotPortfolioBacktester:
                     close_profit_pct=self.scenario.progression.close_profit_pct,
                     estimated_fee_rate=self.scenario.execution.fee_rate,
                 )
+            if action["action_type"] == "accumulate_asset" and side == "buy":
+                maximum_opening_price = (action.get("reason") or {}).get(
+                    "maximum_opening_price_exclusive"
+                )
+                if (
+                    maximum_opening_price is not None
+                    and price >= float(maximum_opening_price)
+                ):
+                    raise ValueError(
+                        "Strategy accumulation level rejected because its execution price is not "
+                        "below the previous campaign opening."
+                    )
             quantity = float(quantity_decimal)
             if side == "buy":
                 required_quote = quantity * price * (1.0 + self.scenario.execution.fee_rate)
@@ -985,6 +997,7 @@ class SpotPortfolioBacktester:
                 int(campaign.get("highest_completed_level") or 0),
                 int(action.get("signal", {}).get("level") or 0),
             )
+            campaign["last_opening_price"] = price
             self.actions.append(
                 {
                     "timestamp_ms": timestamp_ms,

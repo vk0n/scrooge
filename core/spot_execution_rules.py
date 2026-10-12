@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_UP
+from decimal import (
+    Decimal,
+    InvalidOperation,
+    ROUND_CEILING,
+    ROUND_DOWN,
+    ROUND_FLOOR,
+    ROUND_HALF_UP,
+)
 from typing import Any
 
 
@@ -120,6 +127,36 @@ def next_sell_limit_price(
     next_price = (previous / tick_size).to_integral_value(rounding=ROUND_FLOOR) * tick_size
     next_price += tick_size
     next_price = max(next_price, min_price)
+    if max_price > 0 and next_price > max_price:
+        raise ValueError("Required Spot opening price exceeds the Binance maximum price.")
+    return next_price
+
+
+def next_buy_limit_price(
+    symbol_info: dict[str, Any],
+    previous_opening_price: float,
+) -> Decimal:
+    """Return the highest valid Binance price tick strictly below a prior BUY fill."""
+    filters = {
+        str(item.get("filterType") or ""): item
+        for item in symbol_info.get("filters", [])
+        if isinstance(item, dict)
+    }
+    price_filter = filters.get("PRICE_FILTER")
+    if not isinstance(price_filter, dict):
+        raise ValueError("Binance did not return a price-filter rule for this symbol.")
+    tick_size = as_decimal(price_filter.get("tickSize"))
+    previous = as_decimal(previous_opening_price)
+    min_price = as_decimal(price_filter.get("minPrice")) or Decimal("0")
+    max_price = as_decimal(price_filter.get("maxPrice")) or Decimal("0")
+    if tick_size is None or tick_size <= 0:
+        raise ValueError("Binance did not return a valid price tick for this symbol.")
+    if previous is None or previous <= 0:
+        raise ValueError("Previous Spot opening price must be greater than zero.")
+    next_price = (previous / tick_size).to_integral_value(rounding=ROUND_CEILING) * tick_size
+    next_price -= tick_size
+    if next_price < min_price or next_price <= 0:
+        raise ValueError("Required Spot opening price is below the Binance minimum price.")
     if max_price > 0 and next_price > max_price:
         raise ValueError("Required Spot opening price exceeds the Binance maximum price.")
     return next_price

@@ -71,7 +71,7 @@ Schema changes belong in explicit, forward-safe migration steps in `core/runtime
 - `spot_swing_target_ratchets`
 - `spot_manual_target_ratchets`
 
-`spot_strategy_campaigns.last_opening_price` stores the confirmed average fill of the highest completed SELL opening. It is preserved across `HOLD` and restarts, recovered from completed strategy intents when necessary, and reset by an opposite directional campaign.
+`spot_strategy_campaigns.last_opening_price` stores the confirmed average fill of the highest completed executable level: a SELL Bargain opening or an `ACCUMULATE_ASSET` BUY. It is preserved across `HOLD` and restarts, recovered from completed strategy intents when necessary, and reset by an opposite directional campaign.
 
 ## Treasury Accounting Source Of Truth
 

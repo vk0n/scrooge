@@ -260,33 +260,59 @@ def plan_spot_strategy_action(
                 },
             }
         elif opportunity == "buy" and objective == "accumulate_asset":
-            # Reserve deployment fails closed when a caller has not projected free reserve.
-            accumulation_quote = max(0.0, float(available_accumulation_quote or 0.0))
-            accumulation = plan_treasury_accumulation(
-                allocation_signal,
-                free_reserve_quote=accumulation_quote,
-                current_price=current_price,
-                config=resolved_config,
-            )
-            if accumulation.get("eligible"):
-                new_strategy_decision = {
-                    "action_type": "accumulate_asset",
-                    "side": "buy",
-                    "signal_level": level,
-                    "requested_quantity": float(accumulation["quantity"]),
+            previous_opening_price = campaign.get("last_opening_price")
+            try:
+                previous_opening_price = (
+                    float(previous_opening_price)
+                    if previous_opening_price is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                previous_opening_price = None
+            if (
+                previous_opening_price is not None
+                and math.isfinite(previous_opening_price)
+                and current_price >= previous_opening_price
+            ):
+                opening_price_hold = {
+                    "action_type": "hold",
                     "reason": {
-                        "action_type": "accumulate_asset",
-                        "signal": opportunity,
+                        "action_type": "hold",
+                        "hold_reason": "accumulation_level_price_not_improved",
                         "signal_level": level,
-                        "rolling_change_pct": signal.get("rolling_change_pct"),
-                        "base_tranche_pct": allocation_signal.get("base_tranche_pct"),
-                        "accumulation_tranche_pct": allocation_signal.get("accumulation_tranche_pct"),
-                        "final_tranche_pct": allocation_signal.get("final_tranche_pct"),
-                        "campaign_id": campaign.get("campaign_id"),
-                        "free_reserve_quote": accumulation.get("free_reserve_quote"),
-                        "planned_quote_to_spend": accumulation.get("quote_to_spend"),
+                        "market_price": current_price,
+                        "previous_opening_price": previous_opening_price,
                     },
                 }
+            else:
+                # Reserve deployment fails closed when a caller has not projected free reserve.
+                accumulation_quote = max(0.0, float(available_accumulation_quote or 0.0))
+                accumulation = plan_treasury_accumulation(
+                    allocation_signal,
+                    free_reserve_quote=accumulation_quote,
+                    current_price=current_price,
+                    config=resolved_config,
+                )
+                if accumulation.get("eligible"):
+                    new_strategy_decision = {
+                        "action_type": "accumulate_asset",
+                        "side": "buy",
+                        "signal_level": level,
+                        "requested_quantity": float(accumulation["quantity"]),
+                        "reason": {
+                            "action_type": "accumulate_asset",
+                            "signal": opportunity,
+                            "signal_level": level,
+                            "rolling_change_pct": signal.get("rolling_change_pct"),
+                            "base_tranche_pct": allocation_signal.get("base_tranche_pct"),
+                            "accumulation_tranche_pct": allocation_signal.get("accumulation_tranche_pct"),
+                            "final_tranche_pct": allocation_signal.get("final_tranche_pct"),
+                            "campaign_id": campaign.get("campaign_id"),
+                            "maximum_opening_price_exclusive": previous_opening_price,
+                            "free_reserve_quote": accumulation.get("free_reserve_quote"),
+                            "planned_quote_to_spend": accumulation.get("quote_to_spend"),
+                        },
+                    }
         elif opportunity == "sell":
             previous_opening_price = campaign.get("last_opening_price")
             try:

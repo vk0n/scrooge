@@ -545,6 +545,9 @@ class ProgressiveSpotSwingExecutor:
                             "minimum_opening_price_exclusive": (
                                 action.get("reason") or {}
                             ).get("minimum_opening_price_exclusive"),
+                            "maximum_opening_price_exclusive": (
+                                action.get("reason") or {}
+                            ).get("maximum_opening_price_exclusive"),
                             "reason_text": (
                                 "Progressive Swing opening tranche."
                                 if action["action_type"] == "open"
@@ -660,7 +663,7 @@ class ProgressiveSpotSwingExecutor:
                 consumed_quantity = float(intent.get("executed_quantity") or 0.0)
             opening_price = (
                 float(intent.get("average_price"))
-                if action["action_type"] == "open"
+                if action["action_type"] in {"open", "accumulate_asset"}
                 and intent is not None
                 and intent.get("average_price") is not None
                 else None
