@@ -771,7 +771,7 @@ function bargainStepLine(
 ): string {
   if (!coordinates.length) return "";
   return coordinates.slice(1).reduce(
-    (path, coordinate) => `${path} H ${coordinate.x} V ${coordinate[valueKey]}`,
+    (path, coordinate) => `${path} V ${coordinate[valueKey]} H ${coordinate.x}`,
     `M ${coordinates[0].x} ${coordinates[0][valueKey]}`
   );
 }
@@ -783,7 +783,7 @@ function bargainOpenBand(coordinates: BargainTimelineCoordinate[]): string {
   path += ` L ${last.x} ${last.closedY}`;
   for (let index = coordinates.length - 1; index > 0; index -= 1) {
     const previous = coordinates[index - 1];
-    path += ` V ${previous.closedY} H ${previous.x}`;
+    path += ` H ${previous.x} V ${previous.closedY}`;
   }
   return `${path} Z`;
 }
