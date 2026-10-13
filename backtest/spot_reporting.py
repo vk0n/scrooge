@@ -10,7 +10,11 @@ from typing import Any
 
 from backtest.spot_bargain_analysis import build_bargain_analysis
 from backtest.spot_engine import SpotBacktestResult
-from backtest.spot_report_html import display_spot_report_title, write_spot_backtest_html
+from backtest.spot_report_html import (
+    apply_terminal_buyback_view,
+    render_spot_backtest_markdown,
+    write_spot_backtest_html,
+)
 from backtest.spot_scenario import scenario_as_dict, write_scenario_snapshot
 from core.spot_progression import policy_sellable_reference
 from core.spot_swing import calculate_swing_economics
@@ -1177,7 +1181,7 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
     )
     weighted_actual_recovery_pct = weighted_recovery("actual_final_quantity_pct")
     relative_wealth = dict(result.risk_metrics["relative_wealth"])
-    return {
+    report = {
         "scenario": {
             "name": result.scenario.name,
             "start": result.scenario.start.isoformat(),
@@ -1324,6 +1328,7 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
         "per_asset": per_asset,
         "rejected_orders": len(result.rejections),
     }
+    return apply_terminal_buyback_view(report)
 
 
 def build_monthly_results(result: SpotBacktestResult) -> list[dict[str, Any]]:
@@ -1490,141 +1495,10 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         ],
     )
 
-    portfolio = report["portfolio"]
-    swing_metrics = report["swings"]
-    bargain_analysis = report["bargain_analysis"]
-    bargain_overview = bargain_analysis["overview"]
-    cleanup_metrics = report["waiter_cleanup"]
-    accumulation_metrics = report["treasury_accumulation"]["overview"]
-    campaign_metrics = report["sell_campaigns"]
-    success_metrics = report["success_metrics"]
-    edge_metrics = success_metrics["edge_vs_hodl"]
-    reserve_metrics = success_metrics["free_reserve"]
-    recovery_metrics = success_metrics["asset_recovery"]
-    closure_rate = bargain_overview["closure_rate_pct"]
-    median_duration = bargain_overview["median_duration_hours"]
-    p90_duration = bargain_overview["duration_p90_hours"]
-    report_title = display_spot_report_title(
-        result.scenario.name,
-        result.scenario.start.isoformat(),
-        result.scenario.end.isoformat(),
+    (target / "report.md").write_text(
+        render_spot_backtest_markdown(report),
+        encoding="utf-8",
     )
-    markdown = [
-        f"# {report_title}",
-        "",
-        "## Portfolio",
-        "",
-        f"- Period: {result.scenario.start.isoformat()} to {result.scenario.end.isoformat()}",
-        f"- Starting Treasury Value: ${portfolio['starting_treasury_value']:,.2f}",
-        f"- Final Treasury Value: ${portfolio['final_treasury_value']:,.2f}",
-        f"- HODL Final Treasury Value: ${portfolio['hodl_final_treasury_value']:,.2f}",
-        f"- Difference vs HODL: ${portfolio['difference_vs_hodl']:,.2f}",
-        f"- Total Return: {portfolio['total_return_pct']:.2f}%",
-        f"- HODL Return: {portfolio['hodl_return_pct']:.2f}%",
-        f"- Edge vs HODL: {edge_metrics['difference_pct_points']:.2f} pp ({edge_metrics['relative_outperformance_pct']:.2f}% relative)",
-        f"- Free Reserve: ${reserve_metrics['quote']:,.2f} ({reserve_metrics['pct_of_initial_invested_capital']:.2f}% of initial invested capital)",
-        f"- Weighted Physical Asset Recovery: {recovery_metrics['weighted_actual_quantity_pct']:.2f}%",
-        f"- Weighted Effective Asset Recovery: {recovery_metrics['weighted_effective_quantity_pct']:.2f}% (includes hypothetical buyback of open SELL inventory from its committed cash)",
-        f"- Equal-weight Effective Asset Recovery: {recovery_metrics['average_effective_quantity_pct']:.2f}%",
-        f"- Maximum Treasury Drawdown: {portfolio['maximum_treasury_drawdown_pct']:.2f}%",
-        "",
-        "## Bargains",
-        "",
-        f"- Opened: {swing_metrics['total_opened']}",
-        f"- Closed: {swing_metrics['total_closed']}",
-        f"- Still open: {swing_metrics['still_open']}",
-        f"- Closed Bargain PnL: ${swing_metrics['realized_pnl_quote']:,.2f}",
-        f"- Unrealized open PnL: ${swing_metrics['unrealized_open_pnl_quote']:,.2f}",
-        f"- Lifecycle PnL: ${bargain_overview['net_pnl_quote']:,.2f}",
-        f"- Closure rate: {closure_rate:.2f}%" if closure_rate is not None else "- Closure rate: N/A",
-        (
-            f"- Median closed duration: {median_duration:.2f} hours"
-            if median_duration is not None
-            else "- Median closed duration: N/A"
-        ),
-        (
-            f"- P90 closed duration: {p90_duration:.2f} hours"
-            if p90_duration is not None
-            else "- P90 closed duration: N/A"
-        ),
-        f"- Underwater open Bargains: {bargain_analysis['risk']['underwater_open_count']}",
-        f"- Underwater open lifecycle PnL: ${bargain_analysis['risk']['underwater_open_pnl_quote']:,.2f}",
-        "",
-        "## Treasury Accumulation",
-        "",
-        f"- Accumulation buys: {accumulation_metrics['count']}",
-        f"- USDT deployed: ${accumulation_metrics['usdt_deployed']:,.2f}",
-        f"- Net asset acquired: {accumulation_metrics['net_asset_acquired']:,.8f}",
-        f"- Target growth: {accumulation_metrics['target_growth_quantity']:,.8f}",
-        "",
-        "## SELL Campaign Capacity",
-        "",
-        f"- Total signal SELL campaigns: {campaign_metrics['total_signal_sell_campaigns']}",
-        f"- Executable SELL campaigns: {campaign_metrics['executable_sell_campaigns']}",
-        f"- Zero-capacity SELL campaigns: {campaign_metrics['zero_capacity_sell_campaigns']}",
-        f"- Average utilization: {campaign_metrics['average_utilization_pct']:.2f}%",
-        f"- Median utilization: {campaign_metrics['median_utilization_pct']:.2f}%",
-        f"- Normal executable campaigns: {campaign_metrics['normal_executable_campaigns']}",
-        f"- Full-deploy executable campaigns: {campaign_metrics['full_deploy_executable_campaigns']}",
-        f"- Interrupted by opposite signal: {campaign_metrics['interrupted_by_opposite_signal']}",
-        "",
-        "## Waiter Cleanup",
-        "",
-        f"- Enabled: {'yes' if cleanup_metrics['enabled'] else 'no'}",
-        f"- Cleanup closes: {cleanup_metrics['cleanup_closes_total']}",
-        f"- Lifecycle PnL of cleanup-resolved Bargains: ${cleanup_metrics['accounting']['lifecycle_pnl_quote']:,.2f}",
-        f"- Pre-cleanup mark-to-market PnL: ${cleanup_metrics['accounting']['pre_cleanup_mark_to_market_pnl_quote']:,.2f}",
-        f"- Cleanup settlement delta: ${cleanup_metrics['accounting']['cleanup_settlement_delta_quote']:,.2f}",
-        (
-            "- Restored inventory PnL: "
-            f"${cleanup_metrics['accounting']['restored_inventory_pnl_quote']:,.2f}"
-        ),
-        (
-            "- Unrestored inventory PnL: "
-            f"${cleanup_metrics['accounting']['inventory_residual_pnl_quote']:,.2f}"
-        ),
-        (
-            "- Cumulative cleanup BUY volume (turnover, not capital at once): "
-            f"${cleanup_metrics['accounting']['repurchase_spend_quote']:,.2f}"
-        ),
-        (
-            "- Cleanup BUY count / average / maximum: "
-            f"{cleanup_metrics['accounting']['repurchase_count']} / "
-            f"${cleanup_metrics['accounting']['average_repurchase_spend_quote'] or 0:,.2f} / "
-            f"${cleanup_metrics['accounting']['maximum_repurchase_spend_quote'] or 0:,.2f}"
-        ),
-        (
-            "- Net reserve deployed: "
-            f"${cleanup_metrics['accounting']['net_reserve_deployed_quote']:,.2f}"
-        ),
-        (
-            "- Inventory deficit market value at close: "
-            f"${cleanup_metrics['accounting']['inventory_deficit_market_value_quote']:,.2f}"
-        ),
-        (
-            "- Inventory deficit quantity: "
-            + ", ".join(
-                f"{symbol} {quantity:,.8f}"
-                for symbol, quantity in cleanup_metrics["accounting"][
-                    "inventory_deficit_quantity_by_asset"
-                ].items()
-            )
-        ),
-        f"- Gross cleanup losses: ${cleanup_metrics['realized_cleanup_loss_quote']:,.2f}",
-        f"- Gross cleanup gains: ${cleanup_metrics['realized_cleanup_profit_quote']:,.2f}",
-        (
-            "- Capacity-blocked cycles: "
-            f"{cleanup_metrics['capacity']['capacity_blocked_cycles']}"
-        ),
-        f"- Unique capacity-blocked opportunities: {cleanup_metrics['capacity']['unique_capacity_blocked_opportunities']}",
-        f"- Capacity cleanup actions: {cleanup_metrics['capacity']['capacity_cleanup_actions']}",
-        f"- Open Bargains at end: {cleanup_metrics['open_bargains']['at_end']}",
-        f"- Underwater open Bargains: {cleanup_metrics['open_bargains']['underwater_at_end']}",
-        f"- 90+ day open Bargains: {cleanup_metrics['open_bargains']['age_90_plus']}",
-        "",
-        "This is a strategy backtest, not an order-book or microstructure simulation.",
-    ]
-    (target / "report.md").write_text("\n".join(markdown) + "\n", encoding="utf-8")
     write_spot_backtest_html(
         target / "report.html",
         report,

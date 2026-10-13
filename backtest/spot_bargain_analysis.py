@@ -4,7 +4,6 @@ from collections.abc import Callable
 from statistics import mean, median
 from typing import Any
 
-
 DURATION_BUCKETS = (
     ("under_1_day", "< 1 day", 0.0, 1.0),
     ("1_to_7_days", "1-7 days", 1.0, 7.0),

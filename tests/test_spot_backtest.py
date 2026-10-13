@@ -27,6 +27,7 @@ from backtest.spot_report_html import (
     _free_reserve,
     _retained_reserve,
     _spendable_reserve,
+    apply_terminal_buyback_view,
     display_spot_report_title,
 )
 from backtest.spot_scenario import (
@@ -365,6 +366,47 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(accounting["lifecycle_pnl_quote"], -105)
         self.assertEqual(accounting["cleanup_settlement_delta_quote"], -5)
         self.assertEqual(accounting["cleanup_turnover_quote"], 1100)
+
+    def test_terminal_report_values_committed_cash_as_effective_inventory(self):
+        report = {
+            "portfolio": {
+                "starting_treasury_value": 100,
+                "final_treasury_value": 85,
+                "hodl_final_treasury_value": 50,
+                "hodl_return_pct": -50,
+                "initial_invested_capital": 100,
+                "relative_wealth": {},
+            },
+            "shared_usdt": {"ending_available": 20},
+            "success_metrics": {},
+            "per_asset": {
+                "AAA": {
+                    "market": {"ending_price": 5},
+                    "final": {},
+                    "benchmark": {"hodl_value": 50, "scrooge_asset_value": 50},
+                    "asset_recovery": {"effective_final_quantity": 12},
+                }
+            },
+        }
+
+        normalized = apply_terminal_buyback_view(report)
+        normalized_again = apply_terminal_buyback_view(normalized)
+
+        self.assertIs(normalized_again, normalized)
+        self.assertEqual(normalized["portfolio"]["final_treasury_value"], 80)
+        self.assertEqual(normalized["portfolio"]["difference_vs_hodl"], 30)
+        self.assertEqual(normalized["portfolio"]["final_allocation_pct"]["AAA"], 75)
+        self.assertEqual(normalized["portfolio"]["final_allocation_pct"]["USDT"], 25)
+        self.assertEqual(
+            normalized["per_asset"]["AAA"]["benchmark"]["scrooge_asset_value"],
+            60,
+        )
+        self.assertEqual(
+            normalized["per_asset"]["AAA"]["benchmark"][
+                "physical_scrooge_asset_value"
+            ],
+            50,
+        )
 
     def test_per_candle_drawdown_captures_intrahour_trough(self):
         base = scenario((asset("AAA", objective=None),), hours=2, starting_usdt=0)
@@ -1904,11 +1946,21 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertIn('"protectedReserve"', report_html)
             self.assertIn('"spendableReserve"', report_html)
             self.assertIn("Bargain History", report_html)
-            self.assertIn("Bargain Analytics", report_html)
+            self.assertIn("Bargain Operations", report_html)
+            self.assertIn("Final Inventory", report_html)
+            self.assertIn("Committed Buyback", report_html)
+            self.assertIn("Effective Final", report_html)
+            self.assertIn("HODL Asset Value", report_html)
+            self.assertIn("Asset Delta vs HODL", report_html)
+            self.assertIn("Delta vs HODL", report_html)
             self.assertIn("Waiter Cleanup", report_html)
+            self.assertNotIn("Cleanup-resolved Lifecycle PnL", report_html)
+            self.assertNotIn("Bargain Health", report_html)
+            self.assertNotIn("Inventory at settlement", report_html)
+            self.assertNotIn("Timing Breakdown", report_html)
             self.assertIn("Entry Cost", report_html)
             self.assertIn("Total Gain", report_html)
-            self.assertIn("<span>Closed</span><span>Open</span>", report_html)
+            self.assertIn("Final Price", report_html)
             self.assertIn('"swingHistory"', report_html)
             self.assertIn('"bargainAnalysis"', report_html)
             self.assertIn(result.swings[0]["swing_id"], report_html)

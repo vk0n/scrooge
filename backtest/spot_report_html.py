@@ -12,6 +12,7 @@ from backtest.spot_bargain_analysis import build_bargain_analysis
 
 
 MAX_CHART_POINTS = 720
+MAX_EMBEDDED_SWINGS_PER_ASSET = 100
 
 
 def _number(value: Any) -> float:
@@ -75,13 +76,200 @@ def display_spot_report_title(name: str, start: str | None = None, end: str | No
     return " ".join(acronyms.get(word.lower(), word.capitalize()) for word in words)
 
 
+def apply_terminal_buyback_view(report: dict[str, Any]) -> dict[str, Any]:
+    """Make post-buyback marked value the canonical terminal portfolio result."""
+    portfolio = report.get("portfolio") or {}
+    if portfolio.get("valuation_basis") == "post_committed_buyback":
+        return report
+
+    effective_values: dict[str, float] = {}
+    for symbol, item in (report.get("per_asset") or {}).items():
+        recovery = item.get("asset_recovery") or {}
+        final_price = _number((item.get("market") or {}).get("ending_price"))
+        effective_quantity = _number(recovery.get("effective_final_quantity"))
+        effective_value = effective_quantity * final_price
+        effective_values[symbol] = effective_value
+        item.setdefault("final", {})["effective_quantity"] = effective_quantity
+        item["final"]["effective_market_value"] = effective_value
+        benchmark = item.setdefault("benchmark", {})
+        benchmark["physical_scrooge_asset_value"] = _number(
+            benchmark.get("scrooge_asset_value")
+        )
+        benchmark["scrooge_asset_value"] = effective_value
+
+    free_reserve = _number((report.get("shared_usdt") or {}).get("ending_available"))
+    final_value = sum(effective_values.values()) + free_reserve
+    starting_value = _number(portfolio.get("starting_treasury_value"))
+    hodl_value = _number(portfolio.get("hodl_final_treasury_value"))
+    initial_capital = _number(portfolio.get("initial_invested_capital"))
+    portfolio["pre_buyback_treasury_value"] = _number(
+        portfolio.get("final_treasury_value")
+    )
+    portfolio["final_treasury_value"] = final_value
+    portfolio["difference_vs_hodl"] = final_value - hodl_value
+    portfolio["total_return_pct"] = (
+        (final_value / starting_value - 1.0) * 100.0 if starting_value > 0 else 0.0
+    )
+    portfolio["total_gain_on_initial_capital"] = final_value - initial_capital
+    portfolio["total_gain_on_initial_capital_pct"] = (
+        (final_value - initial_capital) / initial_capital * 100.0
+        if initial_capital > 0
+        else None
+    )
+    portfolio["edge_vs_hodl_pct_points"] = (
+        (final_value - hodl_value) / starting_value * 100.0
+        if starting_value > 0
+        else None
+    )
+    portfolio["edge_vs_hodl_relative_pct"] = (
+        (final_value / hodl_value - 1.0) * 100.0 if hodl_value > 0 else None
+    )
+    portfolio["final_allocation_pct"] = {
+        **{
+            symbol: value / final_value * 100.0 if final_value > 0 else 0.0
+            for symbol, value in effective_values.items()
+        },
+        "USDT": free_reserve / final_value * 100.0 if final_value > 0 else 0.0,
+    }
+    portfolio["valuation_basis"] = "post_committed_buyback"
+    relative_wealth = portfolio.get("relative_wealth") or {}
+    relative_wealth["terminal"] = final_value / hodl_value if hodl_value > 0 else None
+    portfolio["relative_wealth"] = relative_wealth
+
+    success = report.get("success_metrics") or {}
+    success["edge_vs_hodl"] = {
+        "quote": final_value - hodl_value,
+        "strategy_return_pct": portfolio["total_return_pct"],
+        "hodl_return_pct": portfolio.get("hodl_return_pct"),
+        "difference_pct_points": portfolio["edge_vs_hodl_pct_points"],
+        "relative_outperformance_pct": portfolio["edge_vs_hodl_relative_pct"],
+    }
+    report["success_metrics"] = success
+    return report
+
+
+def render_spot_backtest_markdown(report: dict[str, Any]) -> str:
+    report = apply_terminal_buyback_view(report)
+    scenario = report["scenario"]
+    portfolio = report["portfolio"]
+    swings = report["swings"]
+    analysis = report["bargain_analysis"]
+    cleanup = report["waiter_cleanup"]
+    accumulation = report["treasury_accumulation"]["overview"]
+    campaigns = report["sell_campaigns"]
+    success = report["success_metrics"]
+    edge = success["edge_vs_hodl"]
+    reserve = success["free_reserve"]
+    recovery_metrics = success["asset_recovery"]
+    overview = analysis["overview"]
+
+    def money(value: Any) -> str:
+        numeric = _number(value)
+        return f"-${abs(numeric):,.2f}" if numeric < 0 else f"${numeric:,.2f}"
+
+    inventory_rows = []
+    effective_asset_value = 0.0
+    hodl_asset_value = 0.0
+    for symbol, item in sorted(report["per_asset"].items()):
+        asset_recovery = item.get("asset_recovery") or {}
+        market = item.get("market") or {}
+        benchmark = item.get("benchmark") or {}
+        physical_quantity = _number(asset_recovery.get("actual_final_quantity"))
+        buyback_quantity = _number(asset_recovery.get("hypothetical_buyback_quantity"))
+        effective_quantity = _number(asset_recovery.get("effective_final_quantity"))
+        final_price = _number(market.get("ending_price"))
+        hodl_value = _number(benchmark.get("hodl_value"))
+        effective_value = effective_quantity * final_price
+        value_difference = effective_value - hodl_value
+        hodl_asset_value += hodl_value
+        effective_asset_value += effective_value
+        inventory_rows.append(
+            "| "
+            f"{symbol} | {physical_quantity:,.8f} | {buyback_quantity:,.8f} | "
+            f"{effective_quantity:,.8f} | {_number(asset_recovery.get('initial_quantity')):,.8f} | "
+            f"{_number(asset_recovery.get('effective_final_quantity_pct')):.2f}% | "
+            f"{money(final_price)} | {money(hodl_value)} | {money(effective_value)} | "
+            f"{money(value_difference)} |"
+        )
+    free_reserve = _number(report["shared_usdt"].get("ending_available"))
+    post_buyback_value = effective_asset_value + free_reserve
+    median_duration = overview.get("median_duration_hours")
+    p90_duration = overview.get("duration_p90_hours")
+    lines = [
+        f"# {display_spot_report_title(str(scenario.get('name') or 'Spot Research'), scenario.get('start'), scenario.get('end'))}",
+        "",
+        "## Portfolio",
+        "",
+        f"- Period: {scenario.get('start')} to {scenario.get('end')}",
+        f"- Starting Treasury Value: ${_number(portfolio.get('starting_treasury_value')):,.2f}",
+        f"- Final Treasury Value: ${_number(portfolio.get('final_treasury_value')):,.2f}",
+        f"- HODL Final Treasury Value: ${_number(portfolio.get('hodl_final_treasury_value')):,.2f}",
+        f"- Difference vs HODL: ${_number(portfolio.get('difference_vs_hodl')):,.2f}",
+        f"- Total Return: {_number(portfolio.get('total_return_pct')):.2f}%",
+        f"- HODL Return: {_number(portfolio.get('hodl_return_pct')):.2f}%",
+        f"- Edge vs HODL: {_number(edge.get('difference_pct_points')):.2f} pp ({_number(edge.get('relative_outperformance_pct')):.2f}% relative)",
+        f"- Free Reserve: ${_number(reserve.get('quote')):,.2f} ({_number(reserve.get('pct_of_initial_invested_capital')):.2f}% of initial invested capital)",
+        f"- Weighted Physical Asset Recovery: {_number(recovery_metrics.get('weighted_actual_quantity_pct')):.2f}%",
+        f"- Weighted Effective Asset Recovery: {_number(recovery_metrics.get('weighted_effective_quantity_pct')):.2f}%",
+        f"- Maximum Treasury Drawdown: {_number(portfolio.get('maximum_treasury_drawdown_pct')):.2f}%",
+        "",
+        "## Final Inventory",
+        "",
+        "Committed cash from open SELL Bargains is converted into a hypothetical buyback using the final market mark and configured execution costs. It is therefore counted in effective inventory, not again as free cash.",
+        "",
+        "| Asset | Physical Final | Committed Buyback | Effective Final | Start | Recovery | Final Price | HODL Value | Effective Value | Delta vs HODL |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        *inventory_rows,
+        "",
+        f"- HODL asset value at final marks: {money(hodl_asset_value)}",
+        f"- Effective asset value at final marks: {money(effective_asset_value)}",
+        f"- Asset value difference vs HODL: {money(effective_asset_value - hodl_asset_value)}",
+        f"- Free Vault Reserve after commitments: {money(free_reserve)}",
+        f"- Final Treasury Value after committed buybacks: {money(post_buyback_value)}",
+        "- Buyback quantity includes configured execution costs; effective value uses final market marks and does not simulate a subsequent terminal sale.",
+        "",
+        "## Bargain Operations",
+        "",
+        f"- Opened / closed / open: {swings.get('total_opened', 0)} / {swings.get('total_closed', 0)} / {swings.get('still_open', 0)}",
+        f"- Closure rate: {_number(overview.get('closure_rate_pct')):.2f}%",
+        f"- Median / P90 closed duration: {_number(median_duration):.2f} / {_number(p90_duration):.2f} hours",
+        f"- Underwater open Bargains: {analysis.get('risk', {}).get('underwater_open_count', 0)}",
+        "",
+        "## Treasury Accumulation",
+        "",
+        f"- Accumulation buys: {accumulation.get('count', 0)}",
+        f"- USDT deployed: ${_number(accumulation.get('usdt_deployed')):,.2f}",
+        f"- Net asset acquired: {_number(accumulation.get('net_asset_acquired')):,.8f}",
+        f"- Target growth: {_number(accumulation.get('target_growth_quantity')):,.8f}",
+        "",
+        "## SELL Campaign Capacity",
+        "",
+        f"- Total / executable / zero-capacity campaigns: {campaigns.get('total_signal_sell_campaigns', 0)} / {campaigns.get('executable_sell_campaigns', 0)} / {campaigns.get('zero_capacity_sell_campaigns', 0)}",
+        f"- Average utilization: {_number(campaigns.get('average_utilization_pct')):.2f}%",
+        f"- Interrupted by opposite signal: {campaigns.get('interrupted_by_opposite_signal', 0)}",
+        "",
+        "## Waiter Cleanup",
+        "",
+        f"- Enabled / closes: {'yes' if cleanup.get('enabled') else 'no'} / {cleanup.get('cleanup_closes_total', 0)}",
+        f"- Unique blocked opportunities / capacity relief actions: {cleanup.get('capacity', {}).get('unique_capacity_blocked_opportunities', 0)} / {cleanup.get('capacity', {}).get('capacity_cleanup_actions', 0)}",
+        f"- Open at end / 90+ days: {cleanup.get('open_bargains', {}).get('at_end', 0)} / {cleanup.get('open_bargains', {}).get('age_90_plus', 0)}",
+        "",
+        "This is a strategy backtest, not an order-book or microstructure simulation.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _report_payload(
     report: dict[str, Any],
     equity: list[dict[str, Any]],
     monthly: list[dict[str, Any]],
     swings: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    sampled_equity = _sample_rows(equity)
+    report = apply_terminal_buyback_view(report)
+    portfolio = report["portfolio"]
+    sampled_equity = [dict(item) for item in _sample_rows(equity)]
+    if sampled_equity:
+        sampled_equity[-1]["treasury_value"] = portfolio["final_treasury_value"]
     assets = []
     for symbol, item in sorted(report["per_asset"].items()):
         trading = item["trading"]
@@ -102,14 +290,21 @@ def _report_payload(
                 "scroogeValue": _number(benchmark.get("scrooge_asset_value")),
                 "startingQuantity": _number(starting.get("quantity")),
                 "finalQuantity": _number(final.get("quantity")),
+                "finalPrice": _number(item["market"].get("ending_price")),
                 "actualQuantityPct": _number(
                     item.get("asset_recovery", {}).get("actual_final_quantity_pct")
+                ),
+                "effectiveFinalQuantity": _number(
+                    item.get("asset_recovery", {}).get("effective_final_quantity")
                 ),
                 "effectiveQuantityPct": _number(
                     item.get("asset_recovery", {}).get("effective_final_quantity_pct")
                 ),
                 "hypotheticalBuybackQuantity": _number(
                     item.get("asset_recovery", {}).get("hypothetical_buyback_quantity")
+                ),
+                "committedBuybackCash": _number(
+                    item.get("asset_recovery", {}).get("open_sell_committed_cash")
                 ),
                 "targetQuantity": _number(final.get("target_holding")),
                 "opened": int(trading.get("total_opened") or 0),
@@ -152,7 +347,6 @@ def _report_payload(
         .get("fees_by_asset", {})
         .values()
     )
-    portfolio = report["portfolio"]
     swing_history: dict[str, list[dict[str, Any]]] = {
         symbol: [] for symbol in report["scenario"]["asset_order"]
     }
@@ -216,8 +410,13 @@ def _report_payload(
         }
         symbol = str(swing.get("asset_symbol") or "")
         swing_history.setdefault(symbol, []).append(compact_swing)
-    for items in swing_history.values():
+    swing_history_counts: dict[str, int] = {}
+    for symbol, items in swing_history.items():
         items.sort(key=lambda item: item["openedAtMs"], reverse=True)
+        swing_history_counts[symbol] = len(items)
+        del items[MAX_EMBEDDED_SWINGS_PER_ASSET:]
+    cleanup_report = report.get("waiter_cleanup") or {}
+    analysis_report = report.get("bargain_analysis") or build_bargain_analysis(swings)
 
     return {
         "scenario": report["scenario"],
@@ -226,9 +425,38 @@ def _report_payload(
         "reserve": report["shared_usdt"],
         "swings": report["swings"],
         "treasuryAccumulation": report.get("treasury_accumulation") or {},
-        "sellCampaigns": report.get("sell_campaigns") or {},
-        "waiterCleanup": report.get("waiter_cleanup") or {},
-        "bargainAnalysis": report.get("bargain_analysis") or build_bargain_analysis(swings),
+        "sellCampaigns": {
+            key: (report.get("sell_campaigns") or {}).get(key)
+            for key in (
+                "total_signal_sell_campaigns",
+                "executable_sell_campaigns",
+                "zero_capacity_sell_campaigns",
+                "average_utilization_pct",
+                "interrupted_by_opposite_signal",
+            )
+        },
+        "waiterCleanup": {
+            "enabled": cleanup_report.get("enabled"),
+            "cleanup_attempts_total": cleanup_report.get("cleanup_attempts_total"),
+            "cleanup_closes_total": cleanup_report.get("cleanup_closes_total"),
+            "open_bargains": cleanup_report.get("open_bargains") or {},
+            "capacity": cleanup_report.get("capacity") or {},
+            "by_reason": {
+                reason: {
+                    "closes": item.get("closes"),
+                    "cleanup_executions": item.get("cleanup_executions"),
+                }
+                for reason, item in (cleanup_report.get("by_reason") or {}).items()
+            },
+        },
+        "bargainAnalysis": {
+            "overview": analysis_report.get("overview") or {},
+            "risk": analysis_report.get("risk") or {},
+            "notable": {
+                "worst_open": (analysis_report.get("notable") or {}).get("worst_open")
+                or []
+            },
+        },
         "badCases": report["bad_cases"],
         "rejectedOrders": report["rejected_orders"],
         "fees": fees,
@@ -257,6 +485,7 @@ def _report_payload(
         ],
         "assets": assets,
         "swingHistory": swing_history,
+        "swingHistoryCounts": swing_history_counts,
     }
 
 
@@ -310,8 +539,14 @@ def write_report_from_artifacts(artifact_dir: str | Path) -> Path:
     if scenario_name.lower().replace("_", "-").startswith("treasury-10-assets-real-quantities"):
         report["scenario"]["name"] = "scrooge-treasury-portfolio-replay"
     report["bargain_analysis"] = build_bargain_analysis(swings)
+    report.pop("bargain_accounting", None)
+    apply_terminal_buyback_view(report)
     summary_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (root / "report.md").write_text(
+        render_spot_backtest_markdown(report),
         encoding="utf-8",
     )
     return write_spot_backtest_html(root / "report.html", report, equity, monthly, swings)
@@ -455,36 +690,27 @@ _HTML = r'''<!doctype html>
     .score span { color: var(--muted); font-size: 10px; }
     .callout { margin-top: 16px; border-left: 2px solid var(--red); padding: 10px 13px; color: #d7bac3; background: rgba(67,17,33,.27); font-size: 11px; line-height: 1.55; }
 
+    .inventory-table { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: 13px; }
+    .inventory-row { display: grid; grid-template-columns: 70px repeat(5,minmax(105px,1fr)) 90px repeat(3,minmax(125px,1fr)); gap: 14px; align-items: center; min-width: 1280px; padding: 12px 14px; border-top: 1px solid var(--line-soft); font-size: 12px; }
+    .inventory-row:first-child { border-top: 0; }
+    .inventory-row.header { color: var(--dim); background: #0a0f16; font-size: 10px; text-transform: uppercase; }
+    .inventory-row > :not(:first-child) { text-align: right; }
+
     #bargainAnalytics { padding: 22px; }
     #bargainAnalytics h2 { font-size: 22px; }
     #bargainAnalytics > .card-head .subtitle { font-size: 12px; }
     .analysis-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 17px; }
+    #finalInventoryKpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    #accumulationKpis, #sellCampaignKpis, #analysisKpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    #cleanupKpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     .analysis-kpi { min-width: 0; min-height: 104px; padding: 15px; border: 1px solid var(--line-soft); border-radius: 13px; background: linear-gradient(145deg, rgba(17,25,37,.92), rgba(8,12,18,.92)); }
     .analysis-kpi span { display: block; color: var(--muted); font-size: 11px; }
     .analysis-kpi strong { display: block; margin-top: 10px; overflow: hidden; font-size: 22px; text-overflow: ellipsis; }
     .analysis-kpi small { display: block; margin-top: 7px; color: var(--dim); font-size: 10px; line-height: 1.4; }
-    .analysis-grid { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(380px, .82fr); gap: 16px; }
     .analysis-panel { min-width: 0; padding: 17px; border: 1px solid var(--line-soft); border-radius: 15px; background: rgba(7,11,17,.62); }
     .analysis-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
     .analysis-panel-head strong { font-size: 15px; }
     .analysis-panel-head span { color: var(--muted); font-size: 11px; line-height: 1.45; }
-    .analysis-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 13px; }
-    .analysis-tab { border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; color: var(--muted); background: #0b1119; cursor: pointer; font-size: 11px; }
-    .analysis-tab:hover, .analysis-tab.active { color: var(--ink); border-color: #5e7da8; background: #17253a; }
-    .breakdown-table { display: grid; }
-    .breakdown-row { display: grid; grid-template-columns: minmax(120px,1.25fr) 50px 56px 50px 104px 82px 72px; gap: 10px; align-items: center; padding: 11px 5px; border-top: 1px solid var(--line-soft); font-size: 12px; }
-    .breakdown-row.header { border-top: 0; color: var(--dim); font-size: 10px; text-transform: uppercase; }
-    .breakdown-row > :not(:first-child) { text-align: right; }
-    .breakdown-label { display: flex; align-items: center; gap: 9px; min-width: 0; }
-    .breakdown-label::before { content: ""; width: 7px; height: 26px; flex: 0 0 auto; border-radius: 4px; background: var(--row-color); }
-    .breakdown-label strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .outcome-stack { display: flex; height: 22px; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 999px; background: #080c12; }
-    .outcome-slice { width: var(--width); min-width: 2px; background: var(--slice-color); }
-    .outcome-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 15px; margin-top: 15px; }
-    .outcome-item { display: grid; grid-template-columns: 10px 1fr auto; gap: 9px; align-items: center; font-size: 11px; }
-    .outcome-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--slice-color); }
-    .outcome-item span { color: var(--muted); }
-    .scatter-wrap { height: 300px; }
     .risk-list { display: grid; gap: 8px; }
     .risk-row { display: grid; grid-template-columns: 58px minmax(0,1fr) 68px 90px; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid var(--line-soft); border-radius: 9px; color: inherit; background: #0a0f16; text-decoration: none; font-size: 11px; }
     .risk-row:hover { border-color: #5e718e; background: #101925; }
@@ -575,7 +801,7 @@ _HTML = r'''<!doctype html>
       .donut { width: min(230px, 75vw); margin: 0 auto; }
       .bargain-score { grid-template-columns: 1fr 1fr; }
       .analysis-kpis { grid-template-columns: repeat(3, 1fr); }
-      .analysis-grid { grid-template-columns: 1fr; }
+      #finalInventoryKpis, #accumulationKpis, #sellCampaignKpis, #analysisKpis, #cleanupKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .cleanup-reason { grid-template-columns: minmax(130px,1fr) auto; }
       .cleanup-reason > span:not(:first-child) { grid-column: 1 / -1; grid-row: 2; text-align: left; }
       .bar-row { grid-template-columns: 45px 1fr 68px; }
@@ -594,9 +820,6 @@ _HTML = r'''<!doctype html>
     @media (max-width: 520px) {
       #bargainAnalytics { padding: 16px; }
       .analysis-kpis { grid-template-columns: repeat(2, 1fr); }
-      .breakdown-table { overflow-x: auto; }
-      .breakdown-row { min-width: 740px; }
-      .outcome-list { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -637,76 +860,43 @@ _HTML = r'''<!doctype html>
         <div class="chart-wrap compact"><canvas id="reserveChart"></canvas><div class="tooltip"></div></div>
       </article>
 
-      <article class="card narrow">
-        <div class="card-head"><div><h2>Bargain Health</h2><div class="subtitle">Closed profit versus unfinished exposure.</div></div></div>
-        <div class="bargain-score" id="bargainScore"></div>
-        <div class="bar-list" id="ageBuckets"></div>
-        <div class="callout" id="bargainCallout"></div>
+      <article class="card full" id="finalInventory">
+        <div class="card-head"><div><h2>Final Inventory</h2><div class="subtitle">Physical holdings plus the asset quantity recoverable from committed cash at final market prices.</div></div></div>
+        <div class="analysis-kpis" id="finalInventoryKpis"></div>
+        <div class="inventory-table" id="finalInventoryRows"></div>
+        <div class="analysis-note">Committed cash is counted once as hypothetical buyback inventory; only uncommitted Free Vault Reserve remains cash. Buyback quantity includes configured execution costs. Effective value uses final market marks and does not simulate a subsequent terminal sale.</div>
       </article>
 
       <article class="card full" id="treasuryAccumulation">
         <div class="card-head"><div><h2>Treasury Accumulation</h2><div class="subtitle">Standalone Free Vault Reserve deployment. These purchases are not Bargains.</div></div><span class="tag" id="accumulationCount"></span></div>
         <div class="analysis-kpis" id="accumulationKpis"></div>
-        <div class="analysis-grid">
-          <section class="analysis-panel">
-            <div class="analysis-panel-head"><div><strong>By Asset</strong><br><span>Reserve deployed and net strategic asset protected in Target.</span></div></div>
-            <div class="cleanup-reasons" id="accumulationAssets"></div>
-          </section>
-          <section class="analysis-panel">
-            <div class="analysis-panel-head"><div><strong>By Signal Level</strong><br><span>Attribution preserved for L1 through L4.</span></div></div>
-            <div class="cleanup-reasons" id="accumulationLevels"></div>
-          </section>
-        </div>
+        <section class="analysis-panel">
+          <div class="analysis-panel-head"><div><strong>By Asset</strong><br><span>Reserve deployed and net strategic asset protected in Target.</span></div></div>
+          <div class="cleanup-reasons" id="accumulationAssets"></div>
+        </section>
       </article>
 
       <article class="card full" id="sellCampaignAnalytics">
         <div class="card-head"><div><h2>SELL Campaign Capacity</h2><div class="subtitle">Frozen campaign budgets, utilization, and the 25% full-deploy boundary.</div></div><span class="tag" id="sellCampaignCount"></span></div>
         <div class="analysis-kpis" id="sellCampaignKpis"></div>
-        <section class="analysis-panel">
-          <div class="analysis-panel-head"><div><strong>Inventory Deployment by Asset</strong><br><span>Normal and full-deploy campaigns with final budget utilization.</span></div></div>
-          <div class="cleanup-reasons" id="sellCampaignAssets"></div>
-        </section>
       </article>
 
       <article class="card full" id="bargainAnalytics">
-        <div class="card-head"><div><h2>Bargain Analytics</h2><div class="subtitle">Lifecycle returns, duration, signal quality, and capital still waiting for an exit.</div></div><span class="tag" id="analysisCount"></span></div>
+        <div class="card-head"><div><h2>Bargain Operations</h2><div class="subtitle">Throughput, duration, and unfinished exposure.</div></div><span class="tag" id="analysisCount"></span></div>
         <div class="analysis-kpis" id="analysisKpis"></div>
-        <div class="analysis-grid">
-          <section class="analysis-panel">
-            <div class="analysis-panel-head"><div><strong>Performance Breakdown</strong><br><span>Compare cohorts on the same lifecycle basis.</span></div></div>
-            <div class="analysis-tabs" id="analysisTabs"></div>
-            <div class="breakdown-table" id="breakdownTable"></div>
-          </section>
-          <section class="analysis-panel">
-            <div class="analysis-panel-head"><div><strong>Duration vs Return</strong><br><span>Each point is one Bargain. Open exposure is marked in red.</span></div></div>
-            <div class="chart-wrap scatter-wrap"><canvas id="bargainScatter"></canvas><div class="tooltip"></div></div>
-          </section>
-          <section class="analysis-panel">
-            <div class="analysis-panel-head"><div><strong>Outcome Mix</strong><br><span>Lifecycle state at the end of the replay.</span></div></div>
-            <div class="outcome-stack" id="outcomeStack"></div>
-            <div class="outcome-list" id="outcomeList"></div>
-            <div class="analysis-note" id="outcomeNote"></div>
-          </section>
-          <section class="analysis-panel">
-            <div class="analysis-panel-head"><div><strong>Open Risk Watchlist</strong><br><span>Largest unfinished losses, linked to asset history.</span></div><span id="riskSummary"></span></div>
-            <div class="risk-list" id="riskList"></div>
-          </section>
-        </div>
+        <section class="analysis-panel">
+          <div class="analysis-panel-head"><div><strong>Open Risk Watchlist</strong><br><span>Largest unfinished Bargains, linked to asset history.</span></div><span id="riskSummary"></span></div>
+          <div class="risk-list" id="riskList"></div>
+        </section>
       </article>
 
       <article class="card full" id="waiterCleanup">
-        <div class="card-head"><div><h2>Waiter Cleanup</h2><div class="subtitle">Cash flow, coin inventory, capacity relief, and capital still tied in unfinished Bargains.</div></div><span class="tag" id="cleanupMode"></span></div>
+        <div class="card-head"><div><h2>Waiter Cleanup</h2><div class="subtitle">Operational cleanup activity. Financial effectiveness is reflected in Final Inventory and final Treasury Value above.</div></div><span class="tag" id="cleanupMode"></span></div>
         <div class="analysis-kpis" id="cleanupKpis"></div>
-        <div class="analysis-grid">
-          <section class="analysis-panel">
-            <div class="analysis-panel-head"><div><strong>Cleanup Reasons</strong><br><span>Completed Bargains grouped by their deterministic primary close reason.</span></div></div>
-            <div class="cleanup-reasons" id="cleanupReasons"></div>
-          </section>
-          <section class="analysis-panel">
-            <div class="analysis-panel-head"><div><strong>Remaining Capital Lock</strong><br><span>What still waits for a lifecycle exit at the end of the replay.</span></div></div>
-            <div class="bargain-score" id="cleanupCapital"></div>
-          </section>
-        </div>
+        <section class="analysis-panel">
+          <div class="analysis-panel-head"><div><strong>Reasons</strong><br><span>Closures by deterministic cleanup rule.</span></div></div>
+          <div class="cleanup-reasons" id="cleanupReasons"></div>
+        </section>
       </article>
 
       <article class="card full">
@@ -786,35 +976,6 @@ _HTML = r'''<!doctype html>
       new ResizeObserver(draw).observe(wrap); draw();
     }
 
-    function drawBargainScatter(canvas, points) {
-      const wrap=canvas.parentElement;
-      const tooltip=wrap.querySelector(".tooltip");
-      let positions=[];
-      function draw() {
-        const rect=wrap.getBoundingClientRect();
-        const dpr=window.devicePixelRatio||1;
-        canvas.width=Math.round(rect.width*dpr); canvas.height=Math.round(rect.height*dpr);
-        const ctx=canvas.getContext("2d"); ctx.scale(dpr,dpr);
-        const width=rect.width,height=rect.height,pad={l:58,r:15,t:13,b:32};
-        const valid=points.filter(point=>Number.isFinite(point.returnPct));
-        if (!valid.length) { ctx.fillStyle="#70798a";ctx.font="10px Courier New";ctx.fillText("No Bargains to chart",14,24);return; }
-        const maxDays=Math.max(...valid.map(point=>point.ageDays),1);
-        let minReturn=Math.min(...valid.map(point=>point.returnPct),0);
-        let maxReturn=Math.max(...valid.map(point=>point.returnPct),0);
-        const gap=Math.max((maxReturn-minReturn)*.08,1); minReturn-=gap;maxReturn+=gap;
-        const x=value=>pad.l+(Math.log1p(value)/Math.log1p(maxDays))*(width-pad.l-pad.r);
-        const y=value=>pad.t+(maxReturn-value)/Math.max(maxReturn-minReturn,.0001)*(height-pad.t-pad.b);
-        ctx.font="11px Courier New";ctx.lineWidth=1;
-        for(let index=0;index<5;index++){const value=minReturn+(maxReturn-minReturn)*index/4,yy=y(value);ctx.strokeStyle="rgba(135,149,171,.13)";ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(width-pad.r,yy);ctx.stroke();ctx.fillStyle="#70798a";ctx.fillText(`${value.toFixed(0)}%`,3,yy+3);}
-        const zeroY=y(0);ctx.strokeStyle="rgba(233,185,73,.45)";ctx.beginPath();ctx.moveTo(pad.l,zeroY);ctx.lineTo(width-pad.r,zeroY);ctx.stroke();
-        [0,7,30,90,maxDays].filter((value,index,items)=>items.indexOf(value)===index&&value<=maxDays).forEach(value=>{const xx=x(value);ctx.fillStyle="#70798a";ctx.fillText(`${Math.round(value)}d`,Math.max(2,xx-8),height-7);});
-        positions=valid.map(point=>{const xx=x(point.ageDays),yy=y(point.returnPct);ctx.beginPath();ctx.arc(xx,yy,point.status==="closed"?3.2:4.1,0,Math.PI*2);ctx.fillStyle=point.status==="closed"?"rgba(67,214,160,.66)":"rgba(255,102,125,.78)";ctx.fill();return{x:xx,y:yy,point};});
-      }
-      canvas.addEventListener("mousemove",event=>{if(!positions.length)return;const rect=canvas.getBoundingClientRect(),mx=event.clientX-rect.left,my=event.clientY-rect.top;const nearest=positions.reduce((best,item)=>Math.hypot(item.x-mx,item.y-my)<Math.hypot(best.x-mx,best.y-my)?item:best,positions[0]);if(Math.hypot(nearest.x-mx,nearest.y-my)>24){tooltip.style.opacity=0;return;}tooltip.innerHTML=`<strong>${nearest.point.symbol} / ${bargainId(nearest.point.id)}</strong><br>${nearest.point.status==="closed"?"Closed":"Open"}: ${pct(nearest.point.returnPct)}<br>Age: ${nearest.point.ageDays.toFixed(1)}d`;tooltip.style.left=`${Math.max(90,Math.min(rect.width-90,nearest.x))}px`;tooltip.style.top=`${Math.max(55,nearest.y)}px`;tooltip.style.opacity=1;});
-      canvas.addEventListener("mouseleave",()=>tooltip.style.opacity=0);
-      new ResizeObserver(draw).observe(wrap);draw();
-    }
-
     const drawdowns = (() => { let treasuryPeak=0, hodlPeak=0; return data.equity.map(point => { treasuryPeak=Math.max(treasuryPeak,point.treasury); hodlPeak=Math.max(hodlPeak,point.hodl); return {...point, treasuryDd:(point.treasury/treasuryPeak-1)*100, hodlDd:(point.hodl/hodlPeak-1)*100}; }); })();
     drawLineChart(document.getElementById("equityChart"), data.equity, [
       {name:"Scrooge",color:"#e9b949",value:p=>p.treasury,format:v=>money(v)},
@@ -837,14 +998,18 @@ _HTML = r'''<!doctype html>
     document.getElementById("allocationList").innerHTML=allocations.map(([name,value],index)=>`<div class="allocation-row"><span class="allocation-name" style="--swatch:${COLORS[index%COLORS.length]}">${name}</span><strong>${value.toFixed(2)}%</strong></div>`).join("");
 
     const swing=data.swings;
-    document.getElementById("bargainScore").innerHTML=[
-      ["Opened",swing.total_opened,""], ["Closed",swing.total_closed,"positive"], ["Still Open",swing.still_open,"negative"],
-      ["Closed PnL",money(swing.realized_pnl_quote),"positive"], ["Open PnL",money(swing.unrealized_open_pnl_quote),tone(swing.unrealized_open_pnl_quote)], ["Oldest",`${swing.oldest_open_days.toFixed(0)}d`,"negative"],
-    ].map(([label,value,cls])=>`<div class="score"><span>${label}</span><strong class="${cls}">${value}</strong></div>`).join("");
-    const ageLabels={"under_7_days":"< 7d","7_to_30_days":"7-30d","30_to_90_days":"30-90d","90_to_180_days":"90-180d","180_plus_days":"180d+"};
-    const maxAge=Math.max(...Object.values(swing.open_age_buckets),1);
-    document.getElementById("ageBuckets").innerHTML=Object.entries(swing.open_age_buckets).map(([key,value])=>`<div class="bar-row"><span>${ageLabels[key]}</span><div class="bar-track"><div class="bar-fill" style="--width:${value/maxAge*100}%;--color:${key.includes("180")?"var(--red)":"var(--gold)"}"></div></div><span class="bar-value">${value}</span></div>`).join("");
-    document.getElementById("bargainCallout").textContent=`${data.badCases.underwater_sell_origin_count} underwater sell-origin Bargains need ${money(data.badCases.value_required_to_restore)} to restore ${qty(data.badCases.quantity_sold_not_restored)} units.`;
+    const effectiveAssetValue=data.assets.reduce((sum,item)=>sum+item.effectiveFinalQuantity*item.finalPrice,0);
+    const hodlAssetValue=data.assets.reduce((sum,item)=>sum+item.hodlValue,0);
+    const assetValueDelta=effectiveAssetValue-hodlAssetValue;
+    const freeReserve=data.reserve.ending_available||0;
+    document.getElementById("finalInventoryKpis").innerHTML=[
+      ["HODL Asset Value",money(hodlAssetValue),"Starting quantities at final market prices",""],
+      ["Effective Asset Value",money(effectiveAssetValue),"Physical holdings + committed buybacks","gold"],
+      ["Asset Delta vs HODL",money(assetValueDelta),"Effective asset value minus HODL asset value",tone(assetValueDelta)],
+      ["Free Vault Reserve",money(freeReserve),"Excludes cash committed to open Bargains","positive"],
+      ["Final Treasury",money(effectiveAssetValue+freeReserve),"Post-buyback value at final marks","gold"],
+    ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
+    document.getElementById("finalInventoryRows").innerHTML=`<div class="inventory-row header"><span>Asset</span><span>Physical Final</span><span>Committed Buyback</span><span>Effective Final</span><span>Start</span><span>Recovery</span><span>Final Price</span><span>HODL Value</span><span>Effective Value</span><span>Delta vs HODL</span></div>${data.assets.map(item=>`<div class="inventory-row"><strong>${item.symbol}</strong><span>${qty(item.finalQuantity)}</span><span>+${qty(item.hypotheticalBuybackQuantity)}</span><strong>${qty(item.effectiveFinalQuantity)}</strong><span>${qty(item.startingQuantity)}</span><strong class="${tone(item.effectiveQuantityPct-100)}">${pct(item.effectiveQuantityPct)}</strong><span>${money(item.finalPrice)}</span><span>${money(item.hodlValue)}</span><strong>${money(item.scroogeValue)}</strong><strong class="${tone(item.deltaVsHodl)}">${money(item.deltaVsHodl)}</strong></div>`).join("")}`;
 
     const accumulation=data.treasuryAccumulation||{};
     const accumulationOverview=accumulation.overview||{};
@@ -852,31 +1017,20 @@ _HTML = r'''<!doctype html>
     document.getElementById("accumulationKpis").innerHTML=[
       ["Accumulation Buys",accumulationOverview.count||0,"Standalone reserve deployments",""],
       ["USDT Deployed",money(accumulationOverview.usdt_deployed||0),"Free reserve only","gold"],
-      ["Earned Cash Generated",money(accumulation.earned_cash_generated_quote||0),"Closed SELL-origin swings","positive"],
-      ["Earned Cash Allocated",money(accumulation.earned_cash_allocated_quote||0),"Used by ACCUMULATE_ASSET + BUY","gold"],
-      ["Earned Cash Share",accumulation.earned_cash_allocated_pct==null?"N/A":pct(accumulation.earned_cash_allocated_pct),"Of earned cash generated","positive"],
       ["Net Asset Units",qty(accumulationOverview.net_asset_acquired||0),"See per-asset units below","positive"],
       ["Target Growth",qty(accumulationOverview.target_growth_quantity||0),"Net acquired quantity","positive"],
-      ["Fees",Object.entries(accumulationOverview.fees_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"None","Native fee assets preserved",""],
     ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
     const accumulationRows=(rows,labeler)=>Object.entries(rows||{}).map(([key,item])=>`<div class="cleanup-reason"><strong>${labeler(key)}</strong><span>${item.count} buys / ${qty(item.net_asset_acquired)} units</span><strong>${money(item.usdt_deployed)}</strong></div>`).join("")||`<div class="ledger-empty">No Treasury accumulation purchases.</div>`;
     document.getElementById("accumulationAssets").innerHTML=accumulationRows(accumulation.per_asset,key=>key);
-    document.getElementById("accumulationLevels").innerHTML=accumulationRows(accumulation.per_level,key=>`Level ${key}`);
 
     const sellCampaigns=data.sellCampaigns||{};
     document.getElementById("sellCampaignCount").textContent=`${sellCampaigns.total_signal_sell_campaigns||0} SIGNAL CAMPAIGNS`;
     document.getElementById("sellCampaignKpis").innerHTML=[
       ["Executable",sellCampaigns.executable_sell_campaigns||0,"Capacity above zero","positive"],
       ["Zero Capacity",sellCampaigns.zero_capacity_sell_campaigns||0,"Preserved for signal audit",""],
-      ["Average Capacity",qty(sellCampaigns.average_capacity_quantity||0),"Asset-native units",""],
-      ["Median Capacity",qty(sellCampaigns.median_capacity_quantity||0),"Asset-native units",""],
       ["Average Utilization",pct(sellCampaigns.average_utilization_pct||0),"Consumed frozen budget","gold"],
-      ["Median Utilization",pct(sellCampaigns.median_utilization_pct||0),"Consumed frozen budget","gold"],
-      ["Normal Executable",sellCampaigns.normal_executable_campaigns||0,"Capacity above zero",""],
-      ["Full Deploy Executable",sellCampaigns.full_deploy_executable_campaigns||0,"Start ratio at or below threshold","positive"],
       ["Interrupted",sellCampaigns.interrupted_by_opposite_signal||0,"Ended by opposite actionable signal",""],
     ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
-    document.getElementById("sellCampaignAssets").innerHTML=Object.entries(sellCampaigns.per_asset||{}).map(([asset,item])=>`<div class="cleanup-reason"><strong>${asset}</strong><span>${item.total_signal_sell_campaigns} signal / ${item.executable_sell_campaigns} executable / ${item.zero_capacity_sell_campaigns} zero</span><strong>${pct(item.average_utilization_pct||0)}</strong></div>`).join("")||`<div class="ledger-empty">No SELL campaigns.</div>`;
 
     const maxDelta=Math.max(...data.assets.map(item=>Math.abs(item.deltaVsHodl)),1);
     document.getElementById("assetBars").innerHTML=data.assets.slice().sort((a,b)=>b.deltaVsHodl-a.deltaVsHodl).map(item=>`<div class="bar-row"><strong>${item.symbol}</strong><div class="bar-track"><div class="bar-fill" style="--width:${Math.abs(item.deltaVsHodl)/maxDelta*100}%;--color:${item.deltaVsHodl>=0?"var(--mint)":"var(--red)"}"></div></div><strong class="bar-value ${tone(item.deltaVsHodl)}">${money(item.deltaVsHodl)}</strong></div>`).join("");
@@ -894,80 +1048,30 @@ _HTML = r'''<!doctype html>
     const hoursLabel=value=>value===null||value===undefined?"N/A":value>=24?`${(value/24).toFixed(1)}d`:`${value.toFixed(1)}h`;
     document.getElementById("analysisCount").textContent=`${analysisOverview.count} BARGAINS`;
     document.getElementById("analysisKpis").innerHTML=[
-      ["Lifecycle PnL",money(analysisOverview.net_pnl_quote),`${money(analysisOverview.realized_pnl_quote)} realized`,tone(analysisOverview.net_pnl_quote)],
+      ["Opened",analysisOverview.count||0,"All Bargains in the replay",""],
+      ["Closed",analysisOverview.closed||0,`${analysisOverview.open||0} remain open`,"positive"],
       ["Closure Rate",optionalPct(analysisOverview.closure_rate_pct),`${analysisOverview.open} still open`,""],
-      ["Closed Expectancy",money(analysisOverview.closed_expectancy_quote),`${optionalPct(analysisOverview.average_closed_return_pct)} average return`,tone(analysisOverview.closed_expectancy_quote)],
       ["Median Duration",hoursLabel(analysisOverview.median_duration_hours),`P90 ${hoursLabel(analysisOverview.duration_p90_hours)}`,""],
-      ["Fee Drag",optionalPct(analysisOverview.fee_drag_pct),`${money(analysisOverview.quote_fees)} quote fees`,""],
-      ["Open Risk",money(analysis.risk.underwater_open_pnl_quote),`${analysis.risk.underwater_open_count} underwater`,"negative"],
     ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
-
-    const dimensions={asset:"Asset",objective:"Objective",origin:"Origin",signal_level:"Signal Level",duration:"Duration"};
-    const analysisTabs=document.getElementById("analysisTabs");
-    let activeDimension="asset";
-    analysisTabs.innerHTML=Object.entries(dimensions).map(([key,label])=>`<button type="button" class="analysis-tab ${key===activeDimension?"active":""}" data-dimension="${key}">${label}</button>`).join("");
-    function renderBreakdown() {
-      const rows=analysis.breakdowns[activeDimension]||[];
-      document.getElementById("breakdownTable").innerHTML=`<div class="breakdown-row header"><span>Category</span><span>Count</span><span>Closed</span><span>Open</span><span>Lifecycle PnL</span><span>Return</span><span>Median</span></div>${rows.map((row,index)=>`<div class="breakdown-row"><span class="breakdown-label" style="--row-color:${COLORS[index%COLORS.length]}"><strong>${row.label}</strong></span><span>${row.count}</span><span>${row.closed}</span><span>${row.open}</span><strong class="${tone(row.net_pnl_quote)}">${money(row.net_pnl_quote)}</strong><span class="${tone(row.return_on_notional_pct||0)}">${optionalPct(row.return_on_notional_pct)}</span><span>${hoursLabel(row.median_duration_hours)}</span></div>`).join("")}`;
-    }
-    analysisTabs.querySelectorAll(".analysis-tab").forEach(button=>button.addEventListener("click",()=>{activeDimension=button.dataset.dimension;analysisTabs.querySelectorAll(".analysis-tab").forEach(item=>item.classList.toggle("active",item===button));renderBreakdown();}));
-    renderBreakdown();
-
-    const outcomeColors={closed_profit:"#43d6a0",closed_flat:"#738096",closed_loss:"#ff667d",open_profit:"#83a8e8",open_flat:"#9b7bd4",open_underwater:"#b83352"};
-    const outcomes=analysis.breakdowns.outcome||[];
-    const outcomeTotal=Math.max(outcomes.reduce((total,row)=>total+row.count,0),1);
-    document.getElementById("outcomeStack").innerHTML=outcomes.map(row=>`<span class="outcome-slice" title="${row.label}: ${row.count}" style="--width:${row.count/outcomeTotal*100}%;--slice-color:${outcomeColors[row.key]||"#738096"}"></span>`).join("");
-    document.getElementById("outcomeList").innerHTML=outcomes.map(row=>`<div class="outcome-item"><i class="outcome-dot" style="--slice-color:${outcomeColors[row.key]||"#738096"}"></i><span>${row.label}</span><strong class="${tone(row.net_pnl_quote)}">${row.count} / ${money(row.net_pnl_quote)}</strong></div>`).join("");
-    const feeAssets=Object.entries(analysisOverview.fees_by_asset).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"none";
-    document.getElementById("outcomeNote").textContent=`${analysisOverview.partially_closed} partially closed. Fees remain denominated in their actual assets: ${feeAssets}.`;
 
     const risks=analysis.notable.worst_open||[];
     document.getElementById("riskSummary").textContent=`${analysis.risk.open_90_plus_days} open 90d+`;
     document.getElementById("riskList").innerHTML=risks.length?risks.map(item=>`<a class="risk-row" href="#asset-${item.asset_symbol}" data-risk-asset="${item.asset_symbol}"><strong>${item.asset_symbol}</strong><strong>${bargainId(item.swing_id)}</strong><span>${item.age_days.toFixed(1)}d</span><strong class="${tone(item.pnl_quote)}">${money(item.pnl_quote)}</strong></a>`).join(""):`<div class="ledger-empty">No open Bargains are underwater.</div>`;
 
-    const bargainPoints=Object.entries(data.swingHistory).flatMap(([symbol,items])=>items.map(item=>({symbol,id:item.id,status:item.status,ageDays:item.ageSeconds/86400,returnPct:item.returnPct})));
-    drawBargainScatter(document.getElementById("bargainScatter"),bargainPoints);
-
     const cleanup=data.waiterCleanup;
     const cleanupOpen=cleanup.open_bargains||{};
     const cleanupCapacity=cleanup.capacity||{};
-    const cleanupLock=cleanup.capital_lock||{};
-    const cleanupAccounting=cleanup.accounting||{};
     document.getElementById("cleanupMode").textContent=cleanup.enabled?"AUTOMATIC":"BASELINE / DISABLED";
     const cleanupKpis=[
       ["Cleanup Closes",cleanup.cleanup_closes_total||0,`${cleanup.cleanup_attempts_total||0} closing executions`,""],
-      ["Cleanup-resolved Lifecycle PnL",money(cleanupAccounting.lifecycle_pnl_quote||0),`Full Bargain result from opening through settlement`,tone(cleanupAccounting.lifecycle_pnl_quote||0)],
-      ["Pre-cleanup Mark-to-market",money(cleanupAccounting.pre_cleanup_mark_to_market_pnl_quote||0),`Economic state immediately before execution`,tone(cleanupAccounting.pre_cleanup_mark_to_market_pnl_quote||0)],
-      ["Cleanup Settlement Delta",money(cleanupAccounting.cleanup_settlement_delta_quote||0),`Final lifecycle PnL minus pre-cleanup mark`,tone(cleanupAccounting.cleanup_settlement_delta_quote||0)],
-      ["Restored Inventory PnL",money(cleanupAccounting.restored_inventory_pnl_quote||0),`Sell/buy spread and fees on restored units`,tone(cleanupAccounting.restored_inventory_pnl_quote||0)],
-      ["Unrestored Inventory PnL",money(cleanupAccounting.inventory_residual_pnl_quote||0),`Deficit value ${money(cleanupAccounting.inventory_deficit_market_value_quote||0)}`,tone(cleanupAccounting.inventory_residual_pnl_quote||0)],
-      ["Cleanup BUY Volume",money(cleanupAccounting.repurchase_spend_quote||0),`${cleanupAccounting.repurchase_count||0} buys · avg ${money(cleanupAccounting.average_repurchase_spend_quote||0)} · cumulative turnover`,""],
-      ["Reserve Deployed",money(cleanupAccounting.net_reserve_deployed_quote||0),`Additional USDT beyond committed proceeds`,""],
-      ["Capacity-blocked Cycles",cleanupCapacity.capacity_blocked_cycles||0,`${cleanupCapacity.unique_capacity_blocked_opportunities||0} unique opportunities`,""],
-      ["Open at End",cleanupOpen.at_end||0,`${cleanupOpen.underwater_at_end||0} underwater`,cleanupOpen.underwater_at_end?"negative":"positive"],
-      ["90+ Days",cleanupOpen.age_90_plus||0,`${cleanupOpen.age_180_plus||0} at 180d+`,cleanupOpen.age_90_plus?"negative":"positive"],
-      ["Oldest Remaining",cleanupOpen.oldest_age_days===null||cleanupOpen.oldest_age_days===undefined?"N/A":`${cleanupOpen.oldest_age_days.toFixed(1)}d`,`Median ${cleanupOpen.median_age_days===null||cleanupOpen.median_age_days===undefined?"N/A":`${cleanupOpen.median_age_days.toFixed(1)}d`}`,cleanupOpen.oldest_age_days>=90?"negative":""],
+      ["Open at End",cleanupOpen.at_end||0,`${cleanupOpen.underwater_at_end||0} underwater · oldest ${cleanupOpen.oldest_age_days==null?"N/A":`${cleanupOpen.oldest_age_days.toFixed(1)}d`}`,cleanupOpen.age_90_plus?"negative":"positive"],
+      ["Open 30d+",cleanupOpen.age_30_plus||0,`${cleanupOpen.age_90_plus||0} open 90d+`,cleanupOpen.age_90_plus?"negative":""],
+      ["Blocked Opportunities",cleanupCapacity.unique_capacity_blocked_opportunities||0,"Distinct capacity-blocked signals",""],
+      ["Capacity Relief",cleanupCapacity.capacity_cleanup_actions||0,"Cleanup actions under capacity pressure",""],
     ];
     document.getElementById("cleanupKpis").innerHTML=cleanupKpis.map(item=>`<div class="analysis-kpi"><span>${item[0]}</span><strong class="${item[3]}">${item[1]}</strong><small>${item[2]}</small></div>`).join("");
     const cleanupReasonLabel=value=>value.replace("_cleanup","").replaceAll("_"," ").replace(/\b\w/g,letter=>letter.toUpperCase());
-    document.getElementById("cleanupReasons").innerHTML=Object.entries(cleanup.by_reason||{}).map(([reason,item])=>`<div class="cleanup-reason"><strong>${cleanupReasonLabel(reason)}</strong><span>${item.closes} closes<br>Pre-mark ${money(item.pre_cleanup_mark_to_market_pnl_quote||0)} · settlement delta ${money(item.cleanup_settlement_delta_quote||0)}</span><strong class="${tone(item.lifecycle_pnl_quote||0)}">${money(item.lifecycle_pnl_quote||0)}</strong></div>`).join("");
-    const cleanupFees=Object.entries(cleanup.cleanup_fees_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"None";
-    const cleanupCapital=[
-      ["BUY Capital Tied",money(cleanupLock.open_buy_origin_quote||0)],
-      ["SELL Inventory Tied",Object.entries(cleanupLock.open_sell_origin_asset_quantity_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" · ")||"None"],
-      ["Restore Cost",money(cleanupLock.value_required_to_restore_sell_inventory||0)],
-      ["Final Reserve",money(cleanupLock.final_shared_usdt||0)],
-      ["Minimum Reserve",money(cleanupLock.minimum_shared_usdt||0)],
-      ["Cumulative Committed Proceeds",money(cleanupAccounting.committed_proceeds_quote||0)],
-      ["Cumulative Cleanup BUY Volume",money(cleanupAccounting.repurchase_spend_quote||0)],
-      ["Cleanup Turnover",money(cleanupAccounting.cleanup_turnover_quote||0)],
-      ["Largest Cleanup BUY",money(cleanupAccounting.maximum_repurchase_spend_quote||0)],
-      ["Net Reserve Deployed",money(cleanupAccounting.net_reserve_deployed_quote||0)],
-      ["Inventory Deficit Value",money(cleanupAccounting.inventory_deficit_market_value_quote||0)],
-      ["Inventory Deficit",Object.entries(cleanupAccounting.inventory_deficit_quantity_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" · ")||"None"],
-      ["Cleanup Fees",cleanupFees],
-    ];
-    document.getElementById("cleanupCapital").innerHTML=cleanupCapital.map(item=>`<div class="score"><span>${item[0]}</span><strong>${item[1]}</strong></div>`).join("");
+    document.getElementById("cleanupReasons").innerHTML=Object.entries(cleanup.by_reason||{}).filter(([_reason,item])=>item.closes).map(([reason,item])=>`<div class="cleanup-reason"><strong>${cleanupReasonLabel(reason)}</strong><span>${item.cleanup_executions||0} closing executions</span><strong>${item.closes} closes</strong></div>`).join("")||`<div class="ledger-empty">No cleanup settlements.</div>`;
 
     const assetTable=document.getElementById("assetTable");
     const ledgerState={};
@@ -1000,10 +1104,10 @@ _HTML = r'''<!doctype html>
             <span class="swing-metric"><small>Opened</small><strong>${dateTime(swing.openedAtMs)}</strong></span>
             <span class="swing-metric"><small>Closed</small><strong>${dateTime(swing.closedAtMs)}</strong></span>
             <span class="swing-metric"><small>Age</small><strong>${age(swing.ageSeconds)}</strong></span>
-            <span class="swing-metric"><small>Realized PnL</small><strong class="${tone(swing.realizedPnl)}">${money(swing.realizedPnl)}</strong></span>
-            <span class="swing-metric"><small>Open PnL</small><strong class="${tone(swing.unrealizedPnl)}">${money(swing.unrealizedPnl)}</strong></span>
+            <span class="swing-metric"><small>Closed Timing vs Hold</small><strong class="${tone(swing.realizedPnl)}">${money(swing.realizedPnl)}</strong></span>
+            <span class="swing-metric"><small>Open Timing Gap</small><strong class="${tone(swing.unrealizedPnl)}">${money(swing.unrealizedPnl)}</strong></span>
             <span class="swing-metric"><small>Close Reason</small><strong>${swing.closeReason?cleanupReasonLabel(swing.closeReason):"N/A"}</strong></span>
-            ${swing.closeContext.required_cleanup_level?`<span class="swing-metric"><small>Cleanup Signal</small><strong>L${swing.closeContext.actual_reverse_signal_level} / Required L${swing.closeContext.required_cleanup_level}</strong></span><span class="swing-metric"><small>PnL Before Cleanup</small><strong class="${tone(swing.closeContext.unrealized_pnl_before_cleanup||0)}">${money(swing.closeContext.unrealized_pnl_before_cleanup||0)} / ${optionalPct(swing.closeContext.unrealized_pnl_pct_before_cleanup)}</strong></span><span class="swing-metric"><small>Capacity Pressure</small><strong>${swing.closeContext.capacity_pressure?"Yes":"No"}</strong></span>`:""}
+            ${swing.closeContext.required_cleanup_level?`<span class="swing-metric"><small>Cleanup Signal</small><strong>L${swing.closeContext.actual_reverse_signal_level} / Required L${swing.closeContext.required_cleanup_level}</strong></span><span class="swing-metric"><small>Gap Before Cleanup</small><strong class="${tone(swing.closeContext.unrealized_pnl_before_cleanup||0)}">${money(swing.closeContext.unrealized_pnl_before_cleanup||0)} / ${optionalPct(swing.closeContext.unrealized_pnl_pct_before_cleanup)}</strong></span><span class="swing-metric"><small>Capacity Pressure</small><strong>${swing.closeContext.capacity_pressure?"Yes":"No"}</strong></span>`:""}
           </div>
           ${note?`<p class="swing-note">Scrooge's note: ${note}</p>`:""}
           <div class="execution-head"><strong>Executions</strong><span>${swing.executions.length} ${swing.executions.length===1?"fill":"fills"}</span></div>
@@ -1016,10 +1120,12 @@ _HTML = r'''<!doctype html>
     function renderAssetLedger(symbol) {
       const panel=document.querySelector(`[data-ledger="${symbol}"]`);
       const history=data.swingHistory[symbol]||[];
+      const totalHistory=data.swingHistoryCounts?.[symbol]??history.length;
       const state=ledgerState[symbol]||(ledgerState[symbol]={filter:"all",limit:20});
       const filtered=state.filter==="all"?history:history.filter(item=>state.filter==="open"?item.status!=="closed":item.status==="closed");
       const visible=filtered.slice(0,state.limit);
-      panel.innerHTML=`<div class="ledger-head"><div class="ledger-title"><strong>${symbol} Bargain History</strong><span>${filtered.length} ${filtered.length===1?"Bargain":"Bargains"}, newest first</span></div><div class="ledger-filters">${["all","open","closed"].map(filter=>`<button type="button" class="ledger-filter ${state.filter===filter?"active":""}" data-filter="${filter}">${filter[0].toUpperCase()+filter.slice(1)}</button>`).join("")}</div></div>${visible.length?`<div class="swing-list">${visible.map(item=>swingRow(item,symbol)).join("")}</div>`:`<div class="ledger-empty">No ${state.filter==="all"?"":state.filter} Bargains for ${symbol}.</div>`}${visible.length<filtered.length?`<button type="button" class="show-more">Show ${Math.min(20,filtered.length-visible.length)} more / ${filtered.length-visible.length} remaining</button>`:""}`;
+      const archiveNote=totalHistory>history.length?`<p class="analysis-note">Showing the latest ${history.length} of ${totalHistory} Bargains. The complete ledger remains in <code>swings.json</code>.</p>`:"";
+      panel.innerHTML=`<div class="ledger-head"><div class="ledger-title"><strong>${symbol} Bargain History</strong><span>${totalHistory} ${totalHistory===1?"Bargain":"Bargains"}, newest first</span></div><div class="ledger-filters">${["all","open","closed"].map(filter=>`<button type="button" class="ledger-filter ${state.filter===filter?"active":""}" data-filter="${filter}">${filter[0].toUpperCase()+filter.slice(1)}</button>`).join("")}</div></div>${archiveNote}${visible.length?`<div class="swing-list">${visible.map(item=>swingRow(item,symbol)).join("")}</div>`:`<div class="ledger-empty">No ${state.filter==="all"?"":state.filter} Bargains in the embedded recent history for ${symbol}.</div>`}${visible.length<filtered.length?`<button type="button" class="show-more">Show ${Math.min(20,filtered.length-visible.length)} more / ${filtered.length-visible.length} remaining</button>`:""}`;
       panel.querySelectorAll(".ledger-filter").forEach(button=>button.addEventListener("click",()=>{state.filter=button.dataset.filter;state.limit=20;renderAssetLedger(symbol);}));
       panel.querySelector(".show-more")?.addEventListener("click",()=>{state.limit+=20;renderAssetLedger(symbol);});
       panel.querySelectorAll(".swing-toggle").forEach(button=>button.addEventListener("click",()=>{const details=button.nextElementSibling;const expanded=button.getAttribute("aria-expanded")==="true";button.setAttribute("aria-expanded",String(!expanded));details.hidden=expanded;}));
