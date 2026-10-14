@@ -1075,6 +1075,7 @@ def _project_swing_ledger_entry(
     *,
     current_market_price: float | None,
     market_price_updated_at: str | None,
+    close_profit_pct: float,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
     executions = list_spot_swing_executions(str(swing["swing_id"]))
@@ -1098,6 +1099,15 @@ def _project_swing_ledger_entry(
                 "reason": swing.get("strategy_reason") or {},
             }
         )
+    take_profit_price = None
+    if derived_status != "closed" and economics["weighted_opening_price"] is not None:
+        opening_price = float(economics["weighted_opening_price"])
+        profit_fraction = float(close_profit_pct) / 100.0
+        take_profit_price = opening_price * (
+            1.0 - profit_fraction
+            if swing["origin_side"] == "sell"
+            else 1.0 + profit_fraction
+        )
     return {
         "entry_type": "swing",
         "entry_id": f"swing:{swing['swing_id']}",
@@ -1111,6 +1121,8 @@ def _project_swing_ledger_entry(
             "status": derived_status,
             "current_market_price": current_market_price,
             "market_price_updated_at": market_price_updated_at,
+            "take_profit_price": take_profit_price,
+            "take_profit_pct": close_profit_pct if take_profit_price is not None else None,
             "opening_message": opening_message,
             "age_seconds": max(
                 0,
@@ -1266,6 +1278,7 @@ def load_portfolio_asset_ledger(
         )
 
     market_price, _, market_price_updated_at = _fetch_market_price(normalized_asset, normalized_quote)
+    close_profit_pct = load_treasury_strategy_config().progression.close_profit_pct
     swings = list_spot_swings(
         account_key=DEFAULT_ACCOUNT_KEY,
         asset_symbol=normalized_asset,
@@ -1277,6 +1290,7 @@ def load_portfolio_asset_ledger(
             swing,
             current_market_price=market_price,
             market_price_updated_at=market_price_updated_at,
+            close_profit_pct=close_profit_pct,
         )
         derived_status = str(entry["swing"]["economics"]["status"])
         if normalized_filter == "open" and derived_status == "closed":
@@ -1321,6 +1335,7 @@ def load_portfolio_bargain_ledger(
     entries: list[dict[str, Any]] = []
     open_count = 0
     closed_count = 0
+    close_profit_pct = load_treasury_strategy_config().progression.close_profit_pct
     prices: dict[tuple[str, str], tuple[float | None, str | None]] = {}
     for swing in list_spot_swings(
         account_key=DEFAULT_ACCOUNT_KEY,
@@ -1337,6 +1352,7 @@ def load_portfolio_bargain_ledger(
             swing,
             current_market_price=market_price,
             market_price_updated_at=market_price_updated_at,
+            close_profit_pct=close_profit_pct,
         )
         derived_status = str(entry["swing"]["economics"]["status"])
         if derived_status == "closed":

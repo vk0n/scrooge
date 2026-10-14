@@ -189,8 +189,21 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         )
         open_ledger = portfolio_service.load_portfolio_bargain_ledger(entry_filter="open")
         closed_ledger = portfolio_service.load_portfolio_bargain_ledger(entry_filter="closed")
+        close_profit_pct = (
+            portfolio_service.load_treasury_strategy_config().progression.close_profit_pct
+        )
         self.assertEqual([entry["swing"]["swing_id"] for entry in open_ledger["entries"]], ["open-btc-swing"])
         self.assertEqual([entry["swing"]["swing_id"] for entry in closed_ledger["entries"]], ["closed-eth-swing"])
+        self.assertEqual(open_ledger["entries"][0]["swing"]["current_market_price"], 100)
+        self.assertEqual(
+            open_ledger["entries"][0]["swing"]["take_profit_price"],
+            90 * (1 + close_profit_pct / 100),
+        )
+        self.assertEqual(
+            open_ledger["entries"][0]["swing"]["take_profit_pct"],
+            close_profit_pct,
+        )
+        self.assertIsNone(closed_ledger["entries"][0]["swing"]["take_profit_price"])
         self.assertEqual(
             [entry["swing"]["swing_id"] for entry in ledger["entries"]],
             ["closed-eth-swing", "open-btc-swing"],
@@ -771,6 +784,14 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(open_swing["economics"]["remaining_quantity"], 0.25)
         self.assertEqual(open_swing["economics"]["unrealized_pnl_quote"], 2.5)
         self.assertAlmostEqual(open_swing["economics"]["unrealized_pnl_pct"], 9.0909090909)
+        self.assertEqual(open_swing["current_market_price"], 100)
+        close_profit_pct = (
+            portfolio_service.load_treasury_strategy_config().progression.close_profit_pct
+        )
+        self.assertEqual(
+            open_swing["take_profit_price"],
+            110 * (1 - close_profit_pct / 100),
+        )
         self.assertEqual(open_swing["economics"]["unpriced_fees_by_asset"], {"BNB": 0.01})
         self.assertEqual(
             open_swing["opening_message"],

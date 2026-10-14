@@ -305,6 +305,8 @@ type SpotSwing = {
   closed_at_ms: number | null;
   current_market_price: number | null;
   market_price_updated_at: string | null;
+  take_profit_price: number | null;
+  take_profit_pct: number | null;
   opening_message: string | null;
   age_seconds: number;
   economics: SpotSwingEconomics;
@@ -2248,6 +2250,21 @@ function SwingLedgerRow({
                   : ""}
               </strong>
             </span>
+            {canClose ? (
+              <span>
+                <small>Market Price</small>
+                <strong>{formatCurrency(swing.current_market_price, 6)}</strong>
+              </span>
+            ) : null}
+            {canClose ? (
+              <span>
+                <small>Waiting for</small>
+                <strong>
+                  {swing.origin_side === "sell" ? "≤ " : "≥ "}
+                  {formatCurrency(swing.take_profit_price, 6)}
+                </strong>
+              </span>
+            ) : null}
           </div>
           {swing.opening_message ? <p className="treasury-swing-reason">{swing.opening_message}</p> : null}
           <div className="treasury-swing-execution-head">
