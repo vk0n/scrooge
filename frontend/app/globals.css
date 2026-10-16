@@ -2236,6 +2236,12 @@ button.treasury-summary-card-flip:focus-visible {
   transition: opacity 120ms linear;
 }
 
+.treasury-summary-card-hero .treasury-summary-card-flip-front {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .treasury-summary-card-flip-back {
   transform: rotateY(180deg);
   opacity: 0;
