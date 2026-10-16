@@ -2166,7 +2166,8 @@ pre {
 
 .treasury-summary-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
   gap: 0.62rem;
 }
 
@@ -2260,6 +2261,42 @@ button.treasury-summary-card-flip:focus-visible {
   min-width: 0;
 }
 
+.treasury-total-invested {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-top: 1px solid rgba(87, 103, 127, 0.24);
+  margin-top: 0.14rem;
+  padding-top: 0.28rem;
+  color: #8f9bae;
+}
+
+.treasury-total-invested small {
+  font-size: 0.68rem;
+}
+
+.treasury-summary-card .treasury-total-invested strong {
+  color: #eef3fb;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.treasury-gain-total {
+  font-size: clamp(1.05rem, 1.45vw, 1.3rem) !important;
+  letter-spacing: -0.02em;
+}
+
+.treasury-gain-rate {
+  justify-self: start;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.16rem 0.42rem;
+  font-size: 0.64rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
 .treasury-summary-breakdown small {
   color: #8f9bae;
   font-size: 0.68rem;
@@ -2281,7 +2318,7 @@ button.treasury-summary-card-flip:focus-visible {
   padding-top: 0.22rem;
 }
 
-.treasury-summary-hodl-result {
+.treasury-summary-hodl-line {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -2289,15 +2326,15 @@ button.treasury-summary-card-flip:focus-visible {
   min-width: 0;
 }
 
-.treasury-summary-card .treasury-summary-hodl-result strong {
-  font-size: 0.76rem;
+.treasury-summary-card .treasury-summary-hodl-line strong {
+  font-size: 0.7rem;
+  text-align: right;
+  white-space: nowrap;
 }
 
-.treasury-summary-hodl-comparison {
-  font-size: 0.62rem;
+.treasury-summary-my-result small {
+  color: #d7b75d;
   font-weight: 700;
-  line-height: 1.15;
-  text-align: right;
 }
 
 button.treasury-summary-card-reserve {
@@ -5463,6 +5500,14 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-column: 2;
     grid-row: 2;
     justify-self: end;
+  }
+
+  .treasury-summary-card-hero .treasury-total-invested {
+    grid-column: 1 / -1;
+  }
+
+  .treasury-summary-card-flip:not(.treasury-summary-card-hero) {
+    grid-column: 1 / -1;
   }
 
   .treasury-timeline-grid {

@@ -587,6 +587,8 @@ def _summary_from_holdings(
         _as_float(holding.get("accumulated_cash_gain")) or 0.0
         for holding in managed_holdings
     )
+    asset_market_and_open_gain = asset_total_gain - realized_bargain_cash_gain
+    other_treasury_gain = total_gain - asset_total_gain
     hodl_prices_complete = all(holding.get("market_price") is not None for holding in managed_holdings)
     hodl_gain = (
         sum(
@@ -623,7 +625,9 @@ def _summary_from_holdings(
         "total_gain_pct": (total_gain / invested_capital) * 100 if invested_capital > 0 else None,
         "assets_at_market": assets_at_market,
         "asset_total_gain": asset_total_gain,
+        "asset_market_and_open_gain": asset_market_and_open_gain,
         "realized_bargain_cash_gain": realized_bargain_cash_gain,
+        "other_treasury_gain": other_treasury_gain,
         "hodl_gain": hodl_gain,
         "strategy_vs_hodl": total_gain - hodl_gain if hodl_gain is not None else None,
         "unrealized_pnl": total_gain,

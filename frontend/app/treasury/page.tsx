@@ -15,7 +15,9 @@ type PortfolioSummary = {
   total_gain_pct: number | null;
   assets_at_market: number;
   asset_total_gain: number;
+  asset_market_and_open_gain: number;
   realized_bargain_cash_gain: number;
+  other_treasury_gain: number;
   hodl_gain: number | null;
   strategy_vs_hodl: number | null;
   unrealized_pnl: number;
@@ -3229,6 +3231,13 @@ export default function TreasuryPage(): JSX.Element {
                     </span>
                   </span>
                 ) : null}
+                <span className="treasury-total-invested">
+                  <small>Invested Capital</small>
+                  <strong>
+                    <span className="vault-dollar" aria-hidden="true">$</span>{" "}
+                    {formatNumber(summary?.invested_capital ?? 0)}
+                  </strong>
+                </span>
               </>}
               back={<>
                 <span className="treasury-summary-label">Treasure Composition</span>
@@ -3238,32 +3247,25 @@ export default function TreasuryPage(): JSX.Element {
                 </span>
               </>}
             />
-            <div className="treasury-summary-card">
-              <span className="treasury-summary-label">Invested Capital</span>
-              <strong className="vault-value">
-                <span className="vault-dollar" aria-hidden="true">$</span>
-                <span>{formatNumber(summary?.invested_capital ?? 0)}</span>
-              </strong>
-            </div>
             <SummaryFlipCard
               frontLabel="Show Total Gain"
               backLabel="Show Total Gain breakdown"
               front={<>
                 <span className="treasury-summary-label">Total Gain</span>
-                <strong className={signedToneClass(summary?.total_gain, "treasury-summary-value")}>
+                <strong className={signedToneClass(summary?.total_gain, "treasury-gain-total")}>
                   {formatSignedCurrency(summary?.total_gain ?? 0)}
                 </strong>
-                <span className={signedToneClass(summary?.total_gain_pct, "treasury-summary-note")}>
-                  {formatSignedPercent(summary?.total_gain_pct)}
+                <span className={signedToneClass(summary?.total_gain_pct, "treasury-gain-rate")}>
+                  {formatSignedPercent(summary?.total_gain_pct)} of invested capital
                 </span>
               </>}
               back={<>
                 <span className="treasury-summary-label">Gain Composition</span>
                 <span className="treasury-summary-breakdown treasury-summary-gain-breakdown">
                   <span>
-                    <small>Asset Total Gain</small>
-                    <strong className={signedToneClass(summary?.asset_total_gain, "")}>
-                      {formatSignedCurrency(summary?.asset_total_gain ?? 0)}
+                    <small>Asset market + open</small>
+                    <strong className={signedToneClass(summary?.asset_market_and_open_gain, "")}>
+                      {formatSignedCurrency(summary?.asset_market_and_open_gain ?? 0)}
                     </strong>
                   </span>
                   <span>
@@ -3272,25 +3274,35 @@ export default function TreasuryPage(): JSX.Element {
                       {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
                     </strong>
                   </span>
+                  <span>
+                    <small title="Cash and capital movements outside realized Bargain gains.">Other cash / capital</small>
+                    <strong className={signedToneClass(summary?.other_treasury_gain, "")}>
+                      {formatSignedCurrency(summary?.other_treasury_gain ?? 0)}
+                    </strong>
+                  </span>
                   <span className="treasury-summary-hodl-block">
-                    <span className="treasury-summary-label">HODL Gain</span>
                     {summary?.hodl_gain === null || summary?.hodl_gain === undefined ? (
-                      <strong>Awaiting prices</strong>
-                    ) : (
-                      <span className="treasury-summary-hodl-result">
-                        <strong className={signedToneClass(summary.hodl_gain, "")}>
-                          {formatSignedCurrency(summary.hodl_gain)}
-                        </strong>
-                        {summary.strategy_vs_hodl === null || summary.strategy_vs_hodl === undefined ? null : (
-                          <small className={signedToneClass(summary.strategy_vs_hodl, "treasury-summary-hodl-comparison")}>
-                            {summary.strategy_vs_hodl > 0
-                              ? `Scrooge ahead by ${formatSignedCurrency(summary.strategy_vs_hodl)}`
-                              : summary.strategy_vs_hodl < 0
-                                ? `Scrooge behind by ${formatCurrency(Math.abs(summary.strategy_vs_hodl))}`
-                                : "Scrooge matches HODL"}
-                          </small>
-                        )}
+                      <span className="treasury-summary-hodl-line">
+                        <small>HODL Gain</small>
+                        <strong>Awaiting prices</strong>
                       </span>
+                    ) : (
+                      <>
+                        <span className="treasury-summary-hodl-line">
+                          <small>HODL Gain</small>
+                          <strong className={signedToneClass(summary.hodl_gain, "")}>
+                            {formatSignedCurrency(summary.hodl_gain)}
+                          </strong>
+                        </span>
+                        {summary.strategy_vs_hodl === null || summary.strategy_vs_hodl === undefined ? null : (
+                          <span className="treasury-summary-hodl-line treasury-summary-my-result">
+                            <small>My result</small>
+                            <strong className={signedToneClass(summary.strategy_vs_hodl, "")}>
+                              {formatSignedCurrency(summary.strategy_vs_hodl)} vs HODL
+                            </strong>
+                          </span>
+                        )}
+                      </>
                     )}
                   </span>
                 </span>

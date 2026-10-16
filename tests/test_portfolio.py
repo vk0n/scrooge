@@ -499,7 +499,9 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(closed["summary"]["vault_reserve_available"], 2.5)
         self.assertEqual(closed["summary"]["assets_at_market"], 100)
         self.assertEqual(closed["summary"]["asset_total_gain"], 12.5)
+        self.assertEqual(closed["summary"]["asset_market_and_open_gain"], 10)
         self.assertEqual(closed["summary"]["realized_bargain_cash_gain"], 2.5)
+        self.assertEqual(closed["summary"]["other_treasury_gain"], 0)
         self.assertEqual(closed["summary"]["hodl_gain"], 10)
         self.assertEqual(closed["summary"]["strategy_vs_hodl"], 2.5)
         closed_btc = next(item for item in closed["holdings"] if item["asset_symbol"] == "BTC")
@@ -1709,6 +1711,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(outgoing_summary["total_value"], 70)
         self.assertEqual(outgoing_summary["invested_capital"], 70)
         self.assertEqual(outgoing_summary["total_gain"], 0)
+        self.assertEqual(outgoing_summary["other_treasury_gain"], 0)
 
         deposited, _ = portfolio_service.record_confirmed_office_transfer(
             transfer_ref="from-office-1",
@@ -1720,6 +1723,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(incoming_summary["total_value"], 80)
         self.assertEqual(incoming_summary["invested_capital"], 80)
         self.assertEqual(incoming_summary["total_gain"], 0)
+        self.assertEqual(incoming_summary["other_treasury_gain"], 0)
 
         ledger = portfolio_service.load_portfolio_asset_ledger("USDT")
         deltas = [
@@ -1748,6 +1752,9 @@ class PortfolioPhaseOneTests(unittest.TestCase):
             }
         )
 
+        before_transfer, _ = portfolio_service.load_portfolio_snapshot()
+        self.assertEqual(before_transfer["summary"]["other_treasury_gain"], 50)
+
         transferred, _ = portfolio_service.record_confirmed_office_transfer(
             transfer_ref="generated-to-office",
             direction="to_office",
@@ -1759,6 +1766,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(summary["total_value"], 120)
         self.assertEqual(summary["invested_capital"], 70)
         self.assertEqual(summary["total_gain"], 50)
+        self.assertEqual(summary["other_treasury_gain"], 50)
 
 
 if __name__ == "__main__":
