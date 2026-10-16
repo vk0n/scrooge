@@ -3272,13 +3272,26 @@ export default function TreasuryPage(): JSX.Element {
                       {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
                     </strong>
                   </span>
-                  <span>
-                    <small>HODL gain</small>
-                    <strong className={signedToneClass(summary?.hodl_gain, "")}>
-                      {summary?.hodl_gain === null || summary?.hodl_gain === undefined
-                        ? "Awaiting prices"
-                        : `${formatSignedCurrency(summary.hodl_gain)} (Scrooge ${formatSignedCurrency(summary.strategy_vs_hodl)})`}
-                    </strong>
+                  <span className="treasury-summary-hodl-block">
+                    <span className="treasury-summary-label">HODL Gain</span>
+                    {summary?.hodl_gain === null || summary?.hodl_gain === undefined ? (
+                      <strong>Awaiting prices</strong>
+                    ) : (
+                      <span className="treasury-summary-hodl-result">
+                        <strong className={signedToneClass(summary.hodl_gain, "")}>
+                          {formatSignedCurrency(summary.hodl_gain)}
+                        </strong>
+                        {summary.strategy_vs_hodl === null || summary.strategy_vs_hodl === undefined ? null : (
+                          <small className={signedToneClass(summary.strategy_vs_hodl, "treasury-summary-hodl-comparison")}>
+                            {summary.strategy_vs_hodl > 0
+                              ? `Scrooge ahead by ${formatSignedCurrency(summary.strategy_vs_hodl)}`
+                              : summary.strategy_vs_hodl < 0
+                                ? `Scrooge behind by ${formatCurrency(Math.abs(summary.strategy_vs_hodl))}`
+                                : "Scrooge matches HODL"}
+                          </small>
+                        )}
+                      </span>
+                    )}
                   </span>
                 </span>
               </>}

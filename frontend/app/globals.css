@@ -2178,17 +2178,19 @@ pre {
   border: 1px solid rgba(83, 98, 121, 0.44);
   border-radius: 12px;
   padding: 0.74rem 0.78rem;
-  background:
+  background-color: #0a0e14;
+  background-image:
     radial-gradient(circle at top right, rgba(85, 128, 172, 0.1), transparent 46%),
-    linear-gradient(180deg, rgba(15, 19, 27, 0.92), rgba(10, 14, 20, 0.97));
+    linear-gradient(180deg, #0f131b, #0a0e14);
   box-shadow: inset 0 0 0 1px rgba(132, 150, 178, 0.08);
 }
 
 .treasury-summary-card-hero {
   border-color: rgba(106, 139, 178, 0.58);
-  background:
+  background-color: #090e15;
+  background-image:
     radial-gradient(circle at top right, rgba(98, 149, 202, 0.16), transparent 48%),
-    linear-gradient(180deg, rgba(17, 24, 35, 0.96), rgba(9, 14, 21, 0.98));
+    linear-gradient(180deg, #111823, #090e15);
 }
 
 button.treasury-summary-card-flip {
@@ -2198,6 +2200,7 @@ button.treasury-summary-card-flip {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  isolation: isolate;
   perspective: 900px;
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
@@ -2227,10 +2230,21 @@ button.treasury-summary-card-flip:focus-visible {
   min-width: 0;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
+  opacity: 1;
+  transition: opacity 120ms linear;
 }
 
 .treasury-summary-card-flip-back {
   transform: rotateY(180deg);
+  opacity: 0;
+}
+
+.treasury-summary-card-flipped .treasury-summary-card-flip-front {
+  opacity: 0;
+}
+
+.treasury-summary-card-flipped .treasury-summary-card-flip-back {
+  opacity: 1;
 }
 
 .treasury-summary-breakdown {
@@ -2258,15 +2272,32 @@ button.treasury-summary-card-flip:focus-visible {
   white-space: nowrap;
 }
 
-.treasury-summary-gain-breakdown > span:last-child {
-  align-items: flex-start;
+.treasury-summary-gain-breakdown > .treasury-summary-hodl-block {
+  display: grid;
+  justify-content: stretch;
+  gap: 0.14rem;
+  border-top: 1px solid rgba(87, 103, 127, 0.24);
+  margin-top: 0.08rem;
+  padding-top: 0.22rem;
 }
 
-.treasury-summary-gain-breakdown > span:last-child strong {
-  max-width: 68%;
-  font-size: 0.66rem;
+.treasury-summary-hodl-result {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.treasury-summary-card .treasury-summary-hodl-result strong {
+  font-size: 0.76rem;
+}
+
+.treasury-summary-hodl-comparison {
+  font-size: 0.62rem;
+  font-weight: 700;
   line-height: 1.15;
-  white-space: normal;
+  text-align: right;
 }
 
 button.treasury-summary-card-reserve {

@@ -391,6 +391,7 @@ def _regime_summary(
 def _parameters(variant: SpotSweepVariant) -> dict[str, Any]:
     return {
         "levels_pct": list(variant.levels_pct),
+        "accumulate_asset_pct": variant.accumulate_asset_pct,
         "minimum_holding_pct": variant.minimum_holding_pct,
         "close_profit_pct": variant.close_profit_pct,
         "free_cash_retention_pct": variant.free_cash_retention_pct,

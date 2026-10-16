@@ -228,6 +228,94 @@ spot_sweep:
             [20],
         )
 
+    def test_parameter_grid_can_sweep_nested_objective_policy_mixes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            multi_asset_scenario = BASE_SCENARIO.replace(
+                "  strategy:\n",
+                """    BBB:
+      quantity: 100
+      entry_cost: 1
+      custody: {binance: 100, cold_storage: 0, unassigned: 0}
+      target_holding: 100
+      minimum_holding_pct: 80
+      trading_objective: accumulate_cash
+    CCC:
+      quantity: 100
+      entry_cost: 1
+      custody: {binance: 100, cold_storage: 0, unassigned: 0}
+      target_holding: 100
+      minimum_holding_pct: 80
+      trading_objective: accumulate_cash
+    DDD:
+      quantity: 100
+      entry_cost: 1
+      custody: {binance: 100, cold_storage: 0, unassigned: 0}
+      target_holding: 100
+      minimum_holding_pct: 80
+      trading_objective: accumulate_cash
+  strategy:
+""",
+            )
+            (root / "base.yaml").write_text(multi_asset_scenario, encoding="utf-8")
+            sweep = root / "objective-mix.yaml"
+            sweep.write_text(
+                """
+spot_sweep:
+  name: objective-mix
+  base_config: base.yaml
+  output_dir: output
+  objective_asset_order: [BBB, DDD, AAA, CCC]
+  parameter_grid:
+    accumulate_asset_pct: [0, 25, 50, 75, 100]
+""",
+                encoding="utf-8",
+            )
+
+            config = load_spot_sweep_config(sweep)
+            resolved = [
+                _scenario_for_variant(config, variant) for variant in config.variants
+            ]
+
+        self.assertEqual(len(config.variants), 5)
+        self.assertEqual(config.objective_asset_order, ("BBB", "DDD", "AAA", "CCC"))
+        self.assertEqual(
+            [variant.accumulate_asset_pct for variant in config.variants],
+            [0, 25, 50, 75, 100],
+        )
+        self.assertEqual(
+            [
+                [
+                    asset.symbol
+                    for asset in scenario.assets
+                    if asset.trading_objective == "accumulate_asset"
+                ]
+                for scenario in resolved
+            ],
+            [[], ["BBB"], ["BBB", "DDD"], ["AAA", "BBB", "DDD"], ["AAA", "BBB", "CCC", "DDD"]],
+        )
+        self.assertEqual(resolved[2].metadata["sweep_accumulate_asset_count"], 2)
+
+    def test_objective_policy_order_must_cover_every_asset_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "base.yaml").write_text(BASE_SCENARIO, encoding="utf-8")
+            sweep = root / "invalid-objective-order.yaml"
+            sweep.write_text(
+                """
+spot_sweep:
+  base_config: base.yaml
+  output_dir: output
+  objective_asset_order: [AAA, BBB]
+  parameter_grid:
+    accumulate_asset_pct: [50]
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "every scenario asset exactly once"):
+                load_spot_sweep_config(sweep)
+
     def test_parameter_grid_accepts_levels_as_a_dimension(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
