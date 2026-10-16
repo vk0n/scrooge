@@ -200,6 +200,34 @@ spot_sweep:
         )
         self.assertEqual(resolved.waiter_cleanup.capacity_cleanup_min_age_days, 20)
 
+    def test_parameter_grid_can_apply_minimum_holding_to_every_asset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "base.yaml").write_text(BASE_SCENARIO, encoding="utf-8")
+            sweep = root / "minimum-holding.yaml"
+            sweep.write_text(
+                """
+spot_sweep:
+  name: minimum-holding-sweep
+  base_config: base.yaml
+  output_dir: output
+  parameter_grid:
+    minimum_holding_pct: [20, 80]
+""",
+                encoding="utf-8",
+            )
+
+            config = load_spot_sweep_config(sweep)
+            resolved = _scenario_for_variant(config, config.variants[0])
+
+        self.assertEqual(len(config.variants), 2)
+        self.assertEqual(config.variants[0].minimum_holding_pct, 20)
+        self.assertIn("hold-20", config.variants[0].name)
+        self.assertEqual(
+            [asset.minimum_holding_pct for asset in resolved.assets],
+            [20],
+        )
+
     def test_parameter_grid_accepts_levels_as_a_dimension(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

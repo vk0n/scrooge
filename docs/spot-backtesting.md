@@ -78,7 +78,7 @@ Run relative presets:
 
 ## Parameter Sweeps
 
-`backtest.spot_sweep` expands a Cartesian grid over signal levels, Bargain Goal, cash retention, and deep-loss parameters. Market data is loaded once and shared; each variant receives isolated artifacts. Completed matching variants resume automatically.
+`backtest.spot_sweep` expands a Cartesian grid over signal levels, minimum asset holding, Bargain Goal, cash retention, and cleanup parameters. `minimum_holding_pct` applies one policy floor to every asset in a variant. Market data is loaded once and shared; each variant receives isolated artifacts. Completed matching variants resume automatically.
 
 ```bash
 ./scrooge-env/bin/python -m backtest.spot_sweep \

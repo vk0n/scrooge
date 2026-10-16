@@ -391,6 +391,7 @@ def _regime_summary(
 def _parameters(variant: SpotSweepVariant) -> dict[str, Any]:
     return {
         "levels_pct": list(variant.levels_pct),
+        "minimum_holding_pct": variant.minimum_holding_pct,
         "close_profit_pct": variant.close_profit_pct,
         "free_cash_retention_pct": variant.free_cash_retention_pct,
         "unrealized_pnl_pct": variant.unrealized_pnl_pct,
@@ -523,11 +524,11 @@ def _comparison_html(payload: dict[str, Any]) -> str:
 <title>Scrooge Spot Regime Sweep</title><style>
 :root{{--bg:#080c11;--panel:#111821;--line:#293647;--ink:#edf2f7;--muted:#8d9bad;--gold:#e8b84a;--green:#48d6a2;--red:#ff647f}}
 *{{box-sizing:border-box}}body{{margin:0;background:repeating-linear-gradient(135deg,#080c11,#080c11 12px,#0a0f15 12px,#0a0f15 24px);color:var(--ink);font:13px ui-monospace,SFMono-Regular,Menlo,monospace}}main{{width:min(1540px,calc(100% - 28px));margin:28px auto 60px}}header,.panel{{border:1px solid var(--line);border-radius:18px;background:rgba(17,24,33,.97)}}header{{padding:28px;background:linear-gradient(125deg,#351020,#111923);margin-bottom:18px}}h1{{margin:8px 0;font-size:34px}}h2{{color:var(--gold)}}p{{color:var(--muted)}}.grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}}.card{{padding:15px;border:1px solid var(--line);border-radius:12px}}.panel{{padding:18px;overflow:auto;margin-top:18px}}table{{width:100%;border-collapse:collapse;min-width:1120px}}th,td{{padding:10px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}}th:first-child,td:first-child{{text-align:left}}th{{color:var(--muted)}}.positive{{color:var(--green)}}.negative{{color:var(--red)}}canvas{{width:100%;height:300px}}@media(max-width:800px){{.grid{{grid-template-columns:1fr}}h1{{font-size:26px}}}}
-</style></head><body><main><header><span style="color:var(--gold)">SCROOGE RESEARCH / CROSS-REGIME SWEEP</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><h2>Robust Winner</h2><div class="grid" id="winner"></div><table><thead><tr><th>Metric</th><th>Bull</th><th>Neutral</th><th>Bear</th><th>Mean / Worst</th></tr></thead><tbody id="winnerMetrics"></tbody></table></section><section class="panel"><h2>Top Configurations</h2><table><thead><tr><th>Config</th><th>Mean Edge</th><th>Worst Edge</th><th>Beat HODL</th><th>Bull</th><th>Neutral</th><th>Bear</th><th>Worst Assets</th><th>Fees</th><th>Diagnostic</th></tr></thead><tbody id="rows"></tbody></table></section><section class="panel"><h2>Mean Edge vs Worst-Regime Edge</h2><canvas id="scatter" width="1400" height="300"></canvas></section><section class="panel"><h2>Retention vs Edge by Regime</h2><canvas id="retention" width="1400" height="300"></canvas></section><section class="panel"><h2>Regime Winners</h2><div class="grid" id="regimeWinners"></div></section><section class="panel"><h2>Parameter Stability</h2><p id="stability"></p></section></main>
+</style></head><body><main><header><span style="color:var(--gold)">SCROOGE RESEARCH / CROSS-REGIME SWEEP</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><h2 id="winnerHeading"></h2><div class="grid" id="winner"></div><table><thead><tr><th>Metric</th><th>Bull</th><th>Neutral</th><th>Bear</th><th>Mean / Worst</th></tr></thead><tbody id="winnerMetrics"></tbody></table></section><section class="panel"><h2>Top Configurations</h2><table><thead><tr><th>Config</th><th>Mean Edge</th><th>Worst Edge</th><th>Beat HODL</th><th>Bull</th><th>Neutral</th><th>Bear</th><th>Worst Assets</th><th>Fees</th><th>Diagnostic</th></tr></thead><tbody id="rows"></tbody></table></section><section class="panel"><h2>Mean Edge vs Worst-Regime Edge</h2><canvas id="scatter" width="1400" height="300"></canvas></section><section class="panel"><h2>Retention vs Edge by Regime</h2><canvas id="retention" width="1400" height="300"></canvas></section><section class="panel"><h2>Regime Winners</h2><div class="grid" id="regimeWinners"></div></section><section class="panel"><h2>Parameter Stability</h2><p id="stability"></p></section></main>
 <script id="data" type="application/json">{data}</script><script>
 const d=JSON.parse(document.getElementById('data').textContent),pct=v=>`${{v>=0?'+':''}}${{Number(v).toFixed(2)}}%`,tone=v=>v>0?'positive':v<0?'negative':'';
 document.getElementById('title').textContent=d.name;document.getElementById('meta').textContent=`${{d.completed}}/${{d.total}} candidates · ${{d.completed*3}}/${{d.total*3}} regime replays`;
-const w=d.rows.find(r=>r.status==='ok');document.getElementById('winner').innerHTML=['bull','neutral','bear'].map(k=>{{const r=w.regimes[k];return `<article class="card"><strong>${{k.toUpperCase()}}</strong><h2 class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}} edge</h2><p>Strategy ${{pct(r.strategy_return_pct)}} · HODL ${{pct(r.hodl_return_pct)}}<br>Assets ${{pct(r.weighted_effective_assets_pct)}} · Relative DD ${{pct(r.maximum_relative_drawdown_pct)}}</p></article>`}}).join('');
+const w=d.rows.find(r=>r.status==='ok');document.getElementById('winnerHeading').textContent=w.worst_regime_edge_vs_hodl_pp>=0?'Robust Winner':'Ranked Winner (Not Robust)';document.getElementById('winner').innerHTML=['bull','neutral','bear'].map(k=>{{const r=w.regimes[k];return `<article class="card"><strong>${{k.toUpperCase()}}</strong><h2 class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}} edge</h2><p>Strategy ${{pct(r.strategy_return_pct)}} · HODL ${{pct(r.hodl_return_pct)}}<br>Assets ${{pct(r.weighted_effective_assets_pct)}} · Relative DD ${{pct(r.maximum_relative_drawdown_pct)}}</p></article>`}}).join('');
 const money=v=>`${{v<0?'-':''}}$${{Math.abs(Number(v)).toLocaleString('en-US',{{maximumFractionDigits:2}})}}`,reg=['bull','neutral','bear'],metricRows=[['Scrooge Return','strategy_return_pct',pct,'mean'],['HODL Return','hodl_return_pct',pct,'mean'],['Edge vs HODL','edge_vs_hodl_pct_points',pct,'worst'],['Max DD','maximum_drawdown_pct',pct,'worst'],['HODL Max DD','hodl_maximum_drawdown_pct',pct,'worst'],['Relative DD','maximum_relative_drawdown_pct',pct,'worst'],['Weighted Asset Qty','weighted_effective_assets_pct',pct,'worst'],['Final Reserve','free_reserve_quote',money,'mean'],['Lifecycle PnL','lifecycle_pnl',money,'mean'],['Cleanup Lifecycle PnL','cleanup_lifecycle_pnl',money,'mean'],['Quote Fees','quote_fees',money,'mean'],['Bargains','opened_bargains',v=>Number(v).toLocaleString(),'mean'],['Win Rate','win_rate_pct',pct,'mean'],['Profit Factor','profit_factor',v=>v==null?'N/A':Number(v).toFixed(2),'mean']];document.getElementById('winnerMetrics').innerHTML=metricRows.map(([label,key,fmt,mode])=>{{const vs=reg.map(k=>w.regimes[k][key]),aggregate=mode==='worst'?Math.min(...vs.map(Number)):vs.reduce((a,v)=>a+Number(v||0),0)/vs.length;return `<tr><td>${{label}}</td>${{vs.map(v=>`<td>${{fmt(v)}}</td>`).join('')}}<td>${{fmt(aggregate)}}</td></tr>`}}).join('');
 document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').slice(0,50).map(r=>`<tr><td>#${{r.rank}} ${{r.name}}</td><td class="${{tone(r.mean_edge_vs_hodl_pp)}}">${{pct(r.mean_edge_vs_hodl_pp)}}</td><td class="${{tone(r.worst_regime_edge_vs_hodl_pp)}}">${{pct(r.worst_regime_edge_vs_hodl_pp)}}</td><td>${{r.regimes_beating_hodl}}/3</td><td>${{pct(r.bull_edge_pp)}}</td><td>${{pct(r.neutral_edge_pp)}}</td><td>${{pct(r.bear_edge_pp)}}</td><td>${{pct(r.worst_weighted_effective_assets_pct)}}</td><td>${{pct(r.mean_fee_drag_pct)}}</td><td>${{r.diagnostic}}</td></tr>`).join('');
 document.getElementById('regimeWinners').innerHTML=['bull','neutral','bear'].map(k=>{{const r=d.regime_winners[k];return `<article class="card"><strong>${{k.toUpperCase()}}</strong><h2>${{r.name}}</h2><p>${{pct(r[k+'_edge_pp'])}} edge · overall rank #${{r.rank}}</p></article>`}}).join('');
@@ -574,10 +575,15 @@ def _comparison_markdown(payload: dict[str, Any]) -> str:
     )
     if winner is None:
         return f"# {payload['name']}\n\nNo successful candidates yet.\n"
+    winner_heading = (
+        "Robust Winner"
+        if float(winner["worst_regime_edge_vs_hodl_pp"]) >= 0
+        else "Ranked Winner (Not Robust)"
+    )
     lines = [
         f"# {payload['name']}",
         "",
-        "## Robust Winner",
+        f"## {winner_heading}",
         "",
         f"**{winner['name']}**",
         "",
@@ -622,7 +628,7 @@ def _comparison_markdown(payload: dict[str, Any]) -> str:
             "",
             f"Inspected {len(payload['stability']['neighbors'])} one-dimension neighbors; "
             f"{sum(bool(item['within_one_pp']) for item in payload['stability']['neighbors'])} "
-            "remain within 1 pp of the robust winner.",
+            "remain within 1 pp of the ranked winner.",
             "",
         ]
     )
@@ -994,8 +1000,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Spot regime sweep artifacts: {config.output_dir}")
     winner = next((row for row in payload["rows"] if row.get("status") == "ok"), None)
     if winner:
+        label = (
+            "Robust winner"
+            if float(winner["worst_regime_edge_vs_hodl_pp"]) >= 0
+            else "Ranked winner (not robust)"
+        )
         print(
-            f"Robust winner: {winner['name']} | mean Edge vs HODL "
+            f"{label}: {winner['name']} | mean Edge vs HODL "
             f"{winner['mean_edge_vs_hodl_pp']:+.2f} pp | worst "
             f"{winner['worst_regime_edge_vs_hodl_pp']:+.2f} pp | "
             f"{winner['regimes_beating_hodl']}/3 regimes"

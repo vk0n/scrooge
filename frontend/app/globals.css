@@ -2191,6 +2191,84 @@ pre {
     linear-gradient(180deg, rgba(17, 24, 35, 0.96), rgba(9, 14, 21, 0.98));
 }
 
+button.treasury-summary-card-flip {
+  appearance: none;
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  perspective: 900px;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+button.treasury-summary-card-flip:hover,
+button.treasury-summary-card-flip:focus-visible {
+  border-color: rgba(103, 150, 205, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(133, 176, 226, 0.1), 0 0 18px rgba(35, 86, 141, 0.1);
+}
+
+.treasury-summary-card-flip-inner {
+  display: grid;
+  min-width: 0;
+  transform-style: preserve-3d;
+  transition: transform 340ms cubic-bezier(0.2, 0.72, 0.2, 1);
+}
+
+.treasury-summary-card-flipped .treasury-summary-card-flip-inner {
+  transform: rotateY(180deg);
+}
+
+.treasury-summary-card-flip-face {
+  display: grid;
+  grid-area: 1 / 1;
+  align-content: start;
+  gap: 0.28rem;
+  min-width: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.treasury-summary-card-flip-back {
+  transform: rotateY(180deg);
+}
+
+.treasury-summary-breakdown {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.treasury-summary-breakdown > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.treasury-summary-breakdown small {
+  color: #8f9bae;
+  font-size: 0.68rem;
+  line-height: 1.15;
+}
+
+.treasury-summary-card .treasury-summary-breakdown strong {
+  font-size: 0.78rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.treasury-summary-gain-breakdown > span:last-child {
+  align-items: flex-start;
+}
+
+.treasury-summary-gain-breakdown > span:last-child strong {
+  max-width: 68%;
+  font-size: 0.66rem;
+  line-height: 1.15;
+  white-space: normal;
+}
+
 button.treasury-summary-card-reserve {
   appearance: none;
   width: 100%;
@@ -2855,7 +2933,8 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .treasury-timeline-flip-inner {
+  .treasury-timeline-flip-inner,
+  .treasury-summary-card-flip-inner {
     transition: none;
   }
 }
@@ -5335,6 +5414,21 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-summary-card-hero > .treasury-total-change {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+  }
+
+  .treasury-summary-card-hero .treasury-summary-card-flip-front {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .treasury-summary-card-hero .treasury-summary-card-flip-front > .treasury-summary-label {
+    grid-column: 1 / -1;
+  }
+
+  .treasury-summary-card-hero .treasury-summary-card-flip-front > .treasury-total-change {
     grid-column: 2;
     grid-row: 2;
     justify-self: end;

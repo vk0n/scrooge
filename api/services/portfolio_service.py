@@ -574,6 +574,30 @@ def _summary_from_holdings(
         for holding in holdings
         if bool(holding.get("is_dry_powder"))
     )
+    managed_holdings = [holding for holding in holdings if not bool(holding.get("is_dry_powder"))]
+    assets_at_market = sum(
+        _as_float(holding.get("market_value")) or 0.0
+        for holding in managed_holdings
+    )
+    asset_total_gain = sum(
+        _as_float(holding.get("total_gain")) or 0.0
+        for holding in managed_holdings
+    )
+    realized_bargain_cash_gain = sum(
+        _as_float(holding.get("accumulated_cash_gain")) or 0.0
+        for holding in managed_holdings
+    )
+    hodl_prices_complete = all(holding.get("market_price") is not None for holding in managed_holdings)
+    hodl_gain = (
+        sum(
+            (_as_float(holding.get("initial_quantity")) or 0.0)
+            * float(holding["market_price"])
+            - (_as_float(holding.get("initial_capital")) or 0.0)
+            for holding in managed_holdings
+        )
+        if hodl_prices_complete
+        else None
+    )
     committed_reserve = min(
         dry_powder,
         _reserved_quote_for_open_swings(open_swings, economics_by_swing),
@@ -597,6 +621,11 @@ def _summary_from_holdings(
         "invested_capital": invested_capital,
         "total_gain": total_gain,
         "total_gain_pct": (total_gain / invested_capital) * 100 if invested_capital > 0 else None,
+        "assets_at_market": assets_at_market,
+        "asset_total_gain": asset_total_gain,
+        "realized_bargain_cash_gain": realized_bargain_cash_gain,
+        "hodl_gain": hodl_gain,
+        "strategy_vs_hodl": total_gain - hodl_gain if hodl_gain is not None else None,
         "unrealized_pnl": total_gain,
         "unrealized_pnl_pct": (total_gain / invested_capital) * 100 if invested_capital > 0 else None,
         "vault_reserve": dry_powder,

@@ -13,6 +13,11 @@ type PortfolioSummary = {
   invested_capital: number;
   total_gain: number;
   total_gain_pct: number | null;
+  assets_at_market: number;
+  asset_total_gain: number;
+  realized_bargain_cash_gain: number;
+  hodl_gain: number | null;
+  strategy_vs_hodl: number | null;
   unrealized_pnl: number;
   unrealized_pnl_pct: number | null;
   vault_reserve: number;
@@ -39,6 +44,41 @@ type PortfolioSummary = {
   binance_spot_usdt_free: number | null;
   binance_spot_usdt_locked: number | null;
 };
+
+function SummaryFlipCard({
+  hero = false,
+  front,
+  back,
+  frontLabel,
+  backLabel,
+}: {
+  hero?: boolean;
+  front: JSX.Element;
+  back: JSX.Element;
+  frontLabel: string;
+  backLabel: string;
+}): JSX.Element {
+  const [flipped, setFlipped] = useState<boolean>(false);
+
+  return (
+    <button
+      type="button"
+      className={`treasury-summary-card treasury-summary-card-flip${hero ? " treasury-summary-card-hero" : ""}${flipped ? " treasury-summary-card-flipped" : ""}`}
+      aria-label={flipped ? frontLabel : backLabel}
+      aria-pressed={flipped}
+      onClick={() => setFlipped((current) => !current)}
+    >
+      <span className="treasury-summary-card-flip-inner">
+        <span className="treasury-summary-card-flip-face treasury-summary-card-flip-front" aria-hidden={flipped}>
+          {front}
+        </span>
+        <span className="treasury-summary-card-flip-face treasury-summary-card-flip-back" aria-hidden={!flipped}>
+          {back}
+        </span>
+      </span>
+    </button>
+  );
+}
 
 type PortfolioExchange = {
   venue: string;
@@ -3153,39 +3193,51 @@ export default function TreasuryPage(): JSX.Element {
           {error ? <p className="dialog-scrooge dialog-scrooge-error">{error}</p> : null}
 
           <div className="treasury-summary-grid">
-            <div className="treasury-summary-card treasury-summary-card-hero">
-              <span className="treasury-summary-label">Total Treasure</span>
-              <strong className="vault-value treasury-total-value">
-                <span
-                  className={signedToneClass(summary?.total_gain, "treasury-total-dollar")}
-                  aria-hidden="true"
-                >
-                  $
-                </span>
-                <span>{formatNumber(summary?.total_value ?? 0)}</span>
-              </strong>
-              {typeof summary?.total_value_day_change === "number" ? (
-                <span className="treasury-total-change">
+            <SummaryFlipCard
+              hero
+              frontLabel="Show Total Treasure"
+              backLabel="Show Total Treasure breakdown"
+              front={<>
+                <span className="treasury-summary-label">Total Treasure</span>
+                <strong className="vault-value treasury-total-value">
                   <span
-                    className={signedToneClass(
-                      summary.total_value_day_change,
-                      "treasury-total-change-value"
-                    )}
+                    className={signedToneClass(summary?.total_gain, "treasury-total-dollar")}
+                    aria-hidden="true"
                   >
-                    {formatSignedCurrency(summary.total_value_day_change)}
+                    $
                   </span>
-                  <span className="treasury-total-change-separator" aria-hidden="true">·</span>
-                  <span
-                    className={signedToneClass(
-                      summary.total_value_day_change_pct,
-                      "treasury-total-change-pct"
-                    )}
-                  >
-                    {formatSignedPercent(summary.total_value_day_change_pct)}
+                  <span>{formatNumber(summary?.total_value ?? 0)}</span>
+                </strong>
+                {typeof summary?.total_value_day_change === "number" ? (
+                  <span className="treasury-total-change">
+                    <span
+                      className={signedToneClass(
+                        summary.total_value_day_change,
+                        "treasury-total-change-value"
+                      )}
+                    >
+                      {formatSignedCurrency(summary.total_value_day_change)}
+                    </span>
+                    <span className="treasury-total-change-separator" aria-hidden="true">·</span>
+                    <span
+                      className={signedToneClass(
+                        summary.total_value_day_change_pct,
+                        "treasury-total-change-pct"
+                      )}
+                    >
+                      {formatSignedPercent(summary.total_value_day_change_pct)}
+                    </span>
                   </span>
+                ) : null}
+              </>}
+              back={<>
+                <span className="treasury-summary-label">Treasure Composition</span>
+                <span className="treasury-summary-breakdown">
+                  <span><small>Assets if sold now</small><strong>{formatCurrency(summary?.assets_at_market ?? 0)}</strong></span>
+                  <span><small>Cash</small><strong>{formatCurrency(summary?.dry_powder ?? 0)}</strong></span>
                 </span>
-              ) : null}
-            </div>
+              </>}
+            />
             <div className="treasury-summary-card">
               <span className="treasury-summary-label">Invested Capital</span>
               <strong className="vault-value">
@@ -3193,15 +3245,44 @@ export default function TreasuryPage(): JSX.Element {
                 <span>{formatNumber(summary?.invested_capital ?? 0)}</span>
               </strong>
             </div>
-            <div className="treasury-summary-card">
-              <span className="treasury-summary-label">Total Gain</span>
-              <strong className={signedToneClass(summary?.total_gain, "treasury-summary-value")}>
-                {formatSignedCurrency(summary?.total_gain ?? 0)}
-              </strong>
-              <span className={signedToneClass(summary?.total_gain_pct, "treasury-summary-note")}>
-                {formatSignedPercent(summary?.total_gain_pct)}
-              </span>
-            </div>
+            <SummaryFlipCard
+              frontLabel="Show Total Gain"
+              backLabel="Show Total Gain breakdown"
+              front={<>
+                <span className="treasury-summary-label">Total Gain</span>
+                <strong className={signedToneClass(summary?.total_gain, "treasury-summary-value")}>
+                  {formatSignedCurrency(summary?.total_gain ?? 0)}
+                </strong>
+                <span className={signedToneClass(summary?.total_gain_pct, "treasury-summary-note")}>
+                  {formatSignedPercent(summary?.total_gain_pct)}
+                </span>
+              </>}
+              back={<>
+                <span className="treasury-summary-label">Gain Composition</span>
+                <span className="treasury-summary-breakdown treasury-summary-gain-breakdown">
+                  <span>
+                    <small>Asset Total Gain</small>
+                    <strong className={signedToneClass(summary?.asset_total_gain, "")}>
+                      {formatSignedCurrency(summary?.asset_total_gain ?? 0)}
+                    </strong>
+                  </span>
+                  <span>
+                    <small>Realized cash</small>
+                    <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
+                      {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
+                    </strong>
+                  </span>
+                  <span>
+                    <small>HODL gain</small>
+                    <strong className={signedToneClass(summary?.hodl_gain, "")}>
+                      {summary?.hodl_gain === null || summary?.hodl_gain === undefined
+                        ? "Awaiting prices"
+                        : `${formatSignedCurrency(summary.hodl_gain)} (Scrooge ${formatSignedCurrency(summary.strategy_vs_hodl)})`}
+                    </strong>
+                  </span>
+                </span>
+              </>}
+            />
             <button
               type="button"
               className="treasury-summary-card treasury-summary-card-reserve"

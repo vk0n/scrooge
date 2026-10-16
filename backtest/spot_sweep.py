@@ -34,6 +34,7 @@ from core.spot_waiter_cleanup import AgingCleanupRule
 class SpotSweepVariant:
     name: str
     levels_pct: tuple[float, ...]
+    minimum_holding_pct: float | None
     close_profit_pct: float
     free_cash_retention_pct: float
     unrealized_pnl_pct: float
@@ -139,6 +140,7 @@ def load_spot_sweep_config(
         )
         supported = {
             "levels_pct",
+            "minimum_holding_pct",
             "close_profit_pct",
             "free_cash_retention_pct",
             "unrealized_pnl_pct",
@@ -185,6 +187,9 @@ def load_spot_sweep_config(
         "close_profit_pct",
         scenario.progression.close_profit_pct,
     )
+    minimum_holding_options: list[float | None] = [None]
+    if "minimum_holding_pct" in parameter_grid:
+        minimum_holding_options = grid_values("minimum_holding_pct", 0.0)
     retention_options = grid_values(
         "free_cash_retention_pct",
         scenario.free_cash_retention_pct,
@@ -220,6 +225,7 @@ def load_spot_sweep_config(
     parameter_sweep = parameter_grid_raw is not None
     for (
         levels,
+        minimum_holding_pct,
         close_profit,
         retention,
         unrealized_pnl,
@@ -232,6 +238,7 @@ def load_spot_sweep_config(
         capacity_age,
     ) in product(
         level_options,
+        minimum_holding_options,
         close_profit_options,
         retention_options,
         unrealized_pnl_options,
@@ -243,6 +250,8 @@ def load_spot_sweep_config(
         age_l1_options,
         capacity_age_options,
     ):
+        if minimum_holding_pct is not None and not 0 <= minimum_holding_pct <= 100:
+            raise ValueError("minimum_holding_pct must be in the range [0, 100].")
         deep_loss_level = int(deep_loss_level_raw)
         max_open = int(max_open_raw)
         if deep_loss_level != deep_loss_level_raw:
@@ -267,6 +276,7 @@ def load_spot_sweep_config(
             raise ValueError("Spot free cash retention must be in the range [0, 100].")
         key = (
             levels,
+            minimum_holding_pct,
             close_profit,
             retention,
             unrealized_pnl,
@@ -288,6 +298,7 @@ def load_spot_sweep_config(
         )
         optional_name_parts = []
         optional_values = (
+            ("minimum_holding_pct", "hold", minimum_holding_pct),
             ("deep_loss_min_age_days", "lossage", deep_loss_age),
             ("deep_loss_required_reverse_level", "losslevel", deep_loss_level),
             ("max_open_bargains_per_asset", "maxopen", max_open),
@@ -313,6 +324,7 @@ def load_spot_sweep_config(
             SpotSweepVariant(
                 name=name,
                 levels_pct=levels,
+                minimum_holding_pct=minimum_holding_pct,
                 close_profit_pct=close_profit,
                 free_cash_retention_pct=retention,
                 unrealized_pnl_pct=unrealized_pnl,
@@ -358,6 +370,12 @@ def load_spot_sweep_config(
 
 def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) -> SpotBacktestScenario:
     signal = replace(config.scenario.signal, levels_pct=variant.levels_pct)
+    assets = config.scenario.assets
+    if variant.minimum_holding_pct is not None:
+        assets = tuple(
+            replace(asset, minimum_holding_pct=variant.minimum_holding_pct)
+            for asset in assets
+        )
     progression = replace(
         config.scenario.progression,
         close_profit_pct=variant.close_profit_pct,
@@ -389,6 +407,7 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
         "sweep_name": config.name,
         "sweep_config": str(config.config_path),
         "sweep_levels_pct": list(variant.levels_pct),
+        "sweep_minimum_holding_pct": variant.minimum_holding_pct,
         "sweep_close_profit_pct": variant.close_profit_pct,
         "sweep_free_cash_retention_pct": variant.free_cash_retention_pct,
         "sweep_unrealized_pnl_pct": variant.unrealized_pnl_pct,
@@ -409,6 +428,7 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
     return replace(
         config.scenario,
         name=f"{config.name}-{variant.name}",
+        assets=assets,
         signal=signal,
         progression=progression,
         waiter_cleanup=waiter_cleanup,
@@ -464,6 +484,7 @@ def _summary_row(
         "rank": None,
         "name": variant.name,
         "levels_pct": list(variant.levels_pct),
+        "minimum_holding_pct": variant.minimum_holding_pct,
         "close_profit_pct": variant.close_profit_pct,
         "free_cash_retention_pct": variant.free_cash_retention_pct,
         "unrealized_pnl_pct": variant.unrealized_pnl_pct,
@@ -558,11 +579,11 @@ def _comparison_html(payload: dict[str, Any]) -> str:
 :root{{--bg:#080c11;--panel:#111821;--line:#293647;--ink:#edf2f7;--muted:#8d9bad;--gold:#e8b84a;--green:#48d6a2;--red:#ff647f}}
 *{{box-sizing:border-box}}body{{margin:0;background:repeating-linear-gradient(135deg,#080c11,#080c11 12px,#0a0f15 12px,#0a0f15 24px);color:var(--ink);font:13px ui-monospace,SFMono-Regular,Menlo,monospace}}
 main{{width:min(1500px,calc(100% - 28px));margin:28px auto 60px}}header,.panel{{border:1px solid var(--line);border-radius:18px;background:rgba(17,24,33,.97)}}header{{padding:28px;background:linear-gradient(125deg,#351020,#111923);margin-bottom:18px}}h1{{margin:8px 0;font-size:34px}}p{{color:var(--muted)}}.eyebrow{{color:var(--gold);letter-spacing:.14em;text-transform:uppercase}}.panel{{padding:18px;overflow:auto}}table{{width:100%;border-collapse:collapse;min-width:1120px}}th,td{{padding:11px 10px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}}th{{color:var(--muted);font-weight:400;position:sticky;top:0;background:var(--panel)}}th:nth-child(2),td:nth-child(2){{text-align:left}}tr:first-child td{{color:var(--green);font-weight:700}}.positive{{color:var(--green)}}.negative{{color:var(--red)}}@media(max-width:700px){{h1{{font-size:26px}}}}
-</style></head><body><main><header><span class="eyebrow">Scrooge Research / Spot Parameter Sweep</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><table><thead><tr><th>Rank</th><th>Levels</th><th title="Gross favorable price move required to close a Bargain">Bargain Goal</th><th>Retention</th><th>Deep Loss</th><th>Edge</th><th>Edge pp</th><th>Final</th><th>Free Reserve</th><th>Weighted Effective Assets</th><th>Cleanup Lifecycle PnL</th><th>Inventory Deficit</th><th>Open</th><th>Oldest</th><th>Drawdown</th><th>Runtime</th></tr></thead><tbody id="rows"></tbody></table></section></main>
+</style></head><body><main><header><span class="eyebrow">Scrooge Research / Spot Parameter Sweep</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><table><thead><tr><th>Rank</th><th>Levels</th><th>Minimum Hold</th><th title="Gross favorable price move required to close a Bargain">Bargain Goal</th><th>Retention</th><th>Deep Loss</th><th>Edge</th><th>Edge pp</th><th>Final</th><th>Free Reserve</th><th>Weighted Effective Assets</th><th>Cleanup Lifecycle PnL</th><th>Inventory Deficit</th><th>Open</th><th>Oldest</th><th>Drawdown</th><th>Runtime</th></tr></thead><tbody id="rows"></tbody></table></section></main>
 <script id="data" type="application/json">{data}</script><script>
 const d=JSON.parse(document.getElementById('data').textContent),money=v=>`${{v<0?'-':''}}$${{Math.abs(v).toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}})}}`,pct=v=>`${{v>=0?'+':''}}${{v.toFixed(2)}}%`,tone=v=>v>0?'positive':v<0?'negative':'';
 document.getElementById('title').textContent=d.name;document.getElementById('meta').textContent=`${{d.start}} to ${{d.end}} | ${{d.completed}}/${{d.total}} completed`;
-document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td>${{pct(r.close_profit_pct)}}</td><td>${{pct(r.free_cash_retention_pct)}}</td><td>${{pct(r.unrealized_pnl_pct)}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · protected ${{money(r.retained_reserve_quote||0)}} · spendable ${{money(r.spendable_reserve_quote||0)}}</td><td>${{pct(r.weighted_effective_assets_pct)}}</td><td class="${{tone(r.cleanup_lifecycle_pnl)}}">${{money(r.cleanup_lifecycle_pnl)}}</td><td>${{money(r.cleanup_inventory_deficit_value)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
+document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td>${{r.minimum_holding_pct===null?'Per asset':pct(r.minimum_holding_pct)}}</td><td>${{pct(r.close_profit_pct)}}</td><td>${{pct(r.free_cash_retention_pct)}}</td><td>${{pct(r.unrealized_pnl_pct)}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · protected ${{money(r.retained_reserve_quote||0)}} · spendable ${{money(r.spendable_reserve_quote||0)}}</td><td>${{pct(r.weighted_effective_assets_pct)}}</td><td class="${{tone(r.cleanup_lifecycle_pnl)}}">${{money(r.cleanup_lifecycle_pnl)}}</td><td>${{money(r.cleanup_inventory_deficit_value)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
 </script></body></html>"""
 
 
@@ -660,6 +681,7 @@ def _failed_row(
         "rank": None,
         "name": variant.name,
         "levels_pct": list(variant.levels_pct),
+        "minimum_holding_pct": variant.minimum_holding_pct,
         "status": "failed",
         "resumed": False,
         "duration_seconds": 0.0,

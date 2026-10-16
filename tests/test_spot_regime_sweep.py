@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from backtest.spot_regime_sweep import (
     _combined_summary,
+    _comparison_markdown,
     _scenario_for_regime,
     load_spot_regime_sweep_config,
     rank_combined_rows,
@@ -140,6 +141,7 @@ spot_sweep:
     neutral: {{start: '2024-01-01T00:00:00+00:00', end: '2024-12-31T00:00:00+00:00'}}
     bear: {{start: '2021-01-01T00:00:00+00:00', end: '2022-01-01T00:00:00+00:00'}}
   parameter_grid:
+    minimum_holding_pct: [40]
     close_profit_pct: {goals}
     free_cash_retention_pct: [20]
     unrealized_pnl_pct: [-25]
@@ -207,6 +209,8 @@ spot_sweep:
         self.assertEqual(combined["mean_edge_vs_hodl_pp"], 8)
         self.assertEqual(combined["worst_regime_edge_vs_hodl_pp"], -9)
         self.assertEqual(combined["regimes_beating_hodl"], 2)
+        self.assertEqual(combined["minimum_holding_pct"], 40)
+        self.assertEqual(combined["parameters"]["minimum_holding_pct"], 40)
         self.assertNotIn("summed_difference_vs_hodl", combined)
 
     def test_ranking_uses_cross_regime_mean_then_robustness(self):
@@ -225,6 +229,46 @@ spot_sweep:
         )
 
         self.assertEqual([item["name"] for item in ranked], ["tie-better-worst", "robust", "single-regime-star"])
+
+    def test_report_does_not_label_a_negative_worst_regime_as_robust(self):
+        winner = {
+            "name": "mixed-winner",
+            "status": "ok",
+            "mean_edge_vs_hodl_pp": 5,
+            "worst_regime_edge_vs_hodl_pp": -2,
+            "regimes_beating_hodl": 2,
+            "mean_weighted_effective_assets_pct": 100,
+            "worst_weighted_effective_assets_pct": 90,
+            "bull_edge_pp": -2,
+            "neutral_edge_pp": 8,
+            "bear_edge_pp": 8,
+            "regimes": {
+                name: {
+                    "strategy_return_pct": 1,
+                    "hodl_return_pct": 0,
+                    "edge_vs_hodl_pct_points": -2 if name == "bull" else 8,
+                    "maximum_drawdown_pct": -10,
+                    "hodl_maximum_drawdown_pct": -12,
+                    "maximum_relative_drawdown_pct": -5,
+                    "weighted_effective_assets_pct": 100,
+                    "retained_reserve_quote": 1,
+                    "cleanup_lifecycle_pnl": 0,
+                    "fee_drag_pct": 0.1,
+                }
+                for name in ("bull", "neutral", "bear")
+            },
+        }
+        payload = {
+            "name": "test",
+            "rows": [winner],
+            "regime_winners": {name: winner for name in ("bull", "neutral", "bear")},
+            "stability": {"neighbors": []},
+        }
+
+        report = _comparison_markdown(payload)
+
+        self.assertIn("## Ranked Winner (Not Robust)", report)
+        self.assertNotIn("## Robust Winner", report)
 
     def test_selector_uses_hodl_only_and_enforces_non_overlap(self):
         candidates = [
