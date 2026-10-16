@@ -3255,15 +3255,26 @@ export default function TreasuryPage(): JSX.Element {
                 <strong className={signedToneClass(summary?.total_gain, "treasury-gain-total")}>
                   {formatSignedCurrency(summary?.total_gain ?? 0)}
                 </strong>
-                <span className={signedToneClass(summary?.total_gain_pct, "treasury-gain-rate")}>
-                  {formatSignedPercent(summary?.total_gain_pct)} of invested capital
+                <span className="treasury-gain-rate">
+                  <strong className={signedToneClass(summary?.total_gain_pct, "")}>
+                    {formatSignedPercent(summary?.total_gain_pct)}
+                  </strong>
+                  <small>of invested capital</small>
+                </span>
+                <span className="treasury-gain-benchmark">
+                  <small>vs HODL</small>
+                  <strong className={signedToneClass(summary?.strategy_vs_hodl, "")}>
+                    {summary?.strategy_vs_hodl === null || summary?.strategy_vs_hodl === undefined
+                      ? "Awaiting prices"
+                      : formatSignedCurrency(summary.strategy_vs_hodl)}
+                  </strong>
                 </span>
               </>}
               back={<>
                 <span className="treasury-summary-label">Gain Composition</span>
                 <span className="treasury-summary-breakdown treasury-summary-gain-breakdown">
                   <span>
-                    <small>Asset market + open</small>
+                    <small>Asset + open PnL</small>
                     <strong className={signedToneClass(summary?.asset_market_and_open_gain, "")}>
                       {formatSignedCurrency(summary?.asset_market_and_open_gain ?? 0)}
                     </strong>
@@ -3275,7 +3286,7 @@ export default function TreasuryPage(): JSX.Element {
                     </strong>
                   </span>
                   <span>
-                    <small title="Cash and capital movements outside realized Bargain gains.">Other cash / capital</small>
+                    <small title="Cash and capital movements outside realized Bargain gains.">Other Treasury</small>
                     <strong className={signedToneClass(summary?.other_treasury_gain, "")}>
                       {formatSignedCurrency(summary?.other_treasury_gain ?? 0)}
                     </strong>
@@ -3298,7 +3309,7 @@ export default function TreasuryPage(): JSX.Element {
                           <span className="treasury-summary-hodl-line treasury-summary-my-result">
                             <small>My result</small>
                             <strong className={signedToneClass(summary.strategy_vs_hodl, "")}>
-                              {formatSignedCurrency(summary.strategy_vs_hodl)} vs HODL
+                              {formatSignedCurrency(summary.strategy_vs_hodl)}
                             </strong>
                           </span>
                         )}

@@ -2167,13 +2167,12 @@ pre {
 .treasury-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  align-items: start;
   gap: 0.62rem;
 }
 
 .treasury-summary-card {
   display: grid;
-  align-content: start;
+  align-content: space-between;
   gap: 0.28rem;
   min-width: 0;
   border: 1px solid rgba(83, 98, 121, 0.44);
@@ -2201,6 +2200,7 @@ button.treasury-summary-card-flip {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  height: 100%;
   isolation: isolate;
   perspective: 900px;
   transition: border-color 160ms ease, box-shadow 160ms ease;
@@ -2214,6 +2214,7 @@ button.treasury-summary-card-flip:focus-visible {
 
 .treasury-summary-card-flip-inner {
   display: grid;
+  height: 100%;
   min-width: 0;
   transform-style: preserve-3d;
   transition: transform 340ms cubic-bezier(0.2, 0.72, 0.2, 1);
@@ -2226,7 +2227,7 @@ button.treasury-summary-card-flip:focus-visible {
 .treasury-summary-card-flip-face {
   display: grid;
   grid-area: 1 / 1;
-  align-content: start;
+  align-content: space-between;
   gap: 0.28rem;
   min-width: 0;
   backface-visibility: hidden;
@@ -2283,18 +2284,50 @@ button.treasury-summary-card-flip:focus-visible {
 }
 
 .treasury-gain-total {
-  font-size: clamp(1.05rem, 1.45vw, 1.3rem) !important;
+  font-size: clamp(1.3rem, 1.8vw, 1.65rem) !important;
   letter-spacing: -0.02em;
 }
 
 .treasury-gain-rate {
-  justify-self: start;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  padding: 0.16rem 0.42rem;
-  font-size: 0.64rem;
-  font-weight: 700;
+  display: flex;
+  align-items: baseline;
+  gap: 0.34rem;
+  min-width: 0;
   line-height: 1.1;
+}
+
+.treasury-summary-card .treasury-gain-rate strong {
+  font-size: 0.9rem;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.treasury-gain-rate small {
+  color: #8f9bae;
+  font-size: 0.62rem;
+  line-height: 1.15;
+}
+
+.treasury-gain-benchmark {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.45rem;
+  border-top: 1px solid rgba(87, 103, 127, 0.24);
+  margin-top: 0.14rem;
+  padding-top: 0.28rem;
+}
+
+.treasury-gain-benchmark small {
+  color: #8f9bae;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+}
+
+.treasury-summary-card .treasury-gain-benchmark strong {
+  font-size: 0.76rem;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .treasury-summary-breakdown small {
@@ -5468,13 +5501,13 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-summary-card-hero {
-    grid-column: 1 / -1;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
+    grid-column: auto;
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .treasury-summary-card-hero > .treasury-summary-label {
-    grid-column: 1 / -1;
+    grid-column: 1;
   }
 
   .treasury-summary-card-hero > .treasury-total-value {
@@ -5482,32 +5515,28 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-summary-card-hero > .treasury-total-change {
-    grid-column: 2;
-    grid-row: 2;
-    justify-self: end;
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: start;
   }
 
   .treasury-summary-card-hero .treasury-summary-card-flip-front {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .treasury-summary-card-hero .treasury-summary-card-flip-front > .treasury-summary-label {
-    grid-column: 1 / -1;
+    grid-column: 1;
   }
 
   .treasury-summary-card-hero .treasury-summary-card-flip-front > .treasury-total-change {
-    grid-column: 2;
-    grid-row: 2;
-    justify-self: end;
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: start;
   }
 
   .treasury-summary-card-hero .treasury-total-invested {
-    grid-column: 1 / -1;
-  }
-
-  .treasury-summary-card-flip:not(.treasury-summary-card-hero) {
-    grid-column: 1 / -1;
+    grid-column: 1;
   }
 
   .treasury-timeline-grid {
@@ -6204,7 +6233,49 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-template-columns: 1fr;
   }
 
-  .treasury-summary-grid,
+  .treasury-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.42rem;
+  }
+
+  .treasury-summary-card {
+    padding: 0.68rem 0.62rem;
+  }
+
+  .treasury-summary-card strong.treasury-total-value,
+  .treasury-gain-total {
+    font-size: clamp(1.08rem, 5.4vw, 1.35rem) !important;
+  }
+
+  .treasury-total-change {
+    gap: 0.22rem;
+  }
+
+  .treasury-total-change-value,
+  .treasury-total-change-pct,
+  .treasury-total-change-separator,
+  .treasury-summary-card .treasury-gain-rate strong {
+    font-size: 0.72rem;
+  }
+
+  .treasury-gain-rate {
+    gap: 0.24rem;
+  }
+
+  .treasury-gain-rate small,
+  .treasury-total-invested small,
+  .treasury-gain-benchmark small,
+  .treasury-summary-breakdown small {
+    font-size: 0.58rem;
+  }
+
+  .treasury-summary-card .treasury-total-invested strong,
+  .treasury-summary-card .treasury-gain-benchmark strong,
+  .treasury-summary-card .treasury-summary-breakdown strong,
+  .treasury-summary-card .treasury-summary-hodl-line strong {
+    font-size: 0.66rem;
+  }
+
   .treasury-form,
   .treasury-holdings-grid {
     grid-template-columns: 1fr;
