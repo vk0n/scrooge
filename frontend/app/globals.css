@@ -2194,13 +2194,14 @@ pre {
 }
 
 button.treasury-summary-card-flip {
+  display: flex;
+  flex-direction: column;
   appearance: none;
   width: 100%;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  height: 100%;
   isolation: isolate;
   perspective: 900px;
   transition: border-color 160ms ease, box-shadow 160ms ease;
@@ -2214,7 +2215,8 @@ button.treasury-summary-card-flip:focus-visible {
 
 .treasury-summary-card-flip-inner {
   display: grid;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   min-width: 0;
   transform-style: preserve-3d;
   transition: transform 340ms cubic-bezier(0.2, 0.72, 0.2, 1);
