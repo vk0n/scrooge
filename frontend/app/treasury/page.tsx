@@ -3231,7 +3231,7 @@ export default function TreasuryPage(): JSX.Element {
                     </span>
                   </span>
                 ) : null}
-                <span className="treasury-total-invested">
+                <span className="treasury-summary-card-footer treasury-total-invested">
                   <small>Invested Capital</small>
                   <strong>
                     <span className="vault-dollar" aria-hidden="true">$</span>{" "}
@@ -3255,7 +3255,7 @@ export default function TreasuryPage(): JSX.Element {
                 <strong className={signedToneClass(summary?.total_gain, "treasury-gain-total")}>
                   {formatSignedCurrency(summary?.total_gain ?? 0)}
                 </strong>
-                <span className="treasury-gain-rate">
+                <span className="treasury-summary-card-footer treasury-gain-rate">
                   <strong className={signedToneClass(summary?.total_gain_pct, "")}>
                     {formatSignedPercent(summary?.total_gain_pct)}
                   </strong>
