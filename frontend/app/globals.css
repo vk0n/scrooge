@@ -2266,9 +2266,10 @@ button.treasury-summary-card-flip:focus-visible {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  align-self: end;
   gap: 0.5rem;
   border-top: 1px solid rgba(87, 103, 127, 0.24);
-  margin-top: 0.14rem;
+  margin-top: auto;
   padding-top: 0.28rem;
   color: #8f9bae;
 }
@@ -2306,28 +2307,6 @@ button.treasury-summary-card-flip:focus-visible {
   color: #8f9bae;
   font-size: 0.62rem;
   line-height: 1.15;
-}
-
-.treasury-gain-benchmark {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.45rem;
-  border-top: 1px solid rgba(87, 103, 127, 0.24);
-  margin-top: 0.14rem;
-  padding-top: 0.28rem;
-}
-
-.treasury-gain-benchmark small {
-  color: #8f9bae;
-  font-size: 0.68rem;
-  letter-spacing: 0.02em;
-}
-
-.treasury-summary-card .treasury-gain-benchmark strong {
-  font-size: 0.76rem;
-  text-align: right;
-  white-space: nowrap;
 }
 
 .treasury-summary-breakdown small {
@@ -6264,13 +6243,11 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-gain-rate small,
   .treasury-total-invested small,
-  .treasury-gain-benchmark small,
   .treasury-summary-breakdown small {
     font-size: 0.58rem;
   }
 
   .treasury-summary-card .treasury-total-invested strong,
-  .treasury-summary-card .treasury-gain-benchmark strong,
   .treasury-summary-card .treasury-summary-breakdown strong,
   .treasury-summary-card .treasury-summary-hodl-line strong {
     font-size: 0.66rem;

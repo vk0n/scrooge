@@ -3261,14 +3261,6 @@ export default function TreasuryPage(): JSX.Element {
                   </strong>
                   <small>of invested capital</small>
                 </span>
-                <span className="treasury-gain-benchmark">
-                  <small>vs HODL</small>
-                  <strong className={signedToneClass(summary?.strategy_vs_hodl, "")}>
-                    {summary?.strategy_vs_hodl === null || summary?.strategy_vs_hodl === undefined
-                      ? "Awaiting prices"
-                      : formatSignedCurrency(summary.strategy_vs_hodl)}
-                  </strong>
-                </span>
               </>}
               back={<>
                 <span className="treasury-summary-label">Gain Composition</span>
@@ -3283,12 +3275,6 @@ export default function TreasuryPage(): JSX.Element {
                     <small>Realized cash</small>
                     <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
                       {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
-                    </strong>
-                  </span>
-                  <span>
-                    <small title="Cash and capital movements outside realized Bargain gains.">Other Treasury</small>
-                    <strong className={signedToneClass(summary?.other_treasury_gain, "")}>
-                      {formatSignedCurrency(summary?.other_treasury_gain ?? 0)}
                     </strong>
                   </span>
                   <span className="treasury-summary-hodl-block">
