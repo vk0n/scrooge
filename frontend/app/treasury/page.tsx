@@ -3257,7 +3257,7 @@ export default function TreasuryPage(): JSX.Element {
                 </strong>
                 <span className="treasury-summary-card-footer treasury-gain-rate">
                   <strong className={signedToneClass(summary?.total_gain_pct, "")}>
-                    {formatSignedPercent(summary?.total_gain_pct)}
+                    {formatSignedPercent(summary?.total_gain_pct ?? 0)}
                   </strong>
                   <small>of invested capital</small>
                 </span>
