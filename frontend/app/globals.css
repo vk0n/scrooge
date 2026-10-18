@@ -3388,6 +3388,7 @@ button.treasury-summary-card-swings:focus-visible,
 .treasury-asset-controls {
   display: grid;
   gap: 0.72rem;
+  min-width: 0;
   margin-top: 0.62rem;
   border-top: 1px solid rgba(106, 124, 150, 0.22);
   padding-top: 0.62rem;
@@ -3622,6 +3623,7 @@ button.treasury-summary-card-swings:focus-visible,
 .treasury-custody-content {
   display: grid;
   gap: 0.65rem;
+  min-width: 0;
   margin-top: 0.65rem;
   border-radius: 0.7rem;
   padding: 0.7rem;
@@ -3637,6 +3639,7 @@ button.treasury-summary-card-swings:focus-visible,
 .treasury-custody-breakdown > div {
   display: grid;
   gap: 0.2rem;
+  min-width: 0;
   border: 1px solid rgba(91, 112, 143, 0.28);
   border-radius: 0.55rem;
   padding: 0.5rem 0.6rem;
@@ -3710,6 +3713,7 @@ button.treasury-summary-card-swings:focus-visible,
   grid-template-columns: repeat(3, minmax(0, 0.72fr)) minmax(10rem, 1.4fr) auto;
   align-items: end;
   gap: 0.5rem;
+  min-width: 0;
 }
 
 .treasury-custody-boundary-form {
@@ -3717,6 +3721,12 @@ button.treasury-summary-card-swings:focus-visible,
   grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: end;
   gap: 0.5rem;
+  min-width: 0;
+}
+
+.treasury-custody-form > *,
+.treasury-custody-boundary-form > * {
+  min-width: 0;
 }
 
 .treasury-custody-boundary-note {
@@ -3738,6 +3748,7 @@ button.treasury-summary-card-swings:focus-visible,
 .treasury-office-transfer {
   display: grid;
   gap: 0.55rem;
+  min-width: 0;
   border: 1px solid rgba(217, 174, 69, 0.32);
   border-radius: 0.7rem;
   padding: 0.7rem;
@@ -5584,6 +5595,14 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .treasury-office-transfer .treasury-custody-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .treasury-office-transfer .treasury-protected-cash-option {
+    grid-column: 1 / -1;
+  }
+
   .treasury-custody-note,
   .treasury-custody-form .dialog-user-btn,
   .treasury-custody-boundary-note,
@@ -6317,6 +6336,21 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-policy-form,
   .treasury-policy-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .treasury-office-transfer .treasury-custody-form {
+    grid-template-columns: 1fr;
+  }
+
+  .treasury-office-transfer > header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.18rem;
+  }
+
+  .treasury-office-transfer .treasury-protected-cash-option,
+  .treasury-office-transfer .dialog-user-btn {
+    grid-column: auto;
   }
 
   .treasury-retained-transfer-form .dialog-user-btn {
