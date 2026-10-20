@@ -1470,6 +1470,7 @@ def _create_spot_order_intent_preview(
         and strategy_action_type == "accumulate_asset"
         and side == "buy"
     )
+    standalone_manual_order = normalized_source == "manual" and normalized_swing_id is None
     if normalized_source == "strategy" and normalized_swing_id is None and not standalone_accumulation:
         raise ValueError("A standalone Strategy Spot order must be Treasury accumulation.")
     if normalized_source == "strategy":
@@ -1553,6 +1554,11 @@ def _create_spot_order_intent_preview(
         immediate_sellable = _as_float(holding.get("immediately_sellable_quantity")) or 0.0
         current_quantity = _as_float(holding.get("quantity")) or 0.0
     projected_holding = current_quantity + requested_quantity if side == "buy" else current_quantity - requested_quantity
+    current_target = _as_float(holding.get("target_quantity")) if holding is not None else None
+    projected_target = None
+    if standalone_manual_order and not treasury_intake and current_target is not None:
+        target_delta = requested_quantity if side == "buy" else -requested_quantity
+        projected_target = max(0.0, current_target + target_delta)
 
     if side == "buy" and estimated_required_quote > available_quote + 0.00000001:
         protected_hint = (
@@ -1567,11 +1573,15 @@ def _create_spot_order_intent_preview(
             f"{protected_hint}"
         )
     if side == "sell":
-        if requested_quantity > immediate_sellable + 0.00000001:
+        if standalone_manual_order and requested_quantity > available_asset + 0.00000001:
+            raise ValueError(
+                f"Requested sell exceeds the Binance Free balance of {available_asset:.8f} {asset_symbol}."
+            )
+        if not standalone_manual_order and requested_quantity > immediate_sellable + 0.00000001:
             raise ValueError(
                 f"Requested sell exceeds the immediately sellable inventory of {immediate_sellable:.8f} {asset_symbol}."
             )
-        if projected_holding < protected_floor - 0.00000001:
+        if not standalone_manual_order and projected_holding < protected_floor - 0.00000001:
             raise ValueError(
                 f"Requested sell would reduce the holding below the Protected Floor of {protected_floor:.8f} {asset_symbol}."
             )
@@ -1611,6 +1621,7 @@ def _create_spot_order_intent_preview(
             "use_protected_cash": use_protected_cash,
             "estimated_protected_cash_required": protected_cash_required,
             "initial_target_quantity": requested_quantity if treasury_intake else None,
+            "projected_target_quantity": projected_target,
             "preview_expires_at_ms": int((time.time() + SPOT_ORDER_PREVIEW_TTL_SECONDS) * 1000),
         }
     )

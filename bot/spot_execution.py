@@ -404,18 +404,20 @@ class SpotOrderExecutor:
         if intent["side"] == "sell":
             if holding is None:
                 raise ValueError("A real Spot sell requires an existing Treasury holding.")
-            immediate = _as_float(holding.get("immediately_sellable_quantity")) or 0.0
-            projected = (_as_float(holding.get("quantity")) or 0.0) - quantity_float
-            protected_floor = _as_float(holding.get("protected_floor_quantity")) or 0.0
-            if quantity_float > immediate + 0.00000001:
-                raise ValueError(
-                    f"Sell rejected: only {immediate:.8f} {intent['asset_symbol']} is immediately sellable."
-                )
-            if projected < protected_floor - 0.00000001:
-                raise ValueError("Sell rejected because it would breach the Protected Floor.")
             exchange_free = balances.get(intent["asset_symbol"], {}).get("free", 0.0)
             if quantity_float > exchange_free + 0.00000001:
                 raise ValueError("Sell rejected because Binance free balance changed after preview.")
+            standalone_manual_order = intent["source"] == "manual" and not intent.get("swing_id")
+            if not standalone_manual_order:
+                immediate = _as_float(holding.get("immediately_sellable_quantity")) or 0.0
+                projected = (_as_float(holding.get("quantity")) or 0.0) - quantity_float
+                protected_floor = _as_float(holding.get("protected_floor_quantity")) or 0.0
+                if quantity_float > immediate + 0.00000001:
+                    raise ValueError(
+                        f"Sell rejected: only {immediate:.8f} {intent['asset_symbol']} is immediately sellable."
+                    )
+                if projected < protected_floor - 0.00000001:
+                    raise ValueError("Sell rejected because it would breach the Protected Floor.")
         else:
             quote_free = balances.get(intent["quote_symbol"], {}).get("free", 0.0)
             estimated_fee_rate = self.strategy_config.estimated_fee_rate

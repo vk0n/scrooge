@@ -544,8 +544,8 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot["summary"]["total_gain"], 9.95)
         self.assertEqual(repeated_snapshot["summary"], snapshot["summary"])
 
-    def test_manual_sell_decreases_target_by_total_asset_debit_once(self):
-        preview = self._preview_and_queue("sell", 0.25)
+    def test_manual_sell_beyond_policy_floor_decreases_target_by_total_asset_debit_once(self):
+        preview = self._preview_and_queue("sell", 0.75)
         executor = SpotOrderExecutor(
             FakeSpotExecutionClient(commission_amount=0.01, commission_asset="BTC"),
             logger=logging.getLogger("test.spot-execution"),
@@ -559,7 +559,7 @@ class SpotExecutionTests(unittest.TestCase):
             item for item in list_portfolio_asset_policies(path=self.db_path)
             if item["asset_symbol"] == "BTC"
         )
-        self.assertAlmostEqual(policy["target_quantity"], 0.74)
+        self.assertAlmostEqual(policy["target_quantity"], 0.24)
 
     def test_manual_sell_credits_quote_cash_without_changing_owner_capital(self):
         portfolio_service.create_portfolio_transaction(
@@ -1127,7 +1127,7 @@ class SpotExecutionTests(unittest.TestCase):
         client = FakeSpotExecutionClient(btc_free=0.1)
         executor = SpotOrderExecutor(client, logger=logging.getLogger("test.spot-execution"), db_path=self.db_path)
 
-        with self.assertRaisesRegex(ValueError, "immediately sellable"):
+        with self.assertRaisesRegex(ValueError, "Binance free balance changed"):
             executor.execute(preview["intent_id"])
 
         self.assertEqual(client.create_calls, 0)

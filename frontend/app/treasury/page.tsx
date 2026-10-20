@@ -124,6 +124,7 @@ type SpotOrderIntent = {
   request?: {
     use_protected_cash?: boolean;
     estimated_protected_cash_required?: number;
+    projected_target_quantity?: number | null;
   };
   preview_expires_at_ms?: number;
 };
@@ -1655,7 +1656,7 @@ function SpotOrderPanel({
           {holding ? (
             <>
               <span>Binance Free <strong>{formatNumber(holding.exchange_binance_free_quantity, 8)} {holding.asset_symbol}</strong></span>
-              <span>Sellable <strong>{formatNumber(holding.immediately_sellable_quantity, 8)} {holding.asset_symbol}</strong></span>
+              <span>Strategy Sellable <strong>{formatNumber(holding.immediately_sellable_quantity, 8)} {holding.asset_symbol}</strong></span>
             </>
           ) : (
             <span>New policy <strong>Target quantity · 100% protected</strong></span>
@@ -1676,6 +1677,9 @@ function SpotOrderPanel({
               <span>Projected Holding <strong>{formatNumber(preview.projected_holding_quantity, 8)} {preview.asset_symbol}</strong></span>
               {treasuryIntake ? (
                 <span>Initial Policy <strong>100% protected · Accumulate Cash</strong></span>
+              ) : preview.request?.projected_target_quantity !== null
+                && preview.request?.projected_target_quantity !== undefined ? (
+                <span>Projected Target <strong>{formatNumber(preview.request.projected_target_quantity, 8)} {preview.asset_symbol}</strong></span>
               ) : (
                 <span>Protected Floor <strong>{formatNumber(preview.protected_floor_quantity, 8)} {preview.asset_symbol}</strong></span>
               )}

@@ -1496,7 +1496,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(failed_holding["immediately_sellable_quantity"], 0)
         self.assertFalse(failed_holding["sellable_inventory_is_exchange_verified"])
 
-    def test_spot_sell_preview_enforces_policy_and_persists_intent(self):
+    def test_manual_spot_sell_preview_uses_binance_free_and_projects_target(self):
         self.add("BTC", 1, 90, "binance")
         portfolio_service.update_portfolio_asset_policy(
             "BTC",
@@ -1524,9 +1524,37 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(preview["projected_holding_quantity"], 0.75)
         self.assertEqual(len(preview["client_order_id"]), 35)
 
-        with self.assertRaisesRegex(ValueError, "immediately sellable"):
+        beyond_policy = portfolio_service.create_spot_order_preview(
+            {"asset_symbol": "BTC", "side": "sell", "quantity": 0.6}
+        )
+        self.assertEqual(beyond_policy["available_asset_quantity"], 1)
+        self.assertEqual(beyond_policy["request"]["projected_target_quantity"], 0.4)
+
+        with self.assertRaisesRegex(ValueError, "Binance Free balance"):
             portfolio_service.create_spot_order_preview(
-                {"asset_symbol": "BTC", "side": "sell", "quantity": 0.6}
+                {"asset_symbol": "BTC", "side": "sell", "quantity": 1.1}
+            )
+
+        create_spot_swing(
+            {
+                "swing_id": "strategy-floor-guard",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_cash",
+                "planned_quantity": 0.6,
+                "source": "strategy",
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "immediately sellable"):
+            portfolio_service.create_strategy_spot_order_intent(
+                {
+                    "asset_symbol": "BTC",
+                    "side": "sell",
+                    "quantity": 0.6,
+                    "swing_id": "strategy-floor-guard",
+                    "reason": {"action_type": "open", "signal_level": 1},
+                }
             )
 
     def test_spot_buy_preview_requires_available_usdt(self):
