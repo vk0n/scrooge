@@ -575,6 +575,49 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(btc["total_gain"], 15)
         self.assertEqual(snapshot["summary"]["total_gain"], 15)
 
+    def test_standalone_manual_sell_reports_realized_gain_separately_from_bargains(self):
+        self.add("BTC", 1, 90, "binance")
+        append_portfolio_transaction(
+            {
+                "transaction_id": "spot-order:manual-btc-sell",
+                "account_key": "manual_spot",
+                "executed_at": "2026-12-24 17:00:00",
+                "tx_type": "sell",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "quantity": 0.5,
+                "price": 100,
+                "source": "binance_manual",
+                "status": "settled",
+                "custody_location": "binance",
+                "executed_quote_quantity": 50,
+                "fee_amount": 0.05,
+                "fee_asset": "USDT",
+                "commissions": {"USDT": 0.05},
+            }
+        )
+
+        snapshot, _ = portfolio_service.load_portfolio_snapshot()
+        btc = next(item for item in snapshot["holdings"] if item["asset_symbol"] == "BTC")
+        summary = snapshot["summary"]
+
+        self.assertAlmostEqual(btc["quantity"], 0.5)
+        self.assertAlmostEqual(btc["initial_quantity"], 0.5)
+        self.assertAlmostEqual(btc["initial_capital"], 45)
+        self.assertAlmostEqual(btc["performance_capital"], 90)
+        self.assertAlmostEqual(btc["market_gain"], 5)
+        self.assertAlmostEqual(btc["manual_realized_gain"], 4.95)
+        self.assertAlmostEqual(btc["accumulated_cash_gain"], 0)
+        self.assertAlmostEqual(btc["total_gain"], 9.95)
+        self.assertAlmostEqual(btc["total_gain_pct"], 9.95 / 90 * 100)
+        self.assertAlmostEqual(summary["total_value"], 99.95)
+        self.assertAlmostEqual(summary["total_gain"], 9.95)
+        self.assertAlmostEqual(summary["asset_total_gain"], 9.95)
+        self.assertAlmostEqual(summary["asset_market_and_open_gain"], 5)
+        self.assertAlmostEqual(summary["realized_bargain_cash_gain"], 0)
+        self.assertAlmostEqual(summary["realized_manual_gain"], 4.95)
+        self.assertAlmostEqual(summary["other_treasury_gain"], 0)
+
     def test_accumulated_asset_and_cash_reduce_effective_entry_cost(self):
         self.add("ETH", 1, 10, "binance")
         create_spot_swing(

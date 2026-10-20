@@ -383,7 +383,12 @@ def _derive_owner_positions(
             quantity = _as_float(transaction.get("quantity")) or 0.0
             capital_flow = positions.setdefault(
                 ("__TREASURY_CAPITAL__", quote),
-                {"quantity": 0.0, "basis": 0.0},
+                {
+                    "quantity": 0.0,
+                    "basis": 0.0,
+                    "manual_realized_gain": 0.0,
+                    "manual_realized_cost_basis": 0.0,
+                },
             )
             capital_flow["basis"] += quantity if office_direction == "from_office" else -quantity
             continue
@@ -398,7 +403,15 @@ def _derive_owner_positions(
         if price is None and asset in STABLE_ASSETS and quote in STABLE_ASSETS:
             price = 1.0
         key = (asset, quote)
-        bucket = positions.setdefault(key, {"quantity": 0.0, "basis": 0.0})
+        bucket = positions.setdefault(
+            key,
+            {
+                "quantity": 0.0,
+                "basis": 0.0,
+                "manual_realized_gain": 0.0,
+                "manual_realized_cost_basis": 0.0,
+            },
+        )
         is_standalone_manual_spot = (
             source == "binance_manual"
             and not transaction.get("swing_id")
@@ -407,8 +420,24 @@ def _derive_owner_positions(
         if is_standalone_manual_spot and tx_type == "sell":
             average_basis = bucket["basis"] / bucket["quantity"] if bucket["quantity"] > 0 else 0.0
             removed_quantity = min(quantity, bucket["quantity"])
+            removed_basis = removed_quantity * average_basis
+            executed_quote = _as_float(transaction.get("executed_quote_quantity"))
+            if executed_quote is None:
+                executed_quote = quantity * price if price is not None else 0.0
+            commissions = (
+                transaction.get("commissions")
+                if isinstance(transaction.get("commissions"), dict)
+                else {}
+            )
+            quote_fee = _as_float(commissions.get(quote))
+            if quote_fee is None and _clean_symbol(transaction.get("fee_asset")) == quote:
+                quote_fee = _as_float(transaction.get("fee_amount"))
+            net_quote = max(0.0, executed_quote - (quote_fee or 0.0))
+            attributed_quote = net_quote * removed_quantity / quantity if quantity > 0 else 0.0
             bucket["quantity"] = max(0.0, bucket["quantity"] - removed_quantity)
-            bucket["basis"] = max(0.0, bucket["basis"] - removed_quantity * average_basis)
+            bucket["basis"] = max(0.0, bucket["basis"] - removed_basis)
+            bucket["manual_realized_gain"] += attributed_quote - removed_basis
+            bucket["manual_realized_cost_basis"] += removed_basis
             continue
         is_contribution = capital_effect == "contribution" or (
             not capital_effect and tx_type in {"buy", "deposit", "adjustment"}
@@ -516,13 +545,24 @@ def _attach_asset_performance(
         if bool(holding.get("is_dry_powder")):
             continue
         key = (str(holding["asset_symbol"]), str(holding["quote_symbol"]))
-        owner = owner_positions.get(key, {"quantity": 0.0, "basis": 0.0})
+        owner = owner_positions.get(
+            key,
+            {
+                "quantity": 0.0,
+                "basis": 0.0,
+                "manual_realized_gain": 0.0,
+                "manual_realized_cost_basis": 0.0,
+            },
+        )
         performance = performance_by_asset.get(
             key,
             {"accumulated_asset_quantity": 0.0, "accumulated_cash_gain": 0.0, "open_bargain_pnl": 0.0},
         )
         initial_quantity = float(owner["quantity"])
         initial_capital = float(owner["basis"])
+        manual_realized_gain = float(owner.get("manual_realized_gain") or 0.0)
+        manual_realized_cost_basis = float(owner.get("manual_realized_cost_basis") or 0.0)
+        performance_capital = initial_capital + manual_realized_cost_basis
         accumulated_asset = float(performance["accumulated_asset_quantity"])
         accumulated_cash = float(performance["accumulated_cash_gain"])
         open_bargain_pnl = float(performance["open_bargain_pnl"])
@@ -535,12 +575,19 @@ def _attach_asset_performance(
         market_gain = (
             settled_quantity * market_price - initial_capital if market_price is not None else None
         )
-        floating_gain = market_gain + accumulated_cash if market_gain is not None else None
+        floating_gain = (
+            market_gain + accumulated_cash + manual_realized_gain
+            if market_gain is not None
+            else None
+        )
         total_gain = floating_gain + open_bargain_pnl if floating_gain is not None else None
         holding.update(
             {
                 "initial_quantity": initial_quantity,
                 "initial_capital": initial_capital,
+                "performance_capital": performance_capital,
+                "manual_realized_gain": manual_realized_gain,
+                "manual_realized_cost_basis": manual_realized_cost_basis,
                 "accumulated_asset_quantity": accumulated_asset,
                 "accumulated_cash_gain": accumulated_cash,
                 "open_bargain_pnl": open_bargain_pnl,
@@ -551,8 +598,8 @@ def _attach_asset_performance(
                 "floating_gain": floating_gain,
                 "total_gain": total_gain,
                 "total_gain_pct": (
-                    total_gain / initial_capital * 100.0
-                    if total_gain is not None and initial_capital > 0
+                    total_gain / performance_capital * 100.0
+                    if total_gain is not None and performance_capital > 0
                     else None
                 ),
             }
@@ -587,7 +634,13 @@ def _summary_from_holdings(
         _as_float(holding.get("accumulated_cash_gain")) or 0.0
         for holding in managed_holdings
     )
-    asset_market_and_open_gain = asset_total_gain - realized_bargain_cash_gain
+    realized_manual_gain = sum(
+        _as_float(holding.get("manual_realized_gain")) or 0.0
+        for holding in managed_holdings
+    )
+    asset_market_and_open_gain = (
+        asset_total_gain - realized_bargain_cash_gain - realized_manual_gain
+    )
     other_treasury_gain = total_gain - asset_total_gain
     hodl_prices_complete = all(holding.get("market_price") is not None for holding in managed_holdings)
     hodl_gain = (
@@ -627,6 +680,7 @@ def _summary_from_holdings(
         "asset_total_gain": asset_total_gain,
         "asset_market_and_open_gain": asset_market_and_open_gain,
         "realized_bargain_cash_gain": realized_bargain_cash_gain,
+        "realized_manual_gain": realized_manual_gain,
         "other_treasury_gain": other_treasury_gain,
         "hodl_gain": hodl_gain,
         "strategy_vs_hodl": total_gain - hodl_gain if hodl_gain is not None else None,

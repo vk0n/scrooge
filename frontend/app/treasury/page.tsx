@@ -17,6 +17,7 @@ type PortfolioSummary = {
   asset_total_gain: number;
   asset_market_and_open_gain: number;
   realized_bargain_cash_gain: number;
+  realized_manual_gain: number;
   other_treasury_gain: number;
   hodl_gain: number | null;
   strategy_vs_hodl: number | null;
@@ -223,6 +224,9 @@ type PortfolioHolding = {
   initial_capital: number;
   accumulated_asset_quantity: number;
   accumulated_cash_gain: number;
+  manual_realized_gain: number;
+  manual_realized_cost_basis: number;
+  performance_capital: number;
   open_bargain_pnl: number;
   settled_quantity: number;
   effective_cost_basis: number;
@@ -3001,8 +3005,13 @@ function HoldingCard({
                   </strong>
                   <small className="treasury-gain-breakdown">
                     <span>
-                      Market {formatSignedCurrency(holding.market_gain)} · Cash {formatSignedCurrency(holding.accumulated_cash_gain)}
+                      Market {formatSignedCurrency(holding.market_gain)} · Bargains {formatSignedCurrency(holding.accumulated_cash_gain)}
                     </span>
+                    {Math.abs(holding.manual_realized_gain) > 0.005 ? (
+                      <span className={signedToneClass(holding.manual_realized_gain, "treasury-manual-pnl")}>
+                        Manual {formatSignedCurrency(holding.manual_realized_gain)}
+                      </span>
+                    ) : null}
                     <span className={signedToneClass(holding.open_bargain_pnl, "treasury-open-pnl")}>
                       Open {formatSignedCurrency(holding.open_bargain_pnl)}
                     </span>
@@ -3276,11 +3285,19 @@ export default function TreasuryPage(): JSX.Element {
                     </strong>
                   </span>
                   <span>
-                    <small>Realized cash</small>
+                    <small>Bargain cash</small>
                     <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
                       {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
                     </strong>
                   </span>
+                  {Math.abs(summary?.realized_manual_gain ?? 0) > 0.005 ? (
+                    <span>
+                      <small>Manual realized</small>
+                      <strong className={signedToneClass(summary?.realized_manual_gain, "")}>
+                        {formatSignedCurrency(summary?.realized_manual_gain ?? 0)}
+                      </strong>
+                    </span>
+                  ) : null}
                   <span className="treasury-summary-hodl-block">
                     {summary?.hodl_gain === null || summary?.hodl_gain === undefined ? (
                       <span className="treasury-summary-hodl-line">
