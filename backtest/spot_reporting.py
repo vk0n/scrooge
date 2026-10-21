@@ -429,6 +429,9 @@ def _asset_capital_performance(
     reserve_deployment_asset = sum(
         float(item.get("net_asset_acquired") or 0.0) for item in accumulations
     )
+    reserve_deployment_cost = sum(
+        float(item.get("deployed_quote_quantity") or 0.0) for item in accumulations
+    )
     settled_quantity = max(
         0.0,
         initial_quantity + accumulated_asset + reserve_deployment_asset,
@@ -438,13 +441,17 @@ def _asset_capital_performance(
         if initial_quantity > 0
         else 0.0
     )
-    effective_cost_basis = initial_capital - accumulated_cash
+    effective_cost_basis = initial_capital + reserve_deployment_cost - accumulated_cash
     effective_entry_cost = (
         effective_cost_basis / settled_quantity
         if settled_quantity > 1e-12
         else None
     )
-    market_gain = settled_quantity * final_price - initial_capital
+    market_gain = (
+        settled_quantity * final_price
+        - initial_capital
+        - reserve_deployment_cost
+    )
     floating_gain = market_gain + accumulated_cash
     total_gain = floating_gain + open_bargain_pnl
     return {
@@ -453,6 +460,10 @@ def _asset_capital_performance(
         "initial_capital": initial_capital,
         "accumulated_asset_quantity": accumulated_asset,
         "reserve_deployment_asset_quantity": reserve_deployment_asset,
+        "reserve_deployment_quote_cost": reserve_deployment_cost,
+        "reserve_deployment_pnl": (
+            reserve_deployment_asset * final_price - reserve_deployment_cost
+        ),
         "accumulated_cash_gain": accumulated_cash,
         "open_bargain_pnl": open_bargain_pnl,
         "settled_quantity": settled_quantity,

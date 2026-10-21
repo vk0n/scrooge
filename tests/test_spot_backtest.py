@@ -15,6 +15,7 @@ from backtest.spot_market_data import (
     SpotHistoricalDataset,
 )
 from backtest.spot_reporting import (
+    _asset_capital_performance,
     _accumulation_metrics,
     _campaign_metrics,
     _cleanup_accounting_rows,
@@ -1833,6 +1834,13 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             + cash_performance["open_bargain_pnl"],
         )
         self.assertEqual(cash_result.assets["CASH"].target_quantity, 100)
+        self.assertAlmostEqual(
+            sum(
+                float(item["capital_performance"]["total_gain"] or 0.0)
+                for item in cash_report["per_asset"].values()
+            ),
+            cash_report["portfolio"]["total_gain_on_initial_capital"],
+        )
 
         asset_config = scenario(
             (asset("COIN", minimum=0, objective="accumulate_asset"),),
@@ -1848,6 +1856,34 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertLess(asset_performance["effective_entry_cost"], 120)
         self.assertEqual(len(asset_result.target_history), 1)
         self.assertEqual(len({item["swing_id"] for item in asset_result.target_history}), 1)
+        self.assertAlmostEqual(
+            sum(
+                float(item["capital_performance"]["total_gain"] or 0.0)
+                for item in asset_report["per_asset"].values()
+            ),
+            asset_report["portfolio"]["total_gain_on_initial_capital"],
+        )
+
+    def test_asset_performance_subtracts_reserve_deployment_cost_once(self):
+        performance = _asset_capital_performance(
+            asset("AAA", quantity=1, target=1, objective="accumulate_asset"),
+            [],
+            [
+                {
+                    "net_asset_acquired": 0.5,
+                    "deployed_quote_quantity": 5.0,
+                }
+            ],
+            initial_price=10.0,
+            final_price=20.0,
+        )
+
+        self.assertEqual(performance["initial_capital"], 10.0)
+        self.assertEqual(performance["settled_quantity"], 1.5)
+        self.assertEqual(performance["reserve_deployment_quote_cost"], 5.0)
+        self.assertEqual(performance["reserve_deployment_pnl"], 5.0)
+        self.assertEqual(performance["market_gain"], 15.0)
+        self.assertEqual(performance["total_gain"], 15.0)
 
     def test_losing_asset_swing_does_not_ratchet(self):
         config = scenario(

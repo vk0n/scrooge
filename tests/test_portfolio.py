@@ -500,6 +500,11 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(closed["summary"]["assets_at_market"], 100)
         self.assertEqual(closed["summary"]["asset_total_gain"], 12.5)
         self.assertEqual(closed["summary"]["asset_market_and_open_gain"], 10)
+        self.assertEqual(closed["summary"]["bargains_total_gain"], 2.5)
+        self.assertEqual(closed["summary"]["hodl_component_gain"], 10)
+        self.assertEqual(closed["summary"]["open_bargain_pnl"], 0)
+        self.assertEqual(closed["summary"]["reserve_deployment_pnl"], 0)
+        self.assertEqual(closed["summary"]["closed_bargain_asset_mark"], 0)
         self.assertEqual(closed["summary"]["realized_bargain_cash_gain"], 2.5)
         self.assertEqual(closed["summary"]["other_treasury_gain"], 0)
         self.assertEqual(closed["summary"]["hodl_gain"], 10)
@@ -574,6 +579,8 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(btc["open_bargain_pnl"], 5)
         self.assertEqual(btc["total_gain"], 15)
         self.assertEqual(snapshot["summary"]["total_gain"], 15)
+        self.assertEqual(snapshot["summary"]["bargains_total_gain"], 5)
+        self.assertEqual(snapshot["summary"]["hodl_component_gain"], 10)
 
     def test_standalone_manual_sell_reports_realized_gain_separately_from_bargains(self):
         self.add("BTC", 1, 90, "binance")
@@ -614,6 +621,8 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertAlmostEqual(summary["total_gain"], 9.95)
         self.assertAlmostEqual(summary["asset_total_gain"], 9.95)
         self.assertAlmostEqual(summary["asset_market_and_open_gain"], 5)
+        self.assertAlmostEqual(summary["bargains_total_gain"], 0)
+        self.assertAlmostEqual(summary["hodl_component_gain"], 5)
         self.assertAlmostEqual(summary["realized_bargain_cash_gain"], 0)
         self.assertAlmostEqual(summary["realized_manual_gain"], 4.95)
         self.assertAlmostEqual(summary["other_treasury_gain"], 0)
@@ -680,6 +689,8 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertAlmostEqual(eth["total_gain"], 11.1)
         self.assertAlmostEqual(snapshot["summary"]["total_gain"], 11.1)
         self.assertAlmostEqual(snapshot["summary"]["asset_total_gain"], 11.1)
+        self.assertAlmostEqual(snapshot["summary"]["bargains_total_gain"], 1.1)
+        self.assertAlmostEqual(snapshot["summary"]["hodl_component_gain"], 10)
         self.assertAlmostEqual(snapshot["summary"]["realized_bargain_cash_gain"], 0.1)
         self.assertAlmostEqual(snapshot["summary"]["hodl_gain"], 10)
         self.assertAlmostEqual(snapshot["summary"]["strategy_vs_hodl"], 1.1)
@@ -736,6 +747,67 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         self.assertAlmostEqual(holdings[0]["accumulated_asset_quantity"], -0.03)
         self.assertAlmostEqual(holdings[0]["closed_bargain_asset_mark"], -0.6)
+        summary = portfolio_service._summary_from_holdings(
+            holdings,
+            invested_capital=10.0,
+            open_swings=[],
+            economics_by_swing={},
+        )
+        self.assertAlmostEqual(summary["closed_bargain_asset_mark"], -0.6)
+
+    def test_reserve_deployment_counts_only_its_pnl_in_asset_gain(self):
+        holdings = [
+            {
+                "asset_symbol": "ETH",
+                "quote_symbol": "USDT",
+                "is_dry_powder": False,
+                "market_price": 20.0,
+            }
+        ]
+
+        portfolio_service._attach_asset_performance(
+            holdings,
+            owner_positions={
+                ("ETH", "USDT"): {
+                    "quantity": 1.0,
+                    "basis": 10.0,
+                    "manual_realized_gain": 0.0,
+                    "manual_realized_cost_basis": 0.0,
+                }
+            },
+            swings=[],
+            economics_by_swing={},
+            accumulations=[
+                {
+                    "asset_symbol": "ETH",
+                    "quote_symbol": "USDT",
+                    "applied_gain_quantity": 0.5,
+                    "deployed_quote_quantity": 5.0,
+                }
+            ],
+        )
+
+        eth = holdings[0]
+        self.assertAlmostEqual(eth["settled_quantity"], 1.5)
+        self.assertAlmostEqual(eth["effective_cost_basis"], 15.0)
+        self.assertAlmostEqual(eth["reserve_deployment_pnl"], 5.0)
+        self.assertAlmostEqual(eth["market_gain"], 15.0)
+        self.assertAlmostEqual(eth["total_gain"], 15.0)
+        eth["market_value"] = eth["settled_quantity"] * eth["market_price"]
+        summary = portfolio_service._summary_from_holdings(
+            holdings,
+            invested_capital=15.0,
+            open_swings=[],
+            economics_by_swing={},
+        )
+        self.assertAlmostEqual(summary["bargains_total_gain"], 5.0)
+        self.assertAlmostEqual(summary["hodl_component_gain"], 10.0)
+        self.assertAlmostEqual(
+            summary["hodl_component_gain"]
+            + summary["bargains_total_gain"]
+            + summary["realized_manual_gain"],
+            summary["total_gain"],
+        )
 
     def test_void_and_restore_recalculate_holdings_without_deleting_ledger_entry(self):
         btc = self.add("BTC", 1, 90)
@@ -1879,6 +1951,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         before_transfer, _ = portfolio_service.load_portfolio_snapshot()
         self.assertEqual(before_transfer["summary"]["other_treasury_gain"], 50)
+        self.assertEqual(before_transfer["summary"]["hodl_component_gain"], 50)
 
         transferred, _ = portfolio_service.record_confirmed_office_transfer(
             transfer_ref="generated-to-office",
@@ -1892,6 +1965,12 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(summary["invested_capital"], 70)
         self.assertEqual(summary["total_gain"], 50)
         self.assertEqual(summary["other_treasury_gain"], 50)
+        self.assertEqual(
+            summary["hodl_component_gain"]
+            + summary["bargains_total_gain"]
+            + summary["realized_manual_gain"],
+            summary["total_gain"],
+        )
 
 
 if __name__ == "__main__":

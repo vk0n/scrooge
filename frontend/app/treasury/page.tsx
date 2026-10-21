@@ -14,13 +14,13 @@ type PortfolioSummary = {
   total_gain: number;
   total_gain_pct: number | null;
   assets_at_market: number;
-  asset_total_gain: number;
-  asset_market_and_open_gain: number;
+  bargains_total_gain: number;
+  hodl_component_gain: number;
+  open_bargain_pnl: number;
+  reserve_deployment_pnl: number;
+  closed_bargain_asset_mark: number;
   realized_bargain_cash_gain: number;
   realized_manual_gain: number;
-  other_treasury_gain: number;
-  hodl_gain: number | null;
-  strategy_vs_hodl: number | null;
   unrealized_pnl: number;
   unrealized_pnl_pct: number | null;
   vault_reserve: number;
@@ -3058,7 +3058,7 @@ function HoldingCard({
                       <small>Manual</small>
                       <strong>{formatSignedCurrency(holding.manual_realized_gain)}</strong>
                     </span>
-                    <span>
+                    <span className="treasury-gain-component-share">
                       <small>Closed Bargains 💵</small>
                       <strong>{formatSignedCurrency(holding.accumulated_cash_gain)}</strong>
                     </span>
@@ -3321,49 +3321,50 @@ export default function TreasuryPage(): JSX.Element {
                 <span className="treasury-summary-label">Gain Composition</span>
                 <span className="treasury-summary-breakdown treasury-summary-gain-breakdown">
                   <span>
-                    <small>Asset + open PnL</small>
-                    <strong className={signedToneClass(summary?.asset_market_and_open_gain, "")}>
-                      {formatSignedCurrency(summary?.asset_market_and_open_gain ?? 0)}
+                    <small>HODL</small>
+                    <strong className={signedToneClass(summary?.hodl_component_gain, "")}>
+                      {formatSignedCurrency(summary?.hodl_component_gain ?? 0)}
                     </strong>
                   </span>
-                  <span>
-                    <small>Bargain cash</small>
-                    <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
-                      {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
-                    </strong>
-                  </span>
-                  {Math.abs(summary?.realized_manual_gain ?? 0) > 0.005 ? (
-                    <span>
-                      <small>Manual realized</small>
-                      <strong className={signedToneClass(summary?.realized_manual_gain, "")}>
-                        {formatSignedCurrency(summary?.realized_manual_gain ?? 0)}
+                  <span className="treasury-summary-bargains-group">
+                    <span className="treasury-summary-bargains-total-row">
+                      <small>Bargains Total</small>
+                      <strong className={signedToneClass(summary?.bargains_total_gain, "")}>
+                        {formatSignedCurrency(summary?.bargains_total_gain ?? 0)}
                       </strong>
                     </span>
-                  ) : null}
-                  <span className="treasury-summary-hodl-block">
-                    {summary?.hodl_gain === null || summary?.hodl_gain === undefined ? (
-                      <span className="treasury-summary-hodl-line">
-                        <small>HODL Gain</small>
-                        <strong>Awaiting prices</strong>
+                    <span className="treasury-summary-bargains-components">
+                      <span>
+                        <small>Open PnL</small>
+                        <strong className={signedToneClass(summary?.open_bargain_pnl, "")}>
+                          {formatSignedCurrency(summary?.open_bargain_pnl ?? 0)}
+                        </strong>
                       </span>
-                    ) : (
-                      <>
-                        <span className="treasury-summary-hodl-line">
-                          <small>HODL Gain</small>
-                          <strong className={signedToneClass(summary.hodl_gain, "")}>
-                            {formatSignedCurrency(summary.hodl_gain)}
-                          </strong>
-                        </span>
-                        {summary.strategy_vs_hodl === null || summary.strategy_vs_hodl === undefined ? null : (
-                          <span className="treasury-summary-hodl-line treasury-summary-my-result">
-                            <small>My result</small>
-                            <strong className={signedToneClass(summary.strategy_vs_hodl, "")}>
-                              {formatSignedCurrency(summary.strategy_vs_hodl)}
-                            </strong>
-                          </span>
-                        )}
-                      </>
-                    )}
+                      <span>
+                        <small>Closed 🪙</small>
+                        <strong className={signedToneClass(summary?.closed_bargain_asset_mark, "")}>
+                          {formatSignedCurrency(summary?.closed_bargain_asset_mark ?? 0)}
+                        </strong>
+                      </span>
+                      <span>
+                        <small>Closed 💵</small>
+                        <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
+                          {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
+                        </strong>
+                      </span>
+                      <span>
+                        <small>Reserve PnL</small>
+                        <strong className={signedToneClass(summary?.reserve_deployment_pnl, "")}>
+                          {formatSignedCurrency(summary?.reserve_deployment_pnl ?? 0)}
+                        </strong>
+                      </span>
+                    </span>
+                  </span>
+                  <span className="treasury-summary-manual-row">
+                    <small>Manual</small>
+                    <strong className={signedToneClass(summary?.realized_manual_gain, "")}>
+                      {formatSignedCurrency(summary?.realized_manual_gain ?? 0)}
+                    </strong>
                   </span>
                 </span>
               </>}

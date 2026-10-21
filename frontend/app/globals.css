@@ -2331,32 +2331,53 @@ button.treasury-summary-card-flip:focus-visible {
   white-space: nowrap;
 }
 
-.treasury-summary-gain-breakdown > .treasury-summary-hodl-block {
+.treasury-summary-gain-breakdown > .treasury-summary-bargains-group {
   display: grid;
-  justify-content: stretch;
-  gap: 0.14rem;
-  border-top: 1px solid rgba(87, 103, 127, 0.24);
-  margin-top: 0.08rem;
-  padding-top: 0.22rem;
+  gap: 0.24rem;
+  padding: 0.26rem 0 0.3rem 0.42rem;
+  border-block: 1px solid rgba(87, 103, 127, 0.24);
+  border-left: 2px solid rgba(215, 183, 93, 0.42);
 }
 
-.treasury-summary-hodl-line {
+.treasury-summary-bargains-total-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 0.4rem;
+  gap: 0.36rem;
   min-width: 0;
 }
 
-.treasury-summary-card .treasury-summary-hodl-line strong {
-  font-size: 0.7rem;
-  text-align: right;
+.treasury-summary-card .treasury-summary-bargains-total-row strong {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.treasury-summary-bargains-components {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.24rem 0.4rem;
+}
+
+.treasury-summary-bargains-components > span {
+  display: grid;
+  gap: 0.05rem;
+  min-width: 0;
+}
+
+.treasury-summary-card .treasury-summary-bargains-components small {
+  font-size: 0.56rem;
   white-space: nowrap;
 }
 
-.treasury-summary-my-result small {
-  color: #d7b75d;
-  font-weight: 700;
+.treasury-summary-card .treasury-summary-bargains-components strong {
+  font-size: clamp(0.52rem, 1.15vw, 0.66rem);
+  letter-spacing: -0.025em;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.treasury-summary-manual-row {
+  padding-left: 0.42rem;
 }
 
 button.treasury-summary-card-reserve {
@@ -6354,8 +6375,7 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-summary-card .treasury-total-invested strong,
-  .treasury-summary-card .treasury-summary-breakdown strong,
-  .treasury-summary-card .treasury-summary-hodl-line strong {
+  .treasury-summary-card .treasury-summary-breakdown strong {
     font-size: 0.66rem;
   }
 

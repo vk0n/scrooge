@@ -34,6 +34,7 @@ from core.runtime_db import (  # noqa: E402
     load_spot_order_intent,
     load_spot_swing,
     list_spot_order_status_events,
+    list_spot_accumulation_target_ratchets,
     list_spot_signal_snapshots,
     list_spot_swing_executions,
     list_spot_swings,
@@ -514,6 +515,7 @@ def _attach_asset_performance(
     owner_positions: dict[tuple[str, str], dict[str, float]],
     swings: list[dict[str, Any]],
     economics_by_swing: dict[str, dict[str, Any]],
+    accumulations: list[dict[str, Any]] | None = None,
 ) -> float:
     performance_by_asset: dict[tuple[str, str], dict[str, float]] = {}
     portfolio_accumulated_cash = 0.0
@@ -525,6 +527,8 @@ def _attach_asset_performance(
                 "accumulated_asset_quantity": 0.0,
                 "accumulated_cash_gain": 0.0,
                 "open_bargain_pnl": 0.0,
+                "reserve_deployment_asset_quantity": 0.0,
+                "reserve_deployment_quote_cost": 0.0,
             },
         )
         economics = economics_by_swing[str(swing["swing_id"])]
@@ -543,6 +547,25 @@ def _attach_asset_performance(
         performance["open_bargain_pnl"] += (
             (_as_float(economics.get("realized_pnl_quote")) or 0.0)
             + (_as_float(economics.get("unrealized_pnl_quote")) or 0.0)
+        )
+
+    for accumulation in accumulations or []:
+        key = (str(accumulation["asset_symbol"]), str(accumulation["quote_symbol"]))
+        performance = performance_by_asset.setdefault(
+            key,
+            {
+                "accumulated_asset_quantity": 0.0,
+                "accumulated_cash_gain": 0.0,
+                "open_bargain_pnl": 0.0,
+                "reserve_deployment_asset_quantity": 0.0,
+                "reserve_deployment_quote_cost": 0.0,
+            },
+        )
+        performance["reserve_deployment_asset_quantity"] += (
+            _as_float(accumulation.get("applied_gain_quantity")) or 0.0
+        )
+        performance["reserve_deployment_quote_cost"] += (
+            _as_float(accumulation.get("deployed_quote_quantity")) or 0.0
         )
 
     for holding in holdings:
@@ -564,6 +587,8 @@ def _attach_asset_performance(
                 "accumulated_asset_quantity": 0.0,
                 "accumulated_cash_gain": 0.0,
                 "open_bargain_pnl": 0.0,
+                "reserve_deployment_asset_quantity": 0.0,
+                "reserve_deployment_quote_cost": 0.0,
             },
         )
         initial_quantity = float(owner["quantity"])
@@ -574,14 +599,21 @@ def _attach_asset_performance(
         accumulated_asset = float(performance["accumulated_asset_quantity"])
         accumulated_cash = float(performance["accumulated_cash_gain"])
         open_bargain_pnl = float(performance["open_bargain_pnl"])
-        settled_quantity = max(0.0, initial_quantity + accumulated_asset)
-        effective_cost_basis = initial_capital - accumulated_cash
+        reserve_deployment_asset = float(performance["reserve_deployment_asset_quantity"])
+        reserve_deployment_cost = float(performance["reserve_deployment_quote_cost"])
+        settled_quantity = max(
+            0.0,
+            initial_quantity + accumulated_asset + reserve_deployment_asset,
+        )
+        effective_cost_basis = initial_capital + reserve_deployment_cost - accumulated_cash
         effective_entry_cost = (
             effective_cost_basis / settled_quantity if settled_quantity > 0.00000001 else None
         )
         market_price = _as_float(holding.get("market_price"))
         market_gain = (
-            settled_quantity * market_price - initial_capital if market_price is not None else None
+            settled_quantity * market_price - initial_capital - reserve_deployment_cost
+            if market_price is not None
+            else None
         )
         floating_gain = (
             market_gain + accumulated_cash + manual_realized_gain
@@ -597,6 +629,13 @@ def _attach_asset_performance(
                 "manual_realized_gain": manual_realized_gain,
                 "manual_realized_cost_basis": manual_realized_cost_basis,
                 "accumulated_asset_quantity": accumulated_asset,
+                "reserve_deployment_asset_quantity": reserve_deployment_asset,
+                "reserve_deployment_quote_cost": reserve_deployment_cost,
+                "reserve_deployment_pnl": (
+                    reserve_deployment_asset * market_price - reserve_deployment_cost
+                    if market_price is not None
+                    else None
+                ),
                 "closed_bargain_asset_mark": (
                     accumulated_asset * market_price
                     if market_price is not None
@@ -647,10 +686,29 @@ def _summary_from_holdings(
         _as_float(holding.get("accumulated_cash_gain")) or 0.0
         for holding in managed_holdings
     )
+    closed_bargain_asset_mark = sum(
+        _as_float(holding.get("closed_bargain_asset_mark")) or 0.0
+        for holding in managed_holdings
+    )
+    open_bargain_pnl = sum(
+        _as_float(holding.get("open_bargain_pnl")) or 0.0
+        for holding in managed_holdings
+    )
+    reserve_deployment_pnl = sum(
+        _as_float(holding.get("reserve_deployment_pnl")) or 0.0
+        for holding in managed_holdings
+    )
     realized_manual_gain = sum(
         _as_float(holding.get("manual_realized_gain")) or 0.0
         for holding in managed_holdings
     )
+    bargains_total_gain = (
+        open_bargain_pnl
+        + closed_bargain_asset_mark
+        + realized_bargain_cash_gain
+        + reserve_deployment_pnl
+    )
+    hodl_component_gain = total_gain - bargains_total_gain - realized_manual_gain
     asset_market_and_open_gain = (
         asset_total_gain - realized_bargain_cash_gain - realized_manual_gain
     )
@@ -692,6 +750,11 @@ def _summary_from_holdings(
         "assets_at_market": assets_at_market,
         "asset_total_gain": asset_total_gain,
         "asset_market_and_open_gain": asset_market_and_open_gain,
+        "bargains_total_gain": bargains_total_gain,
+        "hodl_component_gain": hodl_component_gain,
+        "open_bargain_pnl": open_bargain_pnl,
+        "reserve_deployment_pnl": reserve_deployment_pnl,
+        "closed_bargain_asset_mark": closed_bargain_asset_mark,
         "realized_bargain_cash_gain": realized_bargain_cash_gain,
         "realized_manual_gain": realized_manual_gain,
         "other_treasury_gain": other_treasury_gain,
@@ -1081,6 +1144,9 @@ def load_portfolio_snapshot(*, transaction_offset: int = 0) -> tuple[dict[str, A
         owner_positions=owner_positions,
         swings=swings,
         economics_by_swing=economics_by_swing,
+        accumulations=list_spot_accumulation_target_ratchets(
+            account_key=DEFAULT_ACCOUNT_KEY,
+        ),
     )
     open_swings = [
         swing
