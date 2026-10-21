@@ -2919,6 +2919,10 @@ function HoldingCard({
     holding.unassigned_quantity,
     holding.trading_objective ?? "",
   ].join(":");
+  const unrealizedGain = holding.market_gain === null
+    ? null
+    : holding.market_gain + holding.open_bargain_pnl;
+  const realizedGain = holding.manual_realized_gain + holding.accumulated_cash_gain;
 
   useEffect(() => {
     if (focusRequest <= 0) return;
@@ -3013,19 +3017,23 @@ function HoldingCard({
                   </strong>
                   <small className="treasury-gain-breakdown">
                     <span className="treasury-gain-breakdown-row">
-                      <span className={signedToneClass(holding.market_gain, "treasury-gain-component")}>
-                        Holdings {formatSignedCurrency(holding.market_gain)}
+                      <span className="treasury-gain-subtotal">
+                        Unrealized <b>{formatSignedCurrency(unrealizedGain)}</b>
                       </span>
-                      <span className={signedToneClass(holding.open_bargain_pnl, "treasury-gain-component")}>
-                        Open Bargains {formatSignedCurrency(holding.open_bargain_pnl)}
+                      <span className="treasury-gain-detail">
+                        Holdings {formatSignedCurrency(holding.market_gain)} · Open Bargains{" "}
+                        <b className={signedToneClass(holding.open_bargain_pnl, "treasury-open-pnl-value")}>
+                          {formatSignedCurrency(holding.open_bargain_pnl)}
+                        </b>
                       </span>
                     </span>
                     <span className="treasury-gain-breakdown-row">
-                      <span className={signedToneClass(holding.accumulated_cash_gain, "treasury-gain-component")}>
-                        Closed Bargains {formatSignedCurrency(holding.accumulated_cash_gain)}
+                      <span className="treasury-gain-subtotal">
+                        Realized <b>{formatSignedCurrency(realizedGain)}</b>
                       </span>
-                      <span className={signedToneClass(holding.manual_realized_gain, "treasury-gain-component")}>
-                        Manual Sales {formatSignedCurrency(holding.manual_realized_gain)}
+                      <span className="treasury-gain-detail">
+                        Manual {formatSignedCurrency(holding.manual_realized_gain)} · Bargains{" "}
+                        {formatSignedCurrency(holding.accumulated_cash_gain)}
                       </span>
                     </span>
                   </small>
