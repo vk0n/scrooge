@@ -3321,72 +3321,6 @@ button.treasury-summary-card-swings:focus-visible,
   white-space: nowrap;
 }
 
-.treasury-holding-lines .treasury-gain-breakdown {
-  display: grid;
-  grid-template-columns: 0.65rem max-content 0.3rem minmax(0, 1fr);
-  gap: 0.1rem;
-  column-gap: 0.25rem;
-  margin-top: 0.08rem;
-  padding-top: 0.22rem;
-  border-top: 1px solid rgba(106, 124, 150, 0.18);
-  color: #8290a5;
-  font-size: 0.66rem;
-  line-height: 1.35;
-  white-space: normal;
-}
-
-.treasury-holding-lines .treasury-gain-breakdown > span {
-  font-size: inherit;
-  white-space: normal;
-}
-
-.treasury-holding-lines .treasury-gain-breakdown-row {
-  display: contents;
-}
-
-.treasury-holding-lines .treasury-gain-kind,
-.treasury-holding-lines .treasury-gain-subtotal,
-.treasury-holding-lines .treasury-gain-divider,
-.treasury-holding-lines .treasury-gain-detail {
-  color: #8290a5;
-  font-size: inherit;
-  font-weight: 400;
-  line-height: inherit;
-  white-space: nowrap;
-}
-
-.treasury-holding-lines .treasury-gain-kind {
-  text-decoration: none;
-}
-
-.treasury-holding-lines .treasury-gain-subtotal {
-  text-align: right;
-}
-
-.treasury-holding-lines .treasury-gain-divider {
-  color: rgba(130, 144, 165, 0.5);
-}
-
-.treasury-holding-lines .treasury-open-pnl-value {
-  font-size: inherit;
-}
-
-.treasury-holding-lines .treasury-open-pnl-value {
-  font-weight: 600;
-}
-
-.treasury-holding-lines .treasury-open-pnl-value.value-positive {
-  color: var(--value-positive-surface);
-}
-
-.treasury-holding-lines .treasury-open-pnl-value.value-negative {
-  color: var(--value-negative-surface);
-}
-
-.treasury-holding-lines .treasury-open-pnl-value.value-neutral {
-  color: #8290a5;
-}
-
 .treasury-rolling-change {
   grid-column: 2;
   grid-row: 1 / 3;
@@ -3428,6 +3362,85 @@ button.treasury-summary-card-swings:focus-visible,
   margin-top: 0.62rem;
   border-top: 1px solid rgba(106, 124, 150, 0.22);
   padding-top: 0.62rem;
+}
+
+.treasury-gain-composition {
+  display: grid;
+  gap: 0.48rem;
+  min-width: 0;
+}
+
+.treasury-gain-composition h3 {
+  margin: 0;
+  color: #d4dceb;
+  font-size: 0.8rem;
+}
+
+.treasury-gain-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.58rem;
+}
+
+.treasury-gain-group {
+  display: grid;
+  gap: 0.46rem;
+  min-width: 0;
+  border: 1px solid rgba(106, 124, 150, 0.18);
+  border-radius: 0.58rem;
+  padding: 0.52rem 0.6rem;
+  background: rgba(7, 12, 19, 0.38);
+}
+
+.treasury-gain-group > header,
+.treasury-gain-components > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.treasury-gain-group > header {
+  color: #c4cede;
+  font-size: 0.74rem;
+}
+
+.treasury-gain-group strong {
+  color: #d4dceb;
+  font-size: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.treasury-gain-components {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.42rem;
+  border-top: 1px solid rgba(106, 124, 150, 0.14);
+  padding-top: 0.42rem;
+}
+
+.treasury-gain-components > span + span {
+  border-left: 1px solid rgba(106, 124, 150, 0.14);
+  padding-left: 0.42rem;
+}
+
+.treasury-gain-components small {
+  color: #8290a5;
+  font-size: 0.68rem;
+}
+
+.treasury-gain-composition .treasury-open-pnl-value.value-positive {
+  color: var(--value-positive-surface);
+}
+
+.treasury-gain-composition .treasury-open-pnl-value.value-negative {
+  color: var(--value-negative-surface);
+}
+
+.treasury-gain-composition .treasury-open-pnl-value.value-neutral {
+  color: #8290a5;
 }
 
 .treasury-custody-panel,
@@ -5444,10 +5457,6 @@ body.logs-page-active .logs-page-panel .log-box {
     letter-spacing: -0.025em;
   }
 
-  .treasury-holding-lines .treasury-gain-breakdown {
-    font-size: 0.58rem;
-  }
-
   .treasury-rolling-change {
     padding-left: 0.2rem;
     font-size: 0.76rem;
@@ -5636,6 +5645,10 @@ body.logs-page-active .logs-page-panel .log-box {
     grid-column: 2;
     grid-row: 1 / 3;
     justify-self: center;
+  }
+
+  .treasury-gain-groups {
+    grid-template-columns: 1fr;
   }
 
   .treasury-custody-summary,
@@ -6250,6 +6263,17 @@ body.logs-page-active .logs-page-panel .log-box {
 }
 
 @media (max-width: 480px) {
+  .treasury-gain-components {
+    grid-template-columns: 1fr;
+  }
+
+  .treasury-gain-components > span + span {
+    border-top: 1px solid rgba(106, 124, 150, 0.14);
+    border-left: 0;
+    padding-top: 0.36rem;
+    padding-left: 0;
+  }
+
   .auth-shell {
     width: 100%;
     margin-top: 0.55rem;

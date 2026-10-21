@@ -3011,40 +3011,9 @@ function HoldingCard({
                   {formatSignedCurrency(realizedAccumulatedCash)}
                 </strong>
               ) : (
-                <>
-                  <strong className={signedToneClass(holding.total_gain, "treasury-inline-value")}>
-                    {formatSignedCurrency(holding.total_gain)} · {formatSignedPercent(holding.total_gain_pct)}
-                  </strong>
-                  <small className="treasury-gain-breakdown">
-                    <span className="treasury-gain-breakdown-row">
-                      <abbr className="treasury-gain-kind" title="Unrealized">U</abbr>
-                      <span className="treasury-gain-subtotal">{formatSignedCurrency(unrealizedGain)}</span>
-                      <span className="treasury-gain-divider" aria-hidden="true">|</span>
-                      <span
-                        className="treasury-gain-detail"
-                        title="Holdings · Open Bargains"
-                        aria-label={`Holdings ${formatSignedCurrency(holding.market_gain)}; Open Bargains ${formatSignedCurrency(holding.open_bargain_pnl)}`}
-                      >
-                        {formatSignedCurrency(holding.market_gain)} ·{" "}
-                        <b className={signedToneClass(holding.open_bargain_pnl, "treasury-open-pnl-value")}>
-                          {formatSignedCurrency(holding.open_bargain_pnl)}
-                        </b>
-                      </span>
-                    </span>
-                    <span className="treasury-gain-breakdown-row">
-                      <abbr className="treasury-gain-kind" title="Realized">R</abbr>
-                      <span className="treasury-gain-subtotal">{formatSignedCurrency(realizedGain)}</span>
-                      <span className="treasury-gain-divider" aria-hidden="true">|</span>
-                      <span
-                        className="treasury-gain-detail"
-                        title="Manual · Bargains"
-                        aria-label={`Manual ${formatSignedCurrency(holding.manual_realized_gain)}; Bargains ${formatSignedCurrency(holding.accumulated_cash_gain)}`}
-                      >
-                        {formatSignedCurrency(holding.manual_realized_gain)} · {formatSignedCurrency(holding.accumulated_cash_gain)}
-                      </span>
-                    </span>
-                  </small>
-                </>
+                <strong className={signedToneClass(holding.total_gain, "treasury-inline-value")}>
+                  {formatSignedCurrency(holding.total_gain)} · {formatSignedPercent(holding.total_gain_pct)}
+                </strong>
               )}
             </span>
           </span>
@@ -3053,6 +3022,47 @@ function HoldingCard({
       </div>
       {expanded ? (
         <div className="treasury-asset-controls">
+          {!holding.is_dry_powder ? (
+            <section className="treasury-gain-composition" aria-label="Total Gain composition">
+              <h3>Gain Composition</h3>
+              <div className="treasury-gain-groups">
+                <div className="treasury-gain-group">
+                  <header>
+                    <span>Unrealized</span>
+                    <strong>{formatSignedCurrency(unrealizedGain)}</strong>
+                  </header>
+                  <div className="treasury-gain-components">
+                    <span>
+                      <small>Holdings</small>
+                      <strong>{formatSignedCurrency(holding.market_gain)}</strong>
+                    </span>
+                    <span>
+                      <small>Open Bargains</small>
+                      <strong className={signedToneClass(holding.open_bargain_pnl, "treasury-open-pnl-value")}>
+                        {formatSignedCurrency(holding.open_bargain_pnl)}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+                <div className="treasury-gain-group">
+                  <header>
+                    <span>Realized</span>
+                    <strong>{formatSignedCurrency(realizedGain)}</strong>
+                  </header>
+                  <div className="treasury-gain-components">
+                    <span>
+                      <small>Manual</small>
+                      <strong>{formatSignedCurrency(holding.manual_realized_gain)}</strong>
+                    </span>
+                    <span>
+                      <small>Closed Bargains</small>
+                      <strong>{formatSignedCurrency(holding.accumulated_cash_gain)}</strong>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </section>
+          ) : null}
           <CustodyPanel
             key={`${holding.binance_quantity}:${exchange?.spot_execution_enabled ? 1 : 0}`}
             holding={holding}
