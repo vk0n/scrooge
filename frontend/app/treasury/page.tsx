@@ -3341,25 +3341,25 @@ export default function TreasuryPage(): JSX.Element {
                     </span>
                     <span className="treasury-summary-bargains-components">
                       <span>
-                        <small>Closed 💵</small>
+                        <small className="treasury-summary-bargain-icon" role="img" aria-label="Closed Bargains cash">💵</small>
                         <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
                           {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
                         </strong>
                       </span>
                       <span>
-                        <small>Closed 🪙</small>
+                        <small className="treasury-summary-bargain-icon" role="img" aria-label="Closed Bargains asset">🪙</small>
                         <strong className={signedToneClass(summary?.closed_bargain_asset_mark, "")}>
                           {formatSignedCurrency(summary?.closed_bargain_asset_mark ?? 0)}
                         </strong>
                       </span>
                       <span>
-                        <small>Accumulation</small>
+                        <small className="treasury-summary-bargain-icon" role="img" aria-label="Accumulation">💰</small>
                         <strong className={signedToneClass(summary?.reserve_deployment_pnl, "")}>
                           {formatSignedCurrency(summary?.reserve_deployment_pnl ?? 0)}
                         </strong>
                       </span>
                       <span>
-                        <small>Open</small>
+                        <small className="treasury-summary-bargain-icon" role="img" aria-label="Open Bargains">⏳</small>
                         <strong className={signedToneClass(summary?.open_bargain_pnl, "")}>
                           {formatSignedCurrency(summary?.open_bargain_pnl ?? 0)}
                         </strong>
@@ -3376,12 +3376,18 @@ export default function TreasuryPage(): JSX.Element {
               onClick={() => setReserveFocusRequest((current) => current + 1)}
             >
               <span className="treasury-summary-label">Vault Reserve</span>
-              <strong>{formatCurrency(summary?.vault_reserve ?? 0)}</strong>
-              <span className="treasury-summary-note">
-                {formatCurrency(summary?.vault_reserve_available ?? 0)} available
-                {(summary?.vault_reserve_committed ?? 0) > 0
-                  ? <><br />{formatCurrency(summary?.vault_reserve_committed ?? 0)} committed</>
-                  : ""}
+              <strong className="treasury-reserve-total">{formatCurrency(summary?.vault_reserve ?? 0)}</strong>
+              <span className="treasury-reserve-breakdown">
+                <span>
+                  <small>Available</small>
+                  <strong>{formatCurrency(summary?.vault_reserve_available ?? 0)}</strong>
+                </span>
+                {(summary?.vault_reserve_committed ?? 0) > 0 ? (
+                  <span>
+                    <small>Committed</small>
+                    <strong>{formatCurrency(summary?.vault_reserve_committed ?? 0)}</strong>
+                  </span>
+                ) : null}
               </span>
             </button>
             <button
