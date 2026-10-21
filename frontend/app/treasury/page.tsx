@@ -2014,32 +2014,7 @@ function CashPolicyPanel({
       </header>
       {expanded ? <div className="treasury-policy-content">
         <div className="treasury-policy-metrics treasury-cash-policy-metrics">
-          <div className="treasury-free-cash-metric">
-            <span>Free Cash</span>
-            <span className="treasury-free-cash-metric-value">
-              <strong>{formatCurrency(summary.vault_reserve_available)}</strong>
-              <span className="treasury-free-cash-actions">
-                <button
-                  type="button"
-                  aria-label="Transfer between Free Cash and Futures Office"
-                  aria-expanded={transferMenu === "office"}
-                  title="Free Cash / Futures Office"
-                  onClick={() => toggleTransferMenu("office")}
-                >
-                  ⚖️ / 🏦
-                </button>
-                <button
-                  type="button"
-                  aria-label="Transfer between Retained Cash and Spendable Cash"
-                  aria-expanded={transferMenu === "spendable"}
-                  title="Lock / unlock cash"
-                  onClick={() => toggleTransferMenu("spendable")}
-                >
-                  🔒 / 🔓
-                </button>
-              </span>
-            </span>
-          </div>
+          <div><span>Free Cash</span><strong>{formatCurrency(summary.vault_reserve_available)}</strong></div>
           <div><span>Retained</span><strong>{formatCurrency(summary.vault_reserve_retained)}</strong></div>
           <div><span>Spendable</span><strong>{formatCurrency(summary.vault_reserve_spendable)}</strong></div>
           <div><span>Committed</span><strong>{formatCurrency(summary.vault_reserve_committed)}</strong></div>
@@ -2153,6 +2128,26 @@ function CashPolicyPanel({
           <button type="submit" className="dialog-user-btn" disabled={saving}>
             {saving ? "Saving..." : "Update Policy"}
           </button>
+          <span className="treasury-free-cash-actions" aria-label="Free Cash actions">
+            <button
+              type="button"
+              aria-label="Transfer between Free Cash and Futures Office"
+              aria-expanded={transferMenu === "office"}
+              title="Free Cash / Futures Office"
+              onClick={() => toggleTransferMenu("office")}
+            >
+              ⚖️ / 🏦
+            </button>
+            <button
+              type="button"
+              aria-label="Transfer between Retained Cash and Spendable Cash"
+              aria-expanded={transferMenu === "spendable"}
+              title="Lock / unlock cash"
+              onClick={() => toggleTransferMenu("spendable")}
+            >
+              🔒 / 🔓
+            </button>
+          </span>
         </form>
         <p className="treasury-policy-note">
           This percentage of every realized cash profit is added to protected reserve. Automatic actions cannot spend
