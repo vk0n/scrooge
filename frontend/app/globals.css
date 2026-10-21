@@ -2357,7 +2357,7 @@ button.treasury-summary-card-flip:focus-visible {
 .treasury-summary-bargains-components {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.24rem 0.4rem;
+  gap: 0.16rem 0.45rem;
   width: 100%;
   box-sizing: border-box;
   padding: 0.24rem 0.18rem 0.26rem 0.42rem;
@@ -2366,14 +2366,11 @@ button.treasury-summary-card-flip:focus-visible {
 }
 
 .treasury-summary-bargains-components > span {
-  display: grid;
-  gap: 0.05rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.18rem;
   min-width: 0;
-}
-
-.treasury-summary-bargains-components > span:nth-child(even) {
-  justify-items: end;
-  text-align: right;
 }
 
 .treasury-summary-card .treasury-summary-bargains-components small {
