@@ -2334,9 +2334,6 @@ button.treasury-summary-card-flip:focus-visible {
 .treasury-summary-gain-breakdown > .treasury-summary-bargains-group {
   display: grid;
   gap: 0.24rem;
-  padding: 0.26rem 0 0.3rem 0.42rem;
-  border-block: 1px solid rgba(87, 103, 127, 0.24);
-  border-left: 2px solid rgba(215, 183, 93, 0.42);
 }
 
 .treasury-summary-bargains-total-row {
@@ -2347,15 +2344,13 @@ button.treasury-summary-card-flip:focus-visible {
   min-width: 0;
 }
 
-.treasury-summary-card .treasury-summary-bargains-total-row strong {
-  font-size: 0.86rem;
-  font-weight: 600;
-}
-
 .treasury-summary-bargains-components {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.24rem 0.4rem;
+  padding: 0.24rem 0.18rem 0.26rem 0.42rem;
+  border-block: 1px solid rgba(87, 103, 127, 0.24);
+  border-left: 2px solid rgba(215, 183, 93, 0.42);
 }
 
 .treasury-summary-bargains-components > span {
@@ -2374,10 +2369,6 @@ button.treasury-summary-card-flip:focus-visible {
   letter-spacing: -0.025em;
   text-align: left;
   white-space: nowrap;
-}
-
-.treasury-summary-manual-row {
-  padding-left: 0.42rem;
 }
 
 button.treasury-summary-card-reserve {

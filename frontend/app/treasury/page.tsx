@@ -3335,7 +3335,7 @@ export default function TreasuryPage(): JSX.Element {
                     </span>
                     <span className="treasury-summary-bargains-components">
                       <span>
-                        <small>Open PnL</small>
+                        <small>Open</small>
                         <strong className={signedToneClass(summary?.open_bargain_pnl, "")}>
                           {formatSignedCurrency(summary?.open_bargain_pnl ?? 0)}
                         </strong>
@@ -3353,14 +3353,14 @@ export default function TreasuryPage(): JSX.Element {
                         </strong>
                       </span>
                       <span>
-                        <small>Reserve PnL</small>
+                        <small>Accumulation</small>
                         <strong className={signedToneClass(summary?.reserve_deployment_pnl, "")}>
                           {formatSignedCurrency(summary?.reserve_deployment_pnl ?? 0)}
                         </strong>
                       </span>
                     </span>
                   </span>
-                  <span className="treasury-summary-manual-row">
+                  <span>
                     <small>Manual</small>
                     <strong className={signedToneClass(summary?.realized_manual_gain, "")}>
                       {formatSignedCurrency(summary?.realized_manual_gain ?? 0)}
