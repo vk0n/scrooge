@@ -3323,7 +3323,9 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-holding-lines .treasury-gain-breakdown {
   display: grid;
+  grid-template-columns: 0.65rem max-content 0.3rem minmax(0, 1fr);
   gap: 0.1rem;
+  column-gap: 0.25rem;
   margin-top: 0.08rem;
   padding-top: 0.22rem;
   border-top: 1px solid rgba(106, 124, 150, 0.18);
@@ -3339,39 +3341,34 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-holding-lines .treasury-gain-breakdown-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.02rem 0.28rem;
+  display: contents;
 }
 
+.treasury-holding-lines .treasury-gain-kind,
 .treasury-holding-lines .treasury-gain-subtotal,
 .treasury-holding-lines .treasury-gain-divider,
 .treasury-holding-lines .treasury-gain-detail {
   color: #8290a5;
   font-size: inherit;
   font-weight: 400;
+  line-height: inherit;
+  white-space: nowrap;
+}
+
+.treasury-holding-lines .treasury-gain-kind {
+  text-decoration: none;
 }
 
 .treasury-holding-lines .treasury-gain-subtotal {
-  display: inline-flex;
-  min-width: 7.8rem;
-  justify-content: space-between;
-  gap: 0.3rem;
+  text-align: right;
 }
 
 .treasury-holding-lines .treasury-gain-divider {
   color: rgba(130, 144, 165, 0.5);
 }
 
-.treasury-holding-lines .treasury-gain-subtotal b,
 .treasury-holding-lines .treasury-open-pnl-value {
   font-size: inherit;
-}
-
-.treasury-holding-lines .treasury-gain-subtotal b {
-  color: #8290a5;
-  font-weight: 400;
 }
 
 .treasury-holding-lines .treasury-open-pnl-value {

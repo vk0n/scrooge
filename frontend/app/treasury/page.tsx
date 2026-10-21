@@ -3017,9 +3017,8 @@ function HoldingCard({
                   </strong>
                   <small className="treasury-gain-breakdown">
                     <span className="treasury-gain-breakdown-row">
-                      <span className="treasury-gain-subtotal">
-                        Unrealized <b>{formatSignedCurrency(unrealizedGain)}</b>
-                      </span>
+                      <abbr className="treasury-gain-kind" title="Unrealized">U</abbr>
+                      <span className="treasury-gain-subtotal">{formatSignedCurrency(unrealizedGain)}</span>
                       <span className="treasury-gain-divider" aria-hidden="true">|</span>
                       <span
                         className="treasury-gain-detail"
@@ -3033,9 +3032,8 @@ function HoldingCard({
                       </span>
                     </span>
                     <span className="treasury-gain-breakdown-row">
-                      <span className="treasury-gain-subtotal">
-                        Realized <b>{formatSignedCurrency(realizedGain)}</b>
-                      </span>
+                      <abbr className="treasury-gain-kind" title="Realized">R</abbr>
+                      <span className="treasury-gain-subtotal">{formatSignedCurrency(realizedGain)}</span>
                       <span className="treasury-gain-divider" aria-hidden="true">|</span>
                       <span
                         className="treasury-gain-detail"
