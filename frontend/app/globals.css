@@ -2334,6 +2334,8 @@ button.treasury-summary-card-flip:focus-visible {
 .treasury-summary-gain-breakdown > .treasury-summary-bargains-group {
   display: grid;
   gap: 0.24rem;
+  width: 100%;
+  min-width: 0;
 }
 
 .treasury-summary-bargains-total-row {
@@ -2341,6 +2343,7 @@ button.treasury-summary-card-flip:focus-visible {
   align-items: baseline;
   justify-content: space-between;
   gap: 0.36rem;
+  width: 100%;
   min-width: 0;
 }
 
@@ -2348,6 +2351,8 @@ button.treasury-summary-card-flip:focus-visible {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.24rem 0.4rem;
+  width: 100%;
+  box-sizing: border-box;
   padding: 0.24rem 0.18rem 0.26rem 0.42rem;
   border-block: 1px solid rgba(87, 103, 127, 0.24);
   border-left: 2px solid rgba(215, 183, 93, 0.42);
@@ -2359,6 +2364,11 @@ button.treasury-summary-card-flip:focus-visible {
   min-width: 0;
 }
 
+.treasury-summary-bargains-components > span:nth-child(even) {
+  justify-items: end;
+  text-align: right;
+}
+
 .treasury-summary-card .treasury-summary-bargains-components small {
   font-size: 0.56rem;
   white-space: nowrap;
@@ -2367,7 +2377,6 @@ button.treasury-summary-card-flip:focus-visible {
 .treasury-summary-card .treasury-summary-bargains-components strong {
   font-size: clamp(0.52rem, 1.15vw, 0.66rem);
   letter-spacing: -0.025em;
-  text-align: left;
   white-space: nowrap;
 }
 
@@ -3450,6 +3459,10 @@ button.treasury-summary-card-swings:focus-visible,
   border-left: 0;
   padding-top: 0.36rem;
   padding-left: 0;
+}
+
+.treasury-gain-components > .treasury-gain-component-wide {
+  grid-column: 1 / -1;
 }
 
 .treasury-gain-components small {

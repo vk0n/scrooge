@@ -3054,7 +3054,7 @@ function HoldingCard({
                     <strong>{formatSignedCurrency(realizedGain)}</strong>
                   </header>
                   <div className="treasury-gain-components">
-                    <span>
+                    <span className="treasury-gain-component-wide">
                       <small>Manual</small>
                       <strong>{formatSignedCurrency(holding.manual_realized_gain)}</strong>
                     </span>
@@ -3326,6 +3326,12 @@ export default function TreasuryPage(): JSX.Element {
                       {formatSignedCurrency(summary?.hodl_component_gain ?? 0)}
                     </strong>
                   </span>
+                  <span>
+                    <small>Manual</small>
+                    <strong className={signedToneClass(summary?.realized_manual_gain, "")}>
+                      {formatSignedCurrency(summary?.realized_manual_gain ?? 0)}
+                    </strong>
+                  </span>
                   <span className="treasury-summary-bargains-group">
                     <span className="treasury-summary-bargains-total-row">
                       <small>Bargains Total</small>
@@ -3335,9 +3341,9 @@ export default function TreasuryPage(): JSX.Element {
                     </span>
                     <span className="treasury-summary-bargains-components">
                       <span>
-                        <small>Open</small>
-                        <strong className={signedToneClass(summary?.open_bargain_pnl, "")}>
-                          {formatSignedCurrency(summary?.open_bargain_pnl ?? 0)}
+                        <small>Closed 💵</small>
+                        <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
+                          {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
                         </strong>
                       </span>
                       <span>
@@ -3347,24 +3353,18 @@ export default function TreasuryPage(): JSX.Element {
                         </strong>
                       </span>
                       <span>
-                        <small>Closed 💵</small>
-                        <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
-                          {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
-                        </strong>
-                      </span>
-                      <span>
                         <small>Accumulation</small>
                         <strong className={signedToneClass(summary?.reserve_deployment_pnl, "")}>
                           {formatSignedCurrency(summary?.reserve_deployment_pnl ?? 0)}
                         </strong>
                       </span>
+                      <span>
+                        <small>Open</small>
+                        <strong className={signedToneClass(summary?.open_bargain_pnl, "")}>
+                          {formatSignedCurrency(summary?.open_bargain_pnl ?? 0)}
+                        </strong>
+                      </span>
                     </span>
-                  </span>
-                  <span>
-                    <small>Manual</small>
-                    <strong className={signedToneClass(summary?.realized_manual_gain, "")}>
-                      {formatSignedCurrency(summary?.realized_manual_gain ?? 0)}
-                    </strong>
                   </span>
                 </span>
               </>}
