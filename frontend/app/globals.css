@@ -3342,10 +3342,11 @@ button.treasury-summary-card-swings:focus-visible,
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.02rem 0.48rem;
+  gap: 0.02rem 0.28rem;
 }
 
 .treasury-holding-lines .treasury-gain-subtotal,
+.treasury-holding-lines .treasury-gain-divider,
 .treasury-holding-lines .treasury-gain-detail {
   color: #8290a5;
   font-size: inherit;
@@ -3357,6 +3358,10 @@ button.treasury-summary-card-swings:focus-visible,
   min-width: 7.8rem;
   justify-content: space-between;
   gap: 0.3rem;
+}
+
+.treasury-holding-lines .treasury-gain-divider {
+  color: rgba(130, 144, 165, 0.5);
 }
 
 .treasury-holding-lines .treasury-gain-subtotal b,

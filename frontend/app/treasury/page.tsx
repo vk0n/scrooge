@@ -3020,8 +3020,13 @@ function HoldingCard({
                       <span className="treasury-gain-subtotal">
                         Unrealized <b>{formatSignedCurrency(unrealizedGain)}</b>
                       </span>
-                      <span className="treasury-gain-detail">
-                        Holdings {formatSignedCurrency(holding.market_gain)} · Open Bargains{" "}
+                      <span className="treasury-gain-divider" aria-hidden="true">|</span>
+                      <span
+                        className="treasury-gain-detail"
+                        title="Holdings · Open Bargains"
+                        aria-label={`Holdings ${formatSignedCurrency(holding.market_gain)}; Open Bargains ${formatSignedCurrency(holding.open_bargain_pnl)}`}
+                      >
+                        {formatSignedCurrency(holding.market_gain)} ·{" "}
                         <b className={signedToneClass(holding.open_bargain_pnl, "treasury-open-pnl-value")}>
                           {formatSignedCurrency(holding.open_bargain_pnl)}
                         </b>
@@ -3031,9 +3036,13 @@ function HoldingCard({
                       <span className="treasury-gain-subtotal">
                         Realized <b>{formatSignedCurrency(realizedGain)}</b>
                       </span>
-                      <span className="treasury-gain-detail">
-                        Manual {formatSignedCurrency(holding.manual_realized_gain)} · Bargains{" "}
-                        {formatSignedCurrency(holding.accumulated_cash_gain)}
+                      <span className="treasury-gain-divider" aria-hidden="true">|</span>
+                      <span
+                        className="treasury-gain-detail"
+                        title="Manual · Bargains"
+                        aria-label={`Manual ${formatSignedCurrency(holding.manual_realized_gain)}; Bargains ${formatSignedCurrency(holding.accumulated_cash_gain)}`}
+                      >
+                        {formatSignedCurrency(holding.manual_realized_gain)} · {formatSignedCurrency(holding.accumulated_cash_gain)}
                       </span>
                     </span>
                   </small>
