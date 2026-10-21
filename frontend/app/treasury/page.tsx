@@ -3334,7 +3334,7 @@ export default function TreasuryPage(): JSX.Element {
                   </span>
                   <span className="treasury-summary-bargains-group">
                     <span className="treasury-summary-bargains-total-row">
-                      <small>Bargains Total</small>
+                      <small>Bargains</small>
                       <strong className={signedToneClass(summary?.bargains_total_gain, "")}>
                         {formatSignedCurrency(summary?.bargains_total_gain ?? 0)}
                       </strong>
