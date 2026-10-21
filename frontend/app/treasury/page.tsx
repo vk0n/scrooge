@@ -1962,7 +1962,7 @@ function CashPolicyPanel({
     event.preventDefault();
     const quantity = asNumber(officeQuantity);
     if (quantity === null || quantity <= 0) return;
-    const directionLabel = officeDirection === "to_office" ? "Retained Cash to Futures Office" : "Futures Office to Retained Cash";
+    const directionLabel = officeDirection === "to_office" ? "Free Cash to Futures Office" : "Futures Office to Free Cash";
     if (!window.confirm(
       `Transfer ${formatCurrency(quantity)} USDT from ${directionLabel}?\n\nThis is a REAL Binance account transfer and changes Treasury invested capital.`
     )) return;
@@ -1976,14 +1976,14 @@ function CashPolicyPanel({
           direction: officeDirection,
           quantity,
           confirmation: "CONFIRM_TREASURY_TRANSFER",
-          cash_bucket: "retained",
+          cash_bucket: "mixed",
         },
       });
       const command = await waitForControlCommand(queued.command_id);
       if (command.status !== "completed") {
-        throw new Error(command.message || "Protected Cash Office transfer failed.");
+        throw new Error(command.message || "Free Cash Office transfer failed.");
       }
-      setOfficeStage(command.message || "Transfer confirmed. Protected Cash updated.");
+      setOfficeStage(command.message || "Transfer confirmed. Free Cash updated.");
       setOfficeQuantity("");
       await onExecuted();
     } catch (transferError) {
@@ -2014,17 +2014,16 @@ function CashPolicyPanel({
       </header>
       {expanded ? <div className="treasury-policy-content">
         <div className="treasury-policy-metrics treasury-cash-policy-metrics">
-          <div><span>Free Cash</span><strong>{formatCurrency(summary.vault_reserve_available)}</strong></div>
-          <div className="treasury-retained-metric">
-            <span>Retained</span>
-            <span className="treasury-retained-metric-value">
-              <strong>{formatCurrency(summary.vault_reserve_retained)}</strong>
-              <span className="treasury-retained-actions">
+          <div className="treasury-free-cash-metric">
+            <span>Free Cash</span>
+            <span className="treasury-free-cash-metric-value">
+              <strong>{formatCurrency(summary.vault_reserve_available)}</strong>
+              <span className="treasury-free-cash-actions">
                 <button
                   type="button"
-                  aria-label="Transfer between Retained Cash and Futures Office"
+                  aria-label="Transfer between Free Cash and Futures Office"
                   aria-expanded={transferMenu === "office"}
-                  title="Retained Cash / Futures Office"
+                  title="Free Cash / Futures Office"
                   onClick={() => toggleTransferMenu("office")}
                 >
                   ⚖️ / 🏦
@@ -2041,13 +2040,14 @@ function CashPolicyPanel({
               </span>
             </span>
           </div>
+          <div><span>Retained</span><strong>{formatCurrency(summary.vault_reserve_retained)}</strong></div>
           <div><span>Spendable</span><strong>{formatCurrency(summary.vault_reserve_spendable)}</strong></div>
           <div><span>Committed</span><strong>{formatCurrency(summary.vault_reserve_committed)}</strong></div>
         </div>
         {transferMenu === "office" ? (
           <section className="treasury-retained-transfer-panel treasury-retained-office-panel">
             <header>
-              <span>Retained Cash / Futures Office</span>
+              <span>Free Cash / Futures Office</span>
               <strong>Real Binance Transfer</strong>
             </header>
             <form className="treasury-retained-transfer-form" onSubmit={(event) => void submitOfficeTransfer(event)}>
@@ -2062,8 +2062,8 @@ function CashPolicyPanel({
                   }}
                   disabled={officeBusy}
                 >
-                  <option value="to_office">Retained → Office</option>
-                  <option value="from_office">Office → Retained</option>
+                  <option value="to_office">Free Cash → Office</option>
+                  <option value="from_office">Office → Free Cash</option>
                 </select>
               </label>
               <label className="dialog-user-field">
@@ -2071,10 +2071,10 @@ function CashPolicyPanel({
                 <input
                   type="number"
                   min="0.01"
-                  max={officeDirection === "to_office" ? summary.vault_reserve_retained : undefined}
+                  max={officeDirection === "to_office" ? summary.vault_reserve_available : undefined}
                   step="0.01"
                   value={officeQuantity}
-                  placeholder={officeDirection === "to_office" ? formatNumber(summary.vault_reserve_retained, 2) : "0.00"}
+                  placeholder={officeDirection === "to_office" ? formatNumber(summary.vault_reserve_available, 2) : "0.00"}
                   onChange={(event) => setOfficeQuantity(event.target.value)}
                   disabled={officeBusy}
                   required
@@ -2156,7 +2156,8 @@ function CashPolicyPanel({
         </form>
         <p className="treasury-policy-note">
           This percentage of every realized cash profit is added to protected reserve. Automatic actions cannot spend
-          it. The Retained controls move cash to or from Spendable and the Futures Office.
+          it. Free Cash controls move reserve between Spendable, Retained, and the Futures Office; Office transfers use
+          Spendable first and Retained only for the remainder.
         </p>
         {error ? <p className="form-error">{error}</p> : null}
       </div> : null}

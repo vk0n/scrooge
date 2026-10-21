@@ -111,7 +111,7 @@ USDT has one shared accounting pool across all Spot assets:
 - **Protected** is excluded from automatic strategy spending and loss coverage.
 - **Committed** belongs to open Bargains and is not free reserve.
 
-Protected Cash is owner-controlled. It can be moved between Protected and Spendable, transferred between Treasury and Futures Office when that feature is enabled, or explicitly authorized for a manual BUY or manual loss close. Every use or credit is persisted idempotently.
+Protected Cash is owner-controlled. It can be moved between Protected and Spendable or explicitly authorized for a manual BUY or manual loss close. When Treasury/Futures Office transfers are enabled, the Free Cash control can transfer the full uncommitted reserve: Spendable Cash is consumed first and only the required remainder is taken from Protected Cash. Committed cash is never transferable. Every use or credit is persisted idempotently.
 
 Confirmed Spot orders create both asset and quote accounting legs. A BUY debits USDT; a SELL credits USDT. Manual Binance trades change cash and Target but do not count as new external Invested Capital. Treasury deposits and withdrawals are external capital flows. This distinction keeps Total Gain from treating an internal exchange trade as a fresh contribution.
 

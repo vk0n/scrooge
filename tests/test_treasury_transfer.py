@@ -136,6 +136,70 @@ class TreasuryTransferExecutorTests(unittest.TestCase):
         self.assertEqual(result["cash_bucket"], "retained")
         self.assertEqual(result["protected_cash_used"], 15)
 
+    @patch("bot.treasury_transfer.consume_portfolio_retained_cash")
+    @patch("bot.treasury_transfer.record_confirmed_office_transfer")
+    @patch("bot.treasury_transfer.load_portfolio_snapshot")
+    def test_mixed_transfer_to_office_uses_all_free_cash_spendable_first(
+        self,
+        load_snapshot,
+        record_transfer,
+        consume_retained,
+    ):
+        load_snapshot.return_value = (
+            {
+                "summary": {
+                    "vault_reserve_available": 100,
+                    "vault_reserve_spendable": 60,
+                    "vault_reserve_retained": 40,
+                    "vault_reserve_committed": 25,
+                },
+                "exchange": {"usdt_free": 125},
+            },
+            [],
+        )
+        self.client.universal_transfer.return_value = {"tranId": 791}
+        record_transfer.return_value = (
+            {
+                "transaction": {
+                    "transaction_id": "office-transfer:mixed-ref",
+                    "protected_cash_required": 15,
+                }
+            },
+            [],
+        )
+        consume_retained.return_value = {"consumed_quote": 15}
+
+        result = self.executor.execute(
+            {
+                "direction": "to_office",
+                "quantity": 75,
+                "transfer_ref": "mixed-ref",
+                "cash_bucket": "mixed",
+            }
+        )
+
+        consume_retained.assert_called_once()
+        self.assertEqual(consume_retained.call_args.args[0], 15)
+        record_transfer.assert_called_once_with(
+            transfer_ref="mixed-ref",
+            direction="to_office",
+            quantity=75,
+            external_transfer_id="791",
+            protected_cash_required=15,
+        )
+        self.assertEqual(result["cash_bucket"], "mixed")
+        self.assertEqual(result["protected_cash_used"], 15)
+
+        with self.assertRaisesRegex(ValueError, "transferable Free Cash"):
+            self.executor.execute(
+                {
+                    "direction": "to_office",
+                    "quantity": 101,
+                    "transfer_ref": "mixed-overflow",
+                    "cash_bucket": "mixed",
+                }
+            )
+
     @patch("bot.treasury_transfer.credit_portfolio_retained_cash")
     @patch("bot.treasury_transfer.record_confirmed_office_transfer")
     @patch("bot.treasury_transfer.load_portfolio_snapshot")

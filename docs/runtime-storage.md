@@ -110,7 +110,7 @@ Manual BUY increases Target by net asset received. Manual SELL decreases Target 
 
 When an eligible profitable `accumulate_cash` Bargain closes, `spot_swing_cash_retentions` records the calculation and `portfolio_cash_retention_credits` applies the credit exactly once. Explicit owner uses and bucket transfers are recorded in `portfolio_cash_retention_uses` and credit records with stable references.
 
-Automatic strategy actions cannot spend Protected Cash. Manual BUYs, manual loss closes, and Office transfers can use it only when the operator explicitly authorizes that path.
+Automatic strategy actions cannot spend Protected Cash. Manual BUYs and manual loss closes can use it only when the operator explicitly authorizes that path. An operator-initiated Free Cash Office transfer may use the full uncommitted reserve, consuming Spendable Cash before the required Protected Cash remainder. Committed cash remains unavailable.
 
 ## Spot Execution Boundaries
 

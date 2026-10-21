@@ -66,12 +66,21 @@ class TreasuryTransferExecutor:
             else:
                 permitted_reserve = spendable
             if quantity > min(permitted_reserve, exchange_free) + 1e-8:
+                reserve_label = (
+                    "Retained Cash"
+                    if cash_bucket == "retained"
+                    else "Free Cash"
+                    if cash_bucket == "mixed" or use_protected_cash
+                    else "Spendable Cash"
+                )
                 hint = (
                     " Enable Protected Cash for this transfer."
                     if cash_bucket == "spendable" and not use_protected_cash and retained > 0
                     else ""
                 )
-                raise ValueError(f"Office transfer exceeds currently spendable Treasury USDT.{hint}")
+                raise ValueError(
+                    f"Office transfer exceeds currently transferable {reserve_label}.{hint}"
+                )
             if quantity > available + 1e-8:
                 raise ValueError("Office transfer exceeds currently available Treasury USDT.")
             protected_required = (

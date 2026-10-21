@@ -3935,21 +3935,24 @@ button.treasury-summary-card-swings:focus-visible,
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.treasury-retained-metric-value {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.45rem;
+.treasury-free-cash-metric-value {
+  display: grid;
+  gap: 0.38rem;
+  min-width: 0;
 }
 
-.treasury-retained-actions {
-  display: flex;
+.treasury-free-cash-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
   gap: 0.28rem;
+  width: 100%;
+  min-width: 0;
 }
 
-.treasury-retained-actions button {
-  min-width: 3.5rem;
+.treasury-free-cash-actions button {
+  width: 100%;
+  min-width: 0;
   border: 1px solid rgba(217, 174, 69, 0.35);
   border-radius: 0.42rem;
   padding: 0.2rem 0.34rem;
@@ -3961,8 +3964,8 @@ button.treasury-summary-card-swings:focus-visible,
   line-height: 1.1;
 }
 
-.treasury-retained-actions button:hover,
-.treasury-retained-actions button[aria-expanded="true"] {
+.treasury-free-cash-actions button:hover,
+.treasury-free-cash-actions button[aria-expanded="true"] {
   border-color: rgba(96, 156, 220, 0.78);
   background: rgba(31, 57, 87, 0.72);
 }
@@ -6456,11 +6459,6 @@ body.logs-page-active .logs-page-panel .log-box {
 
   .treasury-retained-transfer-form .dialog-user-btn {
     grid-column: auto;
-  }
-
-  .treasury-retained-metric-value {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .treasury-custody-note,
