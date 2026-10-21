@@ -223,6 +223,7 @@ type PortfolioHolding = {
   initial_quantity: number;
   initial_capital: number;
   accumulated_asset_quantity: number;
+  closed_bargain_asset_mark: number | null;
   accumulated_cash_gain: number;
   manual_realized_gain: number;
   manual_realized_cost_basis: number;
@@ -3038,6 +3039,13 @@ function HoldingCard({
                         {formatSignedCurrency(holding.open_bargain_pnl)}
                       </strong>
                     </span>
+                    <span
+                      className="treasury-gain-component-share"
+                      title="Current USD mark of the net asset change from closed Bargains; already included in Holdings."
+                    >
+                      <small>Closed Bargains 🪙</small>
+                      <strong>{formatSignedCurrency(holding.closed_bargain_asset_mark)}</strong>
+                    </span>
                   </div>
                 </div>
                 <div className="treasury-gain-group">
@@ -3051,7 +3059,7 @@ function HoldingCard({
                       <strong>{formatSignedCurrency(holding.manual_realized_gain)}</strong>
                     </span>
                     <span>
-                      <small>Closed Bargains</small>
+                      <small>Closed Bargains 💵</small>
                       <strong>{formatSignedCurrency(holding.accumulated_cash_gain)}</strong>
                     </span>
                   </div>

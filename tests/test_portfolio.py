@@ -671,6 +671,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertAlmostEqual(eth["initial_quantity"], 1)
         self.assertAlmostEqual(eth["initial_capital"], 10)
         self.assertAlmostEqual(eth["accumulated_asset_quantity"], 0.05)
+        self.assertAlmostEqual(eth["closed_bargain_asset_mark"], 1)
         self.assertAlmostEqual(eth["accumulated_cash_gain"], 0.1)
         self.assertAlmostEqual(eth["settled_quantity"], 1.05)
         self.assertAlmostEqual(eth["effective_entry_cost"], 9.9 / 1.05)
@@ -682,6 +683,59 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot["summary"]["realized_bargain_cash_gain"], 0.1)
         self.assertAlmostEqual(snapshot["summary"]["hodl_gain"], 10)
         self.assertAlmostEqual(snapshot["summary"]["strategy_vs_hodl"], 1.1)
+
+    def test_closed_bargain_asset_mark_uses_signed_net_asset_change(self):
+        holdings = [
+            {
+                "asset_symbol": "ETH",
+                "quote_symbol": "USDT",
+                "is_dry_powder": False,
+                "market_price": 20.0,
+            }
+        ]
+        swings = [
+            {
+                "swing_id": "asset-gain",
+                "asset_symbol": "ETH",
+                "quote_symbol": "USDT",
+                "trading_objective": "accumulate_asset",
+            },
+            {
+                "swing_id": "asset-shortfall",
+                "asset_symbol": "ETH",
+                "quote_symbol": "USDT",
+                "trading_objective": "accumulate_cash",
+            },
+        ]
+        economics = {
+            "asset-gain": {
+                "status": "closed",
+                "realized_cash_gain_quote": 0.0,
+                "realized_net_asset_change": 0.05,
+            },
+            "asset-shortfall": {
+                "status": "closed",
+                "realized_cash_gain_quote": 0.0,
+                "realized_net_asset_change": -0.08,
+            },
+        }
+
+        portfolio_service._attach_asset_performance(
+            holdings,
+            owner_positions={
+                ("ETH", "USDT"): {
+                    "quantity": 1.0,
+                    "basis": 10.0,
+                    "manual_realized_gain": 0.0,
+                    "manual_realized_cost_basis": 0.0,
+                }
+            },
+            swings=swings,
+            economics_by_swing=economics,
+        )
+
+        self.assertAlmostEqual(holdings[0]["accumulated_asset_quantity"], -0.03)
+        self.assertAlmostEqual(holdings[0]["closed_bargain_asset_mark"], -0.6)
 
     def test_void_and_restore_recalculate_holdings_without_deleting_ledger_entry(self):
         btc = self.add("BTC", 1, 90)

@@ -3432,6 +3432,14 @@ button.treasury-summary-card-swings:focus-visible,
   padding-left: 0.42rem;
 }
 
+.treasury-gain-components > .treasury-gain-component-share {
+  grid-column: 1 / -1;
+  border-top: 1px solid rgba(106, 124, 150, 0.14);
+  border-left: 0;
+  padding-top: 0.36rem;
+  padding-left: 0;
+}
+
 .treasury-gain-components small {
   color: #8290a5;
   font-size: 0.68rem;

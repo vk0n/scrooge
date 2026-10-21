@@ -521,7 +521,11 @@ def _attach_asset_performance(
         key = (str(swing["asset_symbol"]), str(swing["quote_symbol"]))
         performance = performance_by_asset.setdefault(
             key,
-            {"accumulated_asset_quantity": 0.0, "accumulated_cash_gain": 0.0, "open_bargain_pnl": 0.0},
+            {
+                "accumulated_asset_quantity": 0.0,
+                "accumulated_cash_gain": 0.0,
+                "open_bargain_pnl": 0.0,
+            },
         )
         economics = economics_by_swing[str(swing["swing_id"])]
         if economics.get("status") == "closed":
@@ -556,7 +560,11 @@ def _attach_asset_performance(
         )
         performance = performance_by_asset.get(
             key,
-            {"accumulated_asset_quantity": 0.0, "accumulated_cash_gain": 0.0, "open_bargain_pnl": 0.0},
+            {
+                "accumulated_asset_quantity": 0.0,
+                "accumulated_cash_gain": 0.0,
+                "open_bargain_pnl": 0.0,
+            },
         )
         initial_quantity = float(owner["quantity"])
         initial_capital = float(owner["basis"])
@@ -589,6 +597,11 @@ def _attach_asset_performance(
                 "manual_realized_gain": manual_realized_gain,
                 "manual_realized_cost_basis": manual_realized_cost_basis,
                 "accumulated_asset_quantity": accumulated_asset,
+                "closed_bargain_asset_mark": (
+                    accumulated_asset * market_price
+                    if market_price is not None
+                    else None
+                ),
                 "accumulated_cash_gain": accumulated_cash,
                 "open_bargain_pnl": open_bargain_pnl,
                 "settled_quantity": settled_quantity,
