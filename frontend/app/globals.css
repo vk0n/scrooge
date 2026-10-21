@@ -2259,7 +2259,10 @@ button.treasury-summary-card-flip:focus-visible {
 
 .treasury-summary-breakdown {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.18rem;
+  width: 100%;
+  min-width: 0;
 }
 
 .treasury-summary-breakdown > span {
@@ -2333,9 +2336,13 @@ button.treasury-summary-card-flip:focus-visible {
 
 .treasury-summary-gain-breakdown > .treasury-summary-bargains-group {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-self: stretch;
+  align-self: stretch;
   gap: 0.24rem;
   width: 100%;
   min-width: 0;
+  box-sizing: border-box;
 }
 
 .treasury-summary-bargains-total-row {
