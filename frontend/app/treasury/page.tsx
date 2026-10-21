@@ -2694,7 +2694,11 @@ function AssetLedger({
           onClick={() => setExpanded((current) => !current)}
         >
           <span>Asset Ledger</span>
-          <span>{ledger ? `${count} ${count === 1 ? "entry" : "entries"}` : "History"}</span>
+          <span>
+            {ledger
+              ? `${count} ${count === 1 ? "entry" : "entries"}`
+              : holding.is_dry_powder ? "History" : "Activity"}
+          </span>
           <span className="treasury-asset-panel-chevron" aria-hidden="true" />
         </button>
       </header>
@@ -2773,8 +2777,12 @@ function AssetLedger({
                   ? "Received from Futures Office"
                   : transaction.spot_quote_leg && transaction.swing_id
                     ? "Bargain cash flow"
-                    : transaction.spot_quote_leg
-                      ? "Asset accumulation"
+                  : transaction.spot_quote_leg
+                      ? transaction.source === "binance_manual"
+                        ? transaction.tx_type === "buy"
+                          ? "Manual sale proceeds"
+                          : "Manual asset purchase"
+                        : "Asset accumulation"
                       : transactionLabel(transaction.tx_type);
               const canVoid = transaction.source === "manual";
               return (
@@ -3004,16 +3012,21 @@ function HoldingCard({
                     {formatSignedCurrency(holding.total_gain)} · {formatSignedPercent(holding.total_gain_pct)}
                   </strong>
                   <small className="treasury-gain-breakdown">
-                    <span>
-                      Market {formatSignedCurrency(holding.market_gain)} · Bargains {formatSignedCurrency(holding.accumulated_cash_gain)}
-                    </span>
-                    {Math.abs(holding.manual_realized_gain) > 0.005 ? (
-                      <span className={signedToneClass(holding.manual_realized_gain, "treasury-manual-pnl")}>
-                        Manual {formatSignedCurrency(holding.manual_realized_gain)}
+                    <span className="treasury-gain-breakdown-row">
+                      <span className={signedToneClass(holding.market_gain, "treasury-gain-component")}>
+                        Holdings {formatSignedCurrency(holding.market_gain)}
                       </span>
-                    ) : null}
-                    <span className={signedToneClass(holding.open_bargain_pnl, "treasury-open-pnl")}>
-                      Open {formatSignedCurrency(holding.open_bargain_pnl)}
+                      <span className={signedToneClass(holding.open_bargain_pnl, "treasury-gain-component")}>
+                        Open Bargains {formatSignedCurrency(holding.open_bargain_pnl)}
+                      </span>
+                    </span>
+                    <span className="treasury-gain-breakdown-row">
+                      <span className={signedToneClass(holding.accumulated_cash_gain, "treasury-gain-component")}>
+                        Closed Bargains {formatSignedCurrency(holding.accumulated_cash_gain)}
+                      </span>
+                      <span className={signedToneClass(holding.manual_realized_gain, "treasury-gain-component")}>
+                        Manual Sales {formatSignedCurrency(holding.manual_realized_gain)}
+                      </span>
                     </span>
                   </small>
                 </>
