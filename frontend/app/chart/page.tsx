@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
-import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 import { parseTimestampMs, toDisplayTimezoneNaiveString, toUtcIsoString } from "../../lib/datetime";
 type Candle = {
@@ -891,17 +890,8 @@ function ChartContent(): JSX.Element {
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
 
-    const creds = getSavedBasicCredentials();
-    if (!creds) {
-      setWsConnected(false);
-      return () => undefined;
-    }
-
     const connect = (): void => {
-      const wsUrl = buildWebSocketUrl("/ws/status", {
-        username: creds.username,
-        password: creds.password,
-      });
+      const wsUrl = buildWebSocketUrl("/ws/status");
       if (!wsUrl) {
         setWsConnected(false);
         return;

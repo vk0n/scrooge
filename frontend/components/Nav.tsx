@@ -2,19 +2,26 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { clearAuth, hasSavedAuth } from "../lib/auth";
+import { endSession, hasActiveSession } from "../lib/auth";
 import { PRIMARY_LINKS } from "../lib/navigation";
 import PushNotificationControl from "./PushNotificationControl";
 
 export default function Nav(): JSX.Element {
   const pathname = usePathname();
+  const router = useRouter();
   const [isAuthed, setIsAuthed] = useState<boolean>(false);
 
   useEffect(() => {
-    setIsAuthed(hasSavedAuth());
+    let cancelled = false;
+    void hasActiveSession().then((authed) => {
+      if (!cancelled) setIsAuthed(authed);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [pathname]);
 
   function linkClass(href: string): string {
@@ -48,9 +55,12 @@ export default function Nav(): JSX.Element {
               <Link
                 href="/login"
                 className="nav-link"
-                onClick={() => {
-                  clearAuth();
-                  setIsAuthed(false);
+                onClick={(event) => {
+                  event.preventDefault();
+                  void endSession().finally(() => {
+                    setIsAuthed(false);
+                    router.replace("/login");
+                  });
                 }}
               >
                 Step Out

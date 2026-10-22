@@ -3,7 +3,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import AuthGate from "../../components/AuthGate";
-import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 import { buildContractParagraphs, type ContractParagraph, type EditableConfig } from "../../lib/contract";
 import { formatDateTimeEu, parseTimestampMs } from "../../lib/datetime";
@@ -1321,18 +1320,8 @@ function DashboardContent(): JSX.Element {
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
 
-    const creds = getSavedBasicCredentials();
-    if (!creds) {
-      setWsConnected(false);
-      setWsFallbackActive(false);
-      return () => undefined;
-    }
-
     const connect = (): void => {
-      const wsUrl = buildWebSocketUrl("/ws/status", {
-        username: creds.username,
-        password: creds.password
-      });
+      const wsUrl = buildWebSocketUrl("/ws/status");
       if (!wsUrl) {
         setWsConnected(false);
         return;

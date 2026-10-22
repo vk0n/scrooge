@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 
+from services.auth_service import request_auth_actor
 from services.push_service import (
     get_push_status,
     remove_push_subscription,
@@ -15,10 +16,7 @@ router = APIRouter()
 
 
 def _requested_by(request: Request) -> str:
-    basic = request.headers.get("Authorization", "")
-    if basic.startswith("Basic "):
-        return "basic-user"
-    return "token-user"
+    return request_auth_actor(request, fallback="token-user")
 
 
 class PushSubscriptionKeysPayload(BaseModel):

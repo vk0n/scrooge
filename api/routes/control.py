@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from services.auth_service import require_control_or_basic_auth
+from services.auth_service import request_auth_actor, require_control_or_basic_auth
 from services.command_service import enqueue_control_command, get_command_status
 from services.system_service import get_service_status
 
@@ -13,10 +13,7 @@ router = APIRouter()
 
 
 def _requested_by(request: Request) -> str:
-    basic = request.headers.get("Authorization", "")
-    if basic.startswith("Basic "):
-        return "basic-user"
-    return "token-user"
+    return request_auth_actor(request, fallback="token-user")
 
 
 class UpdateLevelRequest(BaseModel):

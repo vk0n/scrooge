@@ -31,9 +31,9 @@ Daily overview deltas use UTC midnight. `NEXT_PUBLIC_DISPLAY_TIMEZONE` changes o
 
 ## Auth And Updates
 
-- `/login` stores HTTP Basic credentials in browser local storage.
-- `AuthGate` protects operator pages.
-- `Step Out` clears saved credentials.
+- `/login` exchanges credentials for a temporary server-side session in an `HttpOnly` cookie.
+- `AuthGate` verifies the active server session before rendering operator pages.
+- `Step Out` revokes the session; passwords are never stored in browser storage or WebSocket URLs.
 - Office/Ledger prefer WebSocket updates and fall back to polling.
 - Treasury refreshes its DB-backed projection periodically and after mutations.
 

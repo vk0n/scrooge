@@ -6,6 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from services.auth_service import request_auth_actor
 from services.portfolio_service import (
     create_bargain_close_preview,
     create_custody_transfer,
@@ -313,7 +314,7 @@ def execute_spot_order(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Scrooge runtime is offline. A real Spot order cannot be delivered safely.",
         )
-    requested_by = "basic-user" if request.headers.get("Authorization", "").startswith("Basic ") else "unknown"
+    requested_by = request_auth_actor(request)
     try:
         return queue_spot_order_intent(intent_id, requested_by=requested_by)
     except ValueError as exc:
@@ -367,7 +368,7 @@ def execute_office_transfer(
                 detail=f"Only ${available:,.2f} USDT is currently transferable from Treasury.",
             )
     transfer_ref = uuid.uuid4().hex
-    requested_by = "basic-user" if request.headers.get("Authorization", "").startswith("Basic ") else "unknown"
+    requested_by = request_auth_actor(request)
     try:
         return enqueue_control_command(
             action="treasury_transfer",

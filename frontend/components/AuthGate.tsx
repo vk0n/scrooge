@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { hasSavedAuth } from "../lib/auth";
+import { hasActiveSession } from "../lib/auth";
 
 type AuthGateProps = {
   children: ReactNode;
@@ -15,12 +15,16 @@ export default function AuthGate({ children }: AuthGateProps): JSX.Element | nul
   const [isAuthed, setIsAuthed] = useState<boolean>(false);
 
   useEffect(() => {
-    const authed = hasSavedAuth();
-    setIsAuthed(authed);
-    setChecked(true);
-    if (!authed) {
-      router.replace("/login");
-    }
+    let cancelled = false;
+    void hasActiveSession().then((authed) => {
+      if (cancelled) return;
+      setIsAuthed(authed);
+      setChecked(true);
+      if (!authed) router.replace("/login");
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   if (!checked || !isAuthed) {

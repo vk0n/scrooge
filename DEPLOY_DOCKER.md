@@ -46,7 +46,20 @@ BINANCE_API_KEY=...
 BINANCE_API_SECRET=...
 SCROOGE_GUI_USERNAME=admin
 SCROOGE_GUI_PASSWORD=strong_password_here
+SCROOGE_SESSION_COOKIE_SECURE=1
 ```
+
+The browser exchanges these credentials once for a temporary server-side session. The production cookie is `HttpOnly`, `Secure`, and `SameSite=Strict`; the password is not stored in browser storage or placed in WebSocket URLs. Optional session and brute-force controls:
+
+```env
+SCROOGE_SESSION_TTL_SECONDS=43200
+SCROOGE_AUTH_FAILURE_WINDOW_SECONDS=300
+SCROOGE_AUTH_MAX_FAILURES=5
+SCROOGE_AUTH_LOCKOUT_SECONDS=900
+SCROOGE_AUTH_MAX_ACTIVE_SESSIONS=32
+```
+
+Set `SCROOGE_SESSION_COOKIE_SECURE=0` only for local HTTP development. Changing `SCROOGE_GUI_PASSWORD` requires recreating the API container and invalidates all active browser sessions.
 
 Optional control token:
 

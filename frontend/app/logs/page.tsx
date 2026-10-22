@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import AuthGate from "../../components/AuthGate";
-import { getSavedBasicCredentials } from "../../lib/auth";
 import { buildWebSocketUrl, fetchApi } from "../../lib/api";
 import { formatDateTimeEu } from "../../lib/datetime";
 
@@ -94,16 +93,8 @@ function LogsContent(): JSX.Element {
     let closedByUser = false;
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
-    const creds = getSavedBasicCredentials();
-    if (!creds) {
-      setWsConnected(false);
-      return () => undefined;
-    }
-
     const connect = (): void => {
       const wsUrl = buildWebSocketUrl("/ws/ledger", {
-        username: creds.username,
-        password: creds.password,
         scope,
         limit: String(LEDGER_PAGE_SIZE),
       });

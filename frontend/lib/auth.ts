@@ -1,54 +1,45 @@
 "use client";
 
-type StoredAuth = { mode: "basic"; username: string; password: string };
+import { fetchApi } from "./api";
 
-const AUTH_STORAGE_KEY = "scrooge_gui_auth";
 
-function toBase64(raw: string): string {
-  return window.btoa(raw);
+const LEGACY_AUTH_STORAGE_KEY = "scrooge_gui_auth";
+
+type SessionResponse = {
+  authenticated: boolean;
+  username?: string;
+  expires_in_seconds?: number;
+};
+
+function clearLegacyBasicAuth(): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
+  }
 }
 
-export function getSavedBasicCredentials(): { username: string; password: string } | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
+export async function startSession(username: string, password: string): Promise<void> {
+  clearLegacyBasicAuth();
+  await fetchApi<SessionResponse>("/api/auth/login", {
+    method: "POST",
+    body: { username, password }
+  });
+}
+
+export async function hasActiveSession(): Promise<boolean> {
+  clearLegacyBasicAuth();
   try {
-    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as StoredAuth;
-    if (parsed.mode === "basic" && parsed.username.trim() && parsed.password) {
-      return { username: parsed.username.trim(), password: parsed.password };
-    }
-    return null;
+    const session = await fetchApi<SessionResponse>("/api/auth/session");
+    return session.authenticated;
   } catch {
-    return null;
+    return false;
   }
 }
 
-export function getAuthorizationHeader(): string | null {
-  const creds = getSavedBasicCredentials();
-  if (!creds) {
-    return null;
+export async function endSession(): Promise<void> {
+  clearLegacyBasicAuth();
+  try {
+    await fetchApi<SessionResponse>("/api/auth/logout", { method: "POST" });
+  } catch {
+    // A failed logout request must not leave legacy browser credentials behind.
   }
-  return `Basic ${toBase64(`${creds.username}:${creds.password}`)}`;
-}
-
-export function saveBasicAuth(username: string, password: string): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ mode: "basic", username, password }));
-}
-
-export function clearAuth(): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.removeItem(AUTH_STORAGE_KEY);
-}
-
-export function hasSavedAuth(): boolean {
-  return getAuthorizationHeader() !== null;
 }

@@ -13,11 +13,13 @@ Default CORS origins are `http://localhost:3000` and `http://127.0.0.1:3000`. Ov
 
 ## Authentication
 
-- Every `/api/*` endpoint requires HTTP Basic auth.
-- WebSocket endpoints require the same credentials.
+- Browser login exchanges the GUI credentials for a temporary `HttpOnly`, `Secure`, `SameSite=Strict` session cookie.
+- Every protected `/api/*` endpoint accepts the browser session; HTTP Basic remains available for machine clients.
+- WebSocket endpoints use the browser session cookie and never accept credentials in the URL.
 - `/api/control/*` also accepts `X-Scrooge-Control-Token` for machine clients.
 
 Configure `SCROOGE_GUI_USERNAME`, `SCROOGE_GUI_PASSWORD`, and optionally `SCROOGE_CONTROL_TOKEN`.
+Sessions expire after `SCROOGE_SESSION_TTL_SECONDS` (12 hours by default) and are invalidated when the API restarts. Set `SCROOGE_SESSION_COOKIE_SECURE=0` only for local HTTP development.
 
 ## Treasury / Spot Safety
 
@@ -35,6 +37,12 @@ Relevant settings:
 An `uncertain` or `accounting_error` intent must be reconciled by Binance client order ID before a replacement is attempted.
 
 ## Endpoint Map
+
+### Authentication
+
+- `POST /api/auth/login` - exchange GUI credentials for a temporary browser session.
+- `GET /api/auth/session` - validate the current browser session.
+- `POST /api/auth/logout` - revoke the current browser session.
 
 ### Shared Runtime And History
 
