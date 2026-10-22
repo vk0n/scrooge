@@ -2334,6 +2334,40 @@ button.treasury-summary-card-flip:focus-visible {
   white-space: nowrap;
 }
 
+.treasury-composition-values {
+  align-self: center;
+}
+
+.treasury-summary-card .treasury-composition-values strong {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.treasury-composition-share {
+  display: grid;
+  align-items: stretch;
+  gap: 0.1rem;
+  min-height: 0;
+}
+
+.treasury-composition-share > span {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+.treasury-summary-card .treasury-composition-share strong {
+  min-width: 3.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.treasury-composition-share small {
+  color: #8f9bae;
+  font-size: 0.62rem;
+}
+
 .treasury-summary-gain-breakdown > .treasury-summary-bargains-group {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2355,6 +2389,7 @@ button.treasury-summary-card-flip:focus-visible {
 }
 
 .treasury-summary-bargains-components {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.16rem 0.45rem;
@@ -2363,6 +2398,17 @@ button.treasury-summary-card-flip:focus-visible {
   padding: 0.24rem 0.18rem 0.26rem 0.42rem;
   border-block: 1px solid rgba(87, 103, 127, 0.24);
   border-left: 2px solid rgba(215, 183, 93, 0.42);
+}
+
+.treasury-summary-bargains-components::after {
+  position: absolute;
+  top: 0.24rem;
+  bottom: 0.26rem;
+  left: 50%;
+  width: 1px;
+  background: rgba(87, 103, 127, 0.24);
+  content: "";
+  pointer-events: none;
 }
 
 .treasury-summary-bargains-components > span {
@@ -2390,6 +2436,9 @@ button.treasury-summary-card-flip:focus-visible {
 }
 
 button.treasury-summary-card-reserve {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   appearance: none;
   width: 100%;
   color: inherit;
@@ -2445,6 +2494,8 @@ button.treasury-summary-card-reserve:focus-visible {
 button.treasury-summary-card-swings {
   position: relative;
   grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
   appearance: none;
   width: 100%;
   color: inherit;
@@ -2469,9 +2520,13 @@ button.treasury-summary-card-swings:focus-visible,
 }
 
 .treasury-bargain-counts {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   grid-column: 1 / -1;
+  grid-row: 2;
+  align-self: stretch;
   gap: 0.1rem;
+  min-height: 0;
 }
 
 .treasury-bargain-counts > span {
@@ -2524,7 +2579,7 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-bargain-counts > span:nth-child(2) {
   border-top: 1px solid rgba(87, 103, 127, 0.24);
-  margin-top: 0.12rem;
+  margin-top: auto;
   padding-top: 0.28rem;
 }
 
@@ -6436,6 +6491,19 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-summary-card .treasury-total-invested strong,
   .treasury-summary-card .treasury-summary-breakdown strong {
     font-size: 0.66rem;
+  }
+
+  .treasury-summary-card .treasury-composition-values strong {
+    font-size: 0.72rem;
+  }
+
+  .treasury-summary-card .treasury-composition-share strong {
+    min-width: 2.9rem;
+    font-size: 0.64rem;
+  }
+
+  .treasury-composition-share small {
+    font-size: 0.54rem;
   }
 
   .treasury-form,

@@ -3214,6 +3214,15 @@ export default function TreasuryPage(): JSX.Element {
   const allocationHoldings = holdings.filter(
     (holding) => typeof holding.allocation_pct === "number" && holding.allocation_pct > 0
   );
+  const managedCoinCount = holdings.filter(
+    (holding) => !holding.is_dry_powder && holding.quantity > 0
+  ).length;
+  const assetAllocationPct = (summary?.total_value ?? 0) > 0
+    ? ((summary?.assets_at_market ?? 0) / (summary?.total_value ?? 1)) * 100
+    : 0;
+  const cashAllocationPct = (summary?.total_value ?? 0) > 0
+    ? ((summary?.dry_powder ?? 0) / (summary?.total_value ?? 1)) * 100
+    : 0;
   let allocationCursor = 0;
   const allocationStops = allocationHoldings.map((holding, index) => {
     const start = allocationCursor;
@@ -3296,9 +3305,19 @@ export default function TreasuryPage(): JSX.Element {
               </>}
               back={<>
                 <span className="treasury-summary-label">Treasure Composition</span>
-                <span className="treasury-summary-breakdown">
+                <span className="treasury-summary-breakdown treasury-composition-values">
                   <span><small>Assets if sold now</small><strong>{formatCurrency(summary?.assets_at_market ?? 0)}</strong></span>
                   <span><small>Cash</small><strong>{formatCurrency(summary?.dry_powder ?? 0)}</strong></span>
+                </span>
+                <span className="treasury-summary-card-footer treasury-composition-share">
+                  <span>
+                    <strong>{formatPercent(assetAllocationPct)}</strong>
+                    <small>in {managedCoinCount} {managedCoinCount === 1 ? "coin" : "coins"}</small>
+                  </span>
+                  <span>
+                    <strong>{formatPercent(cashAllocationPct)}</strong>
+                    <small>in cash</small>
+                  </span>
                 </span>
               </>}
             />
@@ -3382,12 +3401,10 @@ export default function TreasuryPage(): JSX.Element {
                   <small>Available</small>
                   <strong>{formatCurrency(summary?.vault_reserve_available ?? 0)}</strong>
                 </span>
-                {(summary?.vault_reserve_committed ?? 0) > 0 ? (
-                  <span>
-                    <small>Committed</small>
-                    <strong>{formatCurrency(summary?.vault_reserve_committed ?? 0)}</strong>
-                  </span>
-                ) : null}
+                <span>
+                  <small>Committed</small>
+                  <strong>{formatCurrency(summary?.vault_reserve_committed ?? 0)}</strong>
+                </span>
               </span>
             </button>
             <button
