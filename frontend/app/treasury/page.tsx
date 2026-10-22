@@ -15,6 +15,7 @@ type PortfolioSummary = {
   total_gain_pct: number | null;
   assets_at_market: number;
   bargains_total_gain: number;
+  holdings_pnl: number;
   hodl_component_gain: number;
   open_bargain_pnl: number;
   reserve_deployment_pnl: number;
@@ -3340,9 +3341,9 @@ export default function TreasuryPage(): JSX.Element {
                 <span className="treasury-summary-label">Gain Composition</span>
                 <span className="treasury-summary-breakdown treasury-summary-gain-breakdown">
                   <span>
-                    <small>HODL</small>
-                    <strong className={signedToneClass(summary?.hodl_component_gain, "")}>
-                      {formatSignedCurrency(summary?.hodl_component_gain ?? 0)}
+                    <small>Holdings</small>
+                    <strong className={signedToneClass(summary?.holdings_pnl, "")}>
+                      {formatSignedCurrency(summary?.holdings_pnl ?? 0)}
                     </strong>
                   </span>
                   <span>

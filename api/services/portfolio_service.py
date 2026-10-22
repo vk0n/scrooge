@@ -702,6 +702,11 @@ def _summary_from_holdings(
         _as_float(holding.get("manual_realized_gain")) or 0.0
         for holding in managed_holdings
     )
+    holdings_pnl = sum(
+        (_as_float(holding.get("market_gain")) or 0.0)
+        + (_as_float(holding.get("accumulated_cash_gain")) or 0.0)
+        for holding in managed_holdings
+    )
     bargains_total_gain = (
         open_bargain_pnl
         + closed_bargain_asset_mark
@@ -751,6 +756,7 @@ def _summary_from_holdings(
         "asset_total_gain": asset_total_gain,
         "asset_market_and_open_gain": asset_market_and_open_gain,
         "bargains_total_gain": bargains_total_gain,
+        "holdings_pnl": holdings_pnl,
         "hodl_component_gain": hodl_component_gain,
         "open_bargain_pnl": open_bargain_pnl,
         "reserve_deployment_pnl": reserve_deployment_pnl,
