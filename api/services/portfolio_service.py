@@ -8,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from core.runtime_db import (  # noqa: E402
     list_spot_accumulation_target_ratchets,
     list_spot_signal_snapshots,
     list_spot_swing_executions,
+    list_spot_swing_executions_bulk,
     list_spot_swings,
     list_portfolio_daily_snapshots,
     list_portfolio_transactions,
@@ -176,6 +178,17 @@ def _fetch_market_price(asset_symbol: str, quote_symbol: str) -> tuple[float | N
     return None, f"Market price unavailable for {pair}: {last_error or 'no price source returned a value'}", None
 
 
+def _fetch_market_prices(
+    pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], tuple[float | None, str | None, str | None]]:
+    unique_pairs = list(dict.fromkeys(pairs))
+    if len(unique_pairs) <= 1:
+        return {pair: _fetch_market_price(*pair) for pair in unique_pairs}
+    with ThreadPoolExecutor(max_workers=min(8, len(unique_pairs))) as executor:
+        results = executor.map(lambda pair: _fetch_market_price(*pair), unique_pairs)
+        return dict(zip(unique_pairs, results))
+
+
 def _clean_custody(value: Any, *, default: str = "unassigned") -> str:
     normalized = str(value or default).strip().lower() or default
     if normalized not in CUSTODY_LOCATIONS:
@@ -306,6 +319,9 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
 
     holdings: list[dict[str, Any]] = []
     priced_value_total = 0.0
+    prices = _fetch_market_prices(
+        [(str(bucket["asset_symbol"]), str(bucket["quote_symbol"])) for bucket in aggregate_buckets.values()]
+    )
     for bucket in aggregate_buckets.values():
         quantity = float(bucket["quantity"])
         if abs(quantity) < 0.00000001:
@@ -313,7 +329,7 @@ def _derive_holdings(transactions: list[dict[str, Any]]) -> tuple[list[dict[str,
         asset_symbol = str(bucket["asset_symbol"])
         quote_symbol = str(bucket["quote_symbol"])
         cost_basis = float(bucket["cost_basis"])
-        market_price, warning, market_price_updated_at = _fetch_market_price(asset_symbol, quote_symbol)
+        market_price, warning, market_price_updated_at = prices[(asset_symbol, quote_symbol)]
         if warning:
             warnings.append(warning)
         market_value = quantity * market_price if market_price is not None else None
@@ -476,10 +492,13 @@ def _swing_economics_by_id(
         (str(holding["asset_symbol"]), str(holding["quote_symbol"])): _as_float(holding.get("market_price"))
         for holding in holdings
     }
+    executions_by_swing = list_spot_swing_executions_bulk(
+        [str(swing["swing_id"]) for swing in swings]
+    )
     return {
         str(swing["swing_id"]): calculate_swing_economics(
             swing,
-            list_spot_swing_executions(str(swing["swing_id"])),
+            executions_by_swing[str(swing["swing_id"])],
             current_price=market_price_by_asset.get(
                 (str(swing["asset_symbol"]), str(swing["quote_symbol"]))
             ),
@@ -1245,12 +1264,14 @@ def load_portfolio_asset_transactions(
 def _project_swing_ledger_entry(
     swing: dict[str, Any],
     *,
+    executions: list[dict[str, Any]] | None = None,
     current_market_price: float | None,
     market_price_updated_at: str | None,
     close_profit_pct: float,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
-    executions = list_spot_swing_executions(str(swing["swing_id"]))
+    if executions is None:
+        executions = list_spot_swing_executions(str(swing["swing_id"]))
     economics = calculate_swing_economics(
         swing,
         executions,
@@ -1357,6 +1378,9 @@ def load_portfolio_asset_ledger(
             account_key=DEFAULT_ACCOUNT_KEY,
             materialized_only=True,
         )
+        executions_by_swing = list_spot_swing_executions_bulk(
+            [str(swing["swing_id"]) for swing in swings]
+        )
         swing_by_id = {str(swing["swing_id"]): swing for swing in swings}
         for transaction in transactions:
             if _clean_symbol(transaction.get("asset_symbol")) != normalized_asset:
@@ -1385,7 +1409,7 @@ def load_portfolio_asset_ledger(
         for swing in swings:
             if swing.get("origin_side") != "sell":
                 continue
-            executions = list_spot_swing_executions(str(swing["swing_id"]))
+            executions = executions_by_swing[str(swing["swing_id"])]
             economics = calculate_swing_economics(swing, executions)
             if economics.get("status") != "closed":
                 continue
@@ -1457,9 +1481,13 @@ def load_portfolio_asset_ledger(
         quote_symbol=normalized_quote,
         materialized_only=True,
     )
+    executions_by_swing = list_spot_swing_executions_bulk(
+        [str(swing["swing_id"]) for swing in swings]
+    )
     for swing in swings:
         entry = _project_swing_ledger_entry(
             swing,
+            executions=executions_by_swing[str(swing["swing_id"])],
             current_market_price=market_price,
             market_price_updated_at=market_price_updated_at,
             close_profit_pct=close_profit_pct,
@@ -1508,20 +1536,28 @@ def load_portfolio_bargain_ledger(
     open_count = 0
     closed_count = 0
     close_profit_pct = load_treasury_strategy_config().progression.close_profit_pct
-    prices: dict[tuple[str, str], tuple[float | None, str | None]] = {}
-    for swing in list_spot_swings(
+    swings = list_spot_swings(
         account_key=DEFAULT_ACCOUNT_KEY,
         materialized_only=True,
-    ):
+    )
+    price_results = _fetch_market_prices(
+        [(str(swing["asset_symbol"]), str(swing["quote_symbol"])) for swing in swings]
+    )
+    prices = {
+        pair: (result[0], result[2])
+        for pair, result in price_results.items()
+    }
+    executions_by_swing = list_spot_swing_executions_bulk(
+        [str(swing["swing_id"]) for swing in swings]
+    )
+    for swing in swings:
         asset_symbol = str(swing["asset_symbol"])
         quote_symbol = str(swing["quote_symbol"])
         pair = (asset_symbol, quote_symbol)
-        if pair not in prices:
-            market_price, _, market_price_updated_at = _fetch_market_price(*pair)
-            prices[pair] = (market_price, market_price_updated_at)
         market_price, market_price_updated_at = prices[pair]
         entry = _project_swing_ledger_entry(
             swing,
+            executions=executions_by_swing[str(swing["swing_id"])],
             current_market_price=market_price,
             market_price_updated_at=market_price_updated_at,
             close_profit_pct=close_profit_pct,

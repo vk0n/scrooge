@@ -200,6 +200,32 @@ class StrategyChartTests(unittest.TestCase):
             indicators, _ = chart_service._build_recorded_strategy_indicators("BTCUSDT", 0, 9_999_999_999_999)
         self.assertEqual([point["value"] for point in indicators["ema"]], [77_000, 77_001, 77_003])
 
+    def test_dataset_reader_uses_indexed_time_window_without_changing_candles(self):
+        dataset = Path(self.tmp.name) / "chart.csv"
+        rows = ["open_time,symbol,open,high,low,close,volume,balance,EMA,RSI,BBL,BBM,BBU,ATR"]
+        for minute in range(10):
+            rows.append(
+                f"2026-09-01 11:{minute:02d}:00,BTCUSDT,{100 + minute},{102 + minute},"
+                f"{99 + minute},{101 + minute},1,1000,100,50,90,100,110,2"
+            )
+        dataset.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        end_ms = int(datetime(2026, 9, 1, 11, 9, tzinfo=UTC).timestamp() * 1000)
+
+        with (
+            patch.object(chart_service, "_resolve_dataset_file_path", return_value=(dataset, [])),
+            patch.object(chart_service, "DATASET_INDEX_STRIDE", 2),
+        ):
+            chart_service._DATASET_INDEX_CACHE.clear()
+            candles, warnings = chart_service._fetch_candles_from_dataset(
+                "BTCUSDT",
+                period_ms=2 * 60_000,
+                interval="1m",
+                end_ms=end_ms,
+            )
+
+        self.assertEqual(warnings, [])
+        self.assertEqual([candle["close"] for candle in candles], [108.0, 109.0, 110.0])
+
 
 if __name__ == "__main__":
     unittest.main()

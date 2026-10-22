@@ -17,6 +17,7 @@ from core.runtime_db import (
     list_portfolio_asset_policies,
     list_portfolio_transactions,
     list_spot_swing_executions,
+    list_spot_swing_executions_bulk,
     list_spot_swings,
     load_portfolio_cash_policy,
     load_spot_order_intent,
@@ -675,6 +676,22 @@ class SpotSwingDomainTests(unittest.TestCase):
                 executed_at_ms=2_002,
                 exchange_execution_key="binance:NEARUSDT:trade:77",
             )
+
+    def test_bulk_execution_read_matches_individual_swing_reads(self):
+        self.create_swing("bulk-one")
+        self.create_swing("bulk-two")
+        self.add_execution("bulk-one", "bulk-one-open", "sell", 10, 5, executed_at_ms=2_000)
+        self.add_execution("bulk-one", "bulk-one-close", "buy", 10, 4, executed_at_ms=3_000)
+        self.add_execution("bulk-two", "bulk-two-open", "sell", 5, 6, executed_at_ms=2_500)
+
+        result = list_spot_swing_executions_bulk(
+            ["bulk-one", "bulk-two", "missing", "bulk-one"],
+            path=self.db_path,
+        )
+
+        self.assertEqual(result["bulk-one"], list_spot_swing_executions("bulk-one", path=self.db_path))
+        self.assertEqual(result["bulk-two"], list_spot_swing_executions("bulk-two", path=self.db_path))
+        self.assertEqual(result["missing"], [])
 
 
 class SpotSwingMigrationTests(unittest.TestCase):

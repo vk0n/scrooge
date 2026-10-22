@@ -3789,6 +3789,36 @@ def list_spot_swing_executions(
     return [_spot_swing_execution_from_row(row) for row in rows]
 
 
+def list_spot_swing_executions_bulk(
+    swing_ids: list[str],
+    *,
+    path: Path | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    normalized_ids = list(dict.fromkeys(str(swing_id or "").strip() for swing_id in swing_ids))
+    normalized_ids = [swing_id for swing_id in normalized_ids if swing_id]
+    executions_by_swing = {swing_id: [] for swing_id in normalized_ids}
+    if not normalized_ids:
+        return executions_by_swing
+
+    with _connection(path) as connection:
+        # Stay below SQLite's common 999-variable limit while retaining one connection.
+        for offset in range(0, len(normalized_ids), 500):
+            chunk = normalized_ids[offset:offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = connection.execute(
+                f"""
+                SELECT * FROM spot_swing_executions
+                WHERE swing_id IN ({placeholders})
+                ORDER BY swing_id ASC, executed_at_ms ASC, rowid ASC
+                """,
+                chunk,
+            ).fetchall()
+            for row in rows:
+                execution = _spot_swing_execution_from_row(row)
+                executions_by_swing[str(execution["swing_id"])].append(execution)
+    return executions_by_swing
+
+
 def _refresh_spot_swing_lifecycle(connection: sqlite3.Connection, swing_id: str) -> None:
     swing_row = connection.execute("SELECT * FROM spot_swings WHERE swing_id = ?", (swing_id,)).fetchone()
     if swing_row is None:

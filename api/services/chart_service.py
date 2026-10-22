@@ -8,6 +8,8 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from bisect import bisect_right
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -55,6 +57,21 @@ STRATEGY_BB_PERIOD = 20
 STRATEGY_BB_STD_MULT = 2.0
 DEFAULT_STRATEGY_MEDIUM_INTERVAL = "1h"
 DEFAULT_STRATEGY_BIG_INTERVAL = "4h"
+DATASET_INDEX_STRIDE = 2048
+
+
+@dataclass(frozen=True)
+class _DatasetIndex:
+    mtime_ns: int
+    size: int
+    fieldnames: tuple[str, ...]
+    open_time_key: str
+    samples: tuple[tuple[int, int], ...]
+    last_ts_ms: int | None
+    is_time_sorted: bool
+
+
+_DATASET_INDEX_CACHE: dict[Path, _DatasetIndex] = {}
 
 
 def _project_root() -> Path:
@@ -201,35 +218,145 @@ def _resolve_dataset_file_path() -> tuple[Path | None, list[str]]:
     return None, warnings
 
 
-def _read_dataset_rows(dataset_path: Path, symbol: str) -> tuple[list[dict[str, Any]], list[str]]:
+def _dataset_row_from_bytes(line: bytes, fieldnames: tuple[str, ...]) -> dict[str, str] | None:
+    try:
+        values = next(csv.reader([line.decode("utf-8")]))
+    except (UnicodeDecodeError, csv.Error, StopIteration):
+        return None
+    return dict(zip(fieldnames, values))
+
+
+def _dataset_time_from_bytes(
+    line: bytes,
+    *,
+    fieldnames: tuple[str, ...],
+    open_time_key: str,
+) -> int | None:
+    if fieldnames and fieldnames[0] == open_time_key:
+        raw_time = line.split(b",", 1)[0].decode("utf-8", errors="ignore").strip().strip('"')
+        return _parse_time_to_ms(raw_time)
+    row = _dataset_row_from_bytes(line, fieldnames)
+    return _parse_time_to_ms(row.get(open_time_key)) if row is not None else None
+
+
+def _dataset_index(dataset_path: Path) -> tuple[_DatasetIndex | None, list[str]]:
+    warnings: list[str] = []
+    try:
+        stat = dataset_path.stat()
+    except OSError as exc:
+        return None, [f"Failed to inspect dataset file {dataset_path}: {exc}"]
+
+    cache_key = dataset_path.resolve()
+    cached = _DATASET_INDEX_CACHE.get(cache_key)
+    if cached is not None and cached.mtime_ns == stat.st_mtime_ns and cached.size == stat.st_size:
+        return cached, warnings
+
+    try:
+        with dataset_path.open("rb") as file_obj:
+            header_line = file_obj.readline()
+            try:
+                fieldnames = tuple(next(csv.reader([header_line.decode("utf-8-sig")])))
+            except (UnicodeDecodeError, csv.Error, StopIteration):
+                return None, [f"Dataset CSV has an invalid header: {dataset_path}"]
+            open_time_key = next(
+                (key for key in ("open_time", "time", "timestamp") if key in fieldnames),
+                None,
+            )
+            if open_time_key is None:
+                return None, [f"Dataset CSV missing time column (open_time/time/timestamp): {dataset_path}"]
+
+            samples: list[tuple[int, int]] = []
+            last_line: bytes | None = None
+            row_index = 0
+            while True:
+                offset = file_obj.tell()
+                line = file_obj.readline()
+                if not line:
+                    break
+                if line.strip():
+                    last_line = line
+                if row_index % DATASET_INDEX_STRIDE == 0:
+                    ts_ms = _dataset_time_from_bytes(
+                        line,
+                        fieldnames=fieldnames,
+                        open_time_key=open_time_key,
+                    )
+                    if ts_ms is not None:
+                        samples.append((ts_ms, offset))
+                row_index += 1
+
+            last_ts_ms = (
+                _dataset_time_from_bytes(
+                    last_line,
+                    fieldnames=fieldnames,
+                    open_time_key=open_time_key,
+                )
+                if last_line is not None
+                else None
+            )
+    except OSError as exc:
+        return None, [f"Failed to read dataset file {dataset_path}: {exc}"]
+
+    sample_times = [sample[0] for sample in samples]
+    is_time_sorted = all(left <= right for left, right in zip(sample_times, sample_times[1:]))
+    if sample_times and last_ts_ms is not None and last_ts_ms < sample_times[-1]:
+        is_time_sorted = False
+    index = _DatasetIndex(
+        mtime_ns=stat.st_mtime_ns,
+        size=stat.st_size,
+        fieldnames=fieldnames,
+        open_time_key=open_time_key,
+        samples=tuple(samples),
+        last_ts_ms=last_ts_ms,
+        is_time_sorted=is_time_sorted,
+    )
+    _DATASET_INDEX_CACHE.clear()
+    _DATASET_INDEX_CACHE[cache_key] = index
+    return index, warnings
+
+
+def _read_dataset_rows(
+    dataset_path: Path,
+    symbol: str,
+    *,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
     rows: list[dict[str, Any]] = []
 
+    index, index_warnings = _dataset_index(dataset_path)
+    warnings.extend(index_warnings)
+    if index is None:
+        return [], warnings
+
+    start_offset = 0
+    if start_ms is not None and index.samples and index.is_time_sorted:
+        sample_times = [sample[0] for sample in index.samples]
+        sample_index = max(0, bisect_right(sample_times, start_ms) - 1)
+        start_offset = index.samples[sample_index][1]
+
     try:
-        with dataset_path.open("r", encoding="utf-8", newline="") as file_obj:
-            reader = csv.DictReader(file_obj)
-            if not reader.fieldnames:
-                warnings.append(f"Dataset CSV has no header: {dataset_path}")
-                return [], warnings
+        with dataset_path.open("rb") as file_obj:
+            file_obj.seek(start_offset)
+            if start_offset == 0:
+                file_obj.readline()
+            symbol_key = "symbol" if "symbol" in index.fieldnames else None
 
-            open_time_key = None
-            for key in ("open_time", "time", "timestamp"):
-                if key in reader.fieldnames:
-                    open_time_key = key
+            for line in file_obj:
+                raw = _dataset_row_from_bytes(line, index.fieldnames)
+                if raw is None:
+                    continue
+                ts_ms = _parse_time_to_ms(raw.get(index.open_time_key))
+                if ts_ms is not None and start_ms is not None and ts_ms < start_ms:
+                    continue
+                if ts_ms is not None and end_ms is not None and ts_ms > end_ms and index.is_time_sorted:
                     break
-            if open_time_key is None:
-                warnings.append(f"Dataset CSV missing time column (open_time/time/timestamp): {dataset_path}")
-                return [], warnings
-
-            symbol_key = "symbol" if "symbol" in reader.fieldnames else None
-
-            for raw in reader:
                 if symbol_key is not None:
                     csv_symbol = str(raw.get(symbol_key, "")).strip().upper()
                     if csv_symbol and csv_symbol != symbol:
                         continue
 
-                ts_ms = _parse_time_to_ms(raw.get(open_time_key))
                 open_price = _to_float(raw.get("open"))
                 high_price = _to_float(raw.get("high"))
                 low_price = _to_float(raw.get("low"))
@@ -294,6 +421,43 @@ def _read_dataset_rows(dataset_path: Path, symbol: str) -> tuple[list[dict[str, 
             deduped = deduped[trim_index:]
 
     return deduped, warnings
+
+
+def _last_dataset_timestamp_for_symbol(
+    dataset_path: Path,
+    index: _DatasetIndex,
+    symbol: str,
+) -> int | None:
+    if "symbol" not in index.fieldnames:
+        return index.last_ts_ms
+
+    offsets = [sample[1] for sample in index.samples]
+    if not offsets:
+        offsets = [0]
+    try:
+        with dataset_path.open("rb") as file_obj:
+            for sample_index in range(len(offsets) - 1, -1, -1):
+                start_offset = offsets[sample_index]
+                end_offset = offsets[sample_index + 1] if sample_index + 1 < len(offsets) else index.size
+                file_obj.seek(start_offset)
+                if start_offset == 0:
+                    file_obj.readline()
+                latest: int | None = None
+                while file_obj.tell() < end_offset:
+                    line = file_obj.readline()
+                    if not line:
+                        break
+                    raw = _dataset_row_from_bytes(line, index.fieldnames)
+                    if raw is None or str(raw.get("symbol", "")).strip().upper() != symbol:
+                        continue
+                    ts_ms = _parse_time_to_ms(raw.get(index.open_time_key))
+                    if ts_ms is not None:
+                        latest = ts_ms
+                if latest is not None:
+                    return latest
+    except OSError:
+        return None
+    return None
 
 
 def _aggregate_rows(rows: list[dict[str, Any]], interval_ms: int) -> list[dict[str, Any]]:
@@ -395,18 +559,39 @@ def _fetch_candles_from_dataset(
     if dataset_path is None:
         return [], warnings
 
-    rows, row_warnings = _read_dataset_rows(dataset_path=dataset_path, symbol=symbol)
+    index, index_warnings = _dataset_index(dataset_path)
+    warnings.extend(index_warnings)
+    if index is None or index.last_ts_ms is None:
+        return [], warnings
+
+    interval_ms = _parse_interval_to_ms(interval)
+    if index.is_time_sorted:
+        dataset_end_ms = _last_dataset_timestamp_for_symbol(dataset_path, index, symbol)
+        if dataset_end_ms is None:
+            return [], warnings
+        effective_end_ms = end_ms if end_ms is not None else dataset_end_ms
+        effective_start_ms = max(0, effective_end_ms - period_ms)
+        rows, row_warnings = _read_dataset_rows(
+            dataset_path=dataset_path,
+            symbol=symbol,
+            start_ms=effective_start_ms,
+            end_ms=effective_end_ms,
+        )
+    else:
+        # Preserve support for legacy datasets that are not globally time ordered.
+        rows, row_warnings = _read_dataset_rows(dataset_path=dataset_path, symbol=symbol)
+        if not rows:
+            warnings.extend(row_warnings)
+            return [], warnings
+        effective_end_ms = end_ms if end_ms is not None else int(rows[-1]["ts_ms"])
+        effective_start_ms = max(0, effective_end_ms - period_ms)
     warnings.extend(row_warnings)
     if not rows:
         return [], warnings
 
-    interval_ms = _parse_interval_to_ms(interval)
     if interval_ms > _INTERVAL_TO_MS["1m"]:
         rows = _aggregate_rows(rows=rows, interval_ms=interval_ms)
 
-    last_ts_ms = int(rows[-1]["ts_ms"])
-    effective_end_ms = end_ms if end_ms is not None else last_ts_ms
-    effective_start_ms = max(0, effective_end_ms - period_ms)
     ranged = [row for row in rows if effective_start_ms <= int(row["ts_ms"]) <= effective_end_ms]
 
     if not ranged:
