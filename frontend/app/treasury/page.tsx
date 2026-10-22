@@ -3360,12 +3360,6 @@ export default function TreasuryPage(): JSX.Element {
                     </span>
                     <span className="treasury-summary-bargains-components">
                       <span>
-                        <small className="treasury-summary-bargain-icon" role="img" aria-label="Closed Bargains cash">💵</small>
-                        <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
-                          {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
-                        </strong>
-                      </span>
-                      <span>
                         <small className="treasury-summary-bargain-icon" role="img" aria-label="Closed Bargains asset">🪙</small>
                         <strong className={signedToneClass(summary?.closed_bargain_asset_mark, "")}>
                           {formatSignedCurrency(summary?.closed_bargain_asset_mark ?? 0)}
@@ -3375,6 +3369,12 @@ export default function TreasuryPage(): JSX.Element {
                         <small className="treasury-summary-bargain-icon" role="img" aria-label="Accumulation">💰</small>
                         <strong className={signedToneClass(summary?.reserve_deployment_pnl, "")}>
                           {formatSignedCurrency(summary?.reserve_deployment_pnl ?? 0)}
+                        </strong>
+                      </span>
+                      <span>
+                        <small className="treasury-summary-bargain-icon" role="img" aria-label="Closed Bargains cash">💵</small>
+                        <strong className={signedToneClass(summary?.realized_bargain_cash_gain, "")}>
+                          {formatSignedCurrency(summary?.realized_bargain_cash_gain ?? 0)}
                         </strong>
                       </span>
                       <span>
