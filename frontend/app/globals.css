@@ -3104,21 +3104,15 @@ button.treasury-summary-card-swings:focus-visible,
   fill: rgba(83, 144, 211, 0.24);
 }
 
-.treasury-bargain-flow-chart .treasury-bargain-open-line,
 .treasury-bargain-flow-chart .treasury-bargain-closed-line,
 .treasury-bargain-flow-chart .treasury-bargain-total-line {
   fill: none;
   vector-effect: non-scaling-stroke;
 }
 
-.treasury-bargain-flow-chart .treasury-bargain-open-line {
-  stroke: #579ee8;
-  stroke-width: 3;
-}
-
 .treasury-bargain-flow-chart .treasury-bargain-closed-line {
   stroke: #31bd8c;
-  stroke-width: 3;
+  stroke-width: 2;
 }
 
 .treasury-bargain-flow-chart .treasury-bargain-total-line {
@@ -3129,16 +3123,6 @@ button.treasury-summary-card-swings:focus-visible,
 .treasury-bargain-flow-chart .treasury-bargain-total-point {
   fill: #0b1017;
   stroke: #dcb449;
-}
-
-.treasury-bargain-flow-chart .treasury-bargain-open-point {
-  fill: #0b1017;
-  stroke: #579ee8;
-}
-
-.treasury-bargain-flow-chart .treasury-bargain-closed-point {
-  fill: #0b1017;
-  stroke: #31bd8c;
 }
 
 .treasury-timeline-series > footer.treasury-bargain-flow-legend {
@@ -3444,7 +3428,13 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-holding-lines {
   display: grid;
-  grid-template-columns: 1.32fr 0.82fr 0.82fr 0.94fr 1.02fr 1.55fr;
+  grid-template-columns:
+    minmax(max-content, 1.32fr)
+    minmax(max-content, 0.82fr)
+    minmax(max-content, 0.82fr)
+    minmax(max-content, 0.94fr)
+    max-content
+    minmax(max-content, 1.55fr);
   gap: 0;
   min-width: 0;
 }
@@ -5685,6 +5675,18 @@ body.logs-page-active .logs-page-panel .log-box {
   .treasury-rolling-change {
     padding-left: 0.18rem;
     font-size: 0.74rem;
+  }
+}
+
+@media (min-width: 961px) {
+  .treasury-holding-lines {
+    grid-template-columns:
+      minmax(max-content, 1.32fr)
+      minmax(max-content, 0.82fr)
+      minmax(max-content, 0.82fr)
+      minmax(max-content, 0.94fr)
+      max-content
+      minmax(max-content, 1.55fr);
   }
 }
 
