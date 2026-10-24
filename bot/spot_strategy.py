@@ -9,6 +9,7 @@ from typing import Any
 from api.services.portfolio_service import create_strategy_spot_order_intent, load_portfolio_snapshot
 from bot.spot_execution import SpotOrderExecutor, SpotOrderValidationError
 from core.runtime_db import (
+    complete_spot_accumulation_campaign_level,
     complete_spot_strategy_campaign_level,
     create_spot_swing,
     ensure_spot_strategy_action,
@@ -19,8 +20,10 @@ from core.runtime_db import (
     load_spot_order_intent,
     load_spot_strategy_campaign,
     load_spot_swing,
+    reconcile_spot_accumulation_campaign_progress,
     reconcile_spot_strategy_campaign_progress,
     reserve_spot_order_intent,
+    sync_spot_accumulation_campaign,
     sync_spot_strategy_campaign,
     update_spot_order_intent,
     update_spot_strategy_action,
@@ -144,6 +147,17 @@ class ProgressiveSpotSwingExecutor:
             signal_at_ms=signal_at_ms,
             path=self.db_path,
         )
+        campaign = sync_spot_accumulation_campaign(
+            account_key=self.account_key,
+            asset_symbol=asset,
+            quote_symbol=quote,
+            rolling_change_pct=float(signal.get("rolling_change_pct") or 0.0),
+            accumulation_level=int(
+                signal.get("accumulation_level", signal.get("level")) or 0
+            ),
+            signal_at_ms=signal_at_ms,
+            path=self.db_path,
+        )
         if execution_phase is not None:
             if batch_key not in self._batch_reconciliation_results:
                 self._batch_reconciliation_results[batch_key] = self._reconcile_actions(
@@ -175,6 +189,14 @@ class ProgressiveSpotSwingExecutor:
                 reconciled_campaign.get("highest_completed_level"),
             )
         campaign = reconciled_campaign or campaign
+        reconciled_accumulation = reconcile_spot_accumulation_campaign_progress(
+            account_key=self.account_key,
+            asset_symbol=asset,
+            quote_symbol=quote,
+            campaign_id=str(campaign.get("accumulation_campaign_id") or ""),
+            path=self.db_path,
+        )
+        campaign = reconciled_accumulation or campaign
 
         holding, available_quote, free_quote_reserve, available_accumulation_quote = (
             self._load_execution_context(asset, quote, refresh=not use_batch_context)
@@ -284,10 +306,19 @@ class ProgressiveSpotSwingExecutor:
         campaign: dict[str, Any],
         decision: dict[str, Any],
     ) -> dict[str, Any]:
-        campaign_id = str(campaign.get("campaign_id") or "")
-        quantity = float(decision["requested_quantity"])
         action_type = str(decision["action_type"])
-        action_key = f"{action_type}:{campaign_id}:level:{level}"
+        signal_level = int(decision.get("signal_level") or level)
+        campaign_id = str(
+            (
+                campaign.get("accumulation_campaign_id")
+                if action_type == "accumulate_asset"
+                else campaign.get("campaign_id")
+            )
+            or ""
+        )
+        quantity = float(decision["requested_quantity"])
+        action_side = str(decision.get("side") or opportunity)
+        action_key = f"{action_type}:{campaign_id}:level:{signal_level}"
         swing_id = f"swing-{_stable_key(action_key)[:24]}" if action_type == "open" else None
         reason = decision["reason"]
         action = ensure_spot_strategy_action(
@@ -298,8 +329,8 @@ class ProgressiveSpotSwingExecutor:
                 "quote_symbol": quote,
                 "campaign_id": campaign_id,
                 "action_type": action_type,
-                "side": opportunity,
-                "signal_level": level,
+                "side": action_side,
+                "signal_level": signal_level,
                 "swing_id": swing_id,
                 "requested_quantity": quantity,
                 "reason": reason,
@@ -319,7 +350,7 @@ class ProgressiveSpotSwingExecutor:
                     "account_key": self.account_key,
                     "asset_symbol": asset,
                     "quote_symbol": quote,
-                    "origin_side": opportunity,
+                    "origin_side": action_side,
                     "trading_objective": signal.get("trading_objective"),
                     "planned_quantity": quantity,
                     "reference_state": {
@@ -327,7 +358,7 @@ class ProgressiveSpotSwingExecutor:
                         "signal_price": current_price,
                         "signal_at_ms": signal_at_ms,
                         "campaign_id": campaign_id,
-                        "signal_level": level,
+                        "signal_level": signal_level,
                     },
                     "strategy_reason": reason,
                     "source": "strategy",
@@ -654,7 +685,7 @@ class ProgressiveSpotSwingExecutor:
         intent = load_spot_order_intent(action.get("intent_id"), path=self.db_path) if action.get("intent_id") else None
         completed_at_ms = int(intent["updated_at_ms"]) if intent is not None else int(action["updated_at_ms"])
         if (
-            action["action_type"] in {"open", "accumulate_asset", "campaign_only"}
+            action["action_type"] in {"open", "campaign_only"}
             and action.get("campaign_id")
             and action.get("signal_level")
         ):
@@ -677,6 +708,25 @@ class ProgressiveSpotSwingExecutor:
                 consumed_quantity=consumed_quantity,
                 opening_price=opening_price,
                 action_key=action["action_key"] if consumed_quantity > 0 else None,
+                path=self.db_path,
+            )
+        elif (
+            action["action_type"] == "accumulate_asset"
+            and action.get("campaign_id")
+            and action.get("signal_level")
+        ):
+            opening_price = (
+                float(intent.get("average_price"))
+                if intent is not None and intent.get("average_price") is not None
+                else None
+            )
+            complete_spot_accumulation_campaign_level(
+                account_key=action["account_key"],
+                asset_symbol=action["asset_symbol"],
+                quote_symbol=action["quote_symbol"],
+                campaign_id=action["campaign_id"],
+                signal_level=int(action["signal_level"]),
+                opening_price=opening_price,
                 path=self.db_path,
             )
         updated = update_spot_strategy_action(

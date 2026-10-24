@@ -315,6 +315,11 @@ def load_spot_backtest_scenario(
         signal=SpotSignalConfig(
             levels_pct=levels_pct_override or tuple(signal_payload.get("levels_pct", (5, 8, 12, 18))),
             base_tranches_pct=tuple(signal_payload.get("base_tranches_pct", (10, 20, 30, 40))),
+            accumulation_levels_pct=(
+                tuple(signal_payload["accumulation_levels_pct"])
+                if signal_payload.get("accumulation_levels_pct") is not None
+                else None
+            ),
             accumulation_tranches_pct=(
                 tuple(signal_payload["accumulation_tranches_pct"])
                 if signal_payload.get("accumulation_tranches_pct") is not None
@@ -458,6 +463,7 @@ def export_current_treasury_scenario(
                 "signal": {
                     "levels_pct": [5, 8, 12, 18],
                     "base_tranches_pct": [10, 20, 30, 40],
+                    "accumulation_levels_pct": [5, 8, 12, 18],
                     "accumulation_tranches_pct": [1, 3, 5, 10],
                 },
                 "progression": {

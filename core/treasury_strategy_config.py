@@ -12,7 +12,13 @@ from core.spot_waiter_cleanup import AgingCleanupRule, WaiterCleanupConfig
 
 
 _TREASURY_KEYS = {"signal_refresh_seconds", "signal", "progression", "waiter_cleanup"}
-_SIGNAL_KEYS = {"levels_pct", "base_tranches_pct", "accumulation_tranches_pct"}
+_SIGNAL_KEYS = {
+    "levels_pct",
+    "base_tranches_pct",
+    "accumulation_levels_pct",
+    "accumulation_tranches_pct",
+}
+_SIGNAL_REQUIRED_KEYS = {"levels_pct", "base_tranches_pct", "accumulation_tranches_pct"}
 _PROGRESSION_KEYS = {
     "close_profit_pct",
     "campaign_capacity_pct",
@@ -90,6 +96,7 @@ class TreasuryStrategyConfig:
             "signal": {
                 "levels_pct": list(self.signal.levels_pct),
                 "base_tranches_pct": list(self.signal.base_tranches_pct),
+                "accumulation_levels_pct": list(self.signal.accumulation_levels_pct),
                 "accumulation_tranches_pct": list(self.signal.accumulation_tranches_pct),
             },
             "progression": {
@@ -131,7 +138,7 @@ def treasury_strategy_config_from_mapping(payload: Any) -> TreasuryStrategyConfi
     _reject_unknown(signal, _SIGNAL_KEYS, field="treasury.signal")
     _reject_unknown(progression, _PROGRESSION_KEYS, field="treasury.progression")
     _reject_unknown(cleanup, _CLEANUP_KEYS, field="treasury.waiter_cleanup")
-    _require(signal, _SIGNAL_KEYS, field="treasury.signal")
+    _require(signal, _SIGNAL_REQUIRED_KEYS, field="treasury.signal")
     _require(progression, _PROGRESSION_KEYS, field="treasury.progression")
     _require(cleanup, _CLEANUP_KEYS, field="treasury.waiter_cleanup")
 
@@ -170,6 +177,14 @@ def treasury_strategy_config_from_mapping(payload: Any) -> TreasuryStrategyConfi
             base_tranches_pct=_series(
                 signal["base_tranches_pct"],
                 field="treasury.signal.base_tranches_pct",
+            ),
+            accumulation_levels_pct=(
+                _series(
+                    signal["accumulation_levels_pct"],
+                    field="treasury.signal.accumulation_levels_pct",
+                )
+                if signal.get("accumulation_levels_pct") is not None
+                else None
             ),
             accumulation_tranches_pct=_series(
                 signal["accumulation_tranches_pct"],

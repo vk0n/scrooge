@@ -3028,6 +3028,10 @@ button.treasury-summary-card-swings:focus-visible,
   transform: rotateY(180deg);
 }
 
+.treasury-timeline-flip-all .treasury-timeline-flip-inner {
+  transform: rotateY(180deg);
+}
+
 .treasury-timeline-flip-face {
   grid-area: 1 / 1;
   min-width: 0;
@@ -3424,7 +3428,7 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-holding-lines {
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr 0.82fr 0.82fr 0.92fr 1.7fr;
+  grid-template-columns: 1.12fr 0.82fr 0.82fr 0.94fr 1.22fr 1.55fr;
   gap: 0;
   min-width: 0;
 }
@@ -3450,6 +3454,12 @@ button.treasury-summary-card-swings:focus-visible,
   font-weight: 500;
   text-align: left;
   white-space: nowrap;
+}
+
+.treasury-holding-lines strong.treasury-open-bargains-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.32rem;
 }
 
 .treasury-rolling-change {
@@ -5590,7 +5600,7 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-holding-lines {
-    grid-template-columns: 1.05fr 0.95fr 0.85fr 0.85fr 0.95fr 1.62fr;
+    grid-template-columns: 1.12fr 0.82fr 0.82fr 0.94fr 1.24fr 1.5fr;
   }
 
   .treasury-holding-lines > span {
@@ -5621,7 +5631,7 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-holding-lines {
-    grid-template-columns: 1.02fr 0.92fr 0.8fr 0.8fr 0.88fr 1.88fr;
+    grid-template-columns: 1.08fr 0.78fr 0.78fr 0.9fr 1.3fr 1.58fr;
   }
 
   .treasury-holding-lines > span {

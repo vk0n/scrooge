@@ -15,6 +15,7 @@ def treasury_rules() -> dict:
         "signal": {
             "levels_pct": [2, 3, 4, 6],
             "base_tranches_pct": [10, 20, 30, 40],
+            "accumulation_levels_pct": [4, 6, 8, 12],
             "accumulation_tranches_pct": [1, 3, 5, 10],
         },
         "progression": {
@@ -45,6 +46,7 @@ class TreasuryStrategyConfigTests(unittest.TestCase):
         config = treasury_strategy_config_from_mapping(treasury_rules())
 
         self.assertEqual(config.signal.levels_pct, (2.0, 3.0, 4.0, 6.0))
+        self.assertEqual(config.signal.accumulation_levels_pct, (4.0, 6.0, 8.0, 12.0))
         self.assertEqual(config.signal.accumulation_tranches_pct, (1.0, 3.0, 5.0, 10.0))
         self.assertEqual(config.progression.close_profit_pct, 4.0)
         self.assertEqual(config.progression.estimated_fee_rate, 0.001)
@@ -76,6 +78,14 @@ class TreasuryStrategyConfigTests(unittest.TestCase):
         invalid_loss["waiter_cleanup"]["deep_loss"]["unrealized_pnl_pct"] = 5
         with self.assertRaisesRegex(ValueError, "zero or negative"):
             treasury_strategy_config_from_mapping(invalid_loss)
+
+    def test_old_rules_fall_back_to_bargain_levels_for_accumulation(self):
+        rules = treasury_rules()
+        del rules["signal"]["accumulation_levels_pct"]
+
+        config = treasury_strategy_config_from_mapping(rules)
+
+        self.assertEqual(config.signal.accumulation_levels_pct, config.signal.levels_pct)
 
     def test_rejects_coerced_boolean_and_fractional_level(self):
         invalid_boolean = treasury_rules()

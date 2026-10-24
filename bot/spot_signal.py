@@ -196,6 +196,7 @@ class RollingSpotSignalMonitor:
             saved["level"],
             saved["strategy_eligible"],
             saved["eligibility_reason"],
+            saved.get("accumulation_level"),
             saved.get("accumulation_tranche_pct"),
         )
         if self._last_errors.pop(key, None) is not None:
@@ -203,7 +204,7 @@ class RollingSpotSignalMonitor:
         if self._last_states.get(key) != state:
             self.logger.info(
                 "spot_signal_changed symbol=%s opportunity=%s level=%s change_pct=%.4f "
-                "base_tranche_pct=%.2f accumulation_tranche_pct=%.2f "
+                "base_tranche_pct=%.2f accumulation_level=%s accumulation_tranche_pct=%.2f "
                 "final_tranche_pct=%.2f "
                 "strategy_eligible=%s eligibility_reason=%s",
                 market_symbol,
@@ -211,6 +212,7 @@ class RollingSpotSignalMonitor:
                 saved["level"],
                 saved["rolling_change_pct"],
                 saved["base_tranche_pct"],
+                saved.get("accumulation_level") or 0,
                 saved.get("accumulation_tranche_pct") or 0.0,
                 saved["final_tranche_pct"],
                 saved["strategy_eligible"],

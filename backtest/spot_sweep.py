@@ -34,6 +34,7 @@ from core.spot_waiter_cleanup import AgingCleanupRule
 class SpotSweepVariant:
     name: str
     levels_pct: tuple[float, ...]
+    accumulation_levels_pct: tuple[float, ...]
     accumulate_asset_pct: float | None
     minimum_holding_pct: float | None
     close_profit_pct: float
@@ -130,10 +131,13 @@ def load_spot_sweep_config(
 
     variants: list[SpotSweepVariant] = []
     raw_levels_variants = payload.get("levels_pct")
+    raw_accumulation_levels_variants = payload.get("accumulation_levels_pct")
     parameter_grid_raw = payload.get("parameter_grid")
     if parameter_grid_raw is None:
-        if not isinstance(raw_levels_variants, list) or not raw_levels_variants:
-            raise ValueError("spot_sweep.levels_pct must contain at least one level combination.")
+        if raw_levels_variants is None and raw_accumulation_levels_variants is None:
+            raise ValueError(
+                "spot_sweep must contain levels_pct or accumulation_levels_pct combinations."
+            )
         parameter_grid: dict[str, Any] = {}
     else:
         parameter_grid = _required_mapping(
@@ -142,6 +146,7 @@ def load_spot_sweep_config(
         )
         supported = {
             "levels_pct",
+            "accumulation_levels_pct",
             "accumulate_asset_pct",
             "minimum_holding_pct",
             "close_profit_pct",
@@ -160,6 +165,11 @@ def load_spot_sweep_config(
             raise ValueError(f"Unsupported Spot sweep parameters: {', '.join(unknown)}.")
         if raw_levels_variants is None and parameter_grid.get("levels_pct") is not None:
             raw_levels_variants = parameter_grid["levels_pct"]
+        if (
+            raw_accumulation_levels_variants is None
+            and parameter_grid.get("accumulation_levels_pct") is not None
+        ):
+            raw_accumulation_levels_variants = parameter_grid["accumulation_levels_pct"]
 
     level_options: list[tuple[float, ...]] = []
     if raw_levels_variants is None:
@@ -177,6 +187,31 @@ def load_spot_sweep_config(
                 accumulation_tranches_pct=scenario.signal.accumulation_tranches_pct,
             )
             level_options.append(levels)
+
+    accumulation_level_options: list[tuple[float, ...]] = []
+    if raw_accumulation_levels_variants is None:
+        accumulation_level_options.append(tuple(scenario.signal.accumulation_levels_pct))
+    else:
+        if (
+            not isinstance(raw_accumulation_levels_variants, list)
+            or not raw_accumulation_levels_variants
+        ):
+            raise ValueError(
+                "spot_sweep.accumulation_levels_pct must contain at least one level combination."
+            )
+        for index, raw_levels in enumerate(raw_accumulation_levels_variants):
+            if not isinstance(raw_levels, list):
+                raise ValueError(
+                    f"spot_sweep.accumulation_levels_pct[{index}] must be a list."
+                )
+            accumulation_levels = tuple(float(value) for value in raw_levels)
+            SpotSignalConfig(
+                levels_pct=scenario.signal.levels_pct,
+                base_tranches_pct=scenario.signal.base_tranches_pct,
+                accumulation_levels_pct=accumulation_levels,
+                accumulation_tranches_pct=scenario.signal.accumulation_tranches_pct,
+            )
+            accumulation_level_options.append(accumulation_levels)
 
     def grid_values(key: str, baseline: float) -> list[float]:
         raw_values = parameter_grid.get(key)
@@ -231,6 +266,7 @@ def load_spot_sweep_config(
     parameter_sweep = parameter_grid_raw is not None
     for (
         levels,
+        accumulation_levels,
         accumulate_asset_pct,
         minimum_holding_pct,
         close_profit,
@@ -245,6 +281,7 @@ def load_spot_sweep_config(
         capacity_age,
     ) in product(
         level_options,
+        accumulation_level_options,
         accumulate_asset_options,
         minimum_holding_options,
         close_profit_options,
@@ -286,6 +323,7 @@ def load_spot_sweep_config(
             raise ValueError("Spot free cash retention must be in the range [0, 100].")
         key = (
             levels,
+            accumulation_levels,
             accumulate_asset_pct,
             minimum_holding_pct,
             close_profit,
@@ -324,18 +362,24 @@ def load_spot_sweep_config(
                 optional_name_parts.append(f"{label}-{_format_level(value)}")
         if optional_name_parts:
             parameter_name = f"{parameter_name}-{'-'.join(optional_name_parts)}"
+        accumulation_name = f"acc-{'-'.join(_format_level(value) for value in accumulation_levels)}"
         if parameter_sweep:
-            name = (
-                parameter_name
-                if len(level_options) == 1
-                else f"{_variant_name(levels)}-{parameter_name}"
-            )
+            name_parts = []
+            if len(level_options) > 1:
+                name_parts.append(_variant_name(levels))
+            if len(accumulation_level_options) > 1:
+                name_parts.append(accumulation_name)
+            name_parts.append(parameter_name)
+            name = "-".join(name_parts)
         else:
             name = _variant_name(levels)
+            if len(accumulation_level_options) > 1:
+                name = f"{name}-{accumulation_name}"
         variants.append(
             SpotSweepVariant(
                 name=name,
                 levels_pct=levels,
+                accumulation_levels_pct=accumulation_levels,
                 accumulate_asset_pct=accumulate_asset_pct,
                 minimum_holding_pct=minimum_holding_pct,
                 close_profit_pct=close_profit,
@@ -403,7 +447,11 @@ def load_spot_sweep_config(
 
 
 def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) -> SpotBacktestScenario:
-    signal = replace(config.scenario.signal, levels_pct=variant.levels_pct)
+    signal = replace(
+        config.scenario.signal,
+        levels_pct=variant.levels_pct,
+        accumulation_levels_pct=variant.accumulation_levels_pct,
+    )
     assets = config.scenario.assets
     if variant.minimum_holding_pct is not None:
         assets = tuple(
@@ -457,6 +505,7 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
         "sweep_name": config.name,
         "sweep_config": str(config.config_path),
         "sweep_levels_pct": list(variant.levels_pct),
+        "sweep_accumulation_levels_pct": list(variant.accumulation_levels_pct),
         "sweep_accumulate_asset_pct": variant.accumulate_asset_pct,
         "sweep_objective_asset_order": list(config.objective_asset_order),
         "sweep_accumulate_asset_count": sum(
@@ -542,6 +591,7 @@ def _summary_row(
         "rank": None,
         "name": variant.name,
         "levels_pct": list(variant.levels_pct),
+        "accumulation_levels_pct": list(variant.accumulation_levels_pct),
         "accumulate_asset_pct": variant.accumulate_asset_pct,
         "accumulate_asset_count": sum(
             asset.trading_objective == "accumulate_asset" for asset in scenario.assets
@@ -644,11 +694,11 @@ def _comparison_html(payload: dict[str, Any]) -> str:
 :root{{--bg:#080c11;--panel:#111821;--line:#293647;--ink:#edf2f7;--muted:#8d9bad;--gold:#e8b84a;--green:#48d6a2;--red:#ff647f}}
 *{{box-sizing:border-box}}body{{margin:0;background:repeating-linear-gradient(135deg,#080c11,#080c11 12px,#0a0f15 12px,#0a0f15 24px);color:var(--ink);font:13px ui-monospace,SFMono-Regular,Menlo,monospace}}
 main{{width:min(1500px,calc(100% - 28px));margin:28px auto 60px}}header,.panel{{border:1px solid var(--line);border-radius:18px;background:rgba(17,24,33,.97)}}header{{padding:28px;background:linear-gradient(125deg,#351020,#111923);margin-bottom:18px}}h1{{margin:8px 0;font-size:34px}}p{{color:var(--muted)}}.eyebrow{{color:var(--gold);letter-spacing:.14em;text-transform:uppercase}}.panel{{padding:18px;overflow:auto}}table{{width:100%;border-collapse:collapse;min-width:1120px}}th,td{{padding:11px 10px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}}th{{color:var(--muted);font-weight:400;position:sticky;top:0;background:var(--panel)}}th:nth-child(2),td:nth-child(2){{text-align:left}}tr:first-child td{{color:var(--green);font-weight:700}}.positive{{color:var(--green)}}.negative{{color:var(--red)}}@media(max-width:700px){{h1{{font-size:26px}}}}
-</style></head><body><main><header><span class="eyebrow">Scrooge Research / Spot Parameter Sweep</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><table><thead><tr><th>Rank</th><th>Levels</th><th>Asset Policy Mix</th><th>Minimum Hold</th><th title="Gross favorable price move required to close a Bargain">Bargain Goal</th><th>Retention</th><th>Deep Loss</th><th>Edge</th><th>Edge pp</th><th>Final</th><th>Free Reserve</th><th>Weighted Effective Assets</th><th>Cleanup Lifecycle PnL</th><th>Inventory Deficit</th><th>Open</th><th>Oldest</th><th>Drawdown</th><th>Runtime</th></tr></thead><tbody id="rows"></tbody></table></section></main>
+</style></head><body><main><header><span class="eyebrow">Scrooge Research / Spot Parameter Sweep</span><h1 id="title"></h1><p id="meta"></p></header><section class="panel"><table><thead><tr><th>Rank</th><th>Bargain Levels</th><th>Accumulation Levels</th><th>Asset Policy Mix</th><th>Minimum Hold</th><th title="Gross favorable price move required to close a Bargain">Bargain Goal</th><th>Retention</th><th>Deep Loss</th><th>Edge</th><th>Edge pp</th><th>Final</th><th>Free Reserve</th><th>Weighted Effective Assets</th><th>Cleanup Lifecycle PnL</th><th>Inventory Deficit</th><th>Open</th><th>Oldest</th><th>Drawdown</th><th>Runtime</th></tr></thead><tbody id="rows"></tbody></table></section></main>
 <script id="data" type="application/json">{data}</script><script>
 const d=JSON.parse(document.getElementById('data').textContent),money=v=>`${{v<0?'-':''}}$${{Math.abs(v).toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}})}}`,pct=v=>`${{v>=0?'+':''}}${{v.toFixed(2)}}%`,tone=v=>v>0?'positive':v<0?'negative':'';
 document.getElementById('title').textContent=d.name;document.getElementById('meta').textContent=`${{d.start}} to ${{d.end}} | ${{d.completed}}/${{d.total}} completed`;
-document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td>${{r.accumulate_asset_pct===null?'Per asset':`${{pct(r.accumulate_asset_pct)}} (${{r.accumulate_asset_count}}/${{r.accumulate_asset_count+r.accumulate_cash_count}})`}}</td><td>${{r.minimum_holding_pct===null?'Per asset':pct(r.minimum_holding_pct)}}</td><td>${{pct(r.close_profit_pct)}}</td><td>${{pct(r.free_cash_retention_pct)}}</td><td>${{pct(r.unrealized_pnl_pct)}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · protected ${{money(r.retained_reserve_quote||0)}} · spendable ${{money(r.spendable_reserve_quote||0)}}</td><td>${{pct(r.weighted_effective_assets_pct)}}</td><td class="${{tone(r.cleanup_lifecycle_pnl)}}">${{money(r.cleanup_lifecycle_pnl)}}</td><td>${{money(r.cleanup_inventory_deficit_value)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
+document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(r=>`<tr><td>${{r.rank}}</td><td>${{r.levels_pct.join(' / ')}}</td><td>${{r.accumulation_levels_pct.join(' / ')}}</td><td>${{r.accumulate_asset_pct===null?'Per asset':`${{pct(r.accumulate_asset_pct)}} (${{r.accumulate_asset_count}}/${{r.accumulate_asset_count+r.accumulate_cash_count}})`}}</td><td>${{r.minimum_holding_pct===null?'Per asset':pct(r.minimum_holding_pct)}}</td><td>${{pct(r.close_profit_pct)}}</td><td>${{pct(r.free_cash_retention_pct)}}</td><td>${{pct(r.unrealized_pnl_pct)}}</td><td class="${{tone(r.difference_vs_hodl)}}">${{money(r.difference_vs_hodl)}}</td><td class="${{tone(r.edge_vs_hodl_pct_points)}}">${{pct(r.edge_vs_hodl_pct_points)}}</td><td>${{money(r.final_treasury_value)}}</td><td>${{money(r.free_reserve_quote)}} · protected ${{money(r.retained_reserve_quote||0)}} · spendable ${{money(r.spendable_reserve_quote||0)}}</td><td>${{pct(r.weighted_effective_assets_pct)}}</td><td class="${{tone(r.cleanup_lifecycle_pnl)}}">${{money(r.cleanup_lifecycle_pnl)}}</td><td>${{money(r.cleanup_inventory_deficit_value)}}</td><td>${{r.open_bargains}}</td><td>${{r.oldest_open_days.toFixed(1)}}d</td><td>${{pct(r.maximum_drawdown_pct)}}</td><td>${{(r.duration_seconds/60).toFixed(1)}}m</td></tr>`).join('');
 </script></body></html>"""
 
 
@@ -746,6 +796,7 @@ def _failed_row(
         "rank": None,
         "name": variant.name,
         "levels_pct": list(variant.levels_pct),
+        "accumulation_levels_pct": list(variant.accumulation_levels_pct),
         "minimum_holding_pct": variant.minimum_holding_pct,
         "status": "failed",
         "resumed": False,
@@ -940,6 +991,8 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  {variant.name}: levels "
                 f"{', '.join(f'{value:g}' for value in variant.levels_pct)}; "
+                f"accumulation levels "
+                f"{', '.join(f'{value:g}' for value in variant.accumulation_levels_pct)}; "
                 f"asset policy {asset_policy}; "
                 f"Bargain Goal {variant.close_profit_pct:g}% gross; "
                 f"retention {variant.free_cash_retention_pct:g}%; "

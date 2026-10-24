@@ -85,6 +85,14 @@ def transition_spot_strategy_campaign(
         "campaign_capacity_mode",
         "last_opening_price",
     )
+    accumulation_fields = (
+        "accumulation_campaign_id",
+        "accumulation_active",
+        "accumulation_highest_completed_level",
+        "accumulation_last_signal_level",
+        "accumulation_last_signal_at_ms",
+        "last_accumulation_opening_price",
+    )
     preserve_campaign = normalized_side == "hold" or prior_side == normalized_side
     return {
         "campaign_id": campaign_id,
@@ -97,6 +105,40 @@ def transition_spot_strategy_campaign(
             field: prior.get(field) if preserve_campaign else None
             for field in persistent_campaign_fields
         },
+        **{field: prior.get(field) for field in accumulation_fields},
+    }
+
+
+def transition_spot_accumulation_campaign(
+    previous: dict[str, Any] | None,
+    *,
+    rolling_change_pct: float,
+    accumulation_level: int,
+    signal_at_ms: int,
+    new_campaign_id: str,
+) -> dict[str, Any]:
+    """Advance the reserve-accumulation cycle independently of Bargain direction."""
+    prior = previous or {}
+    is_negative = float(rolling_change_pct) < 0.0
+    was_active = bool(prior.get("accumulation_active"))
+    if is_negative and not was_active:
+        campaign_id = str(new_campaign_id or "").strip()
+        if not campaign_id:
+            raise ValueError("A new Spot accumulation campaign requires a stable ID.")
+        highest_level = 0
+        last_opening_price = None
+    else:
+        campaign_id = prior.get("accumulation_campaign_id")
+        highest_level = int(prior.get("accumulation_highest_completed_level") or 0)
+        last_opening_price = prior.get("last_accumulation_opening_price")
+    return {
+        **prior,
+        "accumulation_campaign_id": campaign_id,
+        "accumulation_active": is_negative,
+        "accumulation_highest_completed_level": highest_level,
+        "accumulation_last_signal_level": max(0, int(accumulation_level)),
+        "accumulation_last_signal_at_ms": int(signal_at_ms),
+        "last_accumulation_opening_price": last_opening_price,
     }
 
 
@@ -137,10 +179,8 @@ def _with_missing_level_allocation(
     start = completed_level
     stop = reached_level
     allocated = dict(signal)
-    for series_key, tranche_key in (
-        ("base_tranches_pct", "base_tranche_pct"),
-        ("accumulation_tranches_pct", "accumulation_tranche_pct"),
-    ):
+    allocated["level"] = reached_level
+    for series_key, tranche_key in (("base_tranches_pct", "base_tranche_pct"),):
         series = signal.get(series_key)
         if not isinstance(series, (list, tuple)) or len(series) < stop:
             continue
@@ -149,8 +189,34 @@ def _with_missing_level_allocation(
         except (TypeError, ValueError):
             continue
         allocated[tranche_key] = tranche
-        if tranche_key == "base_tranche_pct":
-            allocated["final_tranche_pct"] = tranche
+        allocated["final_tranche_pct"] = tranche
+    return allocated
+
+
+def _with_missing_accumulation_allocation(
+    signal: dict[str, Any],
+    campaign: dict[str, Any],
+) -> dict[str, Any]:
+    reached_level = int(
+        signal.get("accumulation_level", signal.get("level")) or 0
+    )
+    completed_level = max(
+        0,
+        int(campaign.get("accumulation_highest_completed_level") or 0),
+    )
+    allocated = dict(signal)
+    allocated["level"] = reached_level
+    series = signal.get("accumulation_tranches_pct")
+    if reached_level <= completed_level or not isinstance(series, (list, tuple)):
+        return allocated
+    if len(series) < reached_level:
+        return allocated
+    try:
+        tranche = sum(float(value) for value in series[completed_level:reached_level])
+    except (TypeError, ValueError):
+        return allocated
+    allocated["accumulation_tranche_pct"] = tranche
+    allocated["final_tranche_pct"] = tranche
     return allocated
 
 
@@ -235,6 +301,7 @@ def plan_spot_strategy_action(
 
     opportunity = str(signal.get("opportunity") or "hold").strip().lower()
     level = int(signal.get("level") or 0)
+    objective = str(signal.get("trading_objective") or "").strip().lower()
     new_strategy_decision: dict[str, Any] | None = None
     opening_price_hold: dict[str, Any] | None = None
     if (
@@ -244,8 +311,7 @@ def plan_spot_strategy_action(
         and level > int(campaign.get("highest_completed_level") or 0)
     ):
         allocation_signal = _with_missing_level_allocation(signal, campaign)
-        objective = str(signal.get("trading_objective") or "").strip().lower()
-        if opportunity == "buy" and objective == "accumulate_cash":
+        if opportunity == "buy":
             new_strategy_decision = {
                 "action_type": "campaign_only",
                 "side": "buy",
@@ -253,66 +319,12 @@ def plan_spot_strategy_action(
                 "requested_quantity": 0.0,
                 "reason": {
                     "action_type": "campaign_only",
-                    "campaign_reason": "accumulate_cash_buy_signal",
+                    "campaign_reason": "bargain_buy_signal",
                     "signal": opportunity,
                     "signal_level": level,
                     "campaign_id": campaign.get("campaign_id"),
                 },
             }
-        elif opportunity == "buy" and objective == "accumulate_asset":
-            previous_opening_price = campaign.get("last_opening_price")
-            try:
-                previous_opening_price = (
-                    float(previous_opening_price)
-                    if previous_opening_price is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                previous_opening_price = None
-            if (
-                previous_opening_price is not None
-                and math.isfinite(previous_opening_price)
-                and current_price >= previous_opening_price
-            ):
-                opening_price_hold = {
-                    "action_type": "hold",
-                    "reason": {
-                        "action_type": "hold",
-                        "hold_reason": "accumulation_level_price_not_improved",
-                        "signal_level": level,
-                        "market_price": current_price,
-                        "previous_opening_price": previous_opening_price,
-                    },
-                }
-            else:
-                # Reserve deployment fails closed when a caller has not projected free reserve.
-                accumulation_quote = max(0.0, float(available_accumulation_quote or 0.0))
-                accumulation = plan_treasury_accumulation(
-                    allocation_signal,
-                    free_reserve_quote=accumulation_quote,
-                    current_price=current_price,
-                    config=resolved_config,
-                )
-                if accumulation.get("eligible"):
-                    new_strategy_decision = {
-                        "action_type": "accumulate_asset",
-                        "side": "buy",
-                        "signal_level": level,
-                        "requested_quantity": float(accumulation["quantity"]),
-                        "reason": {
-                            "action_type": "accumulate_asset",
-                            "signal": opportunity,
-                            "signal_level": level,
-                            "rolling_change_pct": signal.get("rolling_change_pct"),
-                            "base_tranche_pct": allocation_signal.get("base_tranche_pct"),
-                            "accumulation_tranche_pct": allocation_signal.get("accumulation_tranche_pct"),
-                            "final_tranche_pct": allocation_signal.get("final_tranche_pct"),
-                            "campaign_id": campaign.get("campaign_id"),
-                            "maximum_opening_price_exclusive": previous_opening_price,
-                            "free_reserve_quote": accumulation.get("free_reserve_quote"),
-                            "planned_quote_to_spend": accumulation.get("quote_to_spend"),
-                        },
-                    }
         elif opportunity == "sell":
             previous_opening_price = campaign.get("last_opening_price")
             try:
@@ -383,6 +395,82 @@ def plan_spot_strategy_action(
                             "requested_level_quantity": opening.get("requested_level_quantity"),
                         },
                     }
+
+    accumulation_level = int(
+        signal.get("accumulation_level", signal.get("level")) or 0
+    )
+    rolling_change_pct = float(signal.get("rolling_change_pct") or 0.0)
+    accumulation_active = bool(
+        campaign.get("accumulation_active", rolling_change_pct < 0.0)
+    )
+    accumulation_decision: dict[str, Any] | None = None
+    if (
+        new_strategy_decision is None
+        and bool(signal.get("strategy_eligible"))
+        and objective == "accumulate_asset"
+        and rolling_change_pct < 0.0
+        and accumulation_active
+        and accumulation_level
+        > int(campaign.get("accumulation_highest_completed_level") or 0)
+    ):
+        allocation_signal = _with_missing_accumulation_allocation(signal, campaign)
+        previous_opening_price = campaign.get("last_accumulation_opening_price")
+        try:
+            previous_opening_price = (
+                float(previous_opening_price)
+                if previous_opening_price is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            previous_opening_price = None
+        if (
+            previous_opening_price is not None
+            and math.isfinite(previous_opening_price)
+            and current_price >= previous_opening_price
+        ):
+            opening_price_hold = {
+                "action_type": "hold",
+                "reason": {
+                    "action_type": "hold",
+                    "hold_reason": "accumulation_level_price_not_improved",
+                    "signal_level": accumulation_level,
+                    "market_price": current_price,
+                    "previous_opening_price": previous_opening_price,
+                },
+            }
+        else:
+            accumulation_quote = max(0.0, float(available_accumulation_quote or 0.0))
+            accumulation = plan_treasury_accumulation(
+                allocation_signal,
+                free_reserve_quote=accumulation_quote,
+                current_price=current_price,
+                config=resolved_config,
+            )
+            if accumulation.get("eligible"):
+                accumulation_decision = {
+                    "action_type": "accumulate_asset",
+                    "side": "buy",
+                    "signal_level": accumulation_level,
+                    "requested_quantity": float(accumulation["quantity"]),
+                    "reason": {
+                        "action_type": "accumulate_asset",
+                        "signal": "accumulation",
+                        "signal_level": accumulation_level,
+                        "rolling_change_pct": signal.get("rolling_change_pct"),
+                        "accumulation_tranche_pct": allocation_signal.get("accumulation_tranche_pct"),
+                        "final_tranche_pct": allocation_signal.get("final_tranche_pct"),
+                        "campaign_id": (
+                            campaign.get("accumulation_campaign_id")
+                            or campaign.get("campaign_id")
+                        ),
+                        "maximum_opening_price_exclusive": previous_opening_price,
+                        "free_reserve_quote": accumulation.get("free_reserve_quote"),
+                        "planned_quote_to_spend": accumulation.get("quote_to_spend"),
+                    },
+                }
+
+    if new_strategy_decision is None:
+        new_strategy_decision = accumulation_decision
 
     at_capacity = (
         resolved_cleanup.enabled

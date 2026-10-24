@@ -156,6 +156,7 @@ type TreasuryRules = {
   signal: {
     levels_pct: number[];
     base_tranches_pct: number[];
+    accumulation_levels_pct?: number[];
     accumulation_tranches_pct: number[];
   };
   progression: {
@@ -229,6 +230,7 @@ type PortfolioHolding = {
   manual_realized_gain: number;
   manual_realized_cost_basis: number;
   performance_capital: number;
+  open_bargain_count: number;
   open_bargain_pnl: number;
   settled_quantity: number;
   effective_cost_basis: number;
@@ -839,7 +841,13 @@ function bargainOpenBand(coordinates: BargainTimelineCoordinate[]): string {
   return `${path} Z`;
 }
 
-function BargainFlowSeries({ timeline }: { timeline: PortfolioTimelinePoint[] }): JSX.Element {
+function BargainFlowSeries({
+  timeline,
+  rangeLabel,
+}: {
+  timeline: PortfolioTimelinePoint[];
+  rangeLabel: "7 days" | "All time";
+}): JSX.Element {
   const width = 600;
   const height = 150;
   const paddingX = 14;
@@ -865,10 +873,18 @@ function BargainFlowSeries({ timeline }: { timeline: PortfolioTimelinePoint[] })
 
   return (
     <div className="treasury-timeline-series treasury-bargain-flow-series">
-      <header><span>Bargain Flow</span></header>
+      <header>
+        <span>Bargain Flow</span>
+        <strong>{rangeLabel}</strong>
+      </header>
       <div className="treasury-timeline-chart treasury-bargain-flow-chart">
         {coordinates.length ? (
-          <svg viewBox="0 0 600 150" role="img" aria-label="Daily Open, Closed, and Total Bargain timeline" preserveAspectRatio="none">
+          <svg
+            viewBox="0 0 600 150"
+            role="img"
+            aria-label={`${rangeLabel} Open, Closed, and Total Bargain timeline`}
+            preserveAspectRatio="none"
+          >
             <line x1="0" y1="75" x2="600" y2="75" className="treasury-timeline-gridline" />
             <path d={closedArea} className="treasury-bargain-closed-area" />
             <path d={openArea} className="treasury-bargain-open-area" />
@@ -897,6 +913,41 @@ function BargainFlowSeries({ timeline }: { timeline: PortfolioTimelinePoint[] })
         <span><i className="treasury-bargain-legend-closed" aria-hidden="true" />Closed</span>
         <span><i className="treasury-bargain-legend-total" aria-hidden="true" />Total</span>
       </footer>
+    </div>
+  );
+}
+
+function FlippableBargainFlowSeries({
+  timeline,
+}: {
+  timeline: PortfolioTimelinePoint[];
+}): JSX.Element {
+  const [showAllTime, setShowAllTime] = useState<boolean>(false);
+  const sevenDayTimeline = timeline.slice(-7);
+  const toggle = (): void => setShowAllTime((current) => !current);
+
+  return (
+    <div
+      className={`treasury-timeline-flip treasury-bargain-flow-flip${showAllTime ? " treasury-timeline-flip-all" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-label={showAllTime ? "Show last 7 days of Bargain Flow" : "Show all-time Bargain Flow"}
+      aria-pressed={showAllTime}
+      onClick={toggle}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggle();
+      }}
+    >
+      <div className="treasury-timeline-flip-inner">
+        <div className="treasury-timeline-flip-face treasury-timeline-flip-front" aria-hidden={showAllTime}>
+          <BargainFlowSeries timeline={sevenDayTimeline} rangeLabel="7 days" />
+        </div>
+        <div className="treasury-timeline-flip-face treasury-timeline-flip-back" aria-hidden={!showAllTime}>
+          <BargainFlowSeries timeline={timeline} rangeLabel="All time" />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1434,6 +1485,10 @@ function TreasuryRulesPanel(): JSX.Element {
   }
 
   const levelText = rules?.signal.levels_pct.map((value) => `${value}%`).join(" / ") ?? "...";
+  const accumulationLevelText =
+    (rules?.signal.accumulation_levels_pct ?? rules?.signal.levels_pct)
+      ?.map((value) => `${value}%`)
+      .join(" / ") ?? "...";
   const sellText = rules?.signal.base_tranches_pct.map((value) => `${value}%`).join(" / ") ?? "...";
   const buyText = rules?.signal.accumulation_tranches_pct.map((value) => `${value}%`).join(" / ") ?? "...";
   const agingText = rules?.waiter_cleanup.aging
@@ -1467,8 +1522,8 @@ function TreasuryRulesPanel(): JSX.Element {
             <div className="contract-scroll-body">
               <div className="contract-sheet" aria-label="My treasury rules">
                 <p>1. <span className="contract-term">Market bell.</span> Every <span className="contract-value">{rules.signal_refresh_seconds}s</span>, I shall inspect each coin&apos;s 24-hour move and decide whether the market is offering a buying or selling opportunity.</p>
-                <p>2. <span className="contract-term">Signal ladder.</span> Moves of <span className="contract-value">{levelText}</span> shall open Levels 1 through {rules.signal.levels_pct.length}. The farther a coin travels, the stronger the signal I shall act upon.</p>
-                <p>3. <span className="contract-term">Campaign stakes.</span> When I am building cash, Levels 1 through {rules.signal.base_tranches_pct.length} shall commit <span className="contract-value">{sellText}</span> of the campaign purse. When I am gathering more of the asset, those levels shall commit <span className="contract-value">{buyText}</span> of spendable reserve.</p>
+                <p>2. <span className="contract-term">Signal ladders.</span> Bargain moves of <span className="contract-value">{levelText}</span> and accumulation drops of <span className="contract-value">{accumulationLevelText}</span> shall open their respective Levels 1 through {rules.signal.levels_pct.length}.</p>
+                <p>3. <span className="contract-term">Campaign stakes.</span> When I am building cash, Bargain Levels shall commit <span className="contract-value">{sellText}</span> of the campaign purse. When I am gathering more of the asset, Accumulation Levels shall commit <span className="contract-value">{buyText}</span> of spendable reserve.</p>
                 <p>4. <span className="contract-term">Bargain goal.</span> I shall settle every profitable Bargain once its gross return reaches <span className="contract-value">{rules.progression.close_profit_pct}%</span>.</p>
                 <p>5. <span className="contract-term">Inventory discipline.</span> A new selling campaign may command <span className="contract-value">{rules.progression.campaign_capacity_pct}%</span> of the policy-sellable inventory kept in my Binance custody. Cold Storage stays beyond my reach. Once no more than <span className="contract-value">{rules.progression.full_deploy_threshold_pct}%</span> of that allowance remains, I may deploy all of it.</p>
                 <p>6. <span className="contract-term">Patient waiters.</span> Cleanup is <span className="contract-value">{rules.waiter_cleanup.enabled ? "active" : "paused"}</span>, and I shall keep no more than <span className="contract-value">{rules.waiter_cleanup.max_open_bargains_per_asset}</span> open Bargains for one asset. For aging positions, {agingText}.</p>
@@ -2916,6 +2971,8 @@ function HoldingCard({
     holding.cold_storage_quantity,
     holding.unassigned_quantity,
     holding.trading_objective ?? "",
+    holding.open_bargain_count,
+    holding.open_bargain_pnl,
   ].join(":");
   const unrealizedGain = holding.market_gain === null
     ? null
@@ -2977,14 +3034,10 @@ function HoldingCard({
           <span className="treasury-holding-lines">
             <span>
               <span>Stack</span>
-              <strong>{formatAssetQuantity(holding.quantity, holding.asset_symbol)} {holding.asset_symbol}</strong>
-            </span>
-            <span>
-              <span>Target</span>
               <strong>
-                {holding.target_quantity === null
+                {formatAssetQuantity(holding.quantity, holding.asset_symbol)} / {holding.target_quantity === null
                   ? "—"
-                  : `${formatNumber(holding.target_quantity, 8)} ${holding.asset_symbol}`}
+                  : formatAssetQuantity(holding.target_quantity, holding.asset_symbol)}
               </strong>
             </span>
             <span>
@@ -3001,6 +3054,20 @@ function HoldingCard({
             <span>
               <span>Treasure Value</span>
               <strong>{formatCurrency(holding.market_value)}</strong>
+            </span>
+            <span>
+              <span>Open Bargains</span>
+              {holding.is_dry_powder ? (
+                <strong>—</strong>
+              ) : (
+                <strong className="treasury-open-bargains-summary">
+                  <span>{formatNumber(holding.open_bargain_count, 0)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className={signedToneClass(holding.open_bargain_pnl, "")}>
+                    {formatSignedCurrency(holding.open_bargain_pnl)}
+                  </span>
+                </strong>
+              )}
             </span>
             <span>
               <span>{holding.is_dry_powder ? "Accumulated Cash" : "Total Gain"}</span>
@@ -3531,7 +3598,7 @@ export default function TreasuryPage(): JSX.Element {
               </header>
               <div className="treasury-timeline-grid">
                 <FlippableTimelineSeries timeline={timeline} gainTone={timelinePnlTone} />
-                <BargainFlowSeries timeline={timeline} />
+                <FlippableBargainFlowSeries timeline={timeline} />
               </div>
               {timeline.length ? (
                 <footer className="treasury-timeline-range">

@@ -20,6 +20,7 @@ from core.spot_strategy import (
     finalize_spot_strategy_signal,
     plan_spot_strategy_action,
     spot_action_phase,
+    transition_spot_accumulation_campaign,
     transition_spot_strategy_campaign,
 )
 from core.spot_swing import (
@@ -443,6 +444,7 @@ class SpotPortfolioBacktester:
             signal_state = (
                 signal["opportunity"],
                 level,
+                signal.get("accumulation_level"),
                 bool(signal["strategy_eligible"]),
                 signal["eligibility_reason"],
             )
@@ -454,6 +456,7 @@ class SpotPortfolioBacktester:
                         "asset_symbol": symbol,
                         "opportunity": signal["opportunity"],
                         "level": level,
+                        "accumulation_level": signal.get("accumulation_level"),
                         "rolling_change_pct": signal["rolling_change_pct"],
                         "base_tranche_pct": signal["base_tranche_pct"],
                         "accumulation_tranche_pct": signal.get("accumulation_tranche_pct"),
@@ -483,6 +486,16 @@ class SpotPortfolioBacktester:
                 signal_level=int(signal["level"]),
                 signal_at_ms=candle.close_time_ms,
                 new_campaign_id=campaign_id,
+            )
+            accumulation_campaign_id = hashlib.sha256(
+                f"{symbol}|accumulation|{candle.close_time_ms}".encode("utf-8")
+            ).hexdigest()[:24]
+            campaign = transition_spot_accumulation_campaign(
+                campaign,
+                rolling_change_pct=float(signal.get("rolling_change_pct") or 0.0),
+                accumulation_level=int(signal.get("accumulation_level") or 0),
+                signal_at_ms=candle.close_time_ms,
+                new_campaign_id=accumulation_campaign_id,
             )
             if (
                 bool(signal.get("strategy_eligible"))
@@ -632,16 +645,23 @@ class SpotPortfolioBacktester:
     ) -> dict[str, Any]:
         action_signal = dict(signal)
         reason = decision.get("reason") if isinstance(decision.get("reason"), dict) else {}
+        signal_level = int(decision.get("signal_level") or signal["level"])
+        if decision["action_type"] == "accumulate_asset":
+            action_signal["level"] = signal_level
         for field in ("base_tranche_pct", "accumulation_tranche_pct", "final_tranche_pct"):
             if reason.get(field) is not None:
                 action_signal[field] = reason[field]
+        action_campaign_id = (
+            campaign.get("accumulation_campaign_id")
+            if decision["action_type"] == "accumulate_asset"
+            else campaign.get("campaign_id")
+        )
         action = {
             **decision,
             "signal": action_signal,
-            "campaign_id": campaign.get("campaign_id"),
+            "campaign_id": action_campaign_id,
             "action_key": (
-                f"{decision['action_type']}:{campaign.get('campaign_id')}:"
-                f"level:{int(signal['level'])}"
+                f"{decision['action_type']}:{action_campaign_id}:level:{signal_level}"
             ),
             "decided_at_ms": candle.close_time_ms,
             "reference_price": signal.get("reference_price"),
@@ -993,11 +1013,11 @@ class SpotPortfolioBacktester:
                 }
             )
             campaign = self.campaigns[symbol]
-            campaign["highest_completed_level"] = max(
-                int(campaign.get("highest_completed_level") or 0),
+            campaign["accumulation_highest_completed_level"] = max(
+                int(campaign.get("accumulation_highest_completed_level") or 0),
                 int(action.get("signal", {}).get("level") or 0),
             )
-            campaign["last_opening_price"] = price
+            campaign["last_accumulation_opening_price"] = price
             self.actions.append(
                 {
                     "timestamp_ms": timestamp_ms,

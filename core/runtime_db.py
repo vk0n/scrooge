@@ -21,13 +21,16 @@ from core.spot_swing import (
     calculate_swing_economics,
     calculate_target_ratchet,
 )
-from core.spot_strategy import transition_spot_strategy_campaign
+from core.spot_strategy import (
+    transition_spot_accumulation_campaign,
+    transition_spot_strategy_campaign,
+)
 
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 21
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Repair Spot strategy action foreign keys after table migration"
+RUNTIME_DB_SCHEMA_VERSION = 22
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Separate accumulation progress from Bargain campaigns"
 
 
 class RuntimeDbError(OSError):
@@ -738,6 +741,12 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
                 campaign_capacity_mode IS NULL OR campaign_capacity_mode IN ('normal', 'full_deploy')
             ),
             last_opening_price REAL,
+            accumulation_campaign_id TEXT,
+            accumulation_active INTEGER NOT NULL DEFAULT 0 CHECK (accumulation_active IN (0, 1)),
+            accumulation_highest_completed_level INTEGER NOT NULL DEFAULT 0,
+            accumulation_last_signal_level INTEGER NOT NULL DEFAULT 0,
+            accumulation_last_signal_at_ms INTEGER,
+            last_accumulation_opening_price REAL,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
             PRIMARY KEY (account_key, asset_symbol, quote_symbol),
@@ -996,6 +1005,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         str(row["name"])
         for row in connection.execute("PRAGMA table_info(spot_strategy_campaigns)").fetchall()
     }
+    had_accumulation_state = "accumulation_campaign_id" in campaign_columns
     for column_name, definition in (
         ("campaign_start_target_quantity", "REAL"),
         ("campaign_start_minimum_holding_pct", "REAL"),
@@ -1008,11 +1018,39 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         ("campaign_consumed_quantity", "REAL NOT NULL DEFAULT 0"),
         ("campaign_capacity_mode", "TEXT"),
         ("last_opening_price", "REAL"),
+        ("accumulation_campaign_id", "TEXT"),
+        ("accumulation_active", "INTEGER NOT NULL DEFAULT 0"),
+        ("accumulation_highest_completed_level", "INTEGER NOT NULL DEFAULT 0"),
+        ("accumulation_last_signal_level", "INTEGER NOT NULL DEFAULT 0"),
+        ("accumulation_last_signal_at_ms", "INTEGER"),
+        ("last_accumulation_opening_price", "REAL"),
     ):
         if column_name not in campaign_columns:
             connection.execute(
                 f"ALTER TABLE spot_strategy_campaigns ADD COLUMN {column_name} {definition}"
             )
+    if not had_accumulation_state:
+        connection.execute(
+            """
+            UPDATE spot_strategy_campaigns
+            SET accumulation_campaign_id = campaign_id,
+                accumulation_active = 1,
+                accumulation_highest_completed_level = COALESCE((
+                    SELECT MAX(actions.signal_level)
+                    FROM spot_strategy_actions AS actions
+                    WHERE actions.account_key = spot_strategy_campaigns.account_key
+                      AND actions.asset_symbol = spot_strategy_campaigns.asset_symbol
+                      AND actions.quote_symbol = spot_strategy_campaigns.quote_symbol
+                      AND actions.campaign_id = spot_strategy_campaigns.campaign_id
+                      AND actions.action_type = 'accumulate_asset'
+                      AND actions.status = 'completed'
+                ), 0),
+                accumulation_last_signal_level = last_signal_level,
+                accumulation_last_signal_at_ms = last_signal_at_ms,
+                last_accumulation_opening_price = last_opening_price
+            WHERE active_side = 'buy' AND campaign_id IS NOT NULL
+            """
+        )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS spot_strategy_campaign_consumptions (
@@ -2633,6 +2671,24 @@ def _spot_strategy_campaign_from_row(row: sqlite3.Row) -> dict[str, Any]:
             str(row["campaign_capacity_mode"]) if row["campaign_capacity_mode"] is not None else None
         ),
         "last_opening_price": _as_float_or_none(row["last_opening_price"]),
+        "accumulation_campaign_id": (
+            str(row["accumulation_campaign_id"])
+            if row["accumulation_campaign_id"] is not None
+            else None
+        ),
+        "accumulation_active": bool(row["accumulation_active"]),
+        "accumulation_highest_completed_level": int(
+            row["accumulation_highest_completed_level"]
+        ),
+        "accumulation_last_signal_level": int(row["accumulation_last_signal_level"]),
+        "accumulation_last_signal_at_ms": (
+            int(row["accumulation_last_signal_at_ms"])
+            if row["accumulation_last_signal_at_ms"] is not None
+            else None
+        ),
+        "last_accumulation_opening_price": _as_float_or_none(
+            row["last_accumulation_opening_price"]
+        ),
         "created_at_ms": int(row["created_at_ms"]),
         "updated_at_ms": int(row["updated_at_ms"]),
     }
@@ -2763,6 +2819,80 @@ def sync_spot_strategy_campaign(
     return _spot_strategy_campaign_from_row(saved)
 
 
+def sync_spot_accumulation_campaign(
+    *,
+    account_key: str,
+    asset_symbol: str,
+    quote_symbol: str,
+    rolling_change_pct: float,
+    accumulation_level: int,
+    signal_at_ms: int,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Persist reserve-accumulation progress without changing Bargain state."""
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_asset = str(asset_symbol or "").strip().upper()
+    normalized_quote = str(quote_symbol or "USDT").strip().upper() or "USDT"
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM spot_strategy_campaigns
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (normalized_account, normalized_asset, normalized_quote),
+        ).fetchone()
+        if row is None:
+            raise RuntimeDbError("Bargain campaign must be synchronized before accumulation.")
+        transition = transition_spot_accumulation_campaign(
+            _spot_strategy_campaign_from_row(row),
+            rolling_change_pct=float(rolling_change_pct),
+            accumulation_level=int(accumulation_level),
+            signal_at_ms=int(signal_at_ms),
+            new_campaign_id=_row_key(
+                [
+                    normalized_account,
+                    normalized_asset,
+                    normalized_quote,
+                    "accumulation",
+                    int(signal_at_ms),
+                ]
+            )[:24],
+        )
+        connection.execute(
+            """
+            UPDATE spot_strategy_campaigns
+            SET accumulation_campaign_id = ?, accumulation_active = ?,
+                accumulation_highest_completed_level = ?,
+                accumulation_last_signal_level = ?, accumulation_last_signal_at_ms = ?,
+                last_accumulation_opening_price = ?, updated_at_ms = ?
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (
+                transition["accumulation_campaign_id"],
+                int(bool(transition["accumulation_active"])),
+                transition["accumulation_highest_completed_level"],
+                transition["accumulation_last_signal_level"],
+                transition["accumulation_last_signal_at_ms"],
+                transition["last_accumulation_opening_price"],
+                now_ms,
+                normalized_account,
+                normalized_asset,
+                normalized_quote,
+            ),
+        )
+        saved = connection.execute(
+            """
+            SELECT * FROM spot_strategy_campaigns
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+            """,
+            (normalized_account, normalized_asset, normalized_quote),
+        ).fetchone()
+    if saved is None:
+        raise RuntimeDbError("Spot accumulation campaign was not persisted.")
+    return _spot_strategy_campaign_from_row(saved)
+
+
 def initialize_spot_strategy_campaign_capacity(
     *,
     account_key: str,
@@ -2875,6 +3005,49 @@ def complete_spot_strategy_campaign_level(
         )
 
 
+def complete_spot_accumulation_campaign_level(
+    *,
+    account_key: str,
+    asset_symbol: str,
+    quote_symbol: str,
+    campaign_id: str,
+    signal_level: int,
+    opening_price: float | None = None,
+    path: Path | None = None,
+) -> None:
+    """Consume one accumulation level without touching Bargain campaign progress."""
+    normalized_opening_price = _as_float_or_none(opening_price)
+    if normalized_opening_price is not None and normalized_opening_price <= 0:
+        normalized_opening_price = None
+    with _connection(path) as connection:
+        connection.execute(
+            """
+            UPDATE spot_strategy_campaigns
+            SET accumulation_highest_completed_level = MAX(
+                    accumulation_highest_completed_level, ?
+                ),
+                last_accumulation_opening_price = CASE
+                    WHEN ? IS NOT NULL AND ? >= accumulation_highest_completed_level THEN ?
+                    ELSE last_accumulation_opening_price
+                END,
+                updated_at_ms = ?
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+              AND accumulation_campaign_id = ?
+            """,
+            (
+                int(signal_level),
+                normalized_opening_price,
+                int(signal_level),
+                normalized_opening_price,
+                int(datetime.now(timezone.utc).timestamp() * 1000),
+                str(account_key),
+                str(asset_symbol).strip().upper(),
+                str(quote_symbol).strip().upper(),
+                str(campaign_id),
+            ),
+        )
+
+
 def reconcile_spot_strategy_campaign_progress(
     *,
     account_key: str,
@@ -2903,7 +3076,7 @@ def reconcile_spot_strategy_campaign_progress(
             WHERE actions.account_key = ? AND actions.asset_symbol = ?
               AND actions.quote_symbol = ? AND actions.campaign_id = ?
               AND actions.status = 'completed'
-              AND actions.action_type IN ('open', 'accumulate_asset', 'campaign_only')
+              AND actions.action_type IN ('open', 'campaign_only')
               AND actions.signal_level IS NOT NULL
             """,
             (normalized_account, normalized_asset, normalized_quote, normalized_campaign),
@@ -2912,7 +3085,7 @@ def reconcile_spot_strategy_campaign_progress(
         completed_openings = [
             row
             for row in completed
-            if row["action_type"] in {"open", "accumulate_asset"}
+            if row["action_type"] == "open"
             and row["average_price"] is not None
             and float(row["average_price"]) > 0
         ]
@@ -2953,6 +3126,86 @@ def reconcile_spot_strategy_campaign_progress(
             SELECT * FROM spot_strategy_campaigns
             WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
               AND campaign_id = ?
+            """,
+            (normalized_account, normalized_asset, normalized_quote, normalized_campaign),
+        ).fetchone()
+    return _spot_strategy_campaign_from_row(row) if row is not None else None
+
+
+def reconcile_spot_accumulation_campaign_progress(
+    *,
+    account_key: str,
+    asset_symbol: str,
+    quote_symbol: str,
+    campaign_id: str,
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Repair independent accumulation progress from completed actions."""
+    normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
+    normalized_asset = str(asset_symbol or "").strip().upper()
+    normalized_quote = str(quote_symbol or "USDT").strip().upper() or "USDT"
+    normalized_campaign = str(campaign_id or "").strip()
+    if not normalized_asset or not normalized_campaign:
+        return None
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _connection(path) as connection:
+        completed = connection.execute(
+            """
+            SELECT actions.action_key, actions.signal_level, intents.average_price
+            FROM spot_strategy_actions AS actions
+            LEFT JOIN spot_order_intents AS intents
+              ON intents.intent_id = actions.intent_id
+            WHERE actions.account_key = ? AND actions.asset_symbol = ?
+              AND actions.quote_symbol = ? AND actions.campaign_id = ?
+              AND actions.status = 'completed'
+              AND actions.action_type = 'accumulate_asset'
+              AND actions.signal_level IS NOT NULL
+            """,
+            (normalized_account, normalized_asset, normalized_quote, normalized_campaign),
+        ).fetchall()
+        highest_level = max((int(row["signal_level"]) for row in completed), default=0)
+        priced = [
+            row
+            for row in completed
+            if row["average_price"] is not None and float(row["average_price"]) > 0
+        ]
+        latest = max(
+            priced,
+            key=lambda row: (int(row["signal_level"]), str(row["action_key"])),
+            default=None,
+        )
+        recovered_price = float(latest["average_price"]) if latest is not None else None
+        if highest_level > 0:
+            connection.execute(
+                """
+                UPDATE spot_strategy_campaigns
+                SET accumulation_highest_completed_level = MAX(
+                        accumulation_highest_completed_level, ?
+                    ),
+                    last_accumulation_opening_price = COALESCE(
+                        ?, last_accumulation_opening_price
+                    ),
+                    updated_at_ms = ?
+                WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+                  AND accumulation_campaign_id = ?
+                  AND accumulation_highest_completed_level < ?
+                """,
+                (
+                    highest_level,
+                    recovered_price,
+                    now_ms,
+                    normalized_account,
+                    normalized_asset,
+                    normalized_quote,
+                    normalized_campaign,
+                    highest_level,
+                ),
+            )
+        row = connection.execute(
+            """
+            SELECT * FROM spot_strategy_campaigns
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+              AND accumulation_campaign_id = ?
             """,
             (normalized_account, normalized_asset, normalized_quote, normalized_campaign),
         ).fetchone()

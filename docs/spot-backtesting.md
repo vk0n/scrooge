@@ -13,7 +13,7 @@ Live and research call the same implementations for:
 - waiter/capacity cleanup in `core/spot_waiter_cleanup.py`;
 - Binance quantity and notional rules in `core/spot_execution_rules.py`.
 
-Replay replaces the clock, market source, executor, persistence adapter, and reporting. The documented live baseline is `2/3/4/5%` signal levels and a `10%` Bargain Goal. A scenario or sweep may deliberately override those values; research files are not live configuration.
+Replay replaces the clock, market source, executor, persistence adapter, and reporting. Bargain and accumulation ladders are configured independently through `levels_pct` and `accumulation_levels_pct`; older scenarios without the latter inherit their Bargain levels. A scenario or sweep may deliberately override those values; research files are not live configuration.
 
 ## Market And Fill Model
 
@@ -78,7 +78,7 @@ Run relative presets:
 
 ## Parameter Sweeps
 
-`backtest.spot_sweep` expands a Cartesian grid over signal levels, objective policy mix, minimum asset holding, Bargain Goal, cash retention, and cleanup parameters. `minimum_holding_pct` applies one policy floor to every asset in a variant. `accumulate_asset_pct` selects a nested share of assets from `objective_asset_order`; selected assets use `accumulate_asset` and the remainder use `accumulate_cash`. The percentage is based on asset count and rounds to the nearest whole asset, so reports retain both the requested percentage and actual counts. Without this dimension, each asset keeps its base-scenario objective. Market data is loaded once and shared; each variant receives isolated artifacts. Completed matching variants resume automatically.
+`backtest.spot_sweep` expands a Cartesian grid over Bargain levels, accumulation levels, objective policy mix, minimum asset holding, Bargain Goal, cash retention, and cleanup parameters. `accumulation_levels_pct` can be swept without changing `levels_pct`. `minimum_holding_pct` applies one policy floor to every asset in a variant. `accumulate_asset_pct` selects a nested share of assets from `objective_asset_order`; selected assets use `accumulate_asset` and the remainder use `accumulate_cash`. The percentage is based on asset count and rounds to the nearest whole asset, so reports retain both the requested percentage and actual counts. Without this dimension, each asset keeps its base-scenario objective. Market data is loaded once and shared; each variant receives isolated artifacts. Completed matching variants resume automatically.
 
 ```bash
 ./scrooge-env/bin/python -m backtest.spot_sweep \

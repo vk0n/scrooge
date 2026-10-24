@@ -1027,8 +1027,12 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
 
         self.assertFalse(rejected)
         self.assertTrue(completed)
-        self.assertEqual(replay.campaigns["AAA"]["highest_completed_level"], 2)
-        self.assertEqual(replay.campaigns["AAA"]["last_opening_price"], 99)
+        self.assertEqual(replay.campaigns["AAA"]["highest_completed_level"], 1)
+        self.assertEqual(
+            replay.campaigns["AAA"]["accumulation_highest_completed_level"],
+            2,
+        )
+        self.assertEqual(replay.campaigns["AAA"]["last_accumulation_opening_price"], 99)
         self.assertEqual(len(replay.accumulations), 1)
 
     def test_report_title_uses_replay_period_instead_of_market_migration_details(self):
@@ -1670,11 +1674,22 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         signal = {
             "opportunity": "buy",
             "level": 1,
+            "accumulation_level": 1,
+            "rolling_change_pct": -2,
             "strategy_eligible": True,
             "trading_objective": "accumulate_asset",
             "final_tranche_pct": 50,
+            "accumulation_tranche_pct": 50,
             "current_price": 100,
         }
+        campaign.update(
+            {
+                "highest_completed_level": 1,
+                "accumulation_active": True,
+                "accumulation_campaign_id": "accumulation-buy",
+                "accumulation_highest_completed_level": 0,
+            }
+        )
 
         decision = replay._plan_executable_action(
             "AAA",
@@ -1714,7 +1729,11 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
 
         self.assertEqual(result.accumulations, [])
         self.assertEqual(result.swings, [])
-        self.assertEqual(replay.campaigns["AAA"]["highest_completed_level"], 0)
+        self.assertEqual(replay.campaigns["AAA"]["highest_completed_level"], 2)
+        self.assertEqual(
+            replay.campaigns["AAA"]["accumulation_highest_completed_level"],
+            0,
+        )
         self.assertTrue(result.rejections)
         self.assertTrue(all("minimum $5" in item["reason"] for item in result.rejections))
 

@@ -342,6 +342,36 @@ spot_sweep:
         self.assertEqual(config.variants[0].levels_pct, (1.0, 3.0, 5.0, 7.0))
         self.assertTrue(config.variants[0].name.startswith("1-3-5-7-"))
 
+    def test_parameter_grid_sweeps_accumulation_levels_independently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "base.yaml").write_text(BASE_SCENARIO, encoding="utf-8")
+            sweep = root / "accumulation-levels.yaml"
+            sweep.write_text(
+                """
+spot_sweep:
+  name: accumulation-levels
+  base_config: base.yaml
+  output_dir: output
+  parameter_grid:
+    accumulation_levels_pct:
+      - [3, 5, 7, 10]
+      - [4, 6, 8, 12]
+      - [5, 8, 12, 18]
+""",
+                encoding="utf-8",
+            )
+
+            config = load_spot_sweep_config(sweep)
+            resolved = _scenario_for_variant(config, config.variants[1])
+
+        self.assertEqual(len(config.variants), 3)
+        self.assertEqual(config.variants[1].levels_pct, (2.0, 3.0, 5.0, 7.0))
+        self.assertEqual(config.variants[1].accumulation_levels_pct, (4.0, 6.0, 8.0, 12.0))
+        self.assertEqual(resolved.signal.levels_pct, (2.0, 3.0, 5.0, 7.0))
+        self.assertEqual(resolved.signal.accumulation_levels_pct, (4.0, 6.0, 8.0, 12.0))
+        self.assertIn("acc-4-6-8-12", config.variants[1].name)
+
     def test_ranking_prioritizes_edge_then_average_nominal_assets(self):
         rows = [
             {

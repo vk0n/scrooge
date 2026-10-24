@@ -18,10 +18,11 @@ Portfolio entries and exchange balances answer different questions. Settled Trea
 | Clause | Baseline |
 | --- | --- |
 | Market bell | inspect each managed Spot market every `60s` |
-| Signal ladder | L1-L4 at absolute rolling moves of `2% / 3% / 4% / 5%` |
+| Bargain signal ladder | L1-L4 at absolute rolling moves of `2% / 3% / 4% / 5%` |
+| Accumulation BUY ladder | L1-L4 at rolling drops of `4% / 6% / 8% / 12%` |
 | Cash campaign stakes | `10% / 20% / 30% / 40%` of frozen campaign capacity |
 | Asset campaign stakes | `1% / 3% / 5% / 10%` of Spendable Vault Reserve |
-| Bargain Goal | close at a `10%` gross favorable move from the Bargain basis |
+| Bargain Goal | close at a `5%` gross favorable move from the Bargain basis |
 | Campaign capacity | freeze `50%` of current custody-sellable Binance inventory |
 | Full deployment | freeze all remaining custody-sellable inventory when at most `25%` of policy allowance remains |
 | Waiter limit | at most `10` open Bargains per asset |
@@ -33,16 +34,17 @@ The baseline belongs in the required `treasury` YAML subtree. `GET/POST /api/con
 
 ## Signal And Campaigns
 
-The signal is the percentage move from an approximately 24-hour-old reference price to the current price. It is rolling and independent of UTC midnight.
+The signal is the percentage move from an approximately 24-hour-old reference price to the current price. It is rolling and independent of UTC midnight. `levels_pct` controls Bargain signals, while optional `accumulation_levels_pct` controls standalone `accumulate_asset` BUY deployments. When omitted, accumulation inherits `levels_pct` for backward compatibility.
 
-- A move smaller than L1 is `HOLD`.
-- A positive qualifying move is a `SELL` opportunity.
-- A negative qualifying move is a `BUY` opportunity.
+- A move smaller than the applicable L1 is `HOLD`.
+- A positive qualifying move uses the Bargain ladder and is a `SELL` opportunity.
+- A negative qualifying move uses the Bargain ladder and is a `BUY` campaign signal for every policy.
+- Reserve accumulation independently uses `accumulation_levels_pct` on negative rolling moves and does not replace or consume Bargain campaign levels.
 - Treasury does not use the Futures Bollinger Bands, RSI, EMA, or ATR indicators.
 
-Each asset has a durable directional campaign. Repeated polls at an already-consumed level do not spend again. Reaching a new level applies the cumulative allocation for every newly crossed level without creating synthetic intermediate actions. `HOLD` preserves campaign state, while an actionable opposite direction starts a new campaign.
+Each asset has a durable directional Bargain campaign. Repeated polls at an already-consumed Bargain level do not act again. Reaching a new level applies the cumulative allocation for every newly crossed level without creating synthetic intermediate actions. `HOLD` preserves campaign state, while an actionable opposite direction starts a new campaign.
 
-Executed levels are also price-progressive inside one campaign. After the first SELL opening, a higher SELL level may open only above the previous level's confirmed average fill price. After the first `ACCUMULATE_ASSET` BUY, a higher BUY level may execute only below the previous level's confirmed average fill price. Live execution uses a fill-or-kill limit at the first valid Binance tick on the improving side of that fill, so an order either receives a strictly better entry or does not execute and leaves the level unconsumed. A direct jump with no prior fill still executes once with its cumulative missing-level allocation. An opposite actionable campaign resets the price guard. `ACCUMULATE_CASH` BUY signals remain campaign-only and do not place orders.
+Executed levels are price-progressive within their own mechanisms. After the first SELL opening, a higher Bargain SELL level may open only above the previous level's confirmed average fill price. Reserve accumulation has its own cycle, completed-level counter, and price guard; a higher accumulation level may execute only below the previous accumulation fill. Live execution uses a fill-or-kill limit at the first valid Binance tick on the improving side, so a rejected order leaves only its own mechanism's level unconsumed. A direct jump executes once with the cumulative missing-level allocation. Bargain BUY signals remain campaign-only and never place reserve-accumulation orders themselves. An accumulation cycle resets independently after the rolling 24-hour change is no longer negative.
 
 A SELL campaign freezes its capacity from inventory that is both policy-sellable and recorded in Binance custody. Cold Storage contributes to total ownership and Protected Floor economics, but never enlarges automated campaign capacity. Later Target, Minimum Holding, or custody changes affect future campaigns, not the frozen budget of the active one. Actual execution remains capped by the current Protected Floor, verified Binance free balance, and venue filters.
 

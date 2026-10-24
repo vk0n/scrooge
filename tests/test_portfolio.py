@@ -452,6 +452,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(btc["effective_entry_cost"], 90)
         self.assertEqual(btc["market_gain"], 10)
         self.assertEqual(btc["accumulated_cash_gain"], 0)
+        self.assertEqual(btc["open_bargain_count"], 1)
         self.assertEqual(btc["open_bargain_pnl"], 0)
         self.assertEqual(btc["total_gain"], 10)
         ledger = portfolio_service.load_portfolio_asset_ledger("BTC")
@@ -517,6 +518,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
         self.assertEqual(closed_btc["effective_entry_cost"], 87.5)
         self.assertEqual(closed_btc["market_gain"], 10)
         self.assertEqual(closed_btc["floating_gain"], 12.5)
+        self.assertEqual(closed_btc["open_bargain_count"], 0)
         self.assertEqual(closed_btc["open_bargain_pnl"], 0)
         self.assertEqual(closed_btc["total_gain"], 12.5)
         cash_ledger = portfolio_service.load_portfolio_asset_ledger("USDT")
@@ -577,6 +579,7 @@ class PortfolioPhaseOneTests(unittest.TestCase):
 
         self.assertEqual(btc["market_gain"], 10)
         self.assertEqual(btc["accumulated_cash_gain"], 0)
+        self.assertEqual(btc["open_bargain_count"], 1)
         self.assertEqual(btc["open_bargain_pnl"], 5)
         self.assertEqual(btc["total_gain"], 15)
         self.assertEqual(snapshot["summary"]["total_gain"], 15)

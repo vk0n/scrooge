@@ -65,12 +65,13 @@ Treasury is the Spot portfolio and swing-management book. It tracks settled hold
 
 The documented live baseline is:
 - market check every `60s`
-- signal levels `2% / 3% / 4% / 5%`
+- Bargain signal levels `2% / 3% / 4% / 5%`
+- accumulation BUY levels `4% / 6% / 8% / 12%`
 - cash campaign stakes `10% / 20% / 30% / 40%`
 - asset campaign stakes `1% / 3% / 5% / 10%`
-- Bargain Goal `10%` gross
+- Bargain Goal `5%` gross
 - campaign capacity `50%`, with full deployment below `25%` remaining allowance
-- strictly improving SELL and `ACCUMULATE_ASSET` BUY entry prices between completed campaign levels
+- strictly improving SELL entries inside Bargain campaigns and BUY entries inside independent accumulation cycles
 - at most `10` open Bargains per asset
 - deep-loss relief after `15d` at or below `-25%`; aging gates at `30d / 60d / 90d`
 

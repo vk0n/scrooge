@@ -11,6 +11,7 @@ from core.runtime_db import (
     upsert_portfolio_asset_policy,
 )
 from core.spot_signal import ROLLING_WINDOW_MS, SpotSignalConfig, evaluate_rolling_24h_opportunity
+from core.spot_strategy import finalize_spot_strategy_signal
 
 
 class FakeTickerClient:
@@ -43,10 +44,10 @@ class SpotSignalDomainTests(unittest.TestCase):
     def test_default_levels_create_progressive_sell_opportunities(self):
         expectations = [
             (101.9, 0, 0, 0),
-            (102, 1, 10, 1),
-            (103, 2, 20, 3),
-            (104, 3, 30, 5),
-            (106, 4, 40, 10),
+            (102, 1, 10, 0),
+            (103, 2, 20, 0),
+            (104, 3, 30, 0),
+            (106, 4, 40, 0),
         ]
 
         for price, level, tranche, accumulation_tranche in expectations:
@@ -66,6 +67,84 @@ class SpotSignalDomainTests(unittest.TestCase):
         self.assertEqual(result["base_tranche_pct"], 30)
         self.assertAlmostEqual(result["rolling_change_pct"], -4)
 
+    def test_accumulation_levels_are_evaluated_independently(self):
+        config = SpotSignalConfig(
+            levels_pct=(2, 3, 4, 6),
+            base_tranches_pct=(10, 20, 30, 40),
+            accumulation_levels_pct=(4, 6, 8, 12),
+            accumulation_tranches_pct=(1, 3, 5, 10),
+        )
+        signal = evaluate_rolling_24h_opportunity(
+            current_price=96,
+            reference_price=100,
+            current_at_ms=1_000 + ROLLING_WINDOW_MS,
+            reference_at_ms=1_000,
+            config=config,
+        )
+
+        self.assertEqual(signal["level"], 3)
+        self.assertEqual(signal["accumulation_level"], 1)
+        self.assertEqual(signal["accumulation_tranche_pct"], 1)
+
+        cash_signal = finalize_spot_strategy_signal(
+            signal,
+            {"trading_objective": "accumulate_cash", "minimum_holding_pct": 80},
+            execution_enabled=True,
+        )
+        asset_signal = finalize_spot_strategy_signal(
+            signal,
+            {"trading_objective": "accumulate_asset", "minimum_holding_pct": 80},
+            execution_enabled=True,
+        )
+
+        self.assertEqual((cash_signal["opportunity"], cash_signal["level"]), ("buy", 3))
+        self.assertEqual((asset_signal["opportunity"], asset_signal["level"]), ("buy", 3))
+        self.assertEqual(asset_signal["levels_pct"], [2.0, 3.0, 4.0, 6.0])
+        self.assertEqual(asset_signal["accumulation_level"], 1)
+        self.assertEqual(asset_signal["final_tranche_pct"], 30)
+
+    def test_accumulation_buy_waits_for_its_first_level(self):
+        config = SpotSignalConfig(
+            accumulation_levels_pct=(4, 6, 8, 12),
+        )
+        signal = evaluate_rolling_24h_opportunity(
+            current_price=97,
+            reference_price=100,
+            current_at_ms=1_000 + ROLLING_WINDOW_MS,
+            reference_at_ms=1_000,
+            config=config,
+        )
+
+        finalized = finalize_spot_strategy_signal(
+            signal,
+            {"trading_objective": "accumulate_asset", "minimum_holding_pct": 80},
+            execution_enabled=True,
+        )
+
+        self.assertEqual(signal["opportunity"], "buy")
+        self.assertEqual(finalized["opportunity"], "buy")
+        self.assertEqual(finalized["level"], 2)
+        self.assertEqual(finalized["accumulation_level"], 0)
+
+    def test_accumulate_asset_sell_keeps_bargain_levels(self):
+        config = SpotSignalConfig(accumulation_levels_pct=(4, 6, 8, 12))
+        signal = evaluate_rolling_24h_opportunity(
+            current_price=104,
+            reference_price=100,
+            current_at_ms=1_000 + ROLLING_WINDOW_MS,
+            reference_at_ms=1_000,
+            config=config,
+        )
+
+        finalized = finalize_spot_strategy_signal(
+            signal,
+            {"trading_objective": "accumulate_asset", "minimum_holding_pct": 80},
+            execution_enabled=True,
+        )
+
+        self.assertEqual((finalized["opportunity"], finalized["level"]), ("sell", 3))
+        self.assertEqual(finalized["levels_pct"], [2.0, 3.0, 4.0, 5.0])
+
     def test_reference_must_be_approximately_24_hours_old(self):
         with self.assertRaisesRegex(ValueError, "approximately 24 hours"):
             evaluate_rolling_24h_opportunity(
@@ -80,6 +159,13 @@ class SpotSignalDomainTests(unittest.TestCase):
             SpotSignalConfig(levels_pct=(5, 8), base_tranches_pct=(10,))
         with self.assertRaisesRegex(ValueError, "strictly increasing"):
             SpotSignalConfig(levels_pct=(8, 5), base_tranches_pct=(10, 20))
+        with self.assertRaisesRegex(ValueError, "accumulation levels.*same length"):
+            SpotSignalConfig(
+                accumulation_levels_pct=(4, 6),
+                accumulation_tranches_pct=(1, 3, 5),
+            )
+        with self.assertRaisesRegex(ValueError, "accumulation levels must be strictly increasing"):
+            SpotSignalConfig(accumulation_levels_pct=(6, 4, 8, 12))
 
 class RollingSpotSignalMonitorTests(unittest.TestCase):
     def setUp(self):

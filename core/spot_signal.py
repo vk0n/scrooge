@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Sequence
 
-DEFAULT_SIGNAL_LEVELS_PCT = (2.0, 3.0, 4.0, 6.0)
+DEFAULT_SIGNAL_LEVELS_PCT = (2.0, 3.0, 4.0, 5.0)
 DEFAULT_BASE_TRANCHES_PCT = (10.0, 20.0, 30.0, 40.0)
 DEFAULT_ACCUMULATION_TRANCHES_PCT = (1.0, 3.0, 5.0, 10.0)
 ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -18,17 +18,23 @@ MAX_ROLLING_WINDOW_MS = 25 * 60 * 60 * 1000
 class SpotSignalConfig:
     levels_pct: tuple[float, ...] = DEFAULT_SIGNAL_LEVELS_PCT
     base_tranches_pct: tuple[float, ...] = DEFAULT_BASE_TRANCHES_PCT
+    accumulation_levels_pct: tuple[float, ...] | None = None
     accumulation_tranches_pct: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         levels = tuple(float(value) for value in self.levels_pct)
         tranches = tuple(float(value) for value in self.base_tranches_pct)
+        accumulation_levels = (
+            tuple(float(value) for value in self.accumulation_levels_pct)
+            if self.accumulation_levels_pct is not None
+            else levels
+        )
         accumulation_tranches = (
             tuple(float(value) for value in self.accumulation_tranches_pct)
             if self.accumulation_tranches_pct is not None
             else (
                 DEFAULT_ACCUMULATION_TRANCHES_PCT
-                if len(levels) == len(DEFAULT_ACCUMULATION_TRANCHES_PCT)
+                if len(accumulation_levels) == len(DEFAULT_ACCUMULATION_TRANCHES_PCT)
                 else tranches
             )
         )
@@ -36,12 +42,21 @@ class SpotSignalConfig:
             raise ValueError("At least one Spot signal level is required.")
         if len(levels) != len(tranches):
             raise ValueError("Spot signal levels and base tranches must have the same length.")
-        if len(levels) != len(accumulation_tranches):
-            raise ValueError("Spot signal levels and accumulation tranches must have the same length.")
+        if len(accumulation_levels) != len(accumulation_tranches):
+            raise ValueError(
+                "Spot accumulation levels and accumulation tranches must have the same length."
+            )
         if any(not math.isfinite(value) or value <= 0 for value in levels):
             raise ValueError("Spot signal levels must be finite positive percentages.")
         if any(current <= previous for previous, current in zip(levels, levels[1:])):
             raise ValueError("Spot signal levels must be strictly increasing.")
+        if any(not math.isfinite(value) or value <= 0 for value in accumulation_levels):
+            raise ValueError("Spot accumulation levels must be finite positive percentages.")
+        if any(
+            current <= previous
+            for previous, current in zip(accumulation_levels, accumulation_levels[1:])
+        ):
+            raise ValueError("Spot accumulation levels must be strictly increasing.")
         if any(not math.isfinite(value) or value <= 0 or value > 100 for value in tranches):
             raise ValueError("Spot base tranches must be finite percentages in the range (0, 100].")
         if any(
@@ -53,6 +68,7 @@ class SpotSignalConfig:
             )
         object.__setattr__(self, "levels_pct", levels)
         object.__setattr__(self, "base_tranches_pct", tranches)
+        object.__setattr__(self, "accumulation_levels_pct", accumulation_levels)
         object.__setattr__(self, "accumulation_tranches_pct", accumulation_tranches)
 
 
@@ -84,7 +100,6 @@ def evaluate_rolling_24h_opportunity(
     absolute_change_pct = abs(change_pct)
     level = 0
     tranche_pct = 0.0
-    accumulation_tranche_pct = 0.0
     for index, threshold_pct in enumerate(resolved_config.levels_pct, start=1):
         if absolute_change_pct < threshold_pct and not math.isclose(
             absolute_change_pct,
@@ -95,7 +110,20 @@ def evaluate_rolling_24h_opportunity(
             break
         level = index
         tranche_pct = resolved_config.base_tranches_pct[index - 1]
-        accumulation_tranche_pct = resolved_config.accumulation_tranches_pct[index - 1]
+
+    accumulation_level = 0
+    accumulation_tranche_pct = 0.0
+    if change_pct < 0:
+        for index, threshold_pct in enumerate(resolved_config.accumulation_levels_pct, start=1):
+            if absolute_change_pct < threshold_pct and not math.isclose(
+                absolute_change_pct,
+                threshold_pct,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                break
+            accumulation_level = index
+            accumulation_tranche_pct = resolved_config.accumulation_tranches_pct[index - 1]
 
     if level == 0:
         opportunity = "hold"
@@ -107,6 +135,8 @@ def evaluate_rolling_24h_opportunity(
     return {
         "opportunity": opportunity,
         "level": level,
+        "bargain_level": level,
+        "accumulation_level": accumulation_level,
         "base_tranche_pct": tranche_pct,
         "accumulation_tranche_pct": accumulation_tranche_pct,
         "rolling_change_pct": change_pct,
@@ -119,6 +149,7 @@ def evaluate_rolling_24h_opportunity(
         "reason_code": reason_code,
         "levels_pct": list(resolved_config.levels_pct),
         "base_tranches_pct": list(resolved_config.base_tranches_pct),
+        "accumulation_levels_pct": list(resolved_config.accumulation_levels_pct),
         "accumulation_tranches_pct": list(resolved_config.accumulation_tranches_pct),
     }
 

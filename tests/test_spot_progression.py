@@ -12,6 +12,7 @@ from core.runtime_db import (
     apply_spot_accumulation_target_ratchet,
     apply_spot_swing_target_ratchet,
     bootstrap_runtime_db,
+    complete_spot_accumulation_campaign_level,
     complete_spot_strategy_campaign_level,
     create_spot_order_intent,
     create_spot_swing,
@@ -23,7 +24,9 @@ from core.runtime_db import (
     list_spot_swings,
     load_spot_order_intent,
     load_spot_strategy_campaign,
+    reconcile_spot_accumulation_campaign_progress,
     reconcile_spot_strategy_campaign_progress,
+    sync_spot_accumulation_campaign,
     sync_spot_strategy_campaign,
     upsert_portfolio_asset_policy,
     update_spot_strategy_action,
@@ -37,7 +40,11 @@ from core.spot_progression import (
     plan_treasury_accumulation,
     policy_sellable_reference,
 )
-from core.spot_strategy import plan_spot_strategy_action, transition_spot_strategy_campaign
+from core.spot_strategy import (
+    plan_spot_strategy_action,
+    transition_spot_accumulation_campaign,
+    transition_spot_strategy_campaign,
+)
 from core.spot_swing import calculate_swing_economics
 from core.spot_waiter_cleanup import WaiterCleanupConfig
 
@@ -248,10 +255,19 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
                 "strategy_eligible": True,
                 "trading_objective": "accumulate_asset",
                 "final_tranche_pct": 25,
+                "accumulation_level": 2,
+                "rolling_change_pct": -4,
                 "current_price": 5,
             },
             {"target_quantity": 1000, "minimum_holding_pct": 80, "market_price": 5},
-            {"active_side": "buy", "highest_completed_level": 1, "campaign_id": "buy-campaign"},
+            {
+                "active_side": "buy",
+                "highest_completed_level": 2,
+                "campaign_id": "buy-campaign",
+                "accumulation_active": True,
+                "accumulation_campaign_id": "accumulation-campaign",
+                "accumulation_highest_completed_level": 1,
+            },
             [],
             available_quote=1000,
             available_accumulation_quote=40,
@@ -271,13 +287,22 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
                 "level": 4,
                 "strategy_eligible": True,
                 "trading_objective": "accumulate_asset",
+                "accumulation_level": 4,
+                "rolling_change_pct": -10,
                 "current_price": 10,
                 "base_tranches_pct": [10, 20, 30, 40],
                 "accumulation_tranches_pct": [1, 3, 5, 10],
                 "accumulation_tranche_pct": 10,
             },
             {"target_quantity": 1000, "minimum_holding_pct": 80, "market_price": 10},
-            {"active_side": "buy", "highest_completed_level": 1, "campaign_id": "buy-campaign"},
+            {
+                "active_side": "buy",
+                "highest_completed_level": 4,
+                "campaign_id": "buy-campaign",
+                "accumulation_active": True,
+                "accumulation_campaign_id": "accumulation-campaign",
+                "accumulation_highest_completed_level": 1,
+            },
             [],
             available_quote=1000,
             available_accumulation_quote=100,
@@ -295,6 +320,8 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
             "level": 4,
             "strategy_eligible": True,
             "trading_objective": "accumulate_asset",
+            "accumulation_level": 4,
+            "rolling_change_pct": -10,
             "base_tranches_pct": [10, 20, 30, 40],
             "accumulation_tranches_pct": [1, 3, 5, 10],
         }
@@ -305,9 +332,12 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
         }
         campaign = {
             "active_side": "buy",
-            "highest_completed_level": 1,
+            "highest_completed_level": 4,
             "campaign_id": "buy-price-guard",
-            "last_opening_price": 10,
+            "accumulation_active": True,
+            "accumulation_campaign_id": "accumulation-price-guard",
+            "accumulation_highest_completed_level": 1,
+            "last_accumulation_opening_price": 10,
         }
 
         equal_price = plan_spot_strategy_action(
@@ -356,10 +386,19 @@ class ProgressiveSwingDomainTests(unittest.TestCase):
                 "strategy_eligible": True,
                 "trading_objective": "accumulate_asset",
                 "final_tranche_pct": 25,
+                "accumulation_level": 1,
+                "rolling_change_pct": -2,
                 "current_price": 5,
             },
             {"target_quantity": 1000, "minimum_holding_pct": 80, "market_price": 5},
-            {"active_side": "buy", "highest_completed_level": 0, "campaign_id": "buy-campaign"},
+            {
+                "active_side": "buy",
+                "highest_completed_level": 1,
+                "campaign_id": "buy-campaign",
+                "accumulation_active": True,
+                "accumulation_campaign_id": "accumulation-campaign",
+                "accumulation_highest_completed_level": 0,
+            },
             [],
             available_quote=1000,
             config=ProgressiveSwingConfig(),
@@ -578,6 +617,41 @@ class SpotStrategyCampaignTests(unittest.TestCase):
         self.assertEqual(buy["highest_completed_level"], 0)
         decision = self.opening(buy, "buy", 1)
         self.assertEqual(decision["action_type"], "campaign_only")
+
+    def test_accumulation_cycle_progress_is_independent_of_bargain_direction(self):
+        accumulation = transition_spot_accumulation_campaign(
+            None,
+            rolling_change_pct=-4,
+            accumulation_level=1,
+            signal_at_ms=1,
+            new_campaign_id="accumulation-1",
+        )
+        accumulation["accumulation_highest_completed_level"] = 1
+        bargain_sell = self.transition(accumulation, "sell", 2, 2)
+
+        self.assertEqual(bargain_sell["active_side"], "sell")
+        self.assertTrue(bargain_sell["accumulation_active"])
+        self.assertEqual(bargain_sell["accumulation_campaign_id"], "accumulation-1")
+        self.assertEqual(bargain_sell["accumulation_highest_completed_level"], 1)
+
+        recovered = transition_spot_accumulation_campaign(
+            bargain_sell,
+            rolling_change_pct=0.5,
+            accumulation_level=0,
+            signal_at_ms=3,
+            new_campaign_id="unused",
+        )
+        next_drop = transition_spot_accumulation_campaign(
+            recovered,
+            rolling_change_pct=-4,
+            accumulation_level=1,
+            signal_at_ms=4,
+            new_campaign_id="accumulation-2",
+        )
+
+        self.assertFalse(recovered["accumulation_active"])
+        self.assertEqual(next_drop["accumulation_campaign_id"], "accumulation-2")
+        self.assertEqual(next_drop["accumulation_highest_completed_level"], 0)
 
     def test_sell_l1_is_available_after_buy_campaign_resets_sell(self):
         sell = self.complete(self.transition(None, "sell", 3, 1), 3)
@@ -810,6 +884,15 @@ class SpotStrategyCampaignTests(unittest.TestCase):
                 signal_at_ms=1,
                 path=db_path,
             )
+            campaign = sync_spot_accumulation_campaign(
+                account_key="manual_spot",
+                asset_symbol="TIA",
+                quote_symbol="USDT",
+                rolling_change_pct=-4,
+                accumulation_level=2,
+                signal_at_ms=1,
+                path=db_path,
+            )
             intent = create_spot_order_intent(
                 {
                     "intent_id": "filled-buy-l2",
@@ -835,11 +918,11 @@ class SpotStrategyCampaignTests(unittest.TestCase):
             )
             action = ensure_spot_strategy_action(
                 {
-                    "action_key": f"accumulate_asset:{campaign['campaign_id']}:level:2",
+                    "action_key": f"accumulate_asset:{campaign['accumulation_campaign_id']}:level:2",
                     "account_key": "manual_spot",
                     "asset_symbol": "TIA",
                     "quote_symbol": "USDT",
-                    "campaign_id": campaign["campaign_id"],
+                    "campaign_id": campaign["accumulation_campaign_id"],
                     "action_type": "accumulate_asset",
                     "side": "buy",
                     "signal_level": 2,
@@ -859,16 +942,17 @@ class SpotStrategyCampaignTests(unittest.TestCase):
                 path=db_path,
             )
 
-            repaired = reconcile_spot_strategy_campaign_progress(
+            repaired = reconcile_spot_accumulation_campaign_progress(
                 account_key="manual_spot",
                 asset_symbol="TIA",
                 quote_symbol="USDT",
-                campaign_id=campaign["campaign_id"],
+                campaign_id=campaign["accumulation_campaign_id"],
                 path=db_path,
             )
 
-            self.assertEqual(repaired["highest_completed_level"], 2)
-            self.assertEqual(repaired["last_opening_price"], 0.49)
+            self.assertEqual(repaired["highest_completed_level"], 0)
+            self.assertEqual(repaired["accumulation_highest_completed_level"], 2)
+            self.assertEqual(repaired["last_accumulation_opening_price"], 0.49)
 
     def test_campaign_capacity_and_consumption_survive_restart_idempotently(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1175,17 +1259,24 @@ class RecordingProgressiveExecutor(ProgressiveSpotSwingExecutor):
             {"status": "completed", "completed_at_ms": action["updated_at_ms"]},
             path=self.db_path,
         ) or action
-        if action["action_type"] in {"open", "accumulate_asset"}:
+        if action["action_type"] == "open":
             complete_spot_strategy_campaign_level(
                 account_key=action["account_key"],
                 asset_symbol=action["asset_symbol"],
                 quote_symbol=action["quote_symbol"],
                 campaign_id=action["campaign_id"],
                 signal_level=action["signal_level"],
-                consumed_quantity=(
-                    action["requested_quantity"] if action["action_type"] == "open" else 0
-                ),
-                action_key=(action["action_key"] if action["action_type"] == "open" else None),
+                consumed_quantity=action["requested_quantity"],
+                action_key=action["action_key"],
+                path=self.db_path,
+            )
+        elif action["action_type"] == "accumulate_asset":
+            complete_spot_accumulation_campaign_level(
+                account_key=action["account_key"],
+                asset_symbol=action["asset_symbol"],
+                quote_symbol=action["quote_symbol"],
+                campaign_id=action["campaign_id"],
+                signal_level=action["signal_level"],
                 path=self.db_path,
             )
         return updated
@@ -1304,7 +1395,9 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             **self.signal(4, 40),
             "opportunity": "buy",
             "trading_objective": "accumulate_asset",
+            "accumulation_level": 4,
             "accumulation_tranche_pct": 10,
+            "rolling_change_pct": -10,
         }
 
         with patch("bot.spot_strategy.load_portfolio_snapshot", return_value=(portfolio, [])):
@@ -1316,8 +1409,9 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
         self.assertEqual(result["reason"]["accumulation_tranche_pct"], 19)
         self.assertEqual(result["reason"]["planned_quote_to_spend"], 19)
         self.assertEqual(campaign["highest_completed_level"], 4)
-        self.assertEqual(len(actions), 1)
-        self.assertTrue(actions[0]["action_key"].endswith(":level:4"))
+        self.assertEqual(campaign["accumulation_highest_completed_level"], 4)
+        self.assertEqual(len(actions), 2)
+        self.assertTrue(all(action["action_key"].endswith(":level:4") for action in actions))
 
     def test_completed_accumulation_persists_confirmed_fill_price(self):
         campaign = sync_spot_strategy_campaign(
@@ -1326,6 +1420,15 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             quote_symbol="USDT",
             opportunity="buy",
             signal_level=2,
+            signal_at_ms=1,
+            path=self.db_path,
+        )
+        campaign = sync_spot_accumulation_campaign(
+            account_key="manual_spot",
+            asset_symbol="NEAR",
+            quote_symbol="USDT",
+            rolling_change_pct=-4,
+            accumulation_level=2,
             signal_at_ms=1,
             path=self.db_path,
         )
@@ -1354,11 +1457,11 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
         )
         action = ensure_spot_strategy_action(
             {
-                "action_key": f"accumulate_asset:{campaign['campaign_id']}:level:2",
+                "action_key": f"accumulate_asset:{campaign['accumulation_campaign_id']}:level:2",
                 "account_key": "manual_spot",
                 "asset_symbol": "NEAR",
                 "quote_symbol": "USDT",
-                "campaign_id": campaign["campaign_id"],
+                "campaign_id": campaign["accumulation_campaign_id"],
                 "action_type": "accumulate_asset",
                 "side": "buy",
                 "signal_level": 2,
@@ -1382,8 +1485,9 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
         executor._complete_action(action)
 
         completed = load_spot_strategy_campaign("NEAR", path=self.db_path)
-        self.assertEqual(completed["highest_completed_level"], 2)
-        self.assertEqual(completed["last_opening_price"], 4.85)
+        self.assertEqual(completed["highest_completed_level"], 0)
+        self.assertEqual(completed["accumulation_highest_completed_level"], 2)
+        self.assertEqual(completed["last_accumulation_opening_price"], 4.85)
 
     def test_action_is_not_marked_completed_before_campaign_progress(self):
         campaign = sync_spot_strategy_campaign(

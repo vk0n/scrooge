@@ -545,6 +545,7 @@ def _attach_asset_performance(
             {
                 "accumulated_asset_quantity": 0.0,
                 "accumulated_cash_gain": 0.0,
+                "open_bargain_count": 0,
                 "open_bargain_pnl": 0.0,
                 "reserve_deployment_asset_quantity": 0.0,
                 "reserve_deployment_quote_cost": 0.0,
@@ -563,6 +564,7 @@ def _attach_asset_performance(
             ):
                 portfolio_accumulated_cash += cash_gain
             continue
+        performance["open_bargain_count"] += 1
         performance["open_bargain_pnl"] += (
             (_as_float(economics.get("realized_pnl_quote")) or 0.0)
             + (_as_float(economics.get("unrealized_pnl_quote")) or 0.0)
@@ -575,6 +577,7 @@ def _attach_asset_performance(
             {
                 "accumulated_asset_quantity": 0.0,
                 "accumulated_cash_gain": 0.0,
+                "open_bargain_count": 0,
                 "open_bargain_pnl": 0.0,
                 "reserve_deployment_asset_quantity": 0.0,
                 "reserve_deployment_quote_cost": 0.0,
@@ -589,6 +592,7 @@ def _attach_asset_performance(
 
     for holding in holdings:
         if bool(holding.get("is_dry_powder")):
+            holding["open_bargain_count"] = 0
             continue
         key = (str(holding["asset_symbol"]), str(holding["quote_symbol"]))
         owner = owner_positions.get(
@@ -605,6 +609,7 @@ def _attach_asset_performance(
             {
                 "accumulated_asset_quantity": 0.0,
                 "accumulated_cash_gain": 0.0,
+                "open_bargain_count": 0,
                 "open_bargain_pnl": 0.0,
                 "reserve_deployment_asset_quantity": 0.0,
                 "reserve_deployment_quote_cost": 0.0,
@@ -617,6 +622,7 @@ def _attach_asset_performance(
         performance_capital = initial_capital + manual_realized_cost_basis
         accumulated_asset = float(performance["accumulated_asset_quantity"])
         accumulated_cash = float(performance["accumulated_cash_gain"])
+        open_bargain_count = int(performance["open_bargain_count"])
         open_bargain_pnl = float(performance["open_bargain_pnl"])
         reserve_deployment_asset = float(performance["reserve_deployment_asset_quantity"])
         reserve_deployment_cost = float(performance["reserve_deployment_quote_cost"])
@@ -661,6 +667,7 @@ def _attach_asset_performance(
                     else None
                 ),
                 "accumulated_cash_gain": accumulated_cash,
+                "open_bargain_count": open_bargain_count,
                 "open_bargain_pnl": open_bargain_pnl,
                 "settled_quantity": settled_quantity,
                 "effective_cost_basis": effective_cost_basis,
