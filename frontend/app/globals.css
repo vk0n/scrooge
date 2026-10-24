@@ -3444,7 +3444,7 @@ button.treasury-summary-card-swings:focus-visible,
 
 .treasury-holding-lines {
   display: grid;
-  grid-template-columns: 1.12fr 0.82fr 0.82fr 0.94fr 1.22fr 1.55fr;
+  grid-template-columns: 1.32fr 0.82fr 0.82fr 0.94fr 1.02fr 1.55fr;
   gap: 0;
   min-width: 0;
 }
@@ -5633,7 +5633,7 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-holding-lines {
-    grid-template-columns: 1.12fr 0.82fr 0.82fr 0.94fr 1.24fr 1.5fr;
+    grid-template-columns: 1.34fr 0.82fr 0.82fr 0.94fr 1.02fr 1.5fr;
   }
 
   .treasury-holding-lines > span {
@@ -5664,7 +5664,7 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 
   .treasury-holding-lines {
-    grid-template-columns: 1.08fr 0.78fr 0.78fr 0.9fr 1.3fr 1.58fr;
+    grid-template-columns: 1.34fr 0.78fr 0.78fr 0.9fr 1.04fr 1.58fr;
   }
 
   .treasury-holding-lines > span {

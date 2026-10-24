@@ -3072,7 +3072,7 @@ function HoldingCard({
             <span>
               <span>Stack</span>
               <strong>
-                {formatAssetQuantity(holding.quantity, holding.asset_symbol)} / {holding.target_quantity === null
+                {formatAssetQuantity(holding.quantity, holding.asset_symbol)}/{holding.target_quantity === null
                   ? "—"
                   : formatAssetQuantity(holding.target_quantity, holding.asset_symbol)}
               </strong>
