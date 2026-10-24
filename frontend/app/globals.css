@@ -3104,15 +3104,21 @@ button.treasury-summary-card-swings:focus-visible,
   fill: rgba(83, 144, 211, 0.24);
 }
 
+.treasury-bargain-flow-chart .treasury-bargain-open-line,
 .treasury-bargain-flow-chart .treasury-bargain-closed-line,
 .treasury-bargain-flow-chart .treasury-bargain-total-line {
   fill: none;
   vector-effect: non-scaling-stroke;
 }
 
+.treasury-bargain-flow-chart .treasury-bargain-open-line {
+  stroke: #579ee8;
+  stroke-width: 3;
+}
+
 .treasury-bargain-flow-chart .treasury-bargain-closed-line {
   stroke: #31bd8c;
-  stroke-width: 2;
+  stroke-width: 3;
 }
 
 .treasury-bargain-flow-chart .treasury-bargain-total-line {
@@ -3120,9 +3126,19 @@ button.treasury-summary-card-swings:focus-visible,
   stroke-width: 3;
 }
 
-.treasury-bargain-flow-chart circle {
+.treasury-bargain-flow-chart .treasury-bargain-total-point {
   fill: #0b1017;
   stroke: #dcb449;
+}
+
+.treasury-bargain-flow-chart .treasury-bargain-open-point {
+  fill: #0b1017;
+  stroke: #579ee8;
+}
+
+.treasury-bargain-flow-chart .treasury-bargain-closed-point {
+  fill: #0b1017;
+  stroke: #31bd8c;
 }
 
 .treasury-timeline-series > footer.treasury-bargain-flow-legend {
@@ -3460,6 +3476,23 @@ button.treasury-summary-card-swings:focus-visible,
   display: flex;
   align-items: baseline;
   gap: 0.32rem;
+}
+
+.treasury-holding-lines .treasury-open-bargain-count,
+.treasury-holding-lines .treasury-open-bargain-separator {
+  color: #eef3fb;
+}
+
+.treasury-holding-lines .treasury-open-bargain-pnl.value-positive {
+  color: var(--value-positive-surface);
+}
+
+.treasury-holding-lines .treasury-open-bargain-pnl.value-negative {
+  color: var(--value-negative-surface);
+}
+
+.treasury-holding-lines .treasury-open-bargain-pnl.value-neutral {
+  color: var(--value-neutral);
 }
 
 .treasury-rolling-change {

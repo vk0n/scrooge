@@ -813,6 +813,7 @@ function FlippableTimelineSeries({
 
 type BargainTimelineCoordinate = {
   x: number;
+  openY: number;
   closedY: number;
   totalY: number;
   point: PortfolioTimelinePoint;
@@ -820,7 +821,7 @@ type BargainTimelineCoordinate = {
 
 function bargainStepLine(
   coordinates: BargainTimelineCoordinate[],
-  valueKey: "closedY" | "totalY"
+  valueKey: "openY" | "closedY" | "totalY"
 ): string {
   if (!coordinates.length) return "";
   return coordinates.slice(1).reduce(
@@ -852,24 +853,47 @@ function BargainFlowSeries({
   const height = 150;
   const paddingX = 14;
   const paddingY = 16;
-  const baselineY = height - paddingY;
-  const maximum = Math.max(1, ...timeline.map((point) => point.total_bargain_count));
+  const focusChanges = rangeLabel === "7 days";
+  const baseline = timeline[0];
+  const values = timeline.map((point) => ({
+    open: focusChanges && baseline
+      ? point.open_bargain_count - baseline.open_bargain_count
+      : point.open_bargain_count,
+    closed: focusChanges && baseline
+      ? point.closed_bargain_count - baseline.closed_bargain_count
+      : point.closed_bargain_count,
+    total: focusChanges && baseline
+      ? point.total_bargain_count - baseline.total_bargain_count
+      : point.total_bargain_count,
+  }));
+  const plottedValues = values.flatMap((point) => [point.open, point.closed, point.total]);
+  let minimum = focusChanges ? Math.min(0, ...plottedValues) : 0;
+  let maximum = Math.max(1, ...plottedValues);
+  if (focusChanges) {
+    const range = Math.max(1, maximum - minimum);
+    const chartPadding = Math.max(0.75, range * 0.16);
+    minimum -= chartPadding;
+    maximum += chartPadding;
+  }
   const y = (value: number): number =>
-    paddingY + ((maximum - value) / maximum) * (height - paddingY * 2);
+    paddingY + ((maximum - value) / (maximum - minimum)) * (height - paddingY * 2);
   const coordinates: BargainTimelineCoordinate[] = timeline.map((point, index) => ({
     x: timeline.length === 1
       ? width / 2
       : paddingX + (index / (timeline.length - 1)) * (width - paddingX * 2),
-    closedY: y(point.closed_bargain_count),
-    totalY: y(point.total_bargain_count),
+    openY: y(values[index].open),
+    closedY: y(values[index].closed),
+    totalY: y(values[index].total),
     point,
   }));
+  const openLine = bargainStepLine(coordinates, "openY");
   const closedLine = bargainStepLine(coordinates, "closedY");
   const totalLine = bargainStepLine(coordinates, "totalY");
-  const closedArea = coordinates.length
-    ? `${closedLine} L ${coordinates[coordinates.length - 1].x} ${baselineY} H ${coordinates[0].x} Z`
+  const zeroY = y(0);
+  const closedArea = coordinates.length && !focusChanges
+    ? `${closedLine} L ${coordinates[coordinates.length - 1].x} ${zeroY} H ${coordinates[0].x} Z`
     : "";
-  const openArea = bargainOpenBand(coordinates);
+  const openArea = focusChanges ? "" : bargainOpenBand(coordinates);
 
   return (
     <div className="treasury-timeline-series treasury-bargain-flow-series">
@@ -882,15 +906,16 @@ function BargainFlowSeries({
           <svg
             viewBox="0 0 600 150"
             role="img"
-            aria-label={`${rangeLabel} Open, Closed, and Total Bargain timeline`}
+            aria-label={`${rangeLabel} Open, Closed, and Total Bargain ${focusChanges ? "changes" : "timeline"}`}
             preserveAspectRatio="none"
           >
-            <line x1="0" y1="75" x2="600" y2="75" className="treasury-timeline-gridline" />
-            <path d={closedArea} className="treasury-bargain-closed-area" />
-            <path d={openArea} className="treasury-bargain-open-area" />
+            <line x1="0" y1={focusChanges ? zeroY : 75} x2="600" y2={focusChanges ? zeroY : 75} className="treasury-timeline-gridline" />
+            {closedArea ? <path d={closedArea} className="treasury-bargain-closed-area" /> : null}
+            {openArea ? <path d={openArea} className="treasury-bargain-open-area" /> : null}
+            {focusChanges ? <path d={openLine} className="treasury-bargain-open-line" /> : null}
             <path d={closedLine} className="treasury-bargain-closed-line" />
             <path d={totalLine} className="treasury-bargain-total-line" />
-            {coordinates.map(({ x, totalY, point }, index) => {
+            {coordinates.map(({ x, openY, closedY, totalY, point }, index) => {
               const previous = timeline[index - 1];
               const dailyChange = previous
                 ? `Open ${formatSignedCount(point.open_bargain_count - previous.open_bargain_count)}, `
@@ -898,9 +923,21 @@ function BargainFlowSeries({
                   + `Total ${formatSignedCount(point.total_bargain_count - previous.total_bargain_count)}`
                 : "Baseline";
               return (
-                <circle key={point.snapshot_date} cx={x} cy={totalY} r={coordinates.length === 1 ? 5 : 3}>
-                  <title>{formatTimelineDate(point.snapshot_date)}: {dailyChange}</title>
-                </circle>
+                <g key={point.snapshot_date}>
+                  {focusChanges ? (
+                    <>
+                      <circle className="treasury-bargain-open-point" cx={x} cy={openY} r={3}>
+                        <title>{formatTimelineDate(point.snapshot_date)}: {dailyChange}</title>
+                      </circle>
+                      <circle className="treasury-bargain-closed-point" cx={x} cy={closedY} r={3}>
+                        <title>{formatTimelineDate(point.snapshot_date)}: {dailyChange}</title>
+                      </circle>
+                    </>
+                  ) : null}
+                  <circle className="treasury-bargain-total-point" cx={x} cy={totalY} r={coordinates.length === 1 ? 5 : 3}>
+                    <title>{formatTimelineDate(point.snapshot_date)}: {dailyChange}</title>
+                  </circle>
+                </g>
               );
             })}
           </svg>
@@ -3061,9 +3098,11 @@ function HoldingCard({
                 <strong>—</strong>
               ) : (
                 <strong className="treasury-open-bargains-summary">
-                  <span>{formatNumber(holding.open_bargain_count, 0)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span className={signedToneClass(holding.open_bargain_pnl, "")}>
+                  <span className="treasury-open-bargain-count">
+                    {formatNumber(holding.open_bargain_count, 0)}
+                  </span>
+                  <span className="treasury-open-bargain-separator" aria-hidden="true">·</span>
+                  <span className={signedToneClass(holding.open_bargain_pnl, "treasury-open-bargain-pnl")}>
                     {formatSignedCurrency(holding.open_bargain_pnl)}
                   </span>
                 </strong>

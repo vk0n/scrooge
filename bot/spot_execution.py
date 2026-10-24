@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -55,6 +56,10 @@ class SpotOrderRejectedError(RuntimeError):
 
 class SpotOrderValidationError(ValueError):
     """A deterministic pre-submission rejection; Binance cannot have accepted the order."""
+
+
+class SpotOrderExecutionInProgressError(RuntimeError):
+    """Another worker already owns this intent's submission path."""
 
 
 def _as_float(value: Any) -> float | None:
@@ -186,6 +191,9 @@ class SpotOrderExecutor:
         self.logger = logger
         self.db_path = db_path
         self.strategy_config = strategy_config or ProgressiveSwingConfig()
+        # Commands and signal recovery run on separate threads in the live bot.
+        # Serializing execution prevents both paths from submitting the same intent.
+        self._execution_lock = threading.RLock()
 
     def update_strategy_config(self, strategy_config: ProgressiveSwingConfig) -> None:
         self.strategy_config = strategy_config
@@ -815,6 +823,10 @@ class SpotOrderExecutor:
         return result
 
     def execute(self, intent_id: str) -> dict[str, Any]:
+        with self._execution_lock:
+            return self._execute_locked(intent_id)
+
+    def _execute_locked(self, intent_id: str) -> dict[str, Any]:
         execution_enabled = str(os.getenv("SCROOGE_SPOT_EXECUTION_ENABLED", "0") or "0").strip().lower() not in {
             "", "0", "false", "no", "off",
         }
@@ -830,7 +842,13 @@ class SpotOrderExecutor:
                 raise SpotOrderAccountingError("Confirmed fill data is missing; manual reconciliation is required.")
             return self._settle_confirmed_fill(intent, intent["result"])
 
-        recover_exchange_order = intent["status"] in {"submitted", "accepted", "uncertain"}
+        recover_exchange_order = intent["status"] in {
+            "processing",
+            "validated",
+            "submitted",
+            "accepted",
+            "uncertain",
+        }
         if intent["status"] not in {"queueing", "queued", "processing", "validated", "submitted", "accepted", "uncertain"}:
             raise ValueError(f"Spot order intent cannot execute from status {intent['status']}.")
         order_may_exist = recover_exchange_order
@@ -838,12 +856,16 @@ class SpotOrderExecutor:
             if recover_exchange_order:
                 order = self._recover_order(intent)
             else:
-                update_spot_order_intent(
+                claimed = update_spot_order_intent(
                     intent_id,
                     {"status": "processing", "error": None},
-                    expected_statuses={"queueing", "queued", "processing", "validated"},
+                    expected_statuses={"queueing", "queued"},
                     path=self.db_path,
                 )
+                if claimed is None:
+                    raise SpotOrderExecutionInProgressError(
+                        "Another worker already claimed this Spot order intent."
+                    )
                 try:
                     quantity, protected_cash_validation, limit_price = (
                         self._validate_for_submission(intent)
@@ -942,6 +964,8 @@ class SpotOrderExecutor:
                 expected_statuses={"processing", "validated"},
             )
             self.logger.info("spot_order_validation_failed intent_id=%s error=%s", intent_id, exc)
+            raise
+        except SpotOrderExecutionInProgressError:
             raise
         except Exception as exc:
             if order_may_exist:

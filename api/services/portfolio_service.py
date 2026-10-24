@@ -405,6 +405,8 @@ def _derive_owner_positions(
                     "basis": 0.0,
                     "manual_realized_gain": 0.0,
                     "manual_realized_cost_basis": 0.0,
+                    "reconciliation_quantity": 0.0,
+                    "reconciliation_basis": 0.0,
                 },
             )
             capital_flow["basis"] += quantity if office_direction == "from_office" else -quantity
@@ -427,6 +429,8 @@ def _derive_owner_positions(
                 "basis": 0.0,
                 "manual_realized_gain": 0.0,
                 "manual_realized_cost_basis": 0.0,
+                "reconciliation_quantity": 0.0,
+                "reconciliation_basis": 0.0,
             },
         )
         is_standalone_manual_spot = (
@@ -434,6 +438,48 @@ def _derive_owner_positions(
             and not transaction.get("swing_id")
             and not transaction.get("spot_quote_leg")
         )
+        reconciliation_role = str(transaction.get("reconciliation_role") or "").strip().lower()
+        if is_standalone_manual_spot and reconciliation_role == "duplicate-buy" and tx_type == "buy":
+            reconciliation_basis = quantity * (price or 0.0)
+            if _clean_symbol(transaction.get("fee_asset")) == quote:
+                reconciliation_basis += _as_float(transaction.get("fee_amount")) or 0.0
+            bucket["quantity"] += quantity
+            bucket["basis"] += reconciliation_basis
+            bucket["reconciliation_quantity"] += quantity
+            bucket["reconciliation_basis"] += reconciliation_basis
+            continue
+        if is_standalone_manual_spot and reconciliation_role == "corrective-sell" and tx_type == "sell":
+            reconciliation_quantity = bucket["reconciliation_quantity"]
+            if quantity > reconciliation_quantity + 1e-8:
+                raise ValueError("A corrective SELL exceeds its reconciled duplicate BUY lot.")
+            average_basis = (
+                bucket["reconciliation_basis"] / reconciliation_quantity
+                if reconciliation_quantity > 0
+                else 0.0
+            )
+            removed_basis = quantity * average_basis
+            executed_quote = _as_float(transaction.get("executed_quote_quantity"))
+            if executed_quote is None:
+                executed_quote = quantity * price if price is not None else 0.0
+            commissions = (
+                transaction.get("commissions")
+                if isinstance(transaction.get("commissions"), dict)
+                else {}
+            )
+            quote_fee = _as_float(commissions.get(quote))
+            if quote_fee is None and _clean_symbol(transaction.get("fee_asset")) == quote:
+                quote_fee = _as_float(transaction.get("fee_amount"))
+            net_quote = max(0.0, executed_quote - (quote_fee or 0.0))
+            bucket["quantity"] = max(0.0, bucket["quantity"] - quantity)
+            bucket["basis"] = max(0.0, bucket["basis"] - removed_basis)
+            bucket["reconciliation_quantity"] = max(0.0, reconciliation_quantity - quantity)
+            bucket["reconciliation_basis"] = max(
+                0.0,
+                bucket["reconciliation_basis"] - removed_basis,
+            )
+            bucket["manual_realized_gain"] += net_quote - removed_basis
+            bucket["manual_realized_cost_basis"] += removed_basis
+            continue
         if is_standalone_manual_spot and tx_type == "sell":
             average_basis = bucket["basis"] / bucket["quantity"] if bucket["quantity"] > 0 else 0.0
             removed_quantity = min(quantity, bucket["quantity"])

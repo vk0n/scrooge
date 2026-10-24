@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from bot.spot_execution import (
     SpotOrderUncertainError,
     SpotOrderValidationError,
 )
+from bot.spot_reconciliation import register_corrective_sell, register_duplicate_buy
 from core.runtime_db import (
     apply_spot_swing_cash_retention,
     append_spot_swing_execution,
@@ -463,6 +465,139 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(recovered["order_id"], "42")
         self.assertEqual(client.create_calls, 1)
         self.assertEqual(load_spot_order_intent(preview["intent_id"], path=self.db_path)["status"], "filled")
+
+    def test_concurrent_execution_submits_one_binance_order(self):
+        preview = self._preview_and_queue("buy", 0.25)
+
+        class SlowClient(FakeSpotExecutionClient):
+            def create_order(self, **kwargs):
+                time.sleep(0.05)
+                return super().create_order(**kwargs)
+
+        client = SlowClient()
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(executor.execute, [preview["intent_id"], preview["intent_id"]]))
+
+        self.assertEqual(client.create_calls, 1)
+        self.assertEqual([result["order_id"] for result in results], ["42", "42"])
+
+    def test_duplicate_buy_and_corrective_sell_reconciliation_preserve_target(self):
+        preview = self._preview_and_queue("buy", 0.25)
+        executor = SpotOrderExecutor(
+            FakeSpotExecutionClient(),
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+        executor.execute(preview["intent_id"])
+        policy_before = next(
+            item for item in list_portfolio_asset_policies(path=self.db_path)
+            if item["asset_symbol"] == "BTC"
+        )
+        snapshot_before, _ = portfolio_service.load_portfolio_snapshot()
+        holding_before = next(
+            item for item in snapshot_before["holdings"]
+            if item["asset_symbol"] == "BTC"
+        )
+        duplicate = {
+            "status": "FILLED",
+            "order_id": "43",
+            "client_order_id": preview["client_order_id"],
+            "executed_quantity": 0.25,
+            "submitted_quantity": 0.25,
+            "executed_quote_quantity": 25.0,
+            "average_price": 100.0,
+            "fee_amount": 0.001,
+            "fee_asset": "BNB",
+            "commissions": {"BNB": 0.001},
+            "fills": [],
+            "executed_at_ms": 1_790_120_001_000,
+        }
+        update_spot_order_intent(
+            preview["intent_id"],
+            {
+                "status": "accounting_error",
+                "error": "duplicate fill",
+                "result_json": duplicate,
+            },
+            expected_statuses={"filled"},
+            path=self.db_path,
+        )
+
+        duplicate_report = register_duplicate_buy(
+            preview["intent_id"],
+            expected_duplicate_order_id="43",
+            path=self.db_path,
+            apply=True,
+        )
+        duplicate_replay = register_duplicate_buy(
+            preview["intent_id"],
+            expected_duplicate_order_id="43",
+            path=self.db_path,
+            apply=True,
+        )
+        correction = {
+            "status": "FILLED",
+            "order_id": "44",
+            "client_order_id": "operator-correction-44",
+            "executed_quantity": 0.25,
+            "submitted_quantity": 0.25,
+            "executed_quote_quantity": 24.0,
+            "average_price": 96.0,
+            "fee_amount": 0.001,
+            "fee_asset": "BNB",
+            "commissions": {"BNB": 0.001},
+            "fills": [],
+            "executed_at_ms": 1_790_120_002_000,
+        }
+        correction_report = register_corrective_sell(
+            preview["intent_id"],
+            correction,
+            path=self.db_path,
+            apply=True,
+        )
+        correction_replay = register_corrective_sell(
+            preview["intent_id"],
+            correction,
+            path=self.db_path,
+            apply=True,
+        )
+
+        transactions = list_portfolio_transactions(path=self.db_path)
+        reconciliations = [item for item in transactions if item.get("reconciliation_role")]
+        quote_legs = [
+            item for item in transactions
+            if str(item.get("base_transaction_id") or "").startswith(
+                f"spot-reconciliation:{preview['intent_id']}:"
+            )
+        ]
+        policy_after = next(
+            item for item in list_portfolio_asset_policies(path=self.db_path)
+            if item["asset_symbol"] == "BTC"
+        )
+        snapshot_after, _ = portfolio_service.load_portfolio_snapshot()
+        holding_after = next(
+            item for item in snapshot_after["holdings"]
+            if item["asset_symbol"] == "BTC"
+        )
+        intent = load_spot_order_intent(preview["intent_id"], path=self.db_path)
+
+        self.assertEqual(duplicate_report["transaction_id"], duplicate_replay["transaction_id"])
+        self.assertEqual(correction_report["transaction_id"], correction_replay["transaction_id"])
+        self.assertAlmostEqual(correction_report["realized_quote_result"], -1.0)
+        self.assertEqual(len(reconciliations), 2)
+        self.assertEqual(len(quote_legs), 2)
+        self.assertAlmostEqual(policy_after["target_quantity"], policy_before["target_quantity"])
+        self.assertAlmostEqual(holding_after["initial_quantity"], holding_before["initial_quantity"])
+        self.assertAlmostEqual(holding_after["initial_capital"], holding_before["initial_capital"])
+        self.assertAlmostEqual(holding_after["manual_realized_gain"], -1.0)
+        self.assertEqual(intent["status"], "filled")
+        self.assertEqual(intent["result"]["reconciliation"]["duplicate_position_status"], "closed")
 
     def test_manual_buy_increases_target_by_net_received_asset_once(self):
         preview = self._preview_and_queue("buy", 0.25)
