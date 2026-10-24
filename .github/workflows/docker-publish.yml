@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: docker-publish-${{ github.ref }}
-  cancel-in-progress: true
+  # Each push builds only the services changed by that push. Cancelling an
+  # earlier run can therefore leave one of the service images unpublished.
+  cancel-in-progress: false
 
 jobs:
   detect-changes:
@@ -34,6 +36,7 @@ jobs:
           filters: |
             bot:
               - '.dockerignore'
+              - '.github/workflows/docker-publish.yml'
               - 'docker/bot.Dockerfile'
               - 'requirements/**'
               - 'docker/backtest_entrypoint.sh'
@@ -45,6 +48,7 @@ jobs:
               - 'data/**'
             backtest:
               - '.dockerignore'
+              - '.github/workflows/docker-publish.yml'
               - 'docker/backtest.Dockerfile'
               - 'docker/backtest_entrypoint.sh'
               - 'requirements/**'
@@ -62,6 +66,7 @@ jobs:
               - 'core/**'
             frontend:
               - '.dockerignore'
+              - '.github/workflows/docker-publish.yml'
               - 'docker/frontend.Dockerfile'
               - 'frontend/**'
 
