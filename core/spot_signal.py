@@ -9,6 +9,11 @@ from typing import Sequence
 DEFAULT_SIGNAL_LEVELS_PCT = (2.0, 3.0, 4.0, 5.0)
 DEFAULT_BASE_TRANCHES_PCT = (10.0, 20.0, 30.0, 40.0)
 DEFAULT_ACCUMULATION_TRANCHES_PCT = (1.0, 3.0, 5.0, 10.0)
+DEFAULT_ACCUMULATION_COOLDOWN_HOURS = 24.0
+DEFAULT_ACCUMULATION_MIN_PRICE_IMPROVEMENT_PCT = 3.0
+DEFAULT_ACCUMULATION_REARM_RECOVERY_PCT = 10.0
+DEFAULT_ACCUMULATION_REARM_SIGNAL_ABOVE_PCT = -5.0
+DEFAULT_ACCUMULATION_REARM_CONFIRMATION_HOURS = 12.0
 ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000
 MIN_ROLLING_WINDOW_MS = 23 * 60 * 60 * 1000
 MAX_ROLLING_WINDOW_MS = 25 * 60 * 60 * 1000
@@ -20,6 +25,17 @@ class SpotSignalConfig:
     base_tranches_pct: tuple[float, ...] = DEFAULT_BASE_TRANCHES_PCT
     accumulation_levels_pct: tuple[float, ...] | None = None
     accumulation_tranches_pct: tuple[float, ...] | None = None
+    accumulation_cooldown_hours: float = DEFAULT_ACCUMULATION_COOLDOWN_HOURS
+    accumulation_min_price_improvement_pct: float = (
+        DEFAULT_ACCUMULATION_MIN_PRICE_IMPROVEMENT_PCT
+    )
+    accumulation_rearm_recovery_pct: float = DEFAULT_ACCUMULATION_REARM_RECOVERY_PCT
+    accumulation_rearm_signal_above_pct: float = (
+        DEFAULT_ACCUMULATION_REARM_SIGNAL_ABOVE_PCT
+    )
+    accumulation_rearm_confirmation_hours: float = (
+        DEFAULT_ACCUMULATION_REARM_CONFIRMATION_HOURS
+    )
 
     def __post_init__(self) -> None:
         levels = tuple(float(value) for value in self.levels_pct)
@@ -66,10 +82,56 @@ class SpotSignalConfig:
             raise ValueError(
                 "Spot accumulation tranches must be finite percentages in the range (0, 100]."
             )
+        cooldown_hours = float(self.accumulation_cooldown_hours)
+        minimum_improvement_pct = float(self.accumulation_min_price_improvement_pct)
+        rearm_recovery_pct = float(self.accumulation_rearm_recovery_pct)
+        rearm_signal_above_pct = float(self.accumulation_rearm_signal_above_pct)
+        rearm_confirmation_hours = float(self.accumulation_rearm_confirmation_hours)
+        if not math.isfinite(cooldown_hours) or cooldown_hours < 0:
+            raise ValueError(
+                "Spot accumulation cooldown must be a finite non-negative number of hours."
+            )
+        if (
+            not math.isfinite(minimum_improvement_pct)
+            or minimum_improvement_pct < 0
+            or minimum_improvement_pct >= 100
+        ):
+            raise ValueError(
+                "Spot accumulation minimum price improvement must be in the range [0, 100)."
+            )
+        if (
+            not math.isfinite(rearm_recovery_pct)
+            or rearm_recovery_pct <= 0
+            or rearm_recovery_pct >= 100
+        ):
+            raise ValueError("Spot accumulation rearm recovery must be in the range (0, 100).")
+        if not math.isfinite(rearm_signal_above_pct):
+            raise ValueError("Spot accumulation rearm signal threshold must be finite.")
+        if not math.isfinite(rearm_confirmation_hours) or rearm_confirmation_hours < 0:
+            raise ValueError(
+                "Spot accumulation rearm confirmation must be a finite non-negative number of hours."
+            )
         object.__setattr__(self, "levels_pct", levels)
         object.__setattr__(self, "base_tranches_pct", tranches)
         object.__setattr__(self, "accumulation_levels_pct", accumulation_levels)
         object.__setattr__(self, "accumulation_tranches_pct", accumulation_tranches)
+        object.__setattr__(self, "accumulation_cooldown_hours", cooldown_hours)
+        object.__setattr__(
+            self,
+            "accumulation_min_price_improvement_pct",
+            minimum_improvement_pct,
+        )
+        object.__setattr__(self, "accumulation_rearm_recovery_pct", rearm_recovery_pct)
+        object.__setattr__(
+            self,
+            "accumulation_rearm_signal_above_pct",
+            rearm_signal_above_pct,
+        )
+        object.__setattr__(
+            self,
+            "accumulation_rearm_confirmation_hours",
+            rearm_confirmation_hours,
+        )
 
 
 def _positive_number(value: float, field_name: str) -> float:
@@ -151,6 +213,19 @@ def evaluate_rolling_24h_opportunity(
         "base_tranches_pct": list(resolved_config.base_tranches_pct),
         "accumulation_levels_pct": list(resolved_config.accumulation_levels_pct),
         "accumulation_tranches_pct": list(resolved_config.accumulation_tranches_pct),
+        "accumulation_cooldown_hours": resolved_config.accumulation_cooldown_hours,
+        "accumulation_min_price_improvement_pct": (
+            resolved_config.accumulation_min_price_improvement_pct
+        ),
+        "accumulation_rearm_recovery_pct": (
+            resolved_config.accumulation_rearm_recovery_pct
+        ),
+        "accumulation_rearm_signal_above_pct": (
+            resolved_config.accumulation_rearm_signal_above_pct
+        ),
+        "accumulation_rearm_confirmation_hours": (
+            resolved_config.accumulation_rearm_confirmation_hours
+        ),
     }
 
 

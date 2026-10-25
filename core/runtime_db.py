@@ -22,15 +22,15 @@ from core.spot_swing import (
     calculate_target_ratchet,
 )
 from core.spot_strategy import (
-    transition_spot_accumulation_campaign,
+    transition_spot_accumulation_ladder,
     transition_spot_strategy_campaign,
 )
 
 DEFAULT_DB_FILENAME = "scrooge.sqlite3"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_SNAPSHOT_KEY = "current"
-RUNTIME_DB_SCHEMA_VERSION = 22
-RUNTIME_DB_SCHEMA_DESCRIPTION = "Separate accumulation progress from Bargain campaigns"
+RUNTIME_DB_SCHEMA_VERSION = 23
+RUNTIME_DB_SCHEMA_DESCRIPTION = "Add cooldown and recovery rearm state for accumulation ladders"
 
 
 class RuntimeDbError(OSError):
@@ -747,6 +747,9 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             accumulation_last_signal_level INTEGER NOT NULL DEFAULT 0,
             accumulation_last_signal_at_ms INTEGER,
             last_accumulation_opening_price REAL,
+            accumulation_last_executed_at_ms INTEGER,
+            accumulation_local_low_price REAL,
+            accumulation_rearm_started_at_ms INTEGER,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
             PRIMARY KEY (account_key, asset_symbol, quote_symbol),
@@ -1024,6 +1027,9 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         ("accumulation_last_signal_level", "INTEGER NOT NULL DEFAULT 0"),
         ("accumulation_last_signal_at_ms", "INTEGER"),
         ("last_accumulation_opening_price", "REAL"),
+        ("accumulation_last_executed_at_ms", "INTEGER"),
+        ("accumulation_local_low_price", "REAL"),
+        ("accumulation_rearm_started_at_ms", "INTEGER"),
     ):
         if column_name not in campaign_columns:
             connection.execute(
@@ -1051,6 +1057,32 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             WHERE active_side = 'buy' AND campaign_id IS NOT NULL
             """
         )
+    connection.execute(
+        """
+        UPDATE spot_strategy_campaigns
+        SET accumulation_local_low_price = last_accumulation_opening_price
+        WHERE accumulation_active = 1
+          AND accumulation_local_low_price IS NULL
+          AND last_accumulation_opening_price IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
+        UPDATE spot_strategy_campaigns
+        SET accumulation_last_executed_at_ms = (
+            SELECT MAX(actions.completed_at_ms)
+            FROM spot_strategy_actions AS actions
+            WHERE actions.account_key = spot_strategy_campaigns.account_key
+              AND actions.asset_symbol = spot_strategy_campaigns.asset_symbol
+              AND actions.quote_symbol = spot_strategy_campaigns.quote_symbol
+              AND actions.campaign_id = spot_strategy_campaigns.accumulation_campaign_id
+              AND actions.action_type = 'accumulate_asset'
+              AND actions.status = 'completed'
+        )
+        WHERE accumulation_last_executed_at_ms IS NULL
+          AND accumulation_campaign_id IS NOT NULL
+        """
+    )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS spot_strategy_campaign_consumptions (
@@ -2671,6 +2703,11 @@ def _spot_strategy_campaign_from_row(row: sqlite3.Row) -> dict[str, Any]:
             str(row["campaign_capacity_mode"]) if row["campaign_capacity_mode"] is not None else None
         ),
         "last_opening_price": _as_float_or_none(row["last_opening_price"]),
+        "accumulation_cycle_id": (
+            str(row["accumulation_campaign_id"])
+            if row["accumulation_campaign_id"] is not None
+            else None
+        ),
         "accumulation_campaign_id": (
             str(row["accumulation_campaign_id"])
             if row["accumulation_campaign_id"] is not None
@@ -2688,6 +2725,19 @@ def _spot_strategy_campaign_from_row(row: sqlite3.Row) -> dict[str, Any]:
         ),
         "last_accumulation_opening_price": _as_float_or_none(
             row["last_accumulation_opening_price"]
+        ),
+        "accumulation_last_executed_at_ms": (
+            int(row["accumulation_last_executed_at_ms"])
+            if row["accumulation_last_executed_at_ms"] is not None
+            else None
+        ),
+        "accumulation_local_low_price": _as_float_or_none(
+            row["accumulation_local_low_price"]
+        ),
+        "accumulation_rearm_started_at_ms": (
+            int(row["accumulation_rearm_started_at_ms"])
+            if row["accumulation_rearm_started_at_ms"] is not None
+            else None
         ),
         "created_at_ms": int(row["created_at_ms"]),
         "updated_at_ms": int(row["updated_at_ms"]),
@@ -2819,7 +2869,7 @@ def sync_spot_strategy_campaign(
     return _spot_strategy_campaign_from_row(saved)
 
 
-def sync_spot_accumulation_campaign(
+def sync_spot_accumulation_ladder(
     *,
     account_key: str,
     asset_symbol: str,
@@ -2827,9 +2877,13 @@ def sync_spot_accumulation_campaign(
     rolling_change_pct: float,
     accumulation_level: int,
     signal_at_ms: int,
+    current_price: float,
+    rearm_recovery_pct: float = 10.0,
+    rearm_signal_above_pct: float = -5.0,
+    rearm_confirmation_hours: float = 12.0,
     path: Path | None = None,
 ) -> dict[str, Any]:
-    """Persist reserve-accumulation progress without changing Bargain state."""
+    """Persist accumulation ladder progress without changing Bargain state."""
     normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
     normalized_asset = str(asset_symbol or "").strip().upper()
     normalized_quote = str(quote_symbol or "USDT").strip().upper() or "USDT"
@@ -2844,20 +2898,24 @@ def sync_spot_accumulation_campaign(
         ).fetchone()
         if row is None:
             raise RuntimeDbError("Bargain campaign must be synchronized before accumulation.")
-        transition = transition_spot_accumulation_campaign(
+        transition = transition_spot_accumulation_ladder(
             _spot_strategy_campaign_from_row(row),
             rolling_change_pct=float(rolling_change_pct),
             accumulation_level=int(accumulation_level),
             signal_at_ms=int(signal_at_ms),
-            new_campaign_id=_row_key(
+            current_price=float(current_price),
+            new_cycle_id=_row_key(
                 [
                     normalized_account,
                     normalized_asset,
                     normalized_quote,
-                    "accumulation",
+                    "accumulation-cycle",
                     int(signal_at_ms),
                 ]
             )[:24],
+            rearm_recovery_pct=float(rearm_recovery_pct),
+            rearm_signal_above_pct=float(rearm_signal_above_pct),
+            rearm_confirmation_hours=float(rearm_confirmation_hours),
         )
         connection.execute(
             """
@@ -2865,7 +2923,9 @@ def sync_spot_accumulation_campaign(
             SET accumulation_campaign_id = ?, accumulation_active = ?,
                 accumulation_highest_completed_level = ?,
                 accumulation_last_signal_level = ?, accumulation_last_signal_at_ms = ?,
-                last_accumulation_opening_price = ?, updated_at_ms = ?
+                last_accumulation_opening_price = ?,
+                accumulation_last_executed_at_ms = ?, accumulation_local_low_price = ?,
+                accumulation_rearm_started_at_ms = ?, updated_at_ms = ?
             WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
             """,
             (
@@ -2875,6 +2935,9 @@ def sync_spot_accumulation_campaign(
                 transition["accumulation_last_signal_level"],
                 transition["accumulation_last_signal_at_ms"],
                 transition["last_accumulation_opening_price"],
+                transition["accumulation_last_executed_at_ms"],
+                transition["accumulation_local_low_price"],
+                transition["accumulation_rearm_started_at_ms"],
                 now_ms,
                 normalized_account,
                 normalized_asset,
@@ -2889,7 +2952,7 @@ def sync_spot_accumulation_campaign(
             (normalized_account, normalized_asset, normalized_quote),
         ).fetchone()
     if saved is None:
-        raise RuntimeDbError("Spot accumulation campaign was not persisted.")
+        raise RuntimeDbError("Spot accumulation ladder was not persisted.")
     return _spot_strategy_campaign_from_row(saved)
 
 
@@ -3005,7 +3068,7 @@ def complete_spot_strategy_campaign_level(
         )
 
 
-def complete_spot_accumulation_campaign_level(
+def complete_spot_accumulation_ladder_level(
     *,
     account_key: str,
     asset_symbol: str,
@@ -3013,12 +3076,18 @@ def complete_spot_accumulation_campaign_level(
     campaign_id: str,
     signal_level: int,
     opening_price: float | None = None,
+    executed_at_ms: int | None = None,
     path: Path | None = None,
 ) -> None:
     """Consume one accumulation level without touching Bargain campaign progress."""
     normalized_opening_price = _as_float_or_none(opening_price)
     if normalized_opening_price is not None and normalized_opening_price <= 0:
         normalized_opening_price = None
+    completed_at_ms = (
+        int(executed_at_ms)
+        if executed_at_ms is not None
+        else int(datetime.now(timezone.utc).timestamp() * 1000)
+    )
     with _connection(path) as connection:
         connection.execute(
             """
@@ -3030,6 +3099,15 @@ def complete_spot_accumulation_campaign_level(
                     WHEN ? IS NOT NULL AND ? >= accumulation_highest_completed_level THEN ?
                     ELSE last_accumulation_opening_price
                 END,
+                accumulation_last_executed_at_ms = MAX(
+                    COALESCE(accumulation_last_executed_at_ms, 0), ?
+                ),
+                accumulation_local_low_price = CASE
+                    WHEN accumulation_local_low_price IS NULL THEN ?
+                    WHEN ? IS NULL THEN accumulation_local_low_price
+                    ELSE MIN(accumulation_local_low_price, ?)
+                END,
+                accumulation_rearm_started_at_ms = NULL,
                 updated_at_ms = ?
             WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
               AND accumulation_campaign_id = ?
@@ -3039,7 +3117,11 @@ def complete_spot_accumulation_campaign_level(
                 normalized_opening_price,
                 int(signal_level),
                 normalized_opening_price,
-                int(datetime.now(timezone.utc).timestamp() * 1000),
+                completed_at_ms,
+                normalized_opening_price,
+                normalized_opening_price,
+                normalized_opening_price,
+                completed_at_ms,
                 str(account_key),
                 str(asset_symbol).strip().upper(),
                 str(quote_symbol).strip().upper(),
@@ -3132,7 +3214,7 @@ def reconcile_spot_strategy_campaign_progress(
     return _spot_strategy_campaign_from_row(row) if row is not None else None
 
 
-def reconcile_spot_accumulation_campaign_progress(
+def reconcile_spot_accumulation_ladder_progress(
     *,
     account_key: str,
     asset_symbol: str,
@@ -3140,7 +3222,7 @@ def reconcile_spot_accumulation_campaign_progress(
     campaign_id: str,
     path: Path | None = None,
 ) -> dict[str, Any] | None:
-    """Repair independent accumulation progress from completed actions."""
+    """Repair independent accumulation ladder progress from completed actions."""
     normalized_account = str(account_key or "manual_spot").strip() or "manual_spot"
     normalized_asset = str(asset_symbol or "").strip().upper()
     normalized_quote = str(quote_symbol or "USDT").strip().upper() or "USDT"
@@ -3151,7 +3233,8 @@ def reconcile_spot_accumulation_campaign_progress(
     with _connection(path) as connection:
         completed = connection.execute(
             """
-            SELECT actions.action_key, actions.signal_level, intents.average_price
+            SELECT actions.action_key, actions.signal_level, actions.completed_at_ms,
+                   intents.average_price
             FROM spot_strategy_actions AS actions
             LEFT JOIN spot_order_intents AS intents
               ON intents.intent_id = actions.intent_id
@@ -3175,6 +3258,14 @@ def reconcile_spot_accumulation_campaign_progress(
             default=None,
         )
         recovered_price = float(latest["average_price"]) if latest is not None else None
+        recovered_executed_at_ms = max(
+            (
+                int(row["completed_at_ms"])
+                for row in completed
+                if row["completed_at_ms"] is not None
+            ),
+            default=None,
+        )
         if highest_level > 0:
             connection.execute(
                 """
@@ -3185,6 +3276,15 @@ def reconcile_spot_accumulation_campaign_progress(
                     last_accumulation_opening_price = COALESCE(
                         ?, last_accumulation_opening_price
                     ),
+                    accumulation_last_executed_at_ms = MAX(
+                        COALESCE(accumulation_last_executed_at_ms, 0),
+                        COALESCE(?, 0)
+                    ),
+                    accumulation_local_low_price = CASE
+                        WHEN accumulation_local_low_price IS NULL THEN ?
+                        WHEN ? IS NULL THEN accumulation_local_low_price
+                        ELSE MIN(accumulation_local_low_price, ?)
+                    END,
                     updated_at_ms = ?
                 WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
                   AND accumulation_campaign_id = ?
@@ -3192,6 +3292,10 @@ def reconcile_spot_accumulation_campaign_progress(
                 """,
                 (
                     highest_level,
+                    recovered_price,
+                    recovered_executed_at_ms,
+                    recovered_price,
+                    recovered_price,
                     recovered_price,
                     now_ms,
                     normalized_account,

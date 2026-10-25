@@ -782,6 +782,27 @@ class SpotExecutionTests(unittest.TestCase):
         self.assertEqual(intent["status"], "failed")
         self.assertEqual(client.create_calls, 0)
 
+    def test_strategy_candidate_preflight_rejects_dust_before_intent_creation(self):
+        client = FakeSpotExecutionClient(market_price=100)
+        executor = SpotOrderExecutor(
+            client,
+            logger=logging.getLogger("test.spot-execution"),
+            db_path=self.db_path,
+        )
+
+        with self.assertRaisesRegex(SpotOrderValidationError, "minimum \\$5"):
+            executor.preflight_strategy_candidate(
+                asset_symbol="BTC",
+                quote_symbol="USDT",
+                side="buy",
+                action_type="accumulate_asset",
+                requested_quantity=0.04,
+                market_price=100,
+                trading_objective="accumulate_asset",
+            )
+
+        self.assertEqual(client.create_calls, 0)
+
     def test_treasury_intake_creates_holding_and_locked_policy_only_after_fill(self):
         save_exchange_account_snapshot(
             {

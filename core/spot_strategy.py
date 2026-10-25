@@ -86,12 +86,16 @@ def transition_spot_strategy_campaign(
         "last_opening_price",
     )
     accumulation_fields = (
+        "accumulation_cycle_id",
         "accumulation_campaign_id",
         "accumulation_active",
         "accumulation_highest_completed_level",
         "accumulation_last_signal_level",
         "accumulation_last_signal_at_ms",
         "last_accumulation_opening_price",
+        "accumulation_last_executed_at_ms",
+        "accumulation_local_low_price",
+        "accumulation_rearm_started_at_ms",
     )
     preserve_campaign = normalized_side == "hold" or prior_side == normalized_side
     return {
@@ -109,36 +113,93 @@ def transition_spot_strategy_campaign(
     }
 
 
-def transition_spot_accumulation_campaign(
+def transition_spot_accumulation_ladder(
     previous: dict[str, Any] | None,
     *,
     rolling_change_pct: float,
     accumulation_level: int,
     signal_at_ms: int,
-    new_campaign_id: str,
+    current_price: float,
+    new_cycle_id: str,
+    rearm_recovery_pct: float = 10.0,
+    rearm_signal_above_pct: float = -5.0,
+    rearm_confirmation_hours: float = 12.0,
 ) -> dict[str, Any]:
-    """Advance the reserve-accumulation cycle independently of Bargain direction."""
+    """Advance the independent accumulation ladder and recovery-based rearm state."""
     prior = previous or {}
-    is_negative = float(rolling_change_pct) < 0.0
-    was_active = bool(prior.get("accumulation_active"))
-    if is_negative and not was_active:
-        campaign_id = str(new_campaign_id or "").strip()
-        if not campaign_id:
-            raise ValueError("A new Spot accumulation campaign requires a stable ID.")
+    now_ms = int(signal_at_ms)
+    price = float(current_price)
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError("Spot accumulation ladder requires a positive current price.")
+
+    cycle_id = str(
+        prior.get("accumulation_cycle_id")
+        or prior.get("accumulation_campaign_id")
+        or ""
+    ).strip() or None
+    active = bool(prior.get("accumulation_active")) and cycle_id is not None
+    highest_level = max(0, int(prior.get("accumulation_highest_completed_level") or 0))
+    last_opening_price = prior.get("last_accumulation_opening_price")
+    last_executed_at_ms = prior.get("accumulation_last_executed_at_ms")
+    local_low = prior.get("accumulation_local_low_price")
+    rearm_started_at_ms = prior.get("accumulation_rearm_started_at_ms")
+
+    try:
+        local_low = float(local_low) if local_low is not None else None
+    except (TypeError, ValueError):
+        local_low = None
+    if active:
+        if local_low is None:
+            try:
+                local_low = float(last_opening_price)
+            except (TypeError, ValueError):
+                local_low = price
+        local_low = min(local_low, price)
+        recovery_pct = ((price / local_low) - 1.0) * 100.0
+        recovery_confirmed = (
+            recovery_pct + 1e-12 >= float(rearm_recovery_pct)
+            and float(rolling_change_pct) + 1e-12 >= float(rearm_signal_above_pct)
+        )
+        if recovery_confirmed:
+            if rearm_started_at_ms is None:
+                rearm_started_at_ms = now_ms
+            confirmation_ms = (
+                max(0.0, float(rearm_confirmation_hours)) * 60 * 60 * 1000
+            )
+            if now_ms - int(rearm_started_at_ms) >= confirmation_ms:
+                cycle_id = None
+                active = False
+                highest_level = 0
+                last_opening_price = None
+                local_low = None
+                rearm_started_at_ms = None
+        else:
+            rearm_started_at_ms = None
+
+    reached_level = max(0, int(accumulation_level))
+    if not active and reached_level > 0:
+        cycle_id = str(new_cycle_id or "").strip()
+        if not cycle_id:
+            raise ValueError("A new Spot accumulation cycle requires a stable ID.")
+        active = True
         highest_level = 0
         last_opening_price = None
-    else:
-        campaign_id = prior.get("accumulation_campaign_id")
-        highest_level = int(prior.get("accumulation_highest_completed_level") or 0)
-        last_opening_price = prior.get("last_accumulation_opening_price")
+        local_low = price
+        rearm_started_at_ms = None
+
     return {
         **prior,
-        "accumulation_campaign_id": campaign_id,
-        "accumulation_active": is_negative,
+        "accumulation_cycle_id": cycle_id,
+        # Keep the legacy key while the persisted schema is migrated in place.
+        "accumulation_campaign_id": cycle_id,
+        "accumulation_active": active,
         "accumulation_highest_completed_level": highest_level,
-        "accumulation_last_signal_level": max(0, int(accumulation_level)),
-        "accumulation_last_signal_at_ms": int(signal_at_ms),
+        "accumulation_last_signal_level": reached_level,
+        "accumulation_last_signal_at_ms": now_ms,
         "last_accumulation_opening_price": last_opening_price,
+        "accumulation_last_executed_at_ms": last_executed_at_ms,
+        "accumulation_local_low_price": local_low,
+        "accumulation_rearm_started_at_ms": rearm_started_at_ms,
     }
 
 
@@ -414,6 +475,35 @@ def plan_spot_strategy_action(
         > int(campaign.get("accumulation_highest_completed_level") or 0)
     ):
         allocation_signal = _with_missing_accumulation_allocation(signal, campaign)
+        signal_at_ms = int(
+            signal.get("current_at_ms")
+            or signal.get("evaluated_at_ms")
+            or campaign.get("accumulation_last_signal_at_ms")
+            or 0
+        )
+        last_executed_at_ms = campaign.get("accumulation_last_executed_at_ms")
+        cooldown_ms = max(
+            0.0,
+            float(signal.get("accumulation_cooldown_hours", 24.0)),
+        ) * 60 * 60 * 1000
+        completed_accumulation_level = int(
+            campaign.get("accumulation_highest_completed_level") or 0
+        )
+        cooldown_active = (
+            completed_accumulation_level == 0
+            and last_executed_at_ms is not None
+            and signal_at_ms - int(last_executed_at_ms) < cooldown_ms
+        )
+        if cooldown_active:
+            opening_price_hold = {
+                "action_type": "hold",
+                "reason": {
+                    "action_type": "hold",
+                    "hold_reason": "accumulation_cooldown",
+                    "signal_level": accumulation_level,
+                    "cooldown_until_ms": int(last_executed_at_ms + cooldown_ms),
+                },
+            }
         previous_opening_price = campaign.get("last_accumulation_opening_price")
         try:
             previous_opening_price = (
@@ -423,22 +513,35 @@ def plan_spot_strategy_action(
             )
         except (TypeError, ValueError):
             previous_opening_price = None
+        minimum_improvement_pct = max(
+            0.0,
+            float(signal.get("accumulation_min_price_improvement_pct", 3.0)),
+        )
+        maximum_opening_price = (
+            previous_opening_price * (1.0 - minimum_improvement_pct / 100.0)
+            if previous_opening_price is not None
+            else None
+        )
         if (
-            previous_opening_price is not None
+            not cooldown_active
+            and previous_opening_price is not None
             and math.isfinite(previous_opening_price)
-            and current_price >= previous_opening_price
+            and maximum_opening_price is not None
+            and current_price >= maximum_opening_price
         ):
             opening_price_hold = {
                 "action_type": "hold",
                 "reason": {
                     "action_type": "hold",
-                    "hold_reason": "accumulation_level_price_not_improved",
+                    "hold_reason": "accumulation_price_improvement_not_reached",
                     "signal_level": accumulation_level,
                     "market_price": current_price,
                     "previous_opening_price": previous_opening_price,
+                    "minimum_price_improvement_pct": minimum_improvement_pct,
+                    "maximum_opening_price_exclusive": maximum_opening_price,
                 },
             }
-        else:
+        elif not cooldown_active:
             accumulation_quote = max(0.0, float(available_accumulation_quote or 0.0))
             accumulation = plan_treasury_accumulation(
                 allocation_signal,
@@ -459,11 +562,18 @@ def plan_spot_strategy_action(
                         "rolling_change_pct": signal.get("rolling_change_pct"),
                         "accumulation_tranche_pct": allocation_signal.get("accumulation_tranche_pct"),
                         "final_tranche_pct": allocation_signal.get("final_tranche_pct"),
-                        "campaign_id": (
-                            campaign.get("accumulation_campaign_id")
+                        "cycle_id": (
+                            campaign.get("accumulation_cycle_id")
+                            or campaign.get("accumulation_campaign_id")
                             or campaign.get("campaign_id")
                         ),
-                        "maximum_opening_price_exclusive": previous_opening_price,
+                        "campaign_id": (
+                            campaign.get("accumulation_cycle_id")
+                            or campaign.get("accumulation_campaign_id")
+                            or campaign.get("campaign_id")
+                        ),
+                        "maximum_opening_price_exclusive": maximum_opening_price,
+                        "minimum_price_improvement_pct": minimum_improvement_pct,
                         "free_reserve_quote": accumulation.get("free_reserve_quote"),
                         "planned_quote_to_spend": accumulation.get("quote_to_spend"),
                     },

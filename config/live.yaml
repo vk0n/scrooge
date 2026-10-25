@@ -34,6 +34,11 @@ treasury:
     base_tranches_pct: [10, 20, 30, 40]
     accumulation_levels_pct: [10, 15, 20, 30]
     accumulation_tranches_pct: [1, 3, 5, 10]
+    accumulation_cooldown_hours: 24
+    accumulation_min_price_improvement_pct: 3
+    accumulation_rearm_recovery_pct: 10
+    accumulation_rearm_signal_above_pct: -5
+    accumulation_rearm_confirmation_hours: 12
   progression:
     close_profit_pct: 5
     campaign_capacity_pct: 50

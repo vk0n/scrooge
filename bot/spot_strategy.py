@@ -9,7 +9,7 @@ from typing import Any
 from api.services.portfolio_service import create_strategy_spot_order_intent, load_portfolio_snapshot
 from bot.spot_execution import SpotOrderExecutor, SpotOrderValidationError
 from core.runtime_db import (
-    complete_spot_accumulation_campaign_level,
+    complete_spot_accumulation_ladder_level,
     complete_spot_strategy_campaign_level,
     create_spot_swing,
     ensure_spot_strategy_action,
@@ -20,10 +20,10 @@ from core.runtime_db import (
     load_spot_order_intent,
     load_spot_strategy_campaign,
     load_spot_swing,
-    reconcile_spot_accumulation_campaign_progress,
+    reconcile_spot_accumulation_ladder_progress,
     reconcile_spot_strategy_campaign_progress,
     reserve_spot_order_intent,
-    sync_spot_accumulation_campaign,
+    sync_spot_accumulation_ladder,
     sync_spot_strategy_campaign,
     update_spot_order_intent,
     update_spot_strategy_action,
@@ -94,6 +94,7 @@ class ProgressiveSpotSwingExecutor:
         self._batch_reconciliation_results: dict[
             tuple[str, str, int], dict[str, Any] | None
         ] = {}
+        self._deferred_candidates: dict[str, dict[str, Any]] = {}
 
     def order_signals_for_execution(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Schedule one live snapshot in portfolio-wide action phases."""
@@ -147,7 +148,7 @@ class ProgressiveSpotSwingExecutor:
             signal_at_ms=signal_at_ms,
             path=self.db_path,
         )
-        campaign = sync_spot_accumulation_campaign(
+        campaign = sync_spot_accumulation_ladder(
             account_key=self.account_key,
             asset_symbol=asset,
             quote_symbol=quote,
@@ -156,6 +157,16 @@ class ProgressiveSpotSwingExecutor:
                 signal.get("accumulation_level", signal.get("level")) or 0
             ),
             signal_at_ms=signal_at_ms,
+            current_price=float(signal.get("current_price") or 0.0),
+            rearm_recovery_pct=float(
+                signal.get("accumulation_rearm_recovery_pct", 10.0)
+            ),
+            rearm_signal_above_pct=float(
+                signal.get("accumulation_rearm_signal_above_pct", -5.0)
+            ),
+            rearm_confirmation_hours=float(
+                signal.get("accumulation_rearm_confirmation_hours", 12.0)
+            ),
             path=self.db_path,
         )
         if execution_phase is not None:
@@ -189,11 +200,15 @@ class ProgressiveSpotSwingExecutor:
                 reconciled_campaign.get("highest_completed_level"),
             )
         campaign = reconciled_campaign or campaign
-        reconciled_accumulation = reconcile_spot_accumulation_campaign_progress(
+        reconciled_accumulation = reconcile_spot_accumulation_ladder_progress(
             account_key=self.account_key,
             asset_symbol=asset,
             quote_symbol=quote,
-            campaign_id=str(campaign.get("accumulation_campaign_id") or ""),
+            campaign_id=str(
+                campaign.get("accumulation_cycle_id")
+                or campaign.get("accumulation_campaign_id")
+                or ""
+            ),
             path=self.db_path,
         )
         campaign = reconciled_accumulation or campaign
@@ -242,6 +257,14 @@ class ProgressiveSpotSwingExecutor:
                 return self._signal_batch_result(asset, completed_actions)
 
             action_type = str(decision["action_type"])
+            if action_type in {"open", "accumulate_asset"} and self._defer_untradeable_candidate(
+                asset=asset,
+                quote=quote,
+                signal=signal,
+                campaign=campaign,
+                decision=decision,
+            ):
+                return self._signal_batch_result(asset, completed_actions)
             if action_type == "close":
                 action = self._persist_close_action(asset, quote, decision)
             else:
@@ -293,6 +316,83 @@ class ProgressiveSpotSwingExecutor:
                 path=self.db_path,
             ) or campaign
 
+    def _defer_untradeable_candidate(
+        self,
+        *,
+        asset: str,
+        quote: str,
+        signal: dict[str, Any],
+        campaign: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> bool:
+        preflight = getattr(self.order_executor, "preflight_strategy_candidate", None)
+        if not callable(preflight):
+            return False
+
+        action_type = str(decision["action_type"])
+        signal_level = int(decision.get("signal_level") or signal.get("level") or 0)
+        campaign_id = str(
+            (
+                campaign.get("accumulation_cycle_id")
+                or campaign.get("accumulation_campaign_id")
+                or ""
+            )
+            if action_type == "accumulate_asset"
+            else campaign.get("campaign_id") or ""
+        )
+        candidate_key = f"{action_type}:{campaign_id}:level:{signal_level}"
+        deferred_state_key = f"{asset}:{quote}:{action_type}"
+        reason = decision.get("reason") if isinstance(decision.get("reason"), dict) else {}
+        try:
+            preflight(
+                asset_symbol=asset,
+                quote_symbol=quote,
+                side=str(decision.get("side") or ""),
+                action_type=action_type,
+                requested_quantity=float(decision["requested_quantity"]),
+                market_price=float(signal.get("current_price") or 0.0),
+                trading_objective=str(signal.get("trading_objective") or ""),
+                minimum_opening_price_exclusive=reason.get(
+                    "minimum_opening_price_exclusive"
+                ),
+                maximum_opening_price_exclusive=reason.get(
+                    "maximum_opening_price_exclusive"
+                ),
+            )
+        except SpotOrderValidationError as exc:
+            message = str(exc)
+            existing = self._deferred_candidates.get(deferred_state_key)
+            if (
+                existing is None
+                or existing.get("action_key") != candidate_key
+                or existing.get("reason") != message
+            ):
+                self.logger.info(
+                    "spot_strategy_candidate_deferred action_key=%s asset=%s reason=%s",
+                    candidate_key,
+                    asset,
+                    message,
+                )
+                existing = {
+                    "action_key": candidate_key,
+                    "reason": message,
+                    "evaluation_count": 0,
+                }
+            existing["evaluation_count"] = int(existing.get("evaluation_count") or 0) + 1
+            self._deferred_candidates[deferred_state_key] = existing
+            return True
+
+        deferred = self._deferred_candidates.get(deferred_state_key)
+        if deferred is not None and deferred.get("action_key") == candidate_key:
+            self._deferred_candidates.pop(deferred_state_key, None)
+            self.logger.info(
+                "spot_strategy_candidate_resumed action_key=%s asset=%s deferred_evaluations=%s",
+                candidate_key,
+                asset,
+                deferred.get("evaluation_count"),
+            )
+        return False
+
     def _persist_campaign_action(
         self,
         *,
@@ -308,14 +408,14 @@ class ProgressiveSpotSwingExecutor:
     ) -> dict[str, Any]:
         action_type = str(decision["action_type"])
         signal_level = int(decision.get("signal_level") or level)
-        campaign_id = str(
-            (
-                campaign.get("accumulation_campaign_id")
-                if action_type == "accumulate_asset"
-                else campaign.get("campaign_id")
+        if action_type == "accumulate_asset":
+            campaign_id = str(
+                campaign.get("accumulation_cycle_id")
+                or campaign.get("accumulation_campaign_id")
+                or ""
             )
-            or ""
-        )
+        else:
+            campaign_id = str(campaign.get("campaign_id") or "")
         quantity = float(decision["requested_quantity"])
         action_side = str(decision.get("side") or opportunity)
         action_key = f"{action_type}:{campaign_id}:level:{signal_level}"
@@ -720,13 +820,14 @@ class ProgressiveSpotSwingExecutor:
                 if intent is not None and intent.get("average_price") is not None
                 else None
             )
-            complete_spot_accumulation_campaign_level(
+            complete_spot_accumulation_ladder_level(
                 account_key=action["account_key"],
                 asset_symbol=action["asset_symbol"],
                 quote_symbol=action["quote_symbol"],
                 campaign_id=action["campaign_id"],
                 signal_level=int(action["signal_level"]),
                 opening_price=opening_price,
+                executed_at_ms=completed_at_ms,
                 path=self.db_path,
             )
         updated = update_spot_strategy_action(

@@ -162,6 +162,81 @@ def next_buy_limit_price(
     return next_price
 
 
+def validate_strategy_order_candidate(
+    symbol_info: dict[str, Any],
+    *,
+    requested_quantity: float,
+    market_price: float,
+    side: str,
+    action_type: str,
+    minimum_opening_price_exclusive: float | None = None,
+    maximum_opening_price_exclusive: float | None = None,
+    trading_objective: str = "",
+    close_profit_pct: float = 0.0,
+    estimated_fee_rate: float = 0.0,
+) -> tuple[Decimal, Decimal | None]:
+    """Validate deterministic exchange constraints before persisting a strategy order."""
+    normalized_side = str(side or "").strip().lower()
+    normalized_action = str(action_type or "").strip().lower()
+    price = as_decimal(market_price)
+    if price is None or price <= 0:
+        raise ValueError("Spot candidate requires a positive market price.")
+
+    guarded_sell_opening = (
+        normalized_action == "open"
+        and normalized_side == "sell"
+        and minimum_opening_price_exclusive is not None
+        and float(minimum_opening_price_exclusive) > 0
+    )
+    guarded_accumulation = (
+        normalized_action == "accumulate_asset"
+        and normalized_side == "buy"
+        and maximum_opening_price_exclusive is not None
+        and float(maximum_opening_price_exclusive) > 0
+    )
+
+    limit_price: Decimal | None = None
+    if guarded_sell_opening:
+        limit_price = next_sell_limit_price(
+            symbol_info,
+            float(minimum_opening_price_exclusive),
+        )
+        if price < limit_price:
+            raise ValueError(
+                "Strategy SELL level is waiting for a price above the previous campaign opening."
+            )
+        quantity, _ = normalize_limit_quantity(symbol_info, requested_quantity)
+    elif guarded_accumulation:
+        limit_price = next_buy_limit_price(
+            symbol_info,
+            float(maximum_opening_price_exclusive),
+        )
+        if price > limit_price:
+            raise ValueError(
+                "Strategy accumulation level is waiting for a price below the previous campaign opening."
+            )
+        quantity, _ = normalize_limit_quantity(symbol_info, requested_quantity)
+    else:
+        quantity, _ = normalize_market_quantity(symbol_info, requested_quantity)
+
+    validation_price = limit_price if limit_price is not None else price
+    validate_market_notional(
+        symbol_info,
+        quantity=quantity,
+        price=float(validation_price),
+    )
+    if normalized_action == "open" and normalized_side == "sell":
+        validate_sell_opening_round_trip(
+            symbol_info,
+            quantity=quantity,
+            price=float(validation_price),
+            trading_objective=trading_objective,
+            close_profit_pct=close_profit_pct,
+            estimated_fee_rate=estimated_fee_rate,
+        )
+    return quantity, limit_price
+
+
 def validate_market_notional(
     symbol_info: dict[str, Any],
     *,

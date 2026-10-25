@@ -30,12 +30,7 @@ from core.runtime_db import (
 from core.spot_accounting import ensure_spot_quote_leg
 from core.spot_execution_rules import (
     format_decimal as _format_decimal,
-    next_buy_limit_price as _next_buy_limit_price,
-    next_sell_limit_price as _next_sell_limit_price,
-    normalize_limit_quantity as _limit_quantity,
-    normalize_market_quantity as _market_quantity,
-    validate_market_notional as _validate_notional,
-    validate_sell_opening_round_trip as _validate_sell_opening_round_trip,
+    validate_strategy_order_candidate as _validate_strategy_candidate,
 )
 from core.spot_progression import ProgressiveSwingConfig
 from core.spot_swing import calculate_sell_origin_committed_quote, calculate_swing_economics
@@ -179,6 +174,8 @@ def _execution_summary(client: Any, symbol: str, order: dict[str, Any]) -> dict[
 
 
 class SpotOrderExecutor:
+    _PREFLIGHT_SYMBOL_INFO_TTL_SECONDS = 300.0
+
     def __init__(
         self,
         client: Any,
@@ -194,9 +191,64 @@ class SpotOrderExecutor:
         # Commands and signal recovery run on separate threads in the live bot.
         # Serializing execution prevents both paths from submitting the same intent.
         self._execution_lock = threading.RLock()
+        self._preflight_symbol_info: dict[str, tuple[float, dict[str, Any]]] = {}
 
     def update_strategy_config(self, strategy_config: ProgressiveSwingConfig) -> None:
         self.strategy_config = strategy_config
+
+    def _cached_preflight_symbol_info(self, symbol: str) -> dict[str, Any] | None:
+        now = time.monotonic()
+        cached = self._preflight_symbol_info.get(symbol)
+        if cached is not None and now - cached[0] < self._PREFLIGHT_SYMBOL_INFO_TTL_SECONDS:
+            return cached[1]
+        symbol_info = self.client.get_symbol_info(symbol)
+        if isinstance(symbol_info, dict):
+            self._preflight_symbol_info[symbol] = (now, symbol_info)
+        return symbol_info
+
+    def preflight_strategy_candidate(
+        self,
+        *,
+        asset_symbol: str,
+        quote_symbol: str,
+        side: str,
+        action_type: str,
+        requested_quantity: float,
+        market_price: float,
+        trading_objective: str,
+        minimum_opening_price_exclusive: float | None = None,
+        maximum_opening_price_exclusive: float | None = None,
+    ) -> None:
+        """Reject deterministic exchange-filter failures before intent persistence."""
+        asset = str(asset_symbol or "").strip().upper()
+        quote = str(quote_symbol or "").strip().upper()
+        symbol = f"{asset}{quote}"
+        symbol_info = self._cached_preflight_symbol_info(symbol)
+        if not isinstance(symbol_info, dict) or str(symbol_info.get("status") or "").upper() != "TRADING":
+            raise SpotOrderValidationError("This Binance Spot symbol is not currently trading.")
+        if str(symbol_info.get("baseAsset") or "").upper() != asset:
+            raise SpotOrderValidationError(
+                "Binance symbol base asset does not match the Treasury candidate."
+            )
+        if str(symbol_info.get("quoteAsset") or "").upper() != quote:
+            raise SpotOrderValidationError(
+                "Binance symbol quote asset does not match the Treasury candidate."
+            )
+        try:
+            _validate_strategy_candidate(
+                symbol_info,
+                requested_quantity=requested_quantity,
+                market_price=market_price,
+                side=side,
+                action_type=action_type,
+                minimum_opening_price_exclusive=minimum_opening_price_exclusive,
+                maximum_opening_price_exclusive=maximum_opening_price_exclusive,
+                trading_objective=trading_objective,
+                close_profit_pct=self.strategy_config.close_profit_pct,
+                estimated_fee_rate=self.strategy_config.estimated_fee_rate,
+            )
+        except ValueError as exc:
+            raise SpotOrderValidationError(str(exc)) from exc
 
     def _refresh_account(self) -> dict[str, Any]:
         account = self.client.get_account(recvWindow=5000)
@@ -343,51 +395,23 @@ class SpotOrderExecutor:
             raise ValueError("Binance symbol quote asset does not match the Treasury intent.")
         minimum_opening_price = _as_float(request.get("minimum_opening_price_exclusive"))
         maximum_opening_price = _as_float(request.get("maximum_opening_price_exclusive"))
-        guarded_sell_opening = (
-            intent["source"] == "strategy"
-            and intent["side"] == "sell"
-            and strategy_action_type == "open"
-            and minimum_opening_price is not None
-            and minimum_opening_price > 0
+        quantity, limit_price = _validate_strategy_candidate(
+            symbol_info,
+            requested_quantity=intent["requested_quantity"],
+            market_price=market_price,
+            side=intent["side"],
+            action_type=strategy_action_type,
+            minimum_opening_price_exclusive=minimum_opening_price,
+            maximum_opening_price_exclusive=maximum_opening_price,
+            trading_objective=(
+                str(swing.get("trading_objective") or "")
+                if swing is not None
+                else ""
+            ),
+            close_profit_pct=self.strategy_config.close_profit_pct,
+            estimated_fee_rate=self.strategy_config.estimated_fee_rate,
         )
-        guarded_asset_accumulation = (
-            treasury_accumulation
-            and maximum_opening_price is not None
-            and maximum_opening_price > 0
-        )
-        limit_price = None
-        if guarded_sell_opening:
-            limit_price = _next_sell_limit_price(symbol_info, minimum_opening_price)
-            if Decimal(str(market_price)) < limit_price:
-                raise ValueError(
-                    "Strategy SELL level is waiting for a price above the previous campaign opening."
-                )
-            quantity, _ = _limit_quantity(symbol_info, intent["requested_quantity"])
-        elif guarded_asset_accumulation:
-            limit_price = _next_buy_limit_price(symbol_info, maximum_opening_price)
-            if Decimal(str(market_price)) > limit_price:
-                raise ValueError(
-                    "Strategy accumulation level is waiting for a price below the previous campaign opening."
-                )
-            quantity, _ = _limit_quantity(symbol_info, intent["requested_quantity"])
-        else:
-            quantity, _ = _market_quantity(symbol_info, intent["requested_quantity"])
         validation_price = float(limit_price) if limit_price is not None else market_price
-        _validate_notional(symbol_info, quantity=quantity, price=validation_price)
-        if (
-            swing is not None
-            and intent["source"] == "strategy"
-            and intent["side"] == "sell"
-            and intent["side"] == swing["origin_side"]
-        ):
-            _validate_sell_opening_round_trip(
-                symbol_info,
-                quantity=quantity,
-                price=validation_price,
-                trading_objective=str(swing.get("trading_objective") or ""),
-                close_profit_pct=self.strategy_config.close_profit_pct,
-                estimated_fee_rate=self.strategy_config.estimated_fee_rate,
-            )
         from api.services.portfolio_service import load_portfolio_snapshot
 
         portfolio, _ = load_portfolio_snapshot()

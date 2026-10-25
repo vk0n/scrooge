@@ -11,6 +11,7 @@ from core.spot_execution_rules import (
     normalize_market_quantity,
     validate_market_notional,
     validate_sell_opening_round_trip,
+    validate_strategy_order_candidate,
 )
 from core.spot_policy import calculate_spot_inventory_policy
 from core.spot_progression import initialize_sell_campaign_capacity
@@ -20,7 +21,7 @@ from core.spot_strategy import (
     finalize_spot_strategy_signal,
     plan_spot_strategy_action,
     spot_action_phase,
-    transition_spot_accumulation_campaign,
+    transition_spot_accumulation_ladder,
     transition_spot_strategy_campaign,
 )
 from core.spot_swing import (
@@ -158,6 +159,7 @@ class SpotBacktestResult:
     target_history: list[dict[str, Any]]
     inventory_history: list[dict[str, Any]]
     rejections: list[dict[str, Any]]
+    deferred_candidates: list[dict[str, Any]]
     sell_campaigns: list[dict[str, Any]]
     risk_metrics: dict[str, Any]
 
@@ -257,6 +259,7 @@ class SpotPortfolioBacktester:
         self.target_history: list[dict[str, Any]] = []
         self.inventory_history: list[dict[str, Any]] = []
         self.rejections: list[dict[str, Any]] = []
+        self._deferred_candidates: dict[tuple[str, str], dict[str, Any]] = {}
         self.sell_campaigns: list[dict[str, Any]] = []
         self.ratcheted_swings: set[str] = set()
         self.permanently_blocked_close_swings: set[str] = set()
@@ -367,6 +370,14 @@ class SpotPortfolioBacktester:
             target_history=list(self.target_history),
             inventory_history=list(self.inventory_history),
             rejections=list(self.rejections),
+            deferred_candidates=sorted(
+                (dict(item) for item in self._deferred_candidates.values()),
+                key=lambda item: (
+                    int(item["first_seen_at_ms"]),
+                    str(item["action_key"]),
+                    str(item["reason"]),
+                ),
+            ),
             sell_campaigns=[dict(item) for item in self.sell_campaigns],
             risk_metrics=risk_metrics.snapshot(),
         )
@@ -487,15 +498,23 @@ class SpotPortfolioBacktester:
                 signal_at_ms=candle.close_time_ms,
                 new_campaign_id=campaign_id,
             )
-            accumulation_campaign_id = hashlib.sha256(
-                f"{symbol}|accumulation|{candle.close_time_ms}".encode("utf-8")
+            accumulation_cycle_id = hashlib.sha256(
+                f"{symbol}|accumulation-cycle|{candle.close_time_ms}".encode("utf-8")
             ).hexdigest()[:24]
-            campaign = transition_spot_accumulation_campaign(
+            campaign = transition_spot_accumulation_ladder(
                 campaign,
                 rolling_change_pct=float(signal.get("rolling_change_pct") or 0.0),
                 accumulation_level=int(signal.get("accumulation_level") or 0),
                 signal_at_ms=candle.close_time_ms,
-                new_campaign_id=accumulation_campaign_id,
+                current_price=float(signal.get("current_price") or candle.close),
+                new_cycle_id=accumulation_cycle_id,
+                rearm_recovery_pct=self.scenario.signal.accumulation_rearm_recovery_pct,
+                rearm_signal_above_pct=(
+                    self.scenario.signal.accumulation_rearm_signal_above_pct
+                ),
+                rearm_confirmation_hours=(
+                    self.scenario.signal.accumulation_rearm_confirmation_hours
+                ),
             )
             if (
                 bool(signal.get("strategy_eligible"))
@@ -594,6 +613,21 @@ class SpotPortfolioBacktester:
                 continue
 
             action = self._prepare_action(symbol, candle, signal, campaign, decision)
+            if action_type in {"open", "accumulate_asset"}:
+                deferred_reason = self._strategy_candidate_preflight_error(
+                    symbol,
+                    action,
+                    observed_price=fill_price,
+                )
+                if deferred_reason is not None:
+                    self._remember_deferred_candidate(
+                        symbol,
+                        action,
+                        observed_price=fill_price,
+                        timestamp_ms=fill_timestamp_ms,
+                        reason=deferred_reason,
+                    )
+                    return
             completed = self._execute_action(
                 symbol,
                 action,
@@ -605,6 +639,94 @@ class SpotPortfolioBacktester:
                 continue
             if not completed:
                 return
+
+    def _strategy_candidate_preflight_error(
+        self,
+        symbol: str,
+        action: dict[str, Any],
+        *,
+        observed_price: float,
+    ) -> str | None:
+        side = str(action["side"])
+        slippage = self.scenario.execution.slippage_bps / 10_000.0
+        price = observed_price * (1.0 + slippage if side == "buy" else 1.0 - slippage)
+        reason = action.get("reason") if isinstance(action.get("reason"), dict) else {}
+        try:
+            validate_strategy_order_candidate(
+                self.dataset.symbol_info[symbol],
+                requested_quantity=float(action["requested_quantity"]),
+                market_price=price,
+                side=side,
+                action_type=str(action["action_type"]),
+                minimum_opening_price_exclusive=reason.get(
+                    "minimum_opening_price_exclusive"
+                ),
+                maximum_opening_price_exclusive=reason.get(
+                    "maximum_opening_price_exclusive"
+                ),
+                trading_objective=str(
+                    self.assets[symbol].scenario.trading_objective or ""
+                ),
+                close_profit_pct=self.scenario.progression.close_profit_pct,
+                estimated_fee_rate=self.scenario.execution.fee_rate,
+            )
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    def _remember_deferred_candidate(
+        self,
+        symbol: str,
+        action: dict[str, Any],
+        *,
+        observed_price: float,
+        timestamp_ms: int,
+        reason: str,
+    ) -> None:
+        action_key = str(action["action_key"])
+        key = (action_key, reason)
+        requested_quantity = float(action["requested_quantity"])
+        requested_value = requested_quantity * float(observed_price)
+        existing = self._deferred_candidates.get(key)
+        if existing is None:
+            self._deferred_candidates[key] = {
+                "action_key": action_key,
+                "asset_symbol": symbol,
+                "side": action["side"],
+                "action_type": action["action_type"],
+                "campaign_id": action.get("campaign_id"),
+                "signal_level": action.get("signal_level"),
+                "reason": reason,
+                "first_seen_at_ms": timestamp_ms,
+                "first_seen_at": self._timestamp(timestamp_ms),
+                "last_seen_at_ms": timestamp_ms,
+                "last_seen_at": self._timestamp(timestamp_ms),
+                "evaluation_count": 1,
+                "minimum_requested_quantity": requested_quantity,
+                "maximum_requested_quantity": requested_quantity,
+                "minimum_requested_value": requested_value,
+                "maximum_requested_value": requested_value,
+            }
+            return
+        existing["last_seen_at_ms"] = timestamp_ms
+        existing["last_seen_at"] = self._timestamp(timestamp_ms)
+        existing["evaluation_count"] = int(existing["evaluation_count"]) + 1
+        existing["minimum_requested_quantity"] = min(
+            float(existing["minimum_requested_quantity"]),
+            requested_quantity,
+        )
+        existing["maximum_requested_quantity"] = max(
+            float(existing["maximum_requested_quantity"]),
+            requested_quantity,
+        )
+        existing["minimum_requested_value"] = min(
+            float(existing["minimum_requested_value"]),
+            requested_value,
+        )
+        existing["maximum_requested_value"] = max(
+            float(existing["maximum_requested_value"]),
+            requested_value,
+        )
 
     def _record_non_order_action(
         self,
@@ -651,11 +773,13 @@ class SpotPortfolioBacktester:
         for field in ("base_tranche_pct", "accumulation_tranche_pct", "final_tranche_pct"):
             if reason.get(field) is not None:
                 action_signal[field] = reason[field]
-        action_campaign_id = (
-            campaign.get("accumulation_campaign_id")
-            if decision["action_type"] == "accumulate_asset"
-            else campaign.get("campaign_id")
-        )
+        if decision["action_type"] == "accumulate_asset":
+            action_campaign_id = (
+                campaign.get("accumulation_cycle_id")
+                or campaign.get("accumulation_campaign_id")
+            )
+        else:
+            action_campaign_id = campaign.get("campaign_id")
         action = {
             **decision,
             "signal": action_signal,
@@ -1018,6 +1142,13 @@ class SpotPortfolioBacktester:
                 int(action.get("signal", {}).get("level") or 0),
             )
             campaign["last_accumulation_opening_price"] = price
+            campaign["accumulation_last_executed_at_ms"] = timestamp_ms
+            local_low = campaign.get("accumulation_local_low_price")
+            campaign["accumulation_local_low_price"] = min(
+                float(local_low) if local_low is not None else price,
+                price,
+            )
+            campaign["accumulation_rearm_started_at_ms"] = None
             self.actions.append(
                 {
                     "timestamp_ms": timestamp_ms,

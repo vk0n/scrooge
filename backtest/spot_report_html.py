@@ -459,6 +459,7 @@ def _report_payload(
         },
         "badCases": report["bad_cases"],
         "rejectedOrders": report["rejected_orders"],
+        "deferredCandidates": report.get("deferred_candidates") or {},
         "fees": fees,
         "hodlDrawdownPct": _number(portfolio.get("maximum_hodl_drawdown_pct")),
         "equity": [
@@ -939,7 +940,7 @@ _HTML = r'''<!doctype html>
       ["Free Reserve", money(reserveMetrics.quote || 0), `Retained ${money(reserveMetrics.retained_quote || 0)} / Spendable ${money(reserveMetrics.spendable_quote || 0)}`, ""],
       ["Effective Asset Recovery", pct(recoveryMetrics.weighted_effective_quantity_pct || 0), `Starting-capital weighted / Physical ${pct(recoveryMetrics.weighted_actual_quantity_pct || 0)}`, tone((recoveryMetrics.weighted_effective_quantity_pct || 0) - 100)],
       ["Max Drawdown", pct(data.portfolio.maximum_treasury_drawdown_pct), `HODL ${pct(data.hodlDrawdownPct)}`, "negative"],
-      ["Execution Fees", money(data.fees), `${data.rejectedOrders.toLocaleString()} filtered attempts`, ""],
+      ["Execution Fees", money(data.fees), `${(data.deferredCandidates.evaluations || 0).toLocaleString()} deferred evaluations / ${data.rejectedOrders.toLocaleString()} rejected orders`, ""],
     ];
     document.getElementById("metrics").innerHTML = metrics.map(([label,value,note,classes]) => `<div class="metric ${classes}"><div class="metric-label">${label}</div><div class="metric-value ${classes}">${value}</div><div class="metric-note">${note}</div></div>`).join("");
 

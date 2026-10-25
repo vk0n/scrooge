@@ -17,6 +17,11 @@ _SIGNAL_KEYS = {
     "base_tranches_pct",
     "accumulation_levels_pct",
     "accumulation_tranches_pct",
+    "accumulation_cooldown_hours",
+    "accumulation_min_price_improvement_pct",
+    "accumulation_rearm_recovery_pct",
+    "accumulation_rearm_signal_above_pct",
+    "accumulation_rearm_confirmation_hours",
 }
 _SIGNAL_REQUIRED_KEYS = {"levels_pct", "base_tranches_pct", "accumulation_tranches_pct"}
 _PROGRESSION_KEYS = {
@@ -98,6 +103,19 @@ class TreasuryStrategyConfig:
                 "base_tranches_pct": list(self.signal.base_tranches_pct),
                 "accumulation_levels_pct": list(self.signal.accumulation_levels_pct),
                 "accumulation_tranches_pct": list(self.signal.accumulation_tranches_pct),
+                "accumulation_cooldown_hours": self.signal.accumulation_cooldown_hours,
+                "accumulation_min_price_improvement_pct": (
+                    self.signal.accumulation_min_price_improvement_pct
+                ),
+                "accumulation_rearm_recovery_pct": (
+                    self.signal.accumulation_rearm_recovery_pct
+                ),
+                "accumulation_rearm_signal_above_pct": (
+                    self.signal.accumulation_rearm_signal_above_pct
+                ),
+                "accumulation_rearm_confirmation_hours": (
+                    self.signal.accumulation_rearm_confirmation_hours
+                ),
             },
             "progression": {
                 "close_profit_pct": self.progression.close_profit_pct,
@@ -189,6 +207,26 @@ def treasury_strategy_config_from_mapping(payload: Any) -> TreasuryStrategyConfi
             accumulation_tranches_pct=_series(
                 signal["accumulation_tranches_pct"],
                 field="treasury.signal.accumulation_tranches_pct",
+            ),
+            accumulation_cooldown_hours=_number(
+                signal.get("accumulation_cooldown_hours", 24),
+                field="treasury.signal.accumulation_cooldown_hours",
+            ),
+            accumulation_min_price_improvement_pct=_number(
+                signal.get("accumulation_min_price_improvement_pct", 3),
+                field="treasury.signal.accumulation_min_price_improvement_pct",
+            ),
+            accumulation_rearm_recovery_pct=_number(
+                signal.get("accumulation_rearm_recovery_pct", 10),
+                field="treasury.signal.accumulation_rearm_recovery_pct",
+            ),
+            accumulation_rearm_signal_above_pct=_number(
+                signal.get("accumulation_rearm_signal_above_pct", -5),
+                field="treasury.signal.accumulation_rearm_signal_above_pct",
+            ),
+            accumulation_rearm_confirmation_hours=_number(
+                signal.get("accumulation_rearm_confirmation_hours", 12),
+                field="treasury.signal.accumulation_rearm_confirmation_hours",
             ),
         ),
         progression=ProgressiveSwingConfig(

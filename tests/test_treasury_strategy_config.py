@@ -17,6 +17,11 @@ def treasury_rules() -> dict:
             "base_tranches_pct": [10, 20, 30, 40],
             "accumulation_levels_pct": [4, 6, 8, 12],
             "accumulation_tranches_pct": [1, 3, 5, 10],
+            "accumulation_cooldown_hours": 18,
+            "accumulation_min_price_improvement_pct": 4,
+            "accumulation_rearm_recovery_pct": 11,
+            "accumulation_rearm_signal_above_pct": -4,
+            "accumulation_rearm_confirmation_hours": 6,
         },
         "progression": {
             "close_profit_pct": 4,
@@ -48,6 +53,11 @@ class TreasuryStrategyConfigTests(unittest.TestCase):
         self.assertEqual(config.signal.levels_pct, (2.0, 3.0, 4.0, 6.0))
         self.assertEqual(config.signal.accumulation_levels_pct, (4.0, 6.0, 8.0, 12.0))
         self.assertEqual(config.signal.accumulation_tranches_pct, (1.0, 3.0, 5.0, 10.0))
+        self.assertEqual(config.signal.accumulation_cooldown_hours, 18.0)
+        self.assertEqual(config.signal.accumulation_min_price_improvement_pct, 4.0)
+        self.assertEqual(config.signal.accumulation_rearm_recovery_pct, 11.0)
+        self.assertEqual(config.signal.accumulation_rearm_signal_above_pct, -4.0)
+        self.assertEqual(config.signal.accumulation_rearm_confirmation_hours, 6.0)
         self.assertEqual(config.progression.close_profit_pct, 4.0)
         self.assertEqual(config.progression.estimated_fee_rate, 0.001)
         self.assertEqual(config.waiter_cleanup.deep_loss_unrealized_pnl_pct, -25.0)

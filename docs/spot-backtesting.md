@@ -122,7 +122,9 @@ A standalone replay writes:
 - `equity.csv`, `monthly.csv`, and `per_asset_summary.json`;
 - `swings.json`, `executions.csv`, `signals.csv`, and `actions.csv`;
 - `sell_campaigns.json`, `sell_campaigns.csv`, `inventory.csv`, and `target_history.csv`;
-- `waiter_cleanup.json`, `waiter_cleanup_reasons.csv`, `rejections.csv`, and `final_state.json`.
+- `waiter_cleanup.json`, `waiter_cleanup_reasons.csv`, `deferred_candidates.csv`, `rejections.csv`, and `final_state.json`.
+
+`deferred_candidates.csv` aggregates exchange-filtered strategy candidates by action, cycle, level, and reason. Its `evaluation_count` records repeated candle evaluations without treating them as submitted or rejected orders.
 
 A sweep additionally writes resumable `manifest.json` plus `comparison.json`, `comparison.csv`, Markdown, and HTML reports. Regime sweeps preserve per-candidate, per-regime directories and a combined summary.
 

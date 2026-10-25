@@ -57,6 +57,18 @@ SYMBOL_INFO = {
             "maxQty": "100000000",
             "stepSize": "0.000001",
         },
+        {
+            "filterType": "LOT_SIZE",
+            "minQty": "0.000001",
+            "maxQty": "100000000",
+            "stepSize": "0.000001",
+        },
+        {
+            "filterType": "PRICE_FILTER",
+            "minPrice": "0.000001",
+            "maxPrice": "100000000",
+            "tickSize": "0.000001",
+        },
         {"filterType": "MIN_NOTIONAL", "minNotional": "0.01"},
     ]
 }
@@ -1734,8 +1746,18 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             replay.campaigns["AAA"]["accumulation_highest_completed_level"],
             0,
         )
-        self.assertTrue(result.rejections)
-        self.assertTrue(all("minimum $5" in item["reason"] for item in result.rejections))
+        self.assertEqual(result.rejections, [])
+        self.assertEqual(len(result.deferred_candidates), 1)
+        deferred = result.deferred_candidates[0]
+        self.assertGreater(deferred["evaluation_count"], 1)
+        self.assertIn("minimum $5", deferred["reason"])
+        report = build_spot_backtest_report(result)
+        self.assertEqual(report["rejected_orders"], 0)
+        self.assertEqual(report["deferred_candidates"]["candidates"], 1)
+        self.assertEqual(
+            report["deferred_candidates"]["evaluations"],
+            deferred["evaluation_count"],
+        )
 
     def test_all_accumulation_tranches_use_the_same_exchange_order_filters(self):
         config = scenario(
@@ -1990,12 +2012,14 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "swings.json").exists())
             self.assertTrue((Path(tmp) / "waiter_cleanup.json").exists())
             self.assertTrue((Path(tmp) / "waiter_cleanup_reasons.csv").exists())
+            self.assertTrue((Path(tmp) / "deferred_candidates.csv").exists())
             self.assertTrue((Path(tmp) / "scenario.resolved.yaml").exists())
             report_html = (Path(tmp) / "report.html").read_text(encoding="utf-8")
             self.assertIn("Scrooge Research", report_html)
             self.assertIn("Vault Value", report_html)
             self.assertIn("Final Allocation", report_html)
             self.assertIn("Free Reserve", report_html)
+            self.assertIn("deferred evaluations", report_html)
             self.assertIn("Free Reserve Split", report_html)
             self.assertIn('"freeReserve"', report_html)
             self.assertIn('"protectedReserve"', report_html)
@@ -2094,6 +2118,12 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertTrue(all(item.quantity == 0 for item in template.assets))
         self.assertTrue(template.waiter_cleanup.enabled)
         self.assertEqual(template.progression.close_profit_pct, 3)
+        self.assertEqual(template.signal.accumulation_levels_pct, (10.0, 15.0, 20.0, 30.0))
+        self.assertEqual(template.signal.accumulation_cooldown_hours, 24.0)
+        self.assertEqual(template.signal.accumulation_min_price_improvement_pct, 3.0)
+        self.assertEqual(template.signal.accumulation_rearm_recovery_pct, 10.0)
+        self.assertEqual(template.signal.accumulation_rearm_signal_above_pct, -5.0)
+        self.assertEqual(template.signal.accumulation_rearm_confirmation_hours, 12.0)
         self.assertEqual(template.interval, "1m")
         self.assertEqual(template.warmup_candles, 1440)
 
@@ -2142,6 +2172,8 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(exported.assets[0].binance_quantity, 750)
         self.assertEqual(exported.assets[0].cold_storage_quantity, 250)
         self.assertEqual(exported.progression.close_profit_pct, 3)
+        self.assertEqual(exported.signal.accumulation_levels_pct, (10.0, 15.0, 20.0, 30.0))
+        self.assertEqual(exported.signal.accumulation_cooldown_hours, 24.0)
         self.assertEqual(exported.interval, "1m")
         self.assertEqual(exported.warmup_candles, 1440)
         self.assertEqual(exported.metadata["export_warnings"][0], "review me")

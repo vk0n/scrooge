@@ -32,7 +32,7 @@ Portfolio entries and exchange balances answer different questions. Settled Trea
 
 The baseline belongs in the required `treasury` YAML subtree. `GET/POST /api/config/treasury-rules` reads and replaces only that subtree after strict validation. A config write reports that restart is required; it does not silently hot-swap a running strategy.
 
-## Signal And Campaigns
+## Signal, Bargain Campaigns, And Accumulation Rearm
 
 The signal is the percentage move from an approximately 24-hour-old reference price to the current price. It is rolling and independent of UTC midnight. `levels_pct` controls Bargain signals, while optional `accumulation_levels_pct` controls standalone `accumulate_asset` BUY deployments. When omitted, accumulation inherits `levels_pct` for backward compatibility.
 
@@ -44,7 +44,9 @@ The signal is the percentage move from an approximately 24-hour-old reference pr
 
 Each asset has a durable directional Bargain campaign. Repeated polls at an already-consumed Bargain level do not act again. Reaching a new level applies the cumulative allocation for every newly crossed level without creating synthetic intermediate actions. `HOLD` preserves campaign state, while an actionable opposite direction starts a new campaign.
 
-Executed levels are price-progressive within their own mechanisms. After the first SELL opening, a higher Bargain SELL level may open only above the previous level's confirmed average fill price. Reserve accumulation has its own cycle, completed-level counter, and price guard; a higher accumulation level may execute only below the previous accumulation fill. Live execution uses a fill-or-kill limit at the first valid Binance tick on the improving side, so a rejected order leaves only its own mechanism's level unconsumed. A direct jump executes once with the cumulative missing-level allocation. Bargain BUY signals remain campaign-only and never place reserve-accumulation orders themselves. An accumulation cycle resets independently after the rolling 24-hour change is no longer negative.
+Executed levels are price-progressive within their own mechanisms. After the first SELL opening, a higher Bargain SELL level may open only above the previous level's confirmed average fill price. Reserve accumulation uses an independent four-level ladder and requires each later fill to be at least the configured percentage cheaper than the previous confirmed fill. Deeper levels in the same decline are not cooldown-limited, so all four levels may execute within one day. Live execution uses a fill-or-kill limit at the first valid Binance tick on the improving side, so a rejected order leaves only its own mechanism's level unconsumed. A direct jump executes once with the cumulative missing-level allocation. Bargain BUY signals remain campaign-only and never place reserve-accumulation orders themselves.
+
+The accumulation ladder rearms only after price has recovered by the configured percentage from the cycle's local low and the rolling 24-hour signal has remained above its recovery threshold for the full confirmation window. The intercycle cooldown applies only to the first fill after rearm; it never blocks a deeper level in the active ladder. The live baseline is a `10%` recovery, rolling change at or above `-5%` for `12h`, a `24h` intercycle cooldown, and a `3%` minimum improvement between fills.
 
 A SELL campaign freezes its capacity from inventory that is both policy-sellable and recorded in Binance custody. Cold Storage contributes to total ownership and Protected Floor economics, but never enlarges automated campaign capacity. Later Target, Minimum Holding, or custody changes affect future campaigns, not the frozen budget of the active one. Actual execution remains capped by the current Protected Floor, verified Binance free balance, and venue filters.
 

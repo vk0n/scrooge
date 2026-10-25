@@ -325,6 +325,21 @@ def load_spot_backtest_scenario(
                 if signal_payload.get("accumulation_tranches_pct") is not None
                 else None
             ),
+            accumulation_cooldown_hours=float(
+                signal_payload.get("accumulation_cooldown_hours", 24)
+            ),
+            accumulation_min_price_improvement_pct=float(
+                signal_payload.get("accumulation_min_price_improvement_pct", 3)
+            ),
+            accumulation_rearm_recovery_pct=float(
+                signal_payload.get("accumulation_rearm_recovery_pct", 10)
+            ),
+            accumulation_rearm_signal_above_pct=float(
+                signal_payload.get("accumulation_rearm_signal_above_pct", -5)
+            ),
+            accumulation_rearm_confirmation_hours=float(
+                signal_payload.get("accumulation_rearm_confirmation_hours", 12)
+            ),
         ),
         progression=ProgressiveSwingConfig(
             close_profit_pct=(
@@ -463,8 +478,13 @@ def export_current_treasury_scenario(
                 "signal": {
                     "levels_pct": [5, 8, 12, 18],
                     "base_tranches_pct": [10, 20, 30, 40],
-                    "accumulation_levels_pct": [5, 8, 12, 18],
+                    "accumulation_levels_pct": [10, 15, 20, 30],
                     "accumulation_tranches_pct": [1, 3, 5, 10],
+                    "accumulation_cooldown_hours": 24,
+                    "accumulation_min_price_improvement_pct": 3,
+                    "accumulation_rearm_recovery_pct": 10,
+                    "accumulation_rearm_signal_above_pct": -5,
+                    "accumulation_rearm_confirmation_hours": 12,
                 },
                 "progression": {
                     "close_profit_pct": 3,

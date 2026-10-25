@@ -57,6 +57,26 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
+def _deferred_candidate_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_reason: dict[str, dict[str, int]] = {}
+    by_action_type: dict[str, dict[str, int]] = {}
+    for row in rows:
+        evaluations = int(row.get("evaluation_count") or 0)
+        for output, key in (
+            (by_reason, str(row.get("reason") or "unknown")),
+            (by_action_type, str(row.get("action_type") or "unknown")),
+        ):
+            bucket = output.setdefault(key, {"candidates": 0, "evaluations": 0})
+            bucket["candidates"] += 1
+            bucket["evaluations"] += evaluations
+    return {
+        "candidates": len(rows),
+        "evaluations": sum(int(row.get("evaluation_count") or 0) for row in rows),
+        "by_reason": by_reason,
+        "by_action_type": by_action_type,
+    }
+
+
 def _swing_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
     closed = [item for item in swings if item["status"] == "closed"]
     opened = [item for item in swings if item["status"] != "closed"]
@@ -1338,6 +1358,9 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
         },
         "per_asset": per_asset,
         "rejected_orders": len(result.rejections),
+        "deferred_candidates": _deferred_candidate_metrics(
+            result.deferred_candidates
+        ),
     }
     return apply_terminal_buyback_view(report)
 
@@ -1498,6 +1521,7 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
     _write_csv(target / "target_history.csv", result.target_history)
     _write_csv(target / "inventory.csv", result.inventory_history)
     _write_csv(target / "rejections.csv", result.rejections)
+    _write_csv(target / "deferred_candidates.csv", result.deferred_candidates)
     _write_csv(
         target / "waiter_cleanup_reasons.csv",
         [
