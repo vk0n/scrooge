@@ -160,6 +160,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         swings: list[dict],
         *,
         cleanup: WaiterCleanupConfig | None = None,
+        config: ProgressiveSwingConfig | None = None,
         excluded_close_swing_ids: set[str] | None = None,
     ) -> dict | None:
         return plan_spot_strategy_action(
@@ -172,7 +173,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
             },
             swings,
             available_quote=100_000,
-            config=ProgressiveSwingConfig(close_profit_pct=5, estimated_fee_rate=0),
+            config=config or ProgressiveSwingConfig(close_profit_pct=5, estimated_fee_rate=0),
             cleanup_config=cleanup or WaiterCleanupConfig(),
             excluded_close_swing_ids=excluded_close_swing_ids,
         )
@@ -301,17 +302,60 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         self.assertEqual(decision["swing_id"], "asset-waiter")
         self.assertEqual(decision["reason"]["close_reason"], "deep_loss_cleanup")
 
-    def test_capacity_cleanup_chooses_oldest_eligible_bargain(self):
+    def test_capacity_cleanup_chooses_oldest_profitable_sell_origin_bargain(self):
         swings = [
-            swing_state(f"buy-{index}", age_days=31 + index)
+            swing_state(
+                f"sell-{index}",
+                origin_side="sell",
+                age_days=31 + index,
+            )
             for index in range(10)
         ]
-        decision = self.decide(signal("sell", 2, 85), swings)
+        decision = self.decide(signal("buy", 1, 99), swings)
 
         self.assertEqual(decision["action_type"], "close")
-        self.assertEqual(decision["swing_id"], "buy-9")
+        self.assertEqual(decision["swing_id"], "sell-9")
         self.assertEqual(decision["reason"]["close_reason"], "capacity_cleanup")
         self.assertTrue(decision["reason"]["capacity_pressure"])
+        self.assertGreater(
+            decision["reason"]["capacity_cleanup_pnl_after_estimated_fee"],
+            0,
+        )
+
+    def test_capacity_cleanup_does_not_force_lossy_sell_origin_buyback(self):
+        swings = [
+            swing_state(
+                f"sell-{index}",
+                origin_side="sell",
+                age_days=31 + index,
+            )
+            for index in range(10)
+        ]
+
+        decision = self.decide(signal("buy", 1, 101), swings)
+
+        self.assertEqual(decision["action_type"], "campaign_only")
+
+    def test_capacity_cleanup_requires_profit_after_estimated_closing_fee(self):
+        swings = [
+            swing_state(
+                f"sell-{index}",
+                origin_side="sell",
+                age_days=31 + index,
+            )
+            for index in range(10)
+        ]
+
+        decision = self.decide(
+            signal("buy", 1, 99.95),
+            swings,
+            config=ProgressiveSwingConfig(
+                close_profit_pct=5,
+                estimated_fee_rate=0.001,
+            ),
+        )
+
+        self.assertEqual(decision["action_type"], "campaign_only")
 
     def test_disabled_cleanup_preserves_uncapped_opening_behavior(self):
         swings = [

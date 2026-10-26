@@ -600,12 +600,12 @@ def plan_spot_strategy_action(
     if new_strategy_decision is None:
         new_strategy_decision = accumulation_decision
 
-    at_capacity = (
+    capacity_saturated = (
         resolved_cleanup.enabled
         and len(active_swings) >= resolved_cleanup.max_open_bargains_per_asset
     )
-    capacity_pressure = (
-        at_capacity
+    opening_capacity_blocked = (
+        capacity_saturated
         and new_strategy_decision is not None
         and new_strategy_decision.get("action_type") == "open"
     )
@@ -629,10 +629,24 @@ def plan_spot_strategy_action(
                 signal_level=level,
                 required_level=int(scheduled["required_reverse_level"]),
             )
+            unrealized_pnl_quote = economics.get("unrealized_pnl_quote")
+            estimated_closing_fee_quote = (
+                current_price
+                * float(economics.get("remaining_quantity") or 0.0)
+                * resolved_config.estimated_fee_rate
+            )
+            capacity_cleanup_pnl_quote = (
+                float(unrealized_pnl_quote) - estimated_closing_fee_quote
+                if unrealized_pnl_quote is not None
+                else None
+            )
             capacity_matches = (
-                capacity_pressure
+                capacity_saturated
                 and resolved_cleanup.capacity_cleanup_enabled
                 and age_days >= resolved_cleanup.capacity_cleanup_min_age_days
+                and capacity_cleanup_pnl_quote is not None
+                and math.isfinite(capacity_cleanup_pnl_quote)
+                and capacity_cleanup_pnl_quote >= -1e-12
                 and reverse_signal_satisfies(
                     origin_side=str(swing.get("origin_side") or ""),
                     signal_side=opportunity,
@@ -684,7 +698,7 @@ def plan_spot_strategy_action(
                 "age_days": age_days,
                 "unrealized_pnl_before_cleanup": economics.get("unrealized_pnl_quote"),
                 "unrealized_pnl_pct_before_cleanup": pnl_pct,
-                "capacity_pressure": capacity_pressure,
+                "capacity_pressure": capacity_saturated,
                 "market_price": current_price,
                 "weighted_opening_price": economics.get("weighted_opening_price"),
                 "remaining_quantity": economics.get("remaining_quantity"),
@@ -693,6 +707,10 @@ def plan_spot_strategy_action(
                 ),
                 "quantity_basis": quantity_basis,
             }
+            if cleanup_reason == "capacity_cleanup":
+                reason["capacity_cleanup_pnl_after_estimated_fee"] = (
+                    capacity_cleanup_pnl_quote
+                )
             cleanup_candidates.append(
                 (
                     int(swing.get("opened_at_ms") or 0),
@@ -709,7 +727,7 @@ def plan_spot_strategy_action(
     if cleanup_candidates:
         cleanup_candidates.sort(key=lambda item: item[:2])
         return cleanup_candidates[0][2]
-    if capacity_pressure:
+    if opening_capacity_blocked:
         return {
             "action_type": "hold",
             "reason": {

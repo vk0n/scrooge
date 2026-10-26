@@ -32,6 +32,7 @@ from backtest.spot_report_html import (
     apply_terminal_buyback_view,
     display_spot_report_title,
 )
+from backtest.spot_runner import _parser as spot_runner_parser
 from backtest.spot_scenario import (
     SpotBacktestAsset,
     SpotBacktestExecutionConfig,
@@ -214,6 +215,13 @@ def minute_dataset(config: SpotBacktestScenario, price_by_symbol) -> SpotHistori
 
 
 class SpotBacktestFrameworkTests(unittest.TestCase):
+    def test_runner_exposes_cleanup_disabled_control(self):
+        args = spot_runner_parser().parse_args(
+            ["--config", "scenario.yaml", "--disable-cleanup"]
+        )
+
+        self.assertTrue(args.disable_cleanup)
+
     def run_scenario(self, config, prices, **dataset_kwargs):
         return SpotPortfolioBacktester(config, dataset(config, prices, **dataset_kwargs)).run()
 

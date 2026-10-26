@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 import sys
@@ -171,6 +172,11 @@ def _parser() -> argparse.ArgumentParser:
         default=1,
         help="Load independent asset histories concurrently (default: 1).",
     )
+    parser.add_argument(
+        "--disable-cleanup",
+        action="store_true",
+        help="Disable waiter cleanup for a diagnostic control replay.",
+    )
     parser.add_argument("--export-current", metavar="PATH", help="Export current Treasury into a reviewable scenario.")
     parser.add_argument("--name", default="current-treasury-counterfactual", help="Exported scenario name.")
     return parser
@@ -221,6 +227,11 @@ def main(argv: list[str] | None = None) -> int:
             else None
         ),
     )
+    if args.disable_cleanup:
+        scenario = replace(
+            scenario,
+            waiter_cleanup=replace(scenario.waiter_cleanup, enabled=False),
+        )
     output_dir = _resolve_output(scenario.output_dir)
     adapter = BinanceSpotHistoricalAdapter(scenario.data_cache_dir)
     print("Loading Spot market data...", file=sys.stderr, flush=True)
