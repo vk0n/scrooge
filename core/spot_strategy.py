@@ -302,7 +302,7 @@ def plan_spot_strategy_action(
     resolved_cleanup = cleanup_config or WaiterCleanupConfig()
     excluded_closes = excluded_close_swing_ids or set()
     close_candidates: list[tuple[float, int, str, dict[str, Any]]] = []
-    active_swings: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    active_swings: list[tuple[dict[str, Any], dict[str, Any], float]] = []
     for item in swings:
         swing = item.get("swing") if isinstance(item.get("swing"), dict) else item
         executions = item.get("executions") if isinstance(item.get("executions"), list) else []
@@ -314,14 +314,32 @@ def plan_spot_strategy_action(
             if isinstance(supplied_economics, dict)
             else calculate_swing_economics(swing, executions, current_price=current_price)
         )
-        active_swings.append((swing, economics))
+        supplied_committed_quote = (
+            item.get("committed_quote") if isinstance(item, dict) else None
+        )
+        committed_quote = (
+            max(0.0, float(supplied_committed_quote))
+            if supplied_committed_quote is not None
+            else calculate_sell_origin_committed_quote(swing, economics)
+        )
+        active_swings.append((swing, economics, committed_quote))
         if str(swing.get("swing_id") or "") in excluded_closes:
             continue
         close_available_quote = available_quote
-        if free_quote_reserve is not None and str(swing.get("origin_side") or "").lower() == "sell":
+        if (
+            str(swing.get("origin_side") or "").lower() == "sell"
+            and str(swing.get("trading_objective") or "").lower() == "accumulate_asset"
+        ):
+            # An Asset Bargain profit close recycles only its own SELL proceeds.
+            # Spendable reserve is reserved for explicit cleanup decisions below.
+            close_available_quote = committed_quote
+        elif (
+            free_quote_reserve is not None
+            and str(swing.get("origin_side") or "").lower() == "sell"
+        ):
             close_available_quote = (
                 max(0.0, float(free_quote_reserve))
-                + calculate_sell_origin_committed_quote(swing, economics)
+                + committed_quote
             )
         close = plan_profitable_close(
             swing,
@@ -594,7 +612,7 @@ def plan_spot_strategy_action(
     now_ms = int(signal.get("evaluated_at_ms") or signal.get("current_at_ms") or 0)
     cleanup_candidates: list[tuple[int, str, dict[str, Any]]] = []
     if resolved_cleanup.enabled and opportunity in {"buy", "sell"} and level > 0 and now_ms > 0:
-        for swing, economics in active_swings:
+        for swing, economics, committed_quote in active_swings:
             if str(swing.get("swing_id") or "") in excluded_closes:
                 continue
             age_days = bargain_age_days(swing, now_ms=now_ms)
@@ -641,7 +659,7 @@ def plan_spot_strategy_action(
                 if free_quote_reserve is not None:
                     close_available_quote = (
                         max(0.0, float(free_quote_reserve))
-                        + calculate_sell_origin_committed_quote(swing, economics)
+                        + committed_quote
                     )
                 cash_limited_quantity = (
                     max(0.0, float(close_available_quote))

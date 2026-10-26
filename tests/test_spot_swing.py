@@ -25,7 +25,11 @@ from core.runtime_db import (
     upsert_portfolio_asset_policy,
     upsert_portfolio_cash_policy,
 )
-from core.spot_swing import calculate_swing_economics, calculate_target_ratchet
+from core.spot_swing import (
+    calculate_swing_economics,
+    calculate_target_ratchet,
+    mark_swing_economics,
+)
 
 
 class SpotSwingDomainTests(unittest.TestCase):
@@ -121,6 +125,30 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertEqual(result["realized_pnl_quote"], 0)
         self.assertEqual(result["unrealized_pnl_quote"], 25)
         self.assertEqual(result["unrealized_pnl_pct"], 10)
+
+    def test_precomputed_economics_can_be_marked_at_a_new_price(self):
+        self.create_swing("swing-mark")
+        self.add_execution(
+            "swing-mark",
+            "sell-mark",
+            "sell",
+            50,
+            5,
+            executed_at_ms=2_000,
+            fee_amount=0.25,
+            fee_asset="USDT",
+        )
+        swing = load_spot_swing("swing-mark", path=self.db_path)
+        executions = list_spot_swing_executions("swing-mark", path=self.db_path)
+
+        expected = calculate_swing_economics(swing, executions, current_price=4.5)
+        marked = mark_swing_economics(
+            swing,
+            calculate_swing_economics(swing, executions),
+            current_price=4.5,
+        )
+
+        self.assertEqual(marked, expected)
 
     def test_profitable_cash_swing_accrues_retention_exactly_once(self):
         upsert_portfolio_cash_policy(20, path=self.db_path)

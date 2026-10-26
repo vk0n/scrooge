@@ -67,8 +67,14 @@ def report(edge: float) -> dict:
             "unrealized_open_pnl_quote": -2,
         },
         "treasury_accumulation": {
-            "earned_cash_generated_quote": 8,
-            "earned_cash_allocated_quote": 3,
+            "overview": {"spendable_cash_deployed_quote": 3},
+        },
+        "bargain_cash_flow": {
+            "overview": {
+                "cash_released_quote": 8,
+                "spendable_top_up_quote": 5,
+                "net_cash_change_quote": 3,
+            },
         },
         "waiter_cleanup": {
             "cleanup_closes_total": 1,

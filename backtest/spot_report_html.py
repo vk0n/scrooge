@@ -156,6 +156,8 @@ def render_spot_backtest_markdown(report: dict[str, Any]) -> str:
     analysis = report["bargain_analysis"]
     cleanup = report["waiter_cleanup"]
     accumulation = report["treasury_accumulation"]["overview"]
+    cash_flow = report.get("bargain_cash_flow", {}).get("overview", {})
+    cash_flow_by_close = report.get("bargain_cash_flow", {}).get("by_close_type", {})
     campaigns = report["sell_campaigns"]
     success = report["success_metrics"]
     edge = success["edge_vs_hodl"]
@@ -234,6 +236,17 @@ def render_spot_backtest_markdown(report: dict[str, Any]) -> str:
         f"- Closure rate: {_number(overview.get('closure_rate_pct')):.2f}%",
         f"- Median / P90 closed duration: {_number(median_duration):.2f} / {_number(p90_duration):.2f} hours",
         f"- Underwater open Bargains: {analysis.get('risk', {}).get('underwater_open_count', 0)}",
+        "",
+        "## Bargain Cash Flow",
+        "",
+        f"- Net SELL proceeds committed: {money(cash_flow.get('sell_proceeds_quote'))}",
+        f"- BUY-back spend: {money(cash_flow.get('buyback_spend_quote'))}",
+        f"- Committed cash recycled (not profit): {money(cash_flow.get('committed_recycled_quote'))}",
+        f"- Cash released to Free Vault Reserve: {money(cash_flow.get('cash_released_quote'))}",
+        f"- Spendable cash used for close top-ups: {money(cash_flow.get('spendable_top_up_quote'))}",
+        f"- Net Bargain cash change: {money(cash_flow.get('net_cash_change_quote'))}",
+        f"- Profit targets released / topped up / net: {money(cash_flow_by_close.get('profit_target', {}).get('cash_released_quote'))} / {money(cash_flow_by_close.get('profit_target', {}).get('spendable_top_up_quote'))} / {money(cash_flow_by_close.get('profit_target', {}).get('net_cash_change_quote'))}",
+        f"- Cleanup released / topped up / net: {money(cash_flow_by_close.get('cleanup', {}).get('cash_released_quote'))} / {money(cash_flow_by_close.get('cleanup', {}).get('spendable_top_up_quote'))} / {money(cash_flow_by_close.get('cleanup', {}).get('net_cash_change_quote'))}",
         "",
         "## Treasury Accumulation",
         "",
@@ -350,6 +363,7 @@ def _report_payload(
     swing_history: dict[str, list[dict[str, Any]]] = {
         symbol: [] for symbol in report["scenario"]["asset_order"]
     }
+    bargain_scatter: list[dict[str, Any]] = []
     for swing in swings:
         economics = swing.get("economics") or {}
         strategy_reason = swing.get("strategy_reason") or {}
@@ -410,6 +424,15 @@ def _report_payload(
         }
         symbol = str(swing.get("asset_symbol") or "")
         swing_history.setdefault(symbol, []).append(compact_swing)
+        bargain_scatter.append(
+            {
+                "symbol": symbol,
+                "id": compact_swing["id"],
+                "status": compact_swing["status"],
+                "ageDays": compact_swing["ageSeconds"] / 86400.0,
+                "returnPct": compact_swing["returnPct"],
+            }
+        )
     swing_history_counts: dict[str, int] = {}
     for symbol, items in swing_history.items():
         items.sort(key=lambda item: item["openedAtMs"], reverse=True)
@@ -424,6 +447,7 @@ def _report_payload(
         "successMetrics": report.get("success_metrics") or {},
         "reserve": report["shared_usdt"],
         "swings": report["swings"],
+        "bargainCashFlow": report.get("bargain_cash_flow") or {},
         "treasuryAccumulation": report.get("treasury_accumulation") or {},
         "sellCampaigns": {
             key: (report.get("sell_campaigns") or {}).get(key)
@@ -451,6 +475,7 @@ def _report_payload(
         },
         "bargainAnalysis": {
             "overview": analysis_report.get("overview") or {},
+            "breakdowns": analysis_report.get("breakdowns") or {},
             "risk": analysis_report.get("risk") or {},
             "notable": {
                 "worst_open": (analysis_report.get("notable") or {}).get("worst_open")
@@ -485,6 +510,7 @@ def _report_payload(
             for item in monthly
         ],
         "assets": assets,
+        "bargainScatter": bargain_scatter,
         "swingHistory": swing_history,
         "swingHistoryCounts": swing_history_counts,
     }
@@ -702,16 +728,35 @@ _HTML = r'''<!doctype html>
     #bargainAnalytics > .card-head .subtitle { font-size: 12px; }
     .analysis-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 17px; }
     #finalInventoryKpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    #cashFlowKpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
     #accumulationKpis, #sellCampaignKpis, #analysisKpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     #cleanupKpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     .analysis-kpi { min-width: 0; min-height: 104px; padding: 15px; border: 1px solid var(--line-soft); border-radius: 13px; background: linear-gradient(145deg, rgba(17,25,37,.92), rgba(8,12,18,.92)); }
     .analysis-kpi span { display: block; color: var(--muted); font-size: 11px; }
     .analysis-kpi strong { display: block; margin-top: 10px; overflow: hidden; font-size: 22px; text-overflow: ellipsis; }
     .analysis-kpi small { display: block; margin-top: 7px; color: var(--dim); font-size: 10px; line-height: 1.4; }
+    .analysis-grid { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(380px, .82fr); gap: 16px; }
     .analysis-panel { min-width: 0; padding: 17px; border: 1px solid var(--line-soft); border-radius: 15px; background: rgba(7,11,17,.62); }
     .analysis-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
     .analysis-panel-head strong { font-size: 15px; }
     .analysis-panel-head span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .analysis-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 13px; }
+    .analysis-tab { border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; color: var(--muted); background: #0b1119; cursor: pointer; font-size: 11px; }
+    .analysis-tab:hover, .analysis-tab.active { color: var(--ink); border-color: #5e7da8; background: #17253a; }
+    .breakdown-table { display: grid; }
+    .breakdown-row { display: grid; grid-template-columns: minmax(120px,1.25fr) 50px 56px 50px 104px 82px 72px; gap: 10px; align-items: center; padding: 11px 5px; border-top: 1px solid var(--line-soft); font-size: 12px; }
+    .breakdown-row.header { border-top: 0; color: var(--dim); font-size: 10px; text-transform: uppercase; }
+    .breakdown-row > :not(:first-child) { text-align: right; }
+    .breakdown-label { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .breakdown-label::before { content: ""; width: 7px; height: 26px; flex: 0 0 auto; border-radius: 4px; background: var(--row-color); }
+    .breakdown-label strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .outcome-stack { display: flex; height: 22px; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 999px; background: #080c12; }
+    .outcome-slice { width: var(--width); min-width: 2px; background: var(--slice-color); }
+    .outcome-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 15px; margin-top: 15px; }
+    .outcome-item { display: grid; grid-template-columns: 10px 1fr auto; gap: 9px; align-items: center; font-size: 11px; }
+    .outcome-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--slice-color); }
+    .outcome-item span { color: var(--muted); }
+    .scatter-wrap { height: 300px; }
     .risk-list { display: grid; gap: 8px; }
     .risk-row { display: grid; grid-template-columns: 58px minmax(0,1fr) 68px 90px; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid var(--line-soft); border-radius: 9px; color: inherit; background: #0a0f16; text-decoration: none; font-size: 11px; }
     .risk-row:hover { border-color: #5e718e; background: #101925; }
@@ -802,7 +847,8 @@ _HTML = r'''<!doctype html>
       .donut { width: min(230px, 75vw); margin: 0 auto; }
       .bargain-score { grid-template-columns: 1fr 1fr; }
       .analysis-kpis { grid-template-columns: repeat(3, 1fr); }
-      #finalInventoryKpis, #accumulationKpis, #sellCampaignKpis, #analysisKpis, #cleanupKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      #finalInventoryKpis, #cashFlowKpis, #accumulationKpis, #sellCampaignKpis, #analysisKpis, #cleanupKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .analysis-grid { grid-template-columns: 1fr; }
       .cleanup-reason { grid-template-columns: minmax(130px,1fr) auto; }
       .cleanup-reason > span:not(:first-child) { grid-column: 1 / -1; grid-row: 2; text-align: left; }
       .bar-row { grid-template-columns: 45px 1fr 68px; }
@@ -821,6 +867,9 @@ _HTML = r'''<!doctype html>
     @media (max-width: 520px) {
       #bargainAnalytics { padding: 16px; }
       .analysis-kpis { grid-template-columns: repeat(2, 1fr); }
+      .breakdown-table { overflow-x: auto; }
+      .breakdown-row { min-width: 740px; }
+      .outcome-list { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -868,6 +917,16 @@ _HTML = r'''<!doctype html>
         <div class="analysis-note">Committed cash is counted once as hypothetical buyback inventory; only uncommitted Free Vault Reserve remains cash. Buyback quantity includes configured execution costs. Effective value uses final market marks and does not simulate a subsequent terminal sale.</div>
       </article>
 
+      <article class="card full" id="bargainCashFlow">
+        <div class="card-head"><div><h2>Bargain Cash Flow</h2><div class="subtitle">What was committed and recycled, what returned to Free Vault Reserve, and what actually required spendable cash.</div></div></div>
+        <div class="analysis-kpis" id="cashFlowKpis"></div>
+        <section class="analysis-panel">
+          <div class="analysis-panel-head"><div><strong>By Close Type</strong><br><span>Gross released cash, spendable top-up, and resulting net cash movement.</span></div></div>
+          <div class="cleanup-reasons" id="cashFlowCloseTypes"></div>
+        </section>
+        <div class="analysis-note">Committed recycled is turnover, not income or expense. Cash released and spendable top-ups are gross flows; Net Bargain Cash is their difference. Treasury Accumulation is shown separately below.</div>
+      </article>
+
       <article class="card full" id="treasuryAccumulation">
         <div class="card-head"><div><h2>Treasury Accumulation</h2><div class="subtitle">Standalone Free Vault Reserve deployment. These purchases are not Bargains.</div></div><span class="tag" id="accumulationCount"></span></div>
         <div class="analysis-kpis" id="accumulationKpis"></div>
@@ -883,12 +942,29 @@ _HTML = r'''<!doctype html>
       </article>
 
       <article class="card full" id="bargainAnalytics">
-        <div class="card-head"><div><h2>Bargain Operations</h2><div class="subtitle">Throughput, duration, and unfinished exposure.</div></div><span class="tag" id="analysisCount"></span></div>
+        <div class="card-head"><div><h2>Bargain Analytics</h2><div class="subtitle">Lifecycle returns, duration, signal quality, and capital still waiting for an exit.</div></div><span class="tag" id="analysisCount"></span></div>
         <div class="analysis-kpis" id="analysisKpis"></div>
-        <section class="analysis-panel">
-          <div class="analysis-panel-head"><div><strong>Open Risk Watchlist</strong><br><span>Largest unfinished Bargains, linked to asset history.</span></div><span id="riskSummary"></span></div>
-          <div class="risk-list" id="riskList"></div>
-        </section>
+        <div class="analysis-grid">
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Performance Breakdown</strong><br><span>Compare cohorts on the same lifecycle basis.</span></div></div>
+            <div class="analysis-tabs" id="analysisTabs"></div>
+            <div class="breakdown-table" id="breakdownTable"></div>
+          </section>
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Duration vs Return</strong><br><span>Each point is one Bargain. Open exposure is marked in red.</span></div></div>
+            <div class="chart-wrap scatter-wrap"><canvas id="bargainScatter"></canvas><div class="tooltip"></div></div>
+          </section>
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Outcome Mix</strong><br><span>Lifecycle state at the end of the replay.</span></div></div>
+            <div class="outcome-stack" id="outcomeStack"></div>
+            <div class="outcome-list" id="outcomeList"></div>
+            <div class="analysis-note" id="outcomeNote"></div>
+          </section>
+          <section class="analysis-panel">
+            <div class="analysis-panel-head"><div><strong>Open Risk Watchlist</strong><br><span>Largest unfinished losses, linked to asset history.</span></div><span id="riskSummary"></span></div>
+            <div class="risk-list" id="riskList"></div>
+          </section>
+        </div>
       </article>
 
       <article class="card full" id="waiterCleanup">
@@ -977,6 +1053,35 @@ _HTML = r'''<!doctype html>
       new ResizeObserver(draw).observe(wrap); draw();
     }
 
+    function drawBargainScatter(canvas, points) {
+      const wrap=canvas.parentElement;
+      const tooltip=wrap.querySelector(".tooltip");
+      let positions=[];
+      function draw() {
+        const rect=wrap.getBoundingClientRect();
+        const dpr=window.devicePixelRatio||1;
+        canvas.width=Math.round(rect.width*dpr); canvas.height=Math.round(rect.height*dpr);
+        const ctx=canvas.getContext("2d"); ctx.scale(dpr,dpr);
+        const width=rect.width,height=rect.height,pad={l:58,r:15,t:13,b:32};
+        const valid=points.filter(point=>Number.isFinite(point.returnPct));
+        if (!valid.length) { ctx.fillStyle="#70798a";ctx.font="10px Courier New";ctx.fillText("No Bargains to chart",14,24);return; }
+        const maxDays=Math.max(...valid.map(point=>point.ageDays),1);
+        let minReturn=Math.min(...valid.map(point=>point.returnPct),0);
+        let maxReturn=Math.max(...valid.map(point=>point.returnPct),0);
+        const gap=Math.max((maxReturn-minReturn)*.08,1); minReturn-=gap;maxReturn+=gap;
+        const x=value=>pad.l+(Math.log1p(value)/Math.log1p(maxDays))*(width-pad.l-pad.r);
+        const y=value=>pad.t+(maxReturn-value)/Math.max(maxReturn-minReturn,.0001)*(height-pad.t-pad.b);
+        ctx.font="11px Courier New";ctx.lineWidth=1;
+        for(let index=0;index<5;index++){const value=minReturn+(maxReturn-minReturn)*index/4,yy=y(value);ctx.strokeStyle="rgba(135,149,171,.13)";ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(width-pad.r,yy);ctx.stroke();ctx.fillStyle="#70798a";ctx.fillText(`${value.toFixed(0)}%`,3,yy+3);}
+        const zeroY=y(0);ctx.strokeStyle="rgba(233,185,73,.45)";ctx.beginPath();ctx.moveTo(pad.l,zeroY);ctx.lineTo(width-pad.r,zeroY);ctx.stroke();
+        [0,7,30,90,maxDays].filter((value,index,items)=>items.indexOf(value)===index&&value<=maxDays).forEach(value=>{const xx=x(value);ctx.fillStyle="#70798a";ctx.fillText(`${Math.round(value)}d`,Math.max(2,xx-8),height-7);});
+        positions=valid.map(point=>{const xx=x(point.ageDays),yy=y(point.returnPct);ctx.beginPath();ctx.arc(xx,yy,point.status==="closed"?3.2:4.1,0,Math.PI*2);ctx.fillStyle=point.status==="closed"?"rgba(67,214,160,.66)":"rgba(255,102,125,.78)";ctx.fill();return{x:xx,y:yy,point};});
+      }
+      canvas.addEventListener("mousemove",event=>{if(!positions.length)return;const rect=canvas.getBoundingClientRect(),mx=event.clientX-rect.left,my=event.clientY-rect.top;const nearest=positions.reduce((best,item)=>Math.hypot(item.x-mx,item.y-my)<Math.hypot(best.x-mx,best.y-my)?item:best,positions[0]);if(Math.hypot(nearest.x-mx,nearest.y-my)>24){tooltip.style.opacity=0;return;}tooltip.innerHTML=`<strong>${nearest.point.symbol} / ${bargainId(nearest.point.id)}</strong><br>${nearest.point.status==="closed"?"Closed":"Open"}: ${pct(nearest.point.returnPct)}<br>Age: ${nearest.point.ageDays.toFixed(1)}d`;tooltip.style.left=`${Math.max(90,Math.min(rect.width-90,nearest.x))}px`;tooltip.style.top=`${Math.max(55,nearest.y)}px`;tooltip.style.opacity=1;});
+      canvas.addEventListener("mouseleave",()=>tooltip.style.opacity=0);
+      new ResizeObserver(draw).observe(wrap);draw();
+    }
+
     const drawdowns = (() => { let treasuryPeak=0, hodlPeak=0; return data.equity.map(point => { treasuryPeak=Math.max(treasuryPeak,point.treasury); hodlPeak=Math.max(hodlPeak,point.hodl); return {...point, treasuryDd:(point.treasury/treasuryPeak-1)*100, hodlDd:(point.hodl/hodlPeak-1)*100}; }); })();
     drawLineChart(document.getElementById("equityChart"), data.equity, [
       {name:"Scrooge",color:"#e9b949",value:p=>p.treasury,format:v=>money(v)},
@@ -1011,6 +1116,19 @@ _HTML = r'''<!doctype html>
       ["Final Treasury",money(effectiveAssetValue+freeReserve),"Post-buyback value at final marks","gold"],
     ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
     document.getElementById("finalInventoryRows").innerHTML=`<div class="inventory-row header"><span>Asset</span><span>Physical Final</span><span>Committed Buyback</span><span>Effective Final</span><span>Start</span><span>Recovery</span><span>Final Price</span><span>HODL Value</span><span>Effective Value</span><span>Delta vs HODL</span></div>${data.assets.map(item=>`<div class="inventory-row"><strong>${item.symbol}</strong><span>${qty(item.finalQuantity)}</span><span>+${qty(item.hypotheticalBuybackQuantity)}</span><strong>${qty(item.effectiveFinalQuantity)}</strong><span>${qty(item.startingQuantity)}</span><strong class="${tone(item.effectiveQuantityPct-100)}">${pct(item.effectiveQuantityPct)}</strong><span>${money(item.finalPrice)}</span><span>${money(item.hodlValue)}</span><strong>${money(item.scroogeValue)}</strong><strong class="${tone(item.deltaVsHodl)}">${money(item.deltaVsHodl)}</strong></div>`).join("")}`;
+
+    const bargainCashFlow=data.bargainCashFlow||{};
+    const cashFlow=bargainCashFlow.overview||{};
+    document.getElementById("cashFlowKpis").innerHTML=[
+      ["SELL Proceeds",money(cashFlow.sell_proceeds_quote||0),"Net cash received and committed",""],
+      ["BUY-back Spend",money(cashFlow.buyback_spend_quote||0),"Cash paid to restore inventory",""],
+      ["Committed Recycled",money(cashFlow.committed_recycled_quote||0),"Turnover, not profit","gold"],
+      ["Cash Released",money(cashFlow.cash_released_quote||0),"Gross additions to Free Reserve","positive"],
+      ["Spendable Top-ups",money(cashFlow.spendable_top_up_quote||0),"Gross cash used beyond own commitment","negative"],
+      ["Net Bargain Cash",money(cashFlow.net_cash_change_quote||0),"Released minus top-ups",tone(cashFlow.net_cash_change_quote||0)],
+    ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
+    const closeTypeLabel={profit_target:"Profit targets",cleanup:"Cleanup",other:"Other"};
+    document.getElementById("cashFlowCloseTypes").innerHTML=Object.entries(bargainCashFlow.by_close_type||{}).filter(([,item])=>item.closed_sell_bargains).map(([key,item])=>`<div class="cleanup-reason"><strong>${closeTypeLabel[key]||key}</strong><span>${item.closed_sell_bargains} closes · released ${money(item.cash_released_quote)} · top-up ${money(item.spendable_top_up_quote)}</span><strong class="${tone(item.net_cash_change_quote)}">${money(item.net_cash_change_quote)}</strong></div>`).join("")||`<div class="ledger-empty">No closed SELL-origin Bargains.</div>`;
 
     const accumulation=data.treasuryAccumulation||{};
     const accumulationOverview=accumulation.overview||{};
@@ -1049,15 +1167,38 @@ _HTML = r'''<!doctype html>
     const hoursLabel=value=>value===null||value===undefined?"N/A":value>=24?`${(value/24).toFixed(1)}d`:`${value.toFixed(1)}h`;
     document.getElementById("analysisCount").textContent=`${analysisOverview.count} BARGAINS`;
     document.getElementById("analysisKpis").innerHTML=[
-      ["Opened",analysisOverview.count||0,"All Bargains in the replay",""],
-      ["Closed",analysisOverview.closed||0,`${analysisOverview.open||0} remain open`,"positive"],
+      ["Lifecycle PnL",money(analysisOverview.net_pnl_quote),`${money(analysisOverview.realized_pnl_quote)} realized`,tone(analysisOverview.net_pnl_quote)],
       ["Closure Rate",optionalPct(analysisOverview.closure_rate_pct),`${analysisOverview.open} still open`,""],
+      ["Closed Expectancy",money(analysisOverview.closed_expectancy_quote),`${optionalPct(analysisOverview.average_closed_return_pct)} average return`,tone(analysisOverview.closed_expectancy_quote)],
       ["Median Duration",hoursLabel(analysisOverview.median_duration_hours),`P90 ${hoursLabel(analysisOverview.duration_p90_hours)}`,""],
+      ["Fee Drag",optionalPct(analysisOverview.fee_drag_pct),`${money(analysisOverview.quote_fees)} quote fees`,""],
+      ["Open Risk",money(analysis.risk.underwater_open_pnl_quote),`${analysis.risk.underwater_open_count} underwater`,"negative"],
     ].map(([label,value,note,cls])=>`<div class="analysis-kpi"><span>${label}</span><strong class="${cls}">${value}</strong><small>${note}</small></div>`).join("");
+
+    const dimensions={asset:"Asset",objective:"Objective",origin:"Origin",signal_level:"Signal Level",duration:"Duration"};
+    const analysisTabs=document.getElementById("analysisTabs");
+    let activeDimension="asset";
+    analysisTabs.innerHTML=Object.entries(dimensions).map(([key,label])=>`<button type="button" class="analysis-tab ${key===activeDimension?"active":""}" data-dimension="${key}">${label}</button>`).join("");
+    function renderBreakdown() {
+      const rows=analysis.breakdowns[activeDimension]||[];
+      document.getElementById("breakdownTable").innerHTML=`<div class="breakdown-row header"><span>Category</span><span>Count</span><span>Closed</span><span>Open</span><span>Lifecycle PnL</span><span>Return</span><span>Median</span></div>${rows.map((row,index)=>`<div class="breakdown-row"><span class="breakdown-label" style="--row-color:${COLORS[index%COLORS.length]}"><strong>${row.label}</strong></span><span>${row.count}</span><span>${row.closed}</span><span>${row.open}</span><strong class="${tone(row.net_pnl_quote)}">${money(row.net_pnl_quote)}</strong><span class="${tone(row.return_on_notional_pct||0)}">${optionalPct(row.return_on_notional_pct)}</span><span>${hoursLabel(row.median_duration_hours)}</span></div>`).join("")}`;
+    }
+    analysisTabs.querySelectorAll(".analysis-tab").forEach(button=>button.addEventListener("click",()=>{activeDimension=button.dataset.dimension;analysisTabs.querySelectorAll(".analysis-tab").forEach(item=>item.classList.toggle("active",item===button));renderBreakdown();}));
+    renderBreakdown();
+
+    const outcomeColors={closed_profit:"#43d6a0",closed_flat:"#738096",closed_loss:"#ff667d",open_profit:"#83a8e8",open_flat:"#9b7bd4",open_underwater:"#b83352"};
+    const outcomes=analysis.breakdowns.outcome||[];
+    const outcomeTotal=Math.max(outcomes.reduce((total,row)=>total+row.count,0),1);
+    document.getElementById("outcomeStack").innerHTML=outcomes.map(row=>`<span class="outcome-slice" title="${row.label}: ${row.count}" style="--width:${row.count/outcomeTotal*100}%;--slice-color:${outcomeColors[row.key]||"#738096"}"></span>`).join("");
+    document.getElementById("outcomeList").innerHTML=outcomes.map(row=>`<div class="outcome-item"><i class="outcome-dot" style="--slice-color:${outcomeColors[row.key]||"#738096"}"></i><span>${row.label}</span><strong class="${tone(row.net_pnl_quote)}">${row.count} / ${money(row.net_pnl_quote)}</strong></div>`).join("");
+    const feeAssets=Object.entries(analysisOverview.fees_by_asset||{}).map(([asset,value])=>`${qty(value)} ${asset}`).join(" / ")||"none";
+    document.getElementById("outcomeNote").textContent=`${analysisOverview.partially_closed} partially closed. Fees remain denominated in their actual assets: ${feeAssets}.`;
 
     const risks=analysis.notable.worst_open||[];
     document.getElementById("riskSummary").textContent=`${analysis.risk.open_90_plus_days} open 90d+`;
     document.getElementById("riskList").innerHTML=risks.length?risks.map(item=>`<a class="risk-row" href="#asset-${item.asset_symbol}" data-risk-asset="${item.asset_symbol}"><strong>${item.asset_symbol}</strong><strong>${bargainId(item.swing_id)}</strong><span>${item.age_days.toFixed(1)}d</span><strong class="${tone(item.pnl_quote)}">${money(item.pnl_quote)}</strong></a>`).join(""):`<div class="ledger-empty">No open Bargains are underwater.</div>`;
+
+    drawBargainScatter(document.getElementById("bargainScatter"),data.bargainScatter||[]);
 
     const cleanup=data.waiterCleanup;
     const cleanupOpen=cleanup.open_bargains||{};

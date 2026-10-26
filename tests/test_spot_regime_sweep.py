@@ -97,15 +97,21 @@ def regime_report(edge: float, *, recovery: float = 100.0) -> dict:
             }
         },
         "treasury_accumulation": {
-            "earned_cash_generated_quote": 8,
-            "earned_cash_allocated_quote": 3,
             "overview": {
                 "count": 2,
                 "usdt_deployed": 3,
+                "spendable_cash_deployed_quote": 3,
                 "net_asset_acquired": 1,
                 "target_growth_quantity": 1,
             },
             "per_asset": {},
+        },
+        "bargain_cash_flow": {
+            "overview": {
+                "cash_released_quote": 8,
+                "spendable_top_up_quote": 5,
+                "net_cash_change_quote": 3,
+            },
         },
         "waiter_cleanup": {
             "cleanup_closes_total": 1,

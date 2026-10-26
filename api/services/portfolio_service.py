@@ -1769,7 +1769,15 @@ def _create_spot_order_intent_preview(
             committed_pool = _as_float(snapshot["summary"].get("vault_reserve_committed")) or 0.0
             exchange_spendable = max(0.0, available_quote - retained_quote - committed_pool)
             free_reserve = exchange_spendable
-        nonprotected_budget = free_reserve + committed_quote
+        committed_only_profit_close = (
+            normalized_source == "strategy"
+            and normalized_swing_id is not None
+            and swing.get("trading_objective") == "accumulate_asset"
+            and normalized_reason.get("close_reason") == "profit_target"
+        )
+        nonprotected_budget = committed_quote + (
+            0.0 if committed_only_profit_close else free_reserve
+        )
         protected_cash_required = max(0.0, estimated_required_quote - nonprotected_budget)
         managed_quote = nonprotected_budget + (retained_quote if use_protected_cash else 0.0)
         available_quote = min(available_quote, managed_quote)

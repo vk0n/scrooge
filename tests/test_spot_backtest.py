@@ -17,6 +17,7 @@ from backtest.spot_market_data import (
 from backtest.spot_reporting import (
     _asset_capital_performance,
     _accumulation_metrics,
+    _bargain_cash_flow_metrics,
     _campaign_metrics,
     _cleanup_accounting_rows,
     _cleanup_accounting_summary,
@@ -228,6 +229,22 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(updates[0][0], 0)
         self.assertGreater(updates[0][1], 0)
         self.assertEqual(updates[-1], (updates[0][1], updates[0][1]))
+
+    def test_replay_reuses_unchanged_planner_decision_across_action_phases(self):
+        config = scenario((asset("AAA"),))
+        replay = SpotPortfolioBacktester(
+            config,
+            dataset(config, lambda _symbol, _index: 100),
+        )
+
+        with patch(
+            "backtest.spot_engine.plan_spot_strategy_action",
+            return_value=None,
+        ) as planner:
+            replay.run()
+
+        replay_steps = int((config.end - config.start).total_seconds() // 3600)
+        self.assertEqual(planner.call_count, replay_steps - 1)
 
     def test_signal_fills_at_next_candle_open(self):
         config = scenario((asset("AAA"),), hours=3)
@@ -1600,7 +1617,7 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertEqual(replay._retained_free_reserve_quote(), 20)
         self.assertEqual(replay._spendable_free_reserve_quote(), 10)
 
-    def test_accumulation_report_attributes_earned_cash_to_asset_buys(self):
+    def test_accumulation_report_tracks_spendable_cash_deployment(self):
         metrics = _accumulation_metrics(
             [
                 {
@@ -1629,32 +1646,132 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
                     "fee_asset": "USDT",
                     "asset_symbol": "AAA",
                 },
-            ],
+            ]
+        )
+
+        self.assertAlmostEqual(metrics["overview"]["spendable_cash_deployed_quote"], 15.0)
+        self.assertAlmostEqual(
+            metrics["per_asset"]["AAA"]["spendable_cash_deployed_quote"],
+            15.0,
+        )
+
+    def test_bargain_cash_flow_separates_recycled_cash_release_and_top_up(self):
+        metrics = _bargain_cash_flow_metrics(
             [
                 {
                     "status": "closed",
                     "origin_side": "sell",
                     "trading_objective": "accumulate_cash",
-                    "closed_at_ms": 20,
-                    "economics": {"realized_cash_gain_quote": 5.0},
+                    "quote_symbol": "USDT",
+                    "close_reason": "profit_target",
+                    "executions": [
+                        {
+                            "side": "sell",
+                            "quantity": 10,
+                            "price": 10,
+                            "quote_quantity": 100,
+                            "fee_amount": 1,
+                            "fee_asset": "USDT",
+                        },
+                        {
+                            "side": "buy",
+                            "quantity": 10,
+                            "price": 8,
+                            "quote_quantity": 80,
+                            "fee_amount": 0.8,
+                            "fee_asset": "USDT",
+                        },
+                    ],
                 },
                 {
                     "status": "closed",
                     "origin_side": "sell",
                     "trading_objective": "accumulate_asset",
-                    "closed_at_ms": 25,
-                    "economics": {"realized_cash_gain_quote": 3.0},
+                    "quote_symbol": "USDT",
+                    "close_reason": "deep_loss_cleanup",
+                    "executions": [
+                        {
+                            "side": "sell",
+                            "quantity": 10,
+                            "price": 10,
+                            "quote_quantity": 100,
+                            "fee_amount": 1,
+                            "fee_asset": "USDT",
+                        },
+                        {
+                            "side": "buy",
+                            "quantity": 10,
+                            "price": 12,
+                            "quote_quantity": 120,
+                            "fee_amount": 1.2,
+                            "fee_asset": "USDT",
+                        },
+                    ],
                 },
-            ],
+            ]
         )
 
-        self.assertAlmostEqual(metrics["earned_cash_generated_quote"], 8.0)
-        self.assertAlmostEqual(metrics["earned_cash_allocated_quote"], 8.0)
-        self.assertAlmostEqual(metrics["earned_cash_allocated_pct"], 100.0)
-        self.assertAlmostEqual(
-            metrics["per_asset"]["AAA"]["earned_cash_allocated_quote"],
-            8.0,
+        overview = metrics["overview"]
+        self.assertAlmostEqual(overview["committed_recycled_quote"], 179.8)
+        self.assertAlmostEqual(overview["cash_released_quote"], 18.2)
+        self.assertAlmostEqual(overview["spendable_top_up_quote"], 22.2)
+        self.assertAlmostEqual(overview["net_cash_change_quote"], -4.0)
+
+    def test_profit_close_reprices_to_own_committed_cash_at_execution(self):
+        config = scenario(
+            (asset("AAA", objective="accumulate_asset"),),
+            starting_usdt=150,
         )
+        replay = SpotPortfolioBacktester(config, dataset(config, lambda _symbol, _index: 100))
+        replay.swings["asset-profit"] = {
+            "swing_id": "asset-profit",
+            "asset_symbol": "AAA",
+            "quote_symbol": "USDT",
+            "origin_side": "sell",
+            "trading_objective": "accumulate_asset",
+            "status": "open",
+            "source": "strategy",
+            "opened_at_ms": replay.start_ms,
+            "executions": [
+                {
+                    "execution_id": "asset-profit-open",
+                    "side": "sell",
+                    "quantity": 1,
+                    "price": 100,
+                    "quote_quantity": 100,
+                    "fee_amount": 0,
+                    "fee_asset": "USDT",
+                }
+            ],
+        }
+        decision = {
+            "action_type": "close",
+            "side": "buy",
+            "swing_id": "asset-profit",
+            "requested_quantity": 100 / 90,
+            "reason": {"action_type": "close", "close_reason": "profit_target"},
+        }
+
+        error, _ = replay._close_preflight_error(
+            "AAA",
+            decision,
+            observed_price=95,
+            available_quote=replay._close_quote_budget(decision),
+        )
+
+        self.assertIsNone(error)
+        self.assertLess(decision["requested_quantity"], 100 / 90)
+        self.assertAlmostEqual(replay._close_quote_budget(decision), 100)
+        cleanup = {**decision, "reason": {"close_reason": "deep_loss_cleanup"}}
+        self.assertAlmostEqual(replay._close_quote_budget(cleanup), 150)
+        completed = replay._execute_action(
+            "AAA",
+            decision,
+            observed_price=95,
+            timestamp_ms=replay.start_ms,
+        )
+        self.assertTrue(completed)
+        self.assertGreaterEqual(replay.usdt, 50 - 1e-8)
 
     def test_accumulation_never_spends_quote_committed_to_open_sell_bargain(self):
         config = scenario(
@@ -2025,7 +2142,9 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertIn('"protectedReserve"', report_html)
             self.assertIn('"spendableReserve"', report_html)
             self.assertIn("Bargain History", report_html)
-            self.assertIn("Bargain Operations", report_html)
+            self.assertIn("Bargain Analytics", report_html)
+            self.assertIn("Performance Breakdown", report_html)
+            self.assertIn("Duration vs Return", report_html)
             self.assertIn("Final Inventory", report_html)
             self.assertIn("Committed Buyback", report_html)
             self.assertIn("Effective Final", report_html)
@@ -2036,7 +2155,8 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
             self.assertNotIn("Cleanup-resolved Lifecycle PnL", report_html)
             self.assertNotIn("Bargain Health", report_html)
             self.assertNotIn("Inventory at settlement", report_html)
-            self.assertNotIn("Timing Breakdown", report_html)
+            self.assertIn('"bargainScatter"', report_html)
+            self.assertIn('"breakdowns"', report_html)
             self.assertIn("Entry Cost", report_html)
             self.assertIn("Total Gain", report_html)
             self.assertIn("Final Price", report_html)

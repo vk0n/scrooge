@@ -252,6 +252,49 @@ def calculate_swing_economics(
     }
 
 
+def mark_swing_economics(
+    swing: dict[str, Any],
+    economics: dict[str, Any],
+    *,
+    current_price: float,
+) -> dict[str, Any]:
+    """Update only the market-dependent fields of precomputed Swing economics."""
+    origin_side = str(swing.get("origin_side") or "").strip().lower()
+    if origin_side not in SWING_SIDES:
+        raise SpotSwingDomainError("Swing origin side must be buy or sell.")
+    market_price = _number(current_price, field="Current price", positive=True)
+    remaining_quantity = float(economics.get("remaining_quantity") or 0.0)
+    remaining_opening_quote = float(
+        economics.get("remaining_opening_quote_quantity") or 0.0
+    )
+    quote_symbol = str(swing.get("quote_symbol") or "USDT").strip().upper() or "USDT"
+    total_quote_fees = float(
+        (economics.get("fees_by_asset") or {}).get(quote_symbol, 0.0) or 0.0
+    )
+    remaining_open_quote_fees = (
+        max(
+            0.0,
+            total_quote_fees - float(economics.get("realized_fee_quote") or 0.0),
+        )
+        if remaining_quantity > 0.0000000001
+        else 0.0
+    )
+    if origin_side == "sell":
+        unrealized_gross = remaining_opening_quote - remaining_quantity * market_price
+    else:
+        unrealized_gross = remaining_quantity * market_price - remaining_opening_quote
+    unrealized_pnl = unrealized_gross - remaining_open_quote_fees
+    marked = dict(economics)
+    marked["unrealized_gross_pnl_quote"] = unrealized_gross
+    marked["unrealized_pnl_quote"] = unrealized_pnl
+    marked["unrealized_pnl_pct"] = (
+        unrealized_pnl / remaining_opening_quote * 100.0
+        if remaining_opening_quote > 0.0000000001
+        else None
+    )
+    return marked
+
+
 def calculate_sell_origin_committed_quote(
     swing: dict[str, Any],
     economics: dict[str, Any],

@@ -115,58 +115,12 @@ def _swing_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _accumulation_metrics(
     accumulations: list[dict[str, Any]],
-    swings: list[dict[str, Any]],
 ) -> dict[str, Any]:
     accumulation_buys = [
         item
         for item in accumulations
         if str(item.get("action_type") or "accumulate_asset").strip().lower() == "accumulate_asset"
         and str(item.get("side") or "buy").strip().lower() == "buy"
-    ]
-    earned_cash_events = sorted(
-        (
-            int(swing.get("closed_at_ms") or 0),
-            max(0.0, float((swing.get("economics") or {}).get("realized_cash_gain_quote") or 0.0)),
-        )
-        for swing in swings
-        if swing.get("status") == "closed"
-        and str(swing.get("origin_side") or "").strip().lower() == "sell"
-        and float((swing.get("economics") or {}).get("realized_cash_gain_quote") or 0.0) > 0.0
-    )
-    earned_cash_generated = sum(amount for _, amount in earned_cash_events)
-    earned_cash_available = 0.0
-    earned_cash_allocated_by_execution: dict[str, float] = {}
-    cash_events = [
-        (timestamp_ms, 0, "earned", amount, None)
-        for timestamp_ms, amount in earned_cash_events
-    ] + [
-        (
-            int(item.get("timestamp_ms") or 0),
-            1,
-            "buy",
-            max(0.0, float(item.get("deployed_quote_quantity") or 0.0)),
-            str(item.get("execution_id") or ""),
-        )
-        for item in accumulation_buys
-    ]
-    for _, _, event_type, amount, execution_id in sorted(cash_events):
-        if event_type == "earned":
-            earned_cash_available += amount
-            continue
-        allocated = min(amount, earned_cash_available)
-        earned_cash_available -= allocated
-        if execution_id:
-            earned_cash_allocated_by_execution[execution_id] = allocated
-
-    annotated_accumulations = [
-        {
-            **item,
-            "_earned_cash_allocated_quote": earned_cash_allocated_by_execution.get(
-                str(item.get("execution_id") or ""),
-                0.0,
-            ),
-        }
-        for item in accumulation_buys
     ]
 
     def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -180,9 +134,7 @@ def _accumulation_metrics(
         return {
             "count": len(rows),
             "usdt_deployed": deployed,
-            "earned_cash_allocated_quote": sum(
-                float(item.get("_earned_cash_allocated_quote") or 0.0) for item in rows
-            ),
+            "spendable_cash_deployed_quote": deployed,
             "net_asset_acquired": acquired,
             "target_growth_quantity": sum(
                 float(item.get("target_growth_quantity") or 0.0) for item in rows
@@ -200,22 +152,86 @@ def _accumulation_metrics(
 
     def grouped(field: str) -> dict[str, Any]:
         buckets: dict[str, list[dict[str, Any]]] = {}
-        for item in annotated_accumulations:
+        for item in accumulation_buys:
             key = str(item.get(field) or "unknown")
             buckets.setdefault(key, []).append(item)
         return {key: summarize(rows) for key, rows in sorted(buckets.items())}
 
     return {
-        "overview": summarize(annotated_accumulations),
-        "earned_cash_generated_quote": earned_cash_generated,
-        "earned_cash_allocated_quote": sum(earned_cash_allocated_by_execution.values()),
-        "earned_cash_allocated_pct": (
-            sum(earned_cash_allocated_by_execution.values()) / earned_cash_generated * 100.0
-            if earned_cash_generated > 1e-12
-            else None
-        ),
+        "overview": summarize(accumulation_buys),
         "per_asset": grouped("asset_symbol"),
         "per_level": grouped("signal_level"),
+    }
+
+
+def _bargain_cash_flow_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for swing in swings:
+        if swing.get("status") != "closed" or swing.get("origin_side") != "sell":
+            continue
+        quote_symbol = str(swing.get("quote_symbol") or "USDT").upper()
+        sell_proceeds = 0.0
+        buyback_spend = 0.0
+        for execution in swing.get("executions") or []:
+            quantity = float(execution.get("quantity") or 0.0)
+            quote_quantity = float(
+                execution.get("quote_quantity")
+                or quantity * float(execution.get("price") or 0.0)
+            )
+            quote_fee = (
+                float(execution.get("fee_amount") or 0.0)
+                if str(execution.get("fee_asset") or "").upper() == quote_symbol
+                else 0.0
+            )
+            if execution.get("side") == "sell":
+                sell_proceeds += quote_quantity - quote_fee
+            elif execution.get("side") == "buy":
+                buyback_spend += quote_quantity + quote_fee
+        close_reason = str(swing.get("close_reason") or "other")
+        rows.append(
+            {
+                "close_type": (
+                    "cleanup"
+                    if is_cleanup_reason(close_reason)
+                    else "profit_target"
+                    if close_reason == "profit_target"
+                    else "other"
+                ),
+                "objective": str(swing.get("trading_objective") or "unknown"),
+                "sell_proceeds_quote": sell_proceeds,
+                "buyback_spend_quote": buyback_spend,
+                "committed_recycled_quote": min(sell_proceeds, buyback_spend),
+                "cash_released_quote": max(0.0, sell_proceeds - buyback_spend),
+                "spendable_top_up_quote": max(0.0, buyback_spend - sell_proceeds),
+                "net_cash_change_quote": sell_proceeds - buyback_spend,
+            }
+        )
+
+    def summarize(items: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "closed_sell_bargains": len(items),
+            "sell_proceeds_quote": sum(item["sell_proceeds_quote"] for item in items),
+            "buyback_spend_quote": sum(item["buyback_spend_quote"] for item in items),
+            "committed_recycled_quote": sum(
+                item["committed_recycled_quote"] for item in items
+            ),
+            "cash_released_quote": sum(item["cash_released_quote"] for item in items),
+            "spendable_top_up_quote": sum(
+                item["spendable_top_up_quote"] for item in items
+            ),
+            "net_cash_change_quote": sum(item["net_cash_change_quote"] for item in items),
+        }
+
+    return {
+        "overview": summarize(rows),
+        "by_close_type": {
+            close_type: summarize([item for item in rows if item["close_type"] == close_type])
+            for close_type in ("profit_target", "cleanup", "other")
+        },
+        "by_objective": {
+            objective: summarize([item for item in rows if item["objective"] == objective])
+            for objective in ("accumulate_cash", "accumulate_asset", "unknown")
+        },
     }
 
 
@@ -1338,7 +1354,8 @@ def build_spot_backtest_report(result: SpotBacktestResult) -> dict[str, Any]:
             },
         },
         "swings": _swing_metrics(result.swings),
-        "treasury_accumulation": _accumulation_metrics(result.accumulations, result.swings),
+        "bargain_cash_flow": _bargain_cash_flow_metrics(result.swings),
+        "treasury_accumulation": _accumulation_metrics(result.accumulations),
         "sell_campaigns": _campaign_metrics(result),
         "sell_openings_by_level": portfolio_levels,
         "waiter_cleanup": _waiter_cleanup_metrics(result),

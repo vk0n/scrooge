@@ -478,6 +478,13 @@ class SpotOrderExecutor:
                     swing,
                     list_spot_swing_executions(swing["swing_id"], path=self.db_path),
                 )
+                reason = request.get("reason") if isinstance(request.get("reason"), dict) else {}
+                if (
+                    intent["source"] == "strategy"
+                    and swing.get("trading_objective") == "accumulate_asset"
+                    and reason.get("close_reason") == "profit_target"
+                ):
+                    nonprotected_budget = 0.0
                 nonprotected_budget += calculate_sell_origin_committed_quote(swing, economics)
                 close_budget = nonprotected_budget + (
                     retained_reserve if intent["source"] == "manual" and use_protected_cash else 0.0

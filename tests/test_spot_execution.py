@@ -1025,6 +1025,82 @@ class SpotExecutionTests(unittest.TestCase):
 
         self.assertEqual(client.create_calls, 0)
 
+    def test_asset_profit_close_cannot_use_spendable_cash_but_cleanup_can(self):
+        portfolio_service.create_portfolio_transaction(
+            {
+                "tx_type": "deposit",
+                "asset_symbol": "USDT",
+                "quantity": 200,
+                "quote_symbol": "USDT",
+                "custody_location": "binance",
+            }
+        )
+        portfolio_service.update_portfolio_asset_policy(
+            "BTC",
+            {
+                "target_quantity": 1,
+                "minimum_holding_pct": 50,
+                "trading_objective": "accumulate_asset",
+            },
+        )
+        save_exchange_account_snapshot(
+            {
+                "captured_at_ms": int(time.time() * 1000),
+                "can_trade": True,
+                "balances": [
+                    {"asset_symbol": "BTC", "free": 1, "locked": 0},
+                    {"asset_symbol": "USDT", "free": 200, "locked": 0},
+                ],
+            }
+        )
+        create_spot_swing(
+            {
+                "swing_id": "asset-close-budget",
+                "account_key": "manual_spot",
+                "asset_symbol": "BTC",
+                "quote_symbol": "USDT",
+                "origin_side": "sell",
+                "trading_objective": "accumulate_asset",
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        append_spot_swing_execution(
+            {
+                "execution_id": "asset-close-budget-open",
+                "swing_id": "asset-close-budget",
+                "symbol": "BTCUSDT",
+                "side": "sell",
+                "quantity": 1,
+                "price": 100,
+                "source": "strategy",
+            },
+            path=self.db_path,
+        )
+        base = {
+            "asset_symbol": "BTC",
+            "side": "buy",
+            "quantity": 1.5,
+            "swing_id": "asset-close-budget",
+            "strategy_action_type": "close",
+        }
+
+        with self.assertRaisesRegex(ValueError, "only \\$100.00 USDT is available"):
+            portfolio_service.create_strategy_spot_order_intent(
+                {
+                    **base,
+                    "reason": {"action_type": "close", "close_reason": "profit_target"},
+                }
+            )
+
+        cleanup = portfolio_service.create_strategy_spot_order_intent(
+            {
+                **base,
+                "reason": {"action_type": "close", "close_reason": "deep_loss_cleanup"},
+            }
+        )
+        self.assertGreater(cleanup["available_quote_quantity"], 150)
+
     def test_manual_bargain_close_uses_executor_and_closes_linked_swing(self):
         portfolio_service.update_portfolio_asset_policy(
             "BTC",

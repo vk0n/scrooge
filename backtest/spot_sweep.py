@@ -585,6 +585,7 @@ def _summary_row(
     recovery = success["asset_recovery"]
     swings = report["swings"]
     accumulation = report["treasury_accumulation"]
+    cash_flow = (report.get("bargain_cash_flow") or {}).get("overview") or {}
     cleanup = report["waiter_cleanup"]
     cleanup_accounting = cleanup.get("accounting") or {}
     return {
@@ -646,8 +647,15 @@ def _summary_row(
         "cleanup_inventory_deficit_value": float(
             cleanup_accounting.get("inventory_deficit_market_value_quote") or 0.0
         ),
-        "earned_cash_generated": float(accumulation["earned_cash_generated_quote"]),
-        "earned_cash_allocated": float(accumulation["earned_cash_allocated_quote"]),
+        "bargain_cash_released": float(cash_flow.get("cash_released_quote") or 0.0),
+        "bargain_spendable_top_ups": float(
+            cash_flow.get("spendable_top_up_quote") or 0.0
+        ),
+        "net_bargain_cash": float(cash_flow.get("net_cash_change_quote") or 0.0),
+        "accumulation_spendable_deployed": float(
+            (accumulation.get("overview") or {}).get("spendable_cash_deployed_quote")
+            or 0.0
+        ),
     }
 
 
