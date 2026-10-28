@@ -40,13 +40,16 @@ class SpotSweepVariant:
     close_profit_pct: float
     free_cash_retention_pct: float
     unrealized_pnl_pct: float
+    deep_loss_enabled: bool
     deep_loss_min_age_days: float
     deep_loss_required_reverse_level: int
-    max_open_bargains_per_asset: int
+    max_open_bargains_per_asset: int | None
+    aging_cleanup_enabled: bool
     age_l3_min_age_days: float
     age_l2_min_age_days: float
     age_l1_min_age_days: float
     capacity_cleanup_min_age_days: float
+    capacity_cleanup_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -69,7 +72,9 @@ _SWEEP_WORKER_CONFIG: SpotSweepConfig | None = None
 _SWEEP_WORKER_DATASET: SpotHistoricalDataset | None = None
 
 
-def _format_level(value: float) -> str:
+def _format_level(value: float | int | None) -> str:
+    if value is None:
+        return "none"
     return f"{value:g}".replace("-", "neg").replace(".", "p")
 
 
@@ -130,11 +135,16 @@ def load_spot_sweep_config(
     )
 
     variants: list[SpotSweepVariant] = []
+    raw_named_variants = payload.get("variants")
     raw_levels_variants = payload.get("levels_pct")
     raw_accumulation_levels_variants = payload.get("accumulation_levels_pct")
     parameter_grid_raw = payload.get("parameter_grid")
     if parameter_grid_raw is None:
-        if raw_levels_variants is None and raw_accumulation_levels_variants is None:
+        if (
+            raw_named_variants is None
+            and raw_levels_variants is None
+            and raw_accumulation_levels_variants is None
+        ):
             raise ValueError(
                 "spot_sweep must contain levels_pct or accumulation_levels_pct combinations."
             )
@@ -152,13 +162,16 @@ def load_spot_sweep_config(
             "close_profit_pct",
             "free_cash_retention_pct",
             "unrealized_pnl_pct",
+            "deep_loss_enabled",
             "deep_loss_min_age_days",
             "deep_loss_required_reverse_level",
             "max_open_bargains_per_asset",
+            "aging_cleanup_enabled",
             "age_l3_min_age_days",
             "age_l2_min_age_days",
             "age_l1_min_age_days",
             "capacity_cleanup_min_age_days",
+            "capacity_cleanup_enabled",
         }
         unknown = sorted(set(parameter_grid) - supported)
         if unknown:
@@ -221,6 +234,35 @@ def load_spot_sweep_config(
             raise ValueError(f"spot_sweep.parameter_grid.{key} must be a non-empty list.")
         return [float(value) for value in raw_values]
 
+    def boolean_grid_values(key: str, baseline: bool) -> list[bool]:
+        raw_values = parameter_grid.get(key)
+        if raw_values is None:
+            return [baseline]
+        if not isinstance(raw_values, list) or not raw_values:
+            raise ValueError(f"spot_sweep.parameter_grid.{key} must be a non-empty list.")
+        if any(not isinstance(value, bool) for value in raw_values):
+            raise ValueError(f"spot_sweep.parameter_grid.{key} must contain booleans.")
+        return list(raw_values)
+
+    def cap_grid_values() -> list[int | None]:
+        raw_values = parameter_grid.get("max_open_bargains_per_asset")
+        if raw_values is None:
+            return [scenario.waiter_cleanup.max_open_bargains_per_asset]
+        if not isinstance(raw_values, list) or not raw_values:
+            raise ValueError(
+                "spot_sweep.parameter_grid.max_open_bargains_per_asset must be a non-empty list."
+            )
+        values: list[int | None] = []
+        for value in raw_values:
+            if value is None:
+                values.append(None)
+                continue
+            parsed = int(value)
+            if parsed != value:
+                raise ValueError("max_open_bargains_per_asset must contain integers or null.")
+            values.append(parsed)
+        return values
+
     close_profit_options = grid_values(
         "close_profit_pct",
         scenario.progression.close_profit_pct,
@@ -239,6 +281,9 @@ def load_spot_sweep_config(
         "unrealized_pnl_pct",
         scenario.waiter_cleanup.deep_loss_unrealized_pnl_pct,
     )
+    deep_loss_enabled_options = boolean_grid_values(
+        "deep_loss_enabled", scenario.waiter_cleanup.deep_loss_enabled
+    )
     aging_by_level = {
         item.required_reverse_level: item.min_age_days
         for item in scenario.waiter_cleanup.aging_rules
@@ -251,9 +296,9 @@ def load_spot_sweep_config(
         "deep_loss_required_reverse_level",
         scenario.waiter_cleanup.deep_loss_required_reverse_level,
     )
-    max_open_options = grid_values(
-        "max_open_bargains_per_asset",
-        scenario.waiter_cleanup.max_open_bargains_per_asset,
+    max_open_options = cap_grid_values()
+    aging_cleanup_enabled_options = boolean_grid_values(
+        "aging_cleanup_enabled", scenario.waiter_cleanup.aging_cleanup_enabled
     )
     age_l3_options = grid_values("age_l3_min_age_days", aging_by_level.get(3, 30))
     age_l2_options = grid_values("age_l2_min_age_days", aging_by_level.get(2, 60))
@@ -261,6 +306,9 @@ def load_spot_sweep_config(
     capacity_age_options = grid_values(
         "capacity_cleanup_min_age_days",
         scenario.waiter_cleanup.capacity_cleanup_min_age_days,
+    )
+    capacity_cleanup_enabled_options = boolean_grid_values(
+        "capacity_cleanup_enabled", scenario.waiter_cleanup.capacity_cleanup_enabled
     )
     seen: set[tuple[Any, ...]] = set()
     parameter_sweep = parameter_grid_raw is not None
@@ -272,13 +320,16 @@ def load_spot_sweep_config(
         close_profit,
         retention,
         unrealized_pnl,
+        deep_loss_enabled,
         deep_loss_age,
         deep_loss_level_raw,
         max_open_raw,
+        aging_cleanup_enabled,
         age_l3,
         age_l2,
         age_l1,
         capacity_age,
+        capacity_cleanup_enabled,
     ) in product(
         level_options,
         accumulation_level_options,
@@ -287,37 +338,43 @@ def load_spot_sweep_config(
         close_profit_options,
         retention_options,
         unrealized_pnl_options,
+        deep_loss_enabled_options,
         deep_loss_age_options,
         deep_loss_level_options,
         max_open_options,
+        aging_cleanup_enabled_options,
         age_l3_options,
         age_l2_options,
         age_l1_options,
         capacity_age_options,
+        capacity_cleanup_enabled_options,
     ):
         if accumulate_asset_pct is not None and not 0 <= accumulate_asset_pct <= 100:
             raise ValueError("accumulate_asset_pct must be in the range [0, 100].")
         if minimum_holding_pct is not None and not 0 <= minimum_holding_pct <= 100:
             raise ValueError("minimum_holding_pct must be in the range [0, 100].")
         deep_loss_level = int(deep_loss_level_raw)
-        max_open = int(max_open_raw)
+        max_open = None if max_open_raw is None else int(max_open_raw)
         if deep_loss_level != deep_loss_level_raw:
             raise ValueError("deep_loss_required_reverse_level must contain integers.")
-        if max_open != max_open_raw:
+        if max_open_raw is not None and max_open != max_open_raw:
             raise ValueError("max_open_bargains_per_asset must contain integers.")
         replace(scenario.progression, close_profit_pct=close_profit)
         replace(
             scenario.waiter_cleanup,
             deep_loss_unrealized_pnl_pct=unrealized_pnl,
+            deep_loss_enabled=deep_loss_enabled,
             deep_loss_min_age_days=deep_loss_age,
             deep_loss_required_reverse_level=deep_loss_level,
             max_open_bargains_per_asset=max_open,
+            aging_cleanup_enabled=aging_cleanup_enabled,
             aging_rules=(
                 AgingCleanupRule(min_age_days=age_l3, required_reverse_level=3),
                 AgingCleanupRule(min_age_days=age_l2, required_reverse_level=2),
                 AgingCleanupRule(min_age_days=age_l1, required_reverse_level=1),
             ),
             capacity_cleanup_min_age_days=capacity_age,
+            capacity_cleanup_enabled=capacity_cleanup_enabled,
         )
         if not 0 <= retention <= 100:
             raise ValueError("Spot free cash retention must be in the range [0, 100].")
@@ -329,13 +386,16 @@ def load_spot_sweep_config(
             close_profit,
             retention,
             unrealized_pnl,
+            deep_loss_enabled,
             deep_loss_age,
             deep_loss_level,
             max_open,
+            aging_cleanup_enabled,
             age_l3,
             age_l2,
             age_l1,
             capacity_age,
+            capacity_cleanup_enabled,
         )
         if key in seen:
             raise ValueError(f"Duplicate Spot sweep combination: {key}.")
@@ -349,13 +409,16 @@ def load_spot_sweep_config(
         optional_values = (
             ("accumulate_asset_pct", "asset", accumulate_asset_pct),
             ("minimum_holding_pct", "hold", minimum_holding_pct),
+            ("deep_loss_enabled", "loss", int(deep_loss_enabled)),
             ("deep_loss_min_age_days", "lossage", deep_loss_age),
             ("deep_loss_required_reverse_level", "losslevel", deep_loss_level),
             ("max_open_bargains_per_asset", "maxopen", max_open),
+            ("aging_cleanup_enabled", "aging", int(aging_cleanup_enabled)),
             ("age_l3_min_age_days", "l3age", age_l3),
             ("age_l2_min_age_days", "l2age", age_l2),
             ("age_l1_min_age_days", "l1age", age_l1),
             ("capacity_cleanup_min_age_days", "capage", capacity_age),
+            ("capacity_cleanup_enabled", "cap", int(capacity_cleanup_enabled)),
         )
         for key_name, label, value in optional_values:
             if key_name in parameter_grid:
@@ -385,15 +448,72 @@ def load_spot_sweep_config(
                 close_profit_pct=close_profit,
                 free_cash_retention_pct=retention,
                 unrealized_pnl_pct=unrealized_pnl,
+                deep_loss_enabled=deep_loss_enabled,
                 deep_loss_min_age_days=deep_loss_age,
                 deep_loss_required_reverse_level=deep_loss_level,
                 max_open_bargains_per_asset=max_open,
+                aging_cleanup_enabled=aging_cleanup_enabled,
                 age_l3_min_age_days=age_l3,
                 age_l2_min_age_days=age_l2,
                 age_l1_min_age_days=age_l1,
                 capacity_cleanup_min_age_days=capacity_age,
+                capacity_cleanup_enabled=capacity_cleanup_enabled,
             )
         )
+
+    if raw_named_variants is not None:
+        if not isinstance(raw_named_variants, list) or not raw_named_variants:
+            raise ValueError("spot_sweep.variants must be a non-empty list.")
+        baseline = variants[0]
+        allowed = {
+            "deep_loss_enabled",
+            "aging_cleanup_enabled",
+            "capacity_cleanup_enabled",
+            "max_open_bargains_per_asset",
+            "unrealized_pnl_pct",
+            "deep_loss_min_age_days",
+            "deep_loss_required_reverse_level",
+            "age_l3_min_age_days",
+            "age_l2_min_age_days",
+            "age_l1_min_age_days",
+            "capacity_cleanup_min_age_days",
+        }
+        named_variants: list[SpotSweepVariant] = []
+        for index, raw_variant in enumerate(raw_named_variants):
+            item = _required_mapping(raw_variant, field_name=f"spot_sweep.variants[{index}]")
+            name = str(item.get("name") or "").strip()
+            if not name:
+                raise ValueError(f"spot_sweep.variants[{index}].name is required.")
+            unknown = sorted(set(item) - allowed - {"name"})
+            if unknown:
+                raise ValueError(f"Unsupported named variant parameters: {', '.join(unknown)}.")
+            overrides = {key: value for key, value in item.items() if key != "name"}
+            for key in (
+                "deep_loss_enabled",
+                "aging_cleanup_enabled",
+                "capacity_cleanup_enabled",
+            ):
+                if key in overrides and not isinstance(overrides[key], bool):
+                    raise ValueError(f"spot_sweep.variants[{index}].{key} must be true or false.")
+            if "max_open_bargains_per_asset" in overrides:
+                value = overrides["max_open_bargains_per_asset"]
+                if value is not None:
+                    parsed = int(value)
+                    if parsed != value:
+                        raise ValueError("max_open_bargains_per_asset must be an integer or null.")
+                    overrides["max_open_bargains_per_asset"] = parsed
+            variant = replace(baseline, name=name, **overrides)
+            replace(
+                scenario.waiter_cleanup,
+                deep_loss_enabled=variant.deep_loss_enabled,
+                aging_cleanup_enabled=variant.aging_cleanup_enabled,
+                capacity_cleanup_enabled=variant.capacity_cleanup_enabled,
+                max_open_bargains_per_asset=variant.max_open_bargains_per_asset,
+            )
+            named_variants.append(variant)
+        if len({variant.name for variant in named_variants}) != len(named_variants):
+            raise ValueError("spot_sweep.variants names must be unique.")
+        variants = named_variants
 
     default_replay_workers = min(
         max(1, os.cpu_count() or 1),
@@ -481,9 +601,11 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
     waiter_cleanup = replace(
         config.scenario.waiter_cleanup,
         deep_loss_unrealized_pnl_pct=variant.unrealized_pnl_pct,
+        deep_loss_enabled=variant.deep_loss_enabled,
         deep_loss_min_age_days=variant.deep_loss_min_age_days,
         deep_loss_required_reverse_level=variant.deep_loss_required_reverse_level,
         max_open_bargains_per_asset=variant.max_open_bargains_per_asset,
+        aging_cleanup_enabled=variant.aging_cleanup_enabled,
         aging_rules=(
             AgingCleanupRule(
                 min_age_days=variant.age_l3_min_age_days,
@@ -499,6 +621,7 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
             ),
         ),
         capacity_cleanup_min_age_days=variant.capacity_cleanup_min_age_days,
+        capacity_cleanup_enabled=variant.capacity_cleanup_enabled,
     )
     metadata = {
         **config.scenario.metadata,
@@ -518,11 +641,13 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
         "sweep_close_profit_pct": variant.close_profit_pct,
         "sweep_free_cash_retention_pct": variant.free_cash_retention_pct,
         "sweep_unrealized_pnl_pct": variant.unrealized_pnl_pct,
+        "sweep_deep_loss_enabled": variant.deep_loss_enabled,
         "sweep_deep_loss_min_age_days": variant.deep_loss_min_age_days,
         "sweep_deep_loss_required_reverse_level": (
             variant.deep_loss_required_reverse_level
         ),
         "sweep_max_open_bargains_per_asset": variant.max_open_bargains_per_asset,
+        "sweep_aging_cleanup_enabled": variant.aging_cleanup_enabled,
         "sweep_aging_min_age_days": {
             "l3": variant.age_l3_min_age_days,
             "l2": variant.age_l2_min_age_days,
@@ -531,6 +656,7 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
         "sweep_capacity_cleanup_min_age_days": (
             variant.capacity_cleanup_min_age_days
         ),
+        "sweep_capacity_cleanup_enabled": variant.capacity_cleanup_enabled,
     }
     return replace(
         config.scenario,
@@ -585,7 +711,9 @@ def _summary_row(
     recovery = success["asset_recovery"]
     swings = report["swings"]
     accumulation = report["treasury_accumulation"]
-    cash_flow = (report.get("bargain_cash_flow") or {}).get("overview") or {}
+    bargain_cash_flow = report.get("bargain_cash_flow") or {}
+    cash_flow = bargain_cash_flow.get("overview") or {}
+    cash_burn = bargain_cash_flow.get("cleanup_cash_burn") or {}
     cleanup = report["waiter_cleanup"]
     cleanup_accounting = cleanup.get("accounting") or {}
     return {
@@ -604,13 +732,16 @@ def _summary_row(
         "close_profit_pct": variant.close_profit_pct,
         "free_cash_retention_pct": variant.free_cash_retention_pct,
         "unrealized_pnl_pct": variant.unrealized_pnl_pct,
+        "deep_loss_enabled": variant.deep_loss_enabled,
         "deep_loss_min_age_days": variant.deep_loss_min_age_days,
         "deep_loss_required_reverse_level": variant.deep_loss_required_reverse_level,
         "max_open_bargains_per_asset": variant.max_open_bargains_per_asset,
+        "aging_cleanup_enabled": variant.aging_cleanup_enabled,
         "age_l3_min_age_days": variant.age_l3_min_age_days,
         "age_l2_min_age_days": variant.age_l2_min_age_days,
         "age_l1_min_age_days": variant.age_l1_min_age_days,
         "capacity_cleanup_min_age_days": variant.capacity_cleanup_min_age_days,
+        "capacity_cleanup_enabled": variant.capacity_cleanup_enabled,
         "status": "ok",
         "resumed": resumed,
         "duration_seconds": duration_seconds,
@@ -630,6 +761,12 @@ def _summary_row(
         ),
         "maximum_drawdown_pct": float(portfolio["maximum_treasury_drawdown_pct"]),
         "opened_bargains": int(swings["total_opened"]),
+        "closed_bargains": int(
+            swings.get(
+                "total_closed",
+                int(swings["total_opened"]) - int(swings["still_open"]),
+            )
+        ),
         "open_bargains": int(swings["still_open"]),
         "oldest_open_days": float(swings["oldest_open_days"] or 0.0),
         "realized_bargain_pnl": float(swings["realized_pnl_quote"]),
@@ -652,10 +789,63 @@ def _summary_row(
             cash_flow.get("spendable_top_up_quote") or 0.0
         ),
         "net_bargain_cash": float(cash_flow.get("net_cash_change_quote") or 0.0),
+        "gross_cleanup_top_up": float(
+            cash_burn.get("gross_cleanup_top_up_quote") or 0.0
+        ),
+        "cleanup_cash_released": float(
+            cash_burn.get("cleanup_cash_released_quote") or 0.0
+        ),
+        "net_cleanup_cash_consumed": float(
+            cash_burn.get("net_cleanup_cash_consumed_quote") or 0.0
+        ),
+        "positive_cleanup_cash_consumed": float(
+            cash_burn.get("positive_cleanup_cash_consumed_quote") or 0.0
+        ),
+        "gross_profit_cash_generated": float(
+            cash_burn.get("gross_profit_cash_generated_quote") or 0.0
+        ),
+        "cleanup_cash_burn_ratio_pct": cash_burn.get("ratio_pct"),
+        "capacity_blocked_evaluations": int(
+            (cleanup.get("capacity") or {}).get("capacity_blocked_evaluations") or 0
+        ),
+        "unique_capacity_blocked_opportunities": int(
+            (cleanup.get("capacity") or {}).get(
+                "unique_capacity_blocked_opportunities"
+            )
+            or 0
+        ),
+        "capacity_cleanup_closes": int(
+            (cleanup.get("capacity") or {}).get("capacity_cleanup_actions") or 0
+        ),
+        "open_bargains_30_plus": int(
+            (cleanup.get("open_bargains") or {}).get("age_30_plus") or 0
+        ),
+        "open_bargains_60_plus": int(
+            (cleanup.get("open_bargains") or {}).get("age_60_plus") or 0
+        ),
+        "open_bargains_90_plus": int(
+            (cleanup.get("open_bargains") or {}).get("age_90_plus") or 0
+        ),
+        "open_bargains_180_plus": int(
+            (cleanup.get("open_bargains") or {}).get("age_180_plus") or 0
+        ),
+        "p90_open_days": float(
+            (cleanup.get("open_bargains") or {}).get("p90_age_days") or 0.0
+        ),
+        "restore_cost_quote": float(
+            (cleanup.get("capital_lock") or {}).get(
+                "value_required_to_restore_sell_inventory"
+            )
+            or 0.0
+        ),
         "accumulation_spendable_deployed": float(
             (accumulation.get("overview") or {}).get("spendable_cash_deployed_quote")
             or 0.0
         ),
+        "accumulated_asset_quantities": {
+            symbol: float(metrics.get("net_asset_acquired") or 0.0)
+            for symbol, metrics in (accumulation.get("per_asset") or {}).items()
+        },
     }
 
 
@@ -672,6 +862,39 @@ def _rank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         row["rank"] = rank
     failures = [dict(row) for row in rows if row.get("status") != "ok"]
     return succeeded + failures
+
+
+def _pareto_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = [
+        row
+        for row in rows
+        if row.get("status") == "ok"
+        and row.get("cleanup_cash_burn_ratio_pct") is not None
+        and not str(row.get("name") or "").startswith("G-")
+    ]
+    frontier = []
+    for candidate in candidates:
+        edge = float(candidate["edge_vs_hodl_pct_points"])
+        burn = float(candidate["cleanup_cash_burn_ratio_pct"])
+        dominated = any(
+            float(other["edge_vs_hodl_pct_points"]) >= edge
+            and float(other["cleanup_cash_burn_ratio_pct"]) <= burn
+            and (
+                float(other["edge_vs_hodl_pct_points"]) > edge
+                or float(other["cleanup_cash_burn_ratio_pct"]) < burn
+            )
+            for other in candidates
+            if other is not candidate
+        )
+        if not dominated:
+            frontier.append(dict(candidate))
+    return sorted(
+        frontier,
+        key=lambda row: (
+            -float(row["edge_vs_hodl_pct_points"]),
+            float(row["cleanup_cash_burn_ratio_pct"]),
+        ),
+    )
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -712,6 +935,10 @@ document.getElementById('rows').innerHTML=d.rows.filter(r=>r.status==='ok').map(
 
 def _write_comparison(config: SpotSweepConfig, rows: list[dict[str, Any]]) -> dict[str, Any]:
     ranked = _rank_rows(rows)
+    frontier = _pareto_rows(ranked)
+    frontier_names = {row["name"] for row in frontier}
+    for row in ranked:
+        row["pareto_efficient"] = row.get("name") in frontier_names
     payload = {
         "name": config.name,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -727,6 +954,8 @@ def _write_comparison(config: SpotSweepConfig, rows: list[dict[str, Any]]) -> di
     config.output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(config.output_dir / "comparison.json", payload)
     _write_csv(config.output_dir / "comparison.csv", ranked)
+    _write_json(config.output_dir / "pareto_frontier.json", frontier)
+    _write_csv(config.output_dir / "pareto_frontier.csv", frontier)
     (config.output_dir / "comparison.html").write_text(_comparison_html(payload), encoding="utf-8")
     return payload
 

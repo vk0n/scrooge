@@ -6,6 +6,7 @@ from core.spot_progression import ProgressiveSwingConfig
 from core.spot_strategy import plan_spot_strategy_action
 from core.spot_swing import calculate_swing_economics
 from core.spot_waiter_cleanup import (
+    AgingCleanupRule,
     DAY_MS,
     WaiterCleanupConfig,
     remaining_unrealized_pnl_pct,
@@ -15,6 +16,22 @@ from core.spot_waiter_cleanup import (
 
 
 NOW_MS = 200 * DAY_MS
+
+
+def priority_test_cleanup_config(**overrides) -> WaiterCleanupConfig:
+    values = {
+        "max_open_bargains_per_asset": 10,
+        "deep_loss_min_age_days": 15,
+        "deep_loss_unrealized_pnl_pct": -25,
+        "deep_loss_required_reverse_level": 1,
+        "aging_rules": (
+            AgingCleanupRule(min_age_days=30, required_reverse_level=3),
+            AgingCleanupRule(min_age_days=60, required_reverse_level=2),
+            AgingCleanupRule(min_age_days=90, required_reverse_level=1),
+        ),
+    }
+    values.update(overrides)
+    return WaiterCleanupConfig(**values)
 
 
 def swing_state(
@@ -101,16 +118,44 @@ class WaiterCleanupDomainTests(unittest.TestCase):
         )
 
     def test_age_schedule_boundaries(self):
-        self.assertIsNone(self.requirement(29 + 23 / 24))
-        self.assertEqual(self.requirement(30)["required_reverse_level"], 3)
+        self.assertIsNone(self.requirement(44 + 23 / 24))
+        self.assertEqual(self.requirement(45)["required_reverse_level"], 3)
         self.assertEqual(self.requirement(60)["required_reverse_level"], 2)
-        self.assertEqual(self.requirement(90)["required_reverse_level"], 1)
+        self.assertEqual(self.requirement(120)["required_reverse_level"], 1)
 
     def test_deep_loss_boundary_and_minimum_age(self):
-        eligible = self.requirement(15, -25)
+        eligible = self.requirement(7, -45)
         self.assertEqual(eligible["cleanup_reason"], "deep_loss_cleanup")
-        self.assertEqual(eligible["required_reverse_level"], 1)
-        self.assertIsNone(self.requirement(15 - 1 / 24, -25))
+        self.assertEqual(eligible["required_reverse_level"], 3)
+        self.assertIsNone(self.requirement(7 - 1 / 24, -45))
+
+    def test_deep_loss_and_aging_switches_are_independent(self):
+        bargain = swing_state("switches", age_days=130)["swing"]
+        deep_only = required_cleanup_level(
+            bargain,
+            now_ms=NOW_MS,
+            unrealized_pnl_pct=-50,
+            config=WaiterCleanupConfig(aging_cleanup_enabled=False),
+        )
+        aging_only = required_cleanup_level(
+            bargain,
+            now_ms=NOW_MS,
+            unrealized_pnl_pct=-50,
+            config=WaiterCleanupConfig(deep_loss_enabled=False),
+        )
+        disabled = required_cleanup_level(
+            bargain,
+            now_ms=NOW_MS,
+            unrealized_pnl_pct=-50,
+            config=WaiterCleanupConfig(
+                deep_loss_enabled=False,
+                aging_cleanup_enabled=False,
+            ),
+        )
+
+        self.assertEqual(deep_only["cleanup_reason"], "deep_loss_cleanup")
+        self.assertEqual(aging_only["cleanup_reason"], "age_l1_cleanup")
+        self.assertIsNone(disabled)
 
     def test_reverse_level_is_minimum_and_direction_must_match(self):
         self.assertTrue(
@@ -174,7 +219,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
             swings,
             available_quote=100_000,
             config=config or ProgressiveSwingConfig(close_profit_pct=5, estimated_fee_rate=0),
-            cleanup_config=cleanup or WaiterCleanupConfig(),
+            cleanup_config=cleanup or priority_test_cleanup_config(),
             excluded_close_swing_ids=excluded_close_swing_ids,
         )
 
@@ -235,7 +280,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
             [swing_state("cash-limited", origin_side="sell", age_days=100)],
             available_quote=0.1,
             config=ProgressiveSwingConfig(close_profit_pct=5, estimated_fee_rate=0),
-            cleanup_config=WaiterCleanupConfig(),
+            cleanup_config=priority_test_cleanup_config(),
         )
 
         self.assertEqual(decision["action_type"], "close")
@@ -251,7 +296,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
             available_quote=1005,
             free_quote_reserve=5,
             config=ProgressiveSwingConfig(close_profit_pct=5, estimated_fee_rate=0),
-            cleanup_config=WaiterCleanupConfig(),
+            cleanup_config=priority_test_cleanup_config(),
         )
 
         self.assertEqual(decision["action_type"], "close")
@@ -295,7 +340,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
                 close_profit_pct=5,
                 estimated_fee_rate=0,
             ),
-            cleanup_config=WaiterCleanupConfig(),
+            cleanup_config=priority_test_cleanup_config(),
         )
 
         self.assertEqual(decision["action_type"], "close")
@@ -316,7 +361,8 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         self.assertEqual(decision["action_type"], "close")
         self.assertEqual(decision["swing_id"], "sell-9")
         self.assertEqual(decision["reason"]["close_reason"], "capacity_cleanup")
-        self.assertTrue(decision["reason"]["capacity_pressure"])
+        self.assertTrue(decision["reason"]["capacity_saturated"])
+        self.assertFalse(decision["reason"]["capacity_pressure"])
         self.assertGreater(
             decision["reason"]["capacity_cleanup_pnl_after_estimated_fee"],
             0,
@@ -335,6 +381,30 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         decision = self.decide(signal("buy", 1, 101), swings)
 
         self.assertEqual(decision["action_type"], "campaign_only")
+
+    def test_capacity_cleanup_switch_does_not_disable_capacity_cap(self):
+        swings = [
+            swing_state(f"sell-{index}", origin_side="sell", age_days=31 + index)
+            for index in range(10)
+        ]
+
+        buy_decision = self.decide(
+            signal("buy", 1, 99),
+            swings,
+            cleanup=priority_test_cleanup_config(capacity_cleanup_enabled=False),
+        )
+        sell_decision = self.decide(
+            signal("sell", 1, 120),
+            swings,
+            cleanup=priority_test_cleanup_config(capacity_cleanup_enabled=False),
+        )
+
+        self.assertEqual(buy_decision["action_type"], "campaign_only")
+        self.assertEqual(sell_decision["action_type"], "hold")
+        self.assertEqual(
+            sell_decision["reason"]["hold_reason"],
+            "max_open_bargains_per_asset",
+        )
 
     def test_capacity_cleanup_requires_profit_after_estimated_closing_fee(self):
         swings = [
@@ -357,7 +427,7 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
 
         self.assertEqual(decision["action_type"], "campaign_only")
 
-    def test_disabled_cleanup_preserves_uncapped_opening_behavior(self):
+    def test_disabled_cleanup_preserves_capacity_cap(self):
         swings = [
             swing_state(f"sell-{index}", origin_side="sell", age_days=100)
             for index in range(10)
@@ -365,7 +435,24 @@ class WaiterCleanupPriorityTests(unittest.TestCase):
         decision = self.decide(
             signal("sell", 1, 120),
             swings,
-            cleanup=WaiterCleanupConfig(enabled=False),
+            cleanup=priority_test_cleanup_config(enabled=False),
+        )
+
+        self.assertEqual(decision["action_type"], "hold")
+        self.assertEqual(decision["reason"]["hold_reason"], "max_open_bargains_per_asset")
+
+    def test_explicit_null_capacity_preserves_historical_uncapped_control(self):
+        swings = [
+            swing_state(f"sell-{index}", origin_side="sell", age_days=100)
+            for index in range(10)
+        ]
+        decision = self.decide(
+            signal("sell", 1, 120),
+            swings,
+            cleanup=priority_test_cleanup_config(
+                enabled=False,
+                max_open_bargains_per_asset=None,
+            ),
         )
 
         self.assertEqual(decision["action_type"], "open")

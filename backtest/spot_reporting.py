@@ -222,11 +222,30 @@ def _bargain_cash_flow_metrics(swings: list[dict[str, Any]]) -> dict[str, Any]:
             "net_cash_change_quote": sum(item["net_cash_change_quote"] for item in items),
         }
 
+    by_close_type = {
+        close_type: summarize([item for item in rows if item["close_type"] == close_type])
+        for close_type in ("profit_target", "cleanup", "other")
+    }
+    cleanup_top_up = float(by_close_type["cleanup"]["spendable_top_up_quote"])
+    cleanup_released = float(by_close_type["cleanup"]["cash_released_quote"])
+    net_cleanup_consumed = cleanup_top_up - cleanup_released
+    gross_profit_generated = float(
+        by_close_type["profit_target"]["cash_released_quote"]
+    )
     return {
         "overview": summarize(rows),
-        "by_close_type": {
-            close_type: summarize([item for item in rows if item["close_type"] == close_type])
-            for close_type in ("profit_target", "cleanup", "other")
+        "by_close_type": by_close_type,
+        "cleanup_cash_burn": {
+            "gross_cleanup_top_up_quote": cleanup_top_up,
+            "cleanup_cash_released_quote": cleanup_released,
+            "net_cleanup_cash_consumed_quote": net_cleanup_consumed,
+            "positive_cleanup_cash_consumed_quote": max(0.0, net_cleanup_consumed),
+            "gross_profit_cash_generated_quote": gross_profit_generated,
+            "ratio_pct": (
+                net_cleanup_consumed / gross_profit_generated * 100.0
+                if gross_profit_generated > 1e-12
+                else None
+            ),
         },
         "by_objective": {
             objective: summarize([item for item in rows if item["objective"] == objective])
@@ -859,19 +878,20 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
         if action.get("action_type") == "hold"
         and (action.get("reason") or {}).get("hold_reason") == "max_open_bargains_per_asset"
     ]
-    pressure_cleanup_actions = [
+    saturated_cleanup_actions = [
         action
         for action in result.actions
         if action.get("action_type") == "close"
-        and bool((action.get("reason") or {}).get("capacity_pressure"))
+        and bool((action.get("reason") or {}).get("capacity_saturated"))
         and is_cleanup_reason((action.get("reason") or {}).get("close_reason"))
     ]
     capacity_cleanup_actions = [
         action
-        for action in pressure_cleanup_actions
+        for action in result.actions
+        if action.get("action_type") == "close"
         if (action.get("reason") or {}).get("close_reason") == "capacity_cleanup"
     ]
-    capacity_blocked_actions = capacity_holds + pressure_cleanup_actions
+    capacity_blocked_actions = capacity_holds
 
     def blocked_cycle_identity(action: dict[str, Any]) -> tuple[Any, ...]:
         return (
@@ -963,6 +983,7 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
                 result.scenario.waiter_cleanup.max_open_bargains_per_asset
             ),
             "deep_loss": {
+                "enabled": result.scenario.waiter_cleanup.deep_loss_enabled,
                 "min_age_days": result.scenario.waiter_cleanup.deep_loss_min_age_days,
                 "unrealized_pnl_pct": (
                     result.scenario.waiter_cleanup.deep_loss_unrealized_pnl_pct
@@ -971,6 +992,9 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
                     result.scenario.waiter_cleanup.deep_loss_required_reverse_level
                 ),
             },
+            "aging_cleanup_enabled": (
+                result.scenario.waiter_cleanup.aging_cleanup_enabled
+            ),
             "aging": [
                 {
                     "min_age_days": rule.min_age_days,
@@ -994,6 +1018,7 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
         "cleanup_fees_by_asset": cleanup_fees,
         "by_reason": reason_breakdown,
         "capacity": {
+            "capacity_blocked_evaluations": len(capacity_blocked_actions),
             "capacity_blocked_cycles": len(
                 {blocked_cycle_identity(action) for action in capacity_blocked_actions}
             ),
@@ -1004,7 +1029,7 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
                 }
             ),
             "capacity_cleanup_actions": len(capacity_cleanup_actions),
-            "cleanup_actions_under_capacity_pressure": len(pressure_cleanup_actions),
+            "cleanup_actions_while_capacity_saturated": len(saturated_cleanup_actions),
         },
         "open_bargains": {
             "at_end": len(open_swings),

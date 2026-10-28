@@ -31,25 +31,30 @@ class AgingCleanupRule:
 
 def _default_aging_rules() -> tuple[AgingCleanupRule, ...]:
     return (
-        AgingCleanupRule(min_age_days=30, required_reverse_level=3),
+        AgingCleanupRule(min_age_days=45, required_reverse_level=3),
         AgingCleanupRule(min_age_days=60, required_reverse_level=2),
-        AgingCleanupRule(min_age_days=90, required_reverse_level=1),
+        AgingCleanupRule(min_age_days=120, required_reverse_level=1),
     )
 
 
 @dataclass(frozen=True)
 class WaiterCleanupConfig:
     enabled: bool = True
-    max_open_bargains_per_asset: int = 10
-    deep_loss_min_age_days: float = 15.0
-    deep_loss_unrealized_pnl_pct: float = -25.0
-    deep_loss_required_reverse_level: int = 1
+    max_open_bargains_per_asset: int | None = 7
+    deep_loss_enabled: bool = True
+    deep_loss_min_age_days: float = 7.0
+    deep_loss_unrealized_pnl_pct: float = -45.0
+    deep_loss_required_reverse_level: int = 3
     aging_rules: tuple[AgingCleanupRule, ...] = field(default_factory=_default_aging_rules)
+    aging_cleanup_enabled: bool = True
     capacity_cleanup_enabled: bool = True
     capacity_cleanup_min_age_days: float = 30.0
 
     def __post_init__(self) -> None:
-        if self.max_open_bargains_per_asset <= 0:
+        if (
+            self.max_open_bargains_per_asset is not None
+            and self.max_open_bargains_per_asset <= 0
+        ):
             raise ValueError("Maximum open Bargains per asset must be positive.")
         if not math.isfinite(self.deep_loss_min_age_days) or self.deep_loss_min_age_days < 0:
             raise ValueError("Deep-loss minimum age must be non-negative.")
@@ -97,11 +102,17 @@ def waiter_cleanup_config_from_mapping(payload: dict[str, Any] | None) -> Waiter
             raise ValueError("Every waiter-cleanup aging rule must be an object.")
     return WaiterCleanupConfig(
         enabled=bool(data.get("enabled", True)),
-        max_open_bargains_per_asset=int(data.get("max_open_bargains_per_asset", 10)),
-        deep_loss_min_age_days=float(deep_loss.get("min_age_days", 15)),
-        deep_loss_unrealized_pnl_pct=float(deep_loss.get("unrealized_pnl_pct", -25)),
-        deep_loss_required_reverse_level=int(deep_loss.get("required_reverse_level", 1)),
+        max_open_bargains_per_asset=(
+            None
+            if data.get("max_open_bargains_per_asset", 7) is None
+            else int(data.get("max_open_bargains_per_asset", 7))
+        ),
+        deep_loss_enabled=bool(data.get("deep_loss_enabled", True)),
+        deep_loss_min_age_days=float(deep_loss.get("min_age_days", 7)),
+        deep_loss_unrealized_pnl_pct=float(deep_loss.get("unrealized_pnl_pct", -45)),
+        deep_loss_required_reverse_level=int(deep_loss.get("required_reverse_level", 3)),
         aging_rules=aging_rules,
+        aging_cleanup_enabled=bool(data.get("aging_cleanup_enabled", True)),
         capacity_cleanup_enabled=bool(capacity.get("enabled", True)),
         capacity_cleanup_min_age_days=float(capacity.get("min_age_days", 30)),
     )
@@ -122,7 +133,7 @@ def required_cleanup_level(
     if not config.enabled:
         return None
     age_days = bargain_age_days(bargain, now_ms=now_ms)
-    if (
+    if config.deep_loss_enabled and (
         age_days >= config.deep_loss_min_age_days
         and unrealized_pnl_pct is not None
         and unrealized_pnl_pct <= config.deep_loss_unrealized_pnl_pct
@@ -132,6 +143,8 @@ def required_cleanup_level(
             "cleanup_reason": "deep_loss_cleanup",
             "age_days": age_days,
         }
+    if not config.aging_cleanup_enabled:
+        return None
     eligible_rule = None
     for rule in config.aging_rules:
         if age_days >= rule.min_age_days:

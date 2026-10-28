@@ -47,6 +47,25 @@ def treasury_rules() -> dict:
 
 
 class TreasuryStrategyConfigTests(unittest.TestCase):
+    def test_live_cleanup_policy_matches_current_baseline(self):
+        live_path = Path(__file__).resolve().parents[1] / "config" / "live.yaml"
+        live_rules = yaml.safe_load(live_path.read_text(encoding="utf-8"))["treasury"]
+
+        config = treasury_strategy_config_from_mapping(live_rules)
+
+        self.assertEqual(config.waiter_cleanup.max_open_bargains_per_asset, 7)
+        self.assertEqual(config.waiter_cleanup.capacity_cleanup_min_age_days, 30)
+        self.assertEqual(config.waiter_cleanup.deep_loss_min_age_days, 7)
+        self.assertEqual(config.waiter_cleanup.deep_loss_unrealized_pnl_pct, -45)
+        self.assertEqual(config.waiter_cleanup.deep_loss_required_reverse_level, 3)
+        self.assertEqual(
+            tuple(
+                (rule.min_age_days, rule.required_reverse_level)
+                for rule in config.waiter_cleanup.aging_rules
+            ),
+            ((45, 3), (60, 2), (120, 1)),
+        )
+
     def test_parses_all_live_rules(self):
         config = treasury_strategy_config_from_mapping(treasury_rules())
 
@@ -61,6 +80,18 @@ class TreasuryStrategyConfigTests(unittest.TestCase):
         self.assertEqual(config.progression.close_profit_pct, 4.0)
         self.assertEqual(config.progression.estimated_fee_rate, 0.001)
         self.assertEqual(config.waiter_cleanup.deep_loss_unrealized_pnl_pct, -25.0)
+        self.assertTrue(config.waiter_cleanup.deep_loss_enabled)
+        self.assertTrue(config.waiter_cleanup.aging_cleanup_enabled)
+
+    def test_parses_independent_cleanup_switches(self):
+        rules = treasury_rules()
+        rules["waiter_cleanup"]["deep_loss_enabled"] = False
+        rules["waiter_cleanup"]["aging_cleanup_enabled"] = False
+
+        config = treasury_strategy_config_from_mapping(rules)
+
+        self.assertFalse(config.waiter_cleanup.deep_loss_enabled)
+        self.assertFalse(config.waiter_cleanup.aging_cleanup_enabled)
 
     def test_rejects_unknown_and_misaligned_rules(self):
         unknown = treasury_rules()

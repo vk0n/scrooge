@@ -494,16 +494,16 @@ def export_current_treasury_scenario(
                 },
                 "waiter_cleanup": {
                     "enabled": True,
-                    "max_open_bargains_per_asset": 10,
+                    "max_open_bargains_per_asset": 7,
                     "deep_loss": {
-                        "min_age_days": 15,
-                        "unrealized_pnl_pct": -20,
-                        "required_reverse_level": 1,
+                        "min_age_days": 7,
+                        "unrealized_pnl_pct": -45,
+                        "required_reverse_level": 3,
                     },
                     "aging": [
-                        {"min_age_days": 30, "required_reverse_level": 3},
+                        {"min_age_days": 45, "required_reverse_level": 3},
                         {"min_age_days": 60, "required_reverse_level": 2},
-                        {"min_age_days": 90, "required_reverse_level": 1},
+                        {"min_age_days": 120, "required_reverse_level": 1},
                     ],
                     "capacity_cleanup": {"enabled": True, "min_age_days": 30},
                 },

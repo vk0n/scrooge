@@ -206,6 +206,46 @@ spot_sweep:
         )
         self.assertEqual(resolved.waiter_cleanup.capacity_cleanup_min_age_days, 20)
 
+    def test_named_variants_control_cleanup_and_cap_independently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "base.yaml").write_text(BASE_SCENARIO, encoding="utf-8")
+            sweep = root / "cleanup-ablation.yaml"
+            sweep.write_text(
+                """
+spot_sweep:
+  name: cleanup-ablation
+  base_config: base.yaml
+  output_dir: output
+  variants:
+    - name: F-capped-no-cleanup
+      deep_loss_enabled: false
+      aging_cleanup_enabled: false
+      capacity_cleanup_enabled: false
+      max_open_bargains_per_asset: 10
+    - name: G-uncapped-control
+      deep_loss_enabled: false
+      aging_cleanup_enabled: false
+      capacity_cleanup_enabled: false
+      max_open_bargains_per_asset: null
+""",
+                encoding="utf-8",
+            )
+
+            config = load_spot_sweep_config(sweep)
+            capped = _scenario_for_variant(config, config.variants[0])
+            uncapped = _scenario_for_variant(config, config.variants[1])
+
+        self.assertEqual([item.name for item in config.variants], [
+            "F-capped-no-cleanup",
+            "G-uncapped-control",
+        ])
+        self.assertEqual(capped.waiter_cleanup.max_open_bargains_per_asset, 10)
+        self.assertIsNone(uncapped.waiter_cleanup.max_open_bargains_per_asset)
+        self.assertFalse(capped.waiter_cleanup.deep_loss_enabled)
+        self.assertFalse(capped.waiter_cleanup.aging_cleanup_enabled)
+        self.assertFalse(capped.waiter_cleanup.capacity_cleanup_enabled)
+
     def test_parameter_grid_can_apply_minimum_holding_to_every_asset(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

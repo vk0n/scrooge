@@ -503,12 +503,25 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
                 (3, "campaign-b", 1),
             )
         ]
+        result.actions.append(
+            {
+                "timestamp_ms": 4,
+                "asset_symbol": "AAA",
+                "action_type": "close",
+                "reason": {
+                    "close_reason": "capacity_cleanup",
+                    "capacity_saturated": True,
+                    "capacity_pressure": False,
+                },
+            }
+        )
 
         capacity = _waiter_cleanup_metrics(result)["capacity"]
 
         self.assertEqual(capacity["capacity_blocked_cycles"], 3)
         self.assertEqual(capacity["unique_capacity_blocked_opportunities"], 2)
-        self.assertEqual(capacity["capacity_cleanup_actions"], 0)
+        self.assertEqual(capacity["capacity_cleanup_actions"], 1)
+        self.assertEqual(capacity["cleanup_actions_while_capacity_saturated"], 1)
 
     def test_zero_capacity_campaign_does_not_distort_executable_utilization(self):
         config = scenario((asset("AAA", objective=None),), hours=2)
@@ -1724,6 +1737,17 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         self.assertAlmostEqual(overview["cash_released_quote"], 18.2)
         self.assertAlmostEqual(overview["spendable_top_up_quote"], 22.2)
         self.assertAlmostEqual(overview["net_cash_change_quote"], -4.0)
+        burn = metrics["cleanup_cash_burn"]
+        self.assertAlmostEqual(burn["gross_cleanup_top_up_quote"], 22.2)
+        self.assertAlmostEqual(burn["cleanup_cash_released_quote"], 0.0)
+        self.assertAlmostEqual(burn["net_cleanup_cash_consumed_quote"], 22.2)
+        self.assertAlmostEqual(burn["gross_profit_cash_generated_quote"], 18.2)
+        self.assertAlmostEqual(burn["ratio_pct"], 22.2 / 18.2 * 100)
+
+    def test_cleanup_cash_burn_is_na_without_profit_cash(self):
+        metrics = _bargain_cash_flow_metrics([])
+
+        self.assertIsNone(metrics["cleanup_cash_burn"]["ratio_pct"])
 
     def test_profit_close_reprices_to_own_committed_cash_at_execution(self):
         config = scenario(

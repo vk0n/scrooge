@@ -2410,6 +2410,11 @@ class ProgressiveSwingPersistenceTests(unittest.TestCase):
             object(),
             logger=logging.getLogger("test.spot-progression"),
             db_path=self.db_path,
+            cleanup_config=WaiterCleanupConfig(
+                max_open_bargains_per_asset=10,
+                deep_loss_unrealized_pnl_pct=-25,
+                deep_loss_required_reverse_level=1,
+            ),
         )
         swing_ids = ("swing-profit-8", "swing-profit-9", "swing-profit-10")
         for swing_id, price in zip(swing_ids, (8, 9, 10)):

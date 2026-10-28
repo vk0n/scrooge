@@ -601,7 +601,7 @@ def plan_spot_strategy_action(
         new_strategy_decision = accumulation_decision
 
     capacity_saturated = (
-        resolved_cleanup.enabled
+        resolved_cleanup.max_open_bargains_per_asset is not None
         and len(active_swings) >= resolved_cleanup.max_open_bargains_per_asset
     )
     opening_capacity_blocked = (
@@ -698,7 +698,8 @@ def plan_spot_strategy_action(
                 "age_days": age_days,
                 "unrealized_pnl_before_cleanup": economics.get("unrealized_pnl_quote"),
                 "unrealized_pnl_pct_before_cleanup": pnl_pct,
-                "capacity_pressure": capacity_saturated,
+                "capacity_saturated": capacity_saturated,
+                "capacity_pressure": opening_capacity_blocked,
                 "market_price": current_price,
                 "weighted_opening_price": economics.get("weighted_opening_price"),
                 "remaining_quantity": economics.get("remaining_quantity"),

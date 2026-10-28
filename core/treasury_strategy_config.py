@@ -29,7 +29,22 @@ _PROGRESSION_KEYS = {
     "campaign_capacity_pct",
     "full_deploy_threshold_pct",
 }
-_CLEANUP_KEYS = {"enabled", "max_open_bargains_per_asset", "deep_loss", "aging", "capacity_cleanup"}
+_CLEANUP_KEYS = {
+    "enabled",
+    "max_open_bargains_per_asset",
+    "deep_loss_enabled",
+    "deep_loss",
+    "aging_cleanup_enabled",
+    "aging",
+    "capacity_cleanup",
+}
+_CLEANUP_REQUIRED_KEYS = {
+    "enabled",
+    "max_open_bargains_per_asset",
+    "deep_loss",
+    "aging",
+    "capacity_cleanup",
+}
 _DEEP_LOSS_KEYS = {"min_age_days", "unrealized_pnl_pct", "required_reverse_level"}
 _AGING_KEYS = {"min_age_days", "required_reverse_level"}
 _CAPACITY_CLEANUP_KEYS = {"enabled", "min_age_days"}
@@ -125,6 +140,7 @@ class TreasuryStrategyConfig:
             "waiter_cleanup": {
                 "enabled": self.waiter_cleanup.enabled,
                 "max_open_bargains_per_asset": self.waiter_cleanup.max_open_bargains_per_asset,
+                "deep_loss_enabled": self.waiter_cleanup.deep_loss_enabled,
                 "deep_loss": {
                     "min_age_days": self.waiter_cleanup.deep_loss_min_age_days,
                     "unrealized_pnl_pct": self.waiter_cleanup.deep_loss_unrealized_pnl_pct,
@@ -137,6 +153,7 @@ class TreasuryStrategyConfig:
                     }
                     for rule in self.waiter_cleanup.aging_rules
                 ],
+                "aging_cleanup_enabled": self.waiter_cleanup.aging_cleanup_enabled,
                 "capacity_cleanup": {
                     "enabled": self.waiter_cleanup.capacity_cleanup_enabled,
                     "min_age_days": self.waiter_cleanup.capacity_cleanup_min_age_days,
@@ -158,7 +175,7 @@ def treasury_strategy_config_from_mapping(payload: Any) -> TreasuryStrategyConfi
     _reject_unknown(cleanup, _CLEANUP_KEYS, field="treasury.waiter_cleanup")
     _require(signal, _SIGNAL_REQUIRED_KEYS, field="treasury.signal")
     _require(progression, _PROGRESSION_KEYS, field="treasury.progression")
-    _require(cleanup, _CLEANUP_KEYS, field="treasury.waiter_cleanup")
+    _require(cleanup, _CLEANUP_REQUIRED_KEYS, field="treasury.waiter_cleanup")
 
     deep_loss = _mapping(cleanup.get("deep_loss"), field="treasury.waiter_cleanup.deep_loss")
     capacity = _mapping(
@@ -249,6 +266,10 @@ def treasury_strategy_config_from_mapping(payload: Any) -> TreasuryStrategyConfi
                 cleanup["max_open_bargains_per_asset"],
                 field="treasury.waiter_cleanup.max_open_bargains_per_asset",
             ),
+            deep_loss_enabled=_boolean(
+                cleanup.get("deep_loss_enabled", True),
+                field="treasury.waiter_cleanup.deep_loss_enabled",
+            ),
             deep_loss_min_age_days=_number(
                 deep_loss["min_age_days"],
                 field="treasury.waiter_cleanup.deep_loss.min_age_days",
@@ -273,6 +294,10 @@ def treasury_strategy_config_from_mapping(payload: Any) -> TreasuryStrategyConfi
                     ),
                 )
                 for index, item in enumerate(raw_aging)
+            ),
+            aging_cleanup_enabled=_boolean(
+                cleanup.get("aging_cleanup_enabled", True),
+                field="treasury.waiter_cleanup.aging_cleanup_enabled",
             ),
             capacity_cleanup_enabled=_boolean(
                 capacity["enabled"],
