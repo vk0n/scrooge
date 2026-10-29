@@ -403,6 +403,9 @@ def _parameters(variant: SpotSweepVariant) -> dict[str, Any]:
         "age_l2_min_age_days": variant.age_l2_min_age_days,
         "age_l1_min_age_days": variant.age_l1_min_age_days,
         "capacity_cleanup_min_age_days": variant.capacity_cleanup_min_age_days,
+        "capacity_cleanup_required_reverse_level": (
+            variant.capacity_cleanup_required_reverse_level
+        ),
     }
 
 

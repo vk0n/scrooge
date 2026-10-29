@@ -20,6 +20,15 @@ from core.spot_waiter_cleanup import (
 )
 
 SPOT_ACTION_PHASES = ("profit_close", "cleanup_close", "allocation")
+CAPACITY_CLEANUP_MARK_KEY = "capacity_cleanup_mark"
+
+
+def _capacity_cleanup_mark(swing: dict[str, Any]) -> dict[str, Any] | None:
+    reference_state = swing.get("reference_state")
+    if not isinstance(reference_state, dict):
+        return None
+    mark = reference_state.get(CAPACITY_CLEANUP_MARK_KEY)
+    return mark if isinstance(mark, dict) else None
 
 
 def spot_action_phase(decision: dict[str, Any]) -> str:
@@ -610,7 +619,22 @@ def plan_spot_strategy_action(
         and new_strategy_decision.get("action_type") == "open"
     )
     now_ms = int(signal.get("evaluated_at_ms") or signal.get("current_at_ms") or 0)
-    cleanup_candidates: list[tuple[int, str, dict[str, Any]]] = []
+    marked_swings: list[tuple[int, str]] = []
+    for swing, _economics, _committed_quote in active_swings:
+        mark = _capacity_cleanup_mark(swing)
+        if mark is not None:
+            marked_swings.append(
+                (
+                    int(mark.get("marked_at_ms") or 0),
+                    str(swing.get("swing_id") or ""),
+                )
+            )
+    marked_swings.sort(key=lambda item: item)
+    marked_capacity_swing_id = marked_swings[0][1] if marked_swings else None
+    cleanup_candidates: list[tuple[int, int, str, dict[str, Any]]] = []
+    capacity_mark_candidates: list[
+        tuple[float, int, str, dict[str, Any], dict[str, Any], float, float | None]
+    ] = []
     if resolved_cleanup.enabled and opportunity in {"buy", "sell"} and level > 0 and now_ms > 0:
         for swing, economics, committed_quote in active_swings:
             if str(swing.get("swing_id") or "") in excluded_closes:
@@ -640,28 +664,48 @@ def plan_spot_strategy_action(
                 if unrealized_pnl_quote is not None
                 else None
             )
+            swing_id = str(swing.get("swing_id") or "")
+            capacity_mark = _capacity_cleanup_mark(swing)
+            capacity_required_level = (
+                resolved_cleanup.capacity_cleanup_required_reverse_level
+            )
             capacity_matches = (
-                capacity_saturated
+                capacity_mark is not None
+                and swing_id == marked_capacity_swing_id
+                and str(swing.get("origin_side") or "").strip().lower() == "sell"
                 and resolved_cleanup.capacity_cleanup_enabled
-                and age_days >= resolved_cleanup.capacity_cleanup_min_age_days
-                and capacity_cleanup_pnl_quote is not None
-                and math.isfinite(capacity_cleanup_pnl_quote)
-                and capacity_cleanup_pnl_quote >= -1e-12
                 and reverse_signal_satisfies(
                     origin_side=str(swing.get("origin_side") or ""),
                     signal_side=opportunity,
                     signal_level=level,
-                    required_level=1,
+                    required_level=capacity_required_level,
                 )
             )
+            if (
+                opening_capacity_blocked
+                and resolved_cleanup.capacity_cleanup_enabled
+                and marked_capacity_swing_id is None
+                and str(swing.get("origin_side") or "").strip().lower() == "sell"
+                and age_days >= resolved_cleanup.capacity_cleanup_min_age_days
+                and capacity_cleanup_pnl_quote is not None
+                and math.isfinite(capacity_cleanup_pnl_quote)
+            ):
+                capacity_mark_candidates.append(
+                    (
+                        -float(capacity_cleanup_pnl_quote),
+                        int(swing.get("opened_at_ms") or 0),
+                        swing_id,
+                        swing,
+                        economics,
+                        age_days,
+                        pnl_pct,
+                    )
+                )
             if not scheduled_matches and not capacity_matches:
                 continue
-            if scheduled_matches and scheduled["cleanup_reason"] == "deep_loss_cleanup":
-                cleanup_reason = "deep_loss_cleanup"
-                required_level = int(scheduled["required_reverse_level"])
-            elif capacity_matches:
+            if capacity_matches:
                 cleanup_reason = "capacity_cleanup"
-                required_level = 1
+                required_level = capacity_required_level
             else:
                 cleanup_reason = str(scheduled["cleanup_reason"])
                 required_level = int(scheduled["required_reverse_level"])
@@ -712,10 +756,12 @@ def plan_spot_strategy_action(
                 reason["capacity_cleanup_pnl_after_estimated_fee"] = (
                     capacity_cleanup_pnl_quote
                 )
+                reason["capacity_cleanup_mark"] = dict(capacity_mark or {})
             cleanup_candidates.append(
                 (
+                    0 if cleanup_reason == "capacity_cleanup" else 1,
                     int(swing.get("opened_at_ms") or 0),
-                    str(swing.get("swing_id") or ""),
+                    swing_id,
                     {
                         "action_type": "close",
                         "side": close_side,
@@ -726,9 +772,47 @@ def plan_spot_strategy_action(
                 )
             )
     if cleanup_candidates:
-        cleanup_candidates.sort(key=lambda item: item[:2])
-        return cleanup_candidates[0][2]
+        cleanup_candidates.sort(key=lambda item: item[:3])
+        return cleanup_candidates[0][3]
     if opening_capacity_blocked:
+        if capacity_mark_candidates:
+            capacity_mark_candidates.sort(key=lambda item: item[:3])
+            (
+                negative_pnl,
+                _opened_at_ms,
+                swing_id,
+                _swing,
+                economics,
+                age_days,
+                pnl_pct,
+            ) = capacity_mark_candidates[0]
+            mark = {
+                "marked_at_ms": now_ms,
+                "pnl_quote_after_estimated_fee": -negative_pnl,
+                "unrealized_pnl_quote": economics.get("unrealized_pnl_quote"),
+                "unrealized_pnl_pct": pnl_pct,
+                "age_days": age_days,
+                "opening_signal": opportunity,
+                "opening_signal_level": level,
+                "required_reverse_level_at_mark": (
+                    resolved_cleanup.capacity_cleanup_required_reverse_level
+                ),
+            }
+            return {
+                "action_type": "hold",
+                "swing_id": swing_id,
+                "reason": {
+                    "action_type": "hold",
+                    "hold_reason": "capacity_cleanup_marked",
+                    "capacity_cleanup_mark": mark,
+                    "open_bargains": len(active_swings),
+                    "max_open_bargains_per_asset": (
+                        resolved_cleanup.max_open_bargains_per_asset
+                    ),
+                    "prevented_side": new_strategy_decision["side"],
+                    "prevented_signal_level": new_strategy_decision["signal_level"],
+                },
+            }
         return {
             "action_type": "hold",
             "reason": {

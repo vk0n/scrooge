@@ -505,6 +505,16 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
         ]
         result.actions.append(
             {
+                "timestamp_ms": 5,
+                "asset_symbol": "AAA",
+                "campaign_id": "campaign-a",
+                "signal_level": 2,
+                "action_type": "hold",
+                "reason": {"hold_reason": "capacity_cleanup_marked"},
+            }
+        )
+        result.actions.append(
+            {
                 "timestamp_ms": 4,
                 "asset_symbol": "AAA",
                 "action_type": "close",
@@ -518,8 +528,10 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
 
         capacity = _waiter_cleanup_metrics(result)["capacity"]
 
-        self.assertEqual(capacity["capacity_blocked_cycles"], 3)
+        self.assertEqual(capacity["capacity_blocked_evaluations"], 4)
+        self.assertEqual(capacity["capacity_blocked_cycles"], 4)
         self.assertEqual(capacity["unique_capacity_blocked_opportunities"], 2)
+        self.assertEqual(capacity["capacity_cleanup_marks"], 1)
         self.assertEqual(capacity["capacity_cleanup_actions"], 1)
         self.assertEqual(capacity["cleanup_actions_while_capacity_saturated"], 1)
 
@@ -2202,6 +2214,23 @@ class SpotBacktestFrameworkTests(unittest.TestCase):
                 artifacts["report"]["bad_cases"],
             )
             self.assertIn("breakdowns", artifacts["report"]["bargain_analysis"])
+
+    def test_compact_artifacts_keep_summary_without_large_event_files(self):
+        config = scenario((asset("AAA"),), hours=2, starting_usdt=1000)
+        result = self.run_scenario(config, lambda _symbol, _index: 100)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            write_spot_backtest_artifacts(result, tmp, artifact_mode="compact")
+            target = Path(tmp)
+
+            self.assertTrue((target / "summary.json").exists())
+            self.assertTrue((target / "waiter_cleanup.json").exists())
+            self.assertTrue((target / "scenario.resolved.json").exists())
+            self.assertTrue((target / "monthly.csv").exists())
+            self.assertFalse((target / "actions.csv").exists())
+            self.assertFalse((target / "signals.csv").exists())
+            self.assertFalse((target / "swings.json").exists())
+            self.assertFalse((target / "report.html").exists())
 
     def test_cleanup_close_uses_simulated_executor_and_persists_reason_and_fee(self):
         config = scenario(

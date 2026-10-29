@@ -501,11 +501,15 @@ def export_current_treasury_scenario(
                         "required_reverse_level": 3,
                     },
                     "aging": [
-                        {"min_age_days": 45, "required_reverse_level": 3},
+                        {"min_age_days": 30, "required_reverse_level": 3},
                         {"min_age_days": 60, "required_reverse_level": 2},
-                        {"min_age_days": 120, "required_reverse_level": 1},
+                        {"min_age_days": 90, "required_reverse_level": 1},
                     ],
-                    "capacity_cleanup": {"enabled": True, "min_age_days": 30},
+                    "capacity_cleanup": {
+                        "enabled": True,
+                        "min_age_days": 30,
+                        "required_reverse_level": 1,
+                    },
                 },
             },
             "data_cache_dir": "../data/spot_backtest",

@@ -42,13 +42,14 @@ class WaiterCleanupConfig:
     enabled: bool = True
     max_open_bargains_per_asset: int | None = 7
     deep_loss_enabled: bool = True
-    deep_loss_min_age_days: float = 7.0
+    deep_loss_min_age_days: float = 9.0
     deep_loss_unrealized_pnl_pct: float = -45.0
-    deep_loss_required_reverse_level: int = 3
+    deep_loss_required_reverse_level: int = 4
     aging_rules: tuple[AgingCleanupRule, ...] = field(default_factory=_default_aging_rules)
     aging_cleanup_enabled: bool = True
     capacity_cleanup_enabled: bool = True
     capacity_cleanup_min_age_days: float = 30.0
+    capacity_cleanup_required_reverse_level: int = 1
 
     def __post_init__(self) -> None:
         if (
@@ -75,6 +76,8 @@ class WaiterCleanupConfig:
             or self.capacity_cleanup_min_age_days < 0
         ):
             raise ValueError("Capacity-cleanup minimum age must be non-negative.")
+        if self.capacity_cleanup_required_reverse_level not in {1, 2, 3, 4}:
+            raise ValueError("Capacity-cleanup reverse level must be between 1 and 4.")
 
 
 def waiter_cleanup_config_from_mapping(payload: dict[str, Any] | None) -> WaiterCleanupConfig:
@@ -108,13 +111,16 @@ def waiter_cleanup_config_from_mapping(payload: dict[str, Any] | None) -> Waiter
             else int(data.get("max_open_bargains_per_asset", 7))
         ),
         deep_loss_enabled=bool(data.get("deep_loss_enabled", True)),
-        deep_loss_min_age_days=float(deep_loss.get("min_age_days", 7)),
+        deep_loss_min_age_days=float(deep_loss.get("min_age_days", 9)),
         deep_loss_unrealized_pnl_pct=float(deep_loss.get("unrealized_pnl_pct", -45)),
-        deep_loss_required_reverse_level=int(deep_loss.get("required_reverse_level", 3)),
+        deep_loss_required_reverse_level=int(deep_loss.get("required_reverse_level", 4)),
         aging_rules=aging_rules,
         aging_cleanup_enabled=bool(data.get("aging_cleanup_enabled", True)),
         capacity_cleanup_enabled=bool(capacity.get("enabled", True)),
         capacity_cleanup_min_age_days=float(capacity.get("min_age_days", 30)),
+        capacity_cleanup_required_reverse_level=int(
+            capacity.get("required_reverse_level", 1)
+        ),
     )
 
 

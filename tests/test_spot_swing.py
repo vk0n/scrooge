@@ -22,6 +22,7 @@ from core.runtime_db import (
     load_portfolio_cash_policy,
     load_spot_order_intent,
     load_spot_swing,
+    ensure_spot_capacity_cleanup_mark,
     upsert_portfolio_asset_policy,
     upsert_portfolio_cash_policy,
 )
@@ -53,11 +54,12 @@ class SpotSwingDomainTests(unittest.TestCase):
         *,
         side: str = "sell",
         objective: str | None = "accumulate_cash",
+        asset: str = "NEAR",
     ) -> dict:
         return create_spot_swing(
             {
                 "swing_id": swing_id,
-                "asset_symbol": "NEAR",
+                "asset_symbol": asset,
                 "quote_symbol": "USDT",
                 "origin_side": side,
                 "trading_objective": objective,
@@ -436,6 +438,35 @@ class SpotSwingDomainTests(unittest.TestCase):
         self.assertEqual(len(swings), 2)
         self.assertEqual(self.economics("swing-profit")["realized_pnl_quote"], 10)
         self.assertEqual(self.economics("swing-loss", current_price=4)["unrealized_pnl_quote"], -10)
+
+    def test_capacity_cleanup_mark_is_unique_per_asset(self):
+        self.create_swing("near-first")
+        self.create_swing("near-second")
+        self.create_swing("dot-first", asset="DOT")
+
+        first = ensure_spot_capacity_cleanup_mark(
+            "near-first",
+            {"marked_at_ms": 10, "required_reverse_level": 1},
+            path=self.db_path,
+        )
+        duplicate = ensure_spot_capacity_cleanup_mark(
+            "near-second",
+            {"marked_at_ms": 20, "required_reverse_level": 1},
+            path=self.db_path,
+        )
+        other_asset = ensure_spot_capacity_cleanup_mark(
+            "dot-first",
+            {"marked_at_ms": 30, "required_reverse_level": 1},
+            path=self.db_path,
+        )
+
+        self.assertEqual(first["swing_id"], "near-first")
+        self.assertEqual(duplicate["swing_id"], "near-first")
+        self.assertEqual(other_asset["swing_id"], "dot-first")
+        self.assertNotIn(
+            "capacity_cleanup_mark",
+            load_spot_swing("near-second", path=self.db_path)["reference_state"],
+        )
 
     def test_portfolio_average_cost_is_not_used_for_swing_pnl(self):
         swing = self.create_swing("swing-own-economics")

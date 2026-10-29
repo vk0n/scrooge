@@ -616,6 +616,21 @@ class SpotPortfolioBacktester:
             action_type = str(decision["action_type"])
             if action_type == "hold":
                 if execution_phase in {None, "allocation"}:
+                    reason = (
+                        decision.get("reason")
+                        if isinstance(decision.get("reason"), dict)
+                        else {}
+                    )
+                    if reason.get("hold_reason") == "capacity_cleanup_marked":
+                        swing = self.swings.get(str(decision.get("swing_id") or ""))
+                        if swing is not None and swing.get("status") in {
+                            "open",
+                            "partially_closed",
+                        }:
+                            reference_state = swing.setdefault("reference_state", {})
+                            reference_state["capacity_cleanup_mark"] = dict(
+                                reason.get("capacity_cleanup_mark") or {}
+                            )
                     self._record_non_order_action(
                         symbol, candle, signal, campaign, decision
                     )
@@ -770,7 +785,7 @@ class SpotPortfolioBacktester:
                 "campaign_id": campaign.get("campaign_id"),
                 "action_type": decision["action_type"],
                 "side": decision.get("side"),
-                "swing_id": None,
+                "swing_id": decision.get("swing_id"),
                 "signal_level": signal.get("level"),
                 "base_tranche_pct": signal.get("base_tranche_pct"),
                 "final_tranche_pct": signal.get("final_tranche_pct"),

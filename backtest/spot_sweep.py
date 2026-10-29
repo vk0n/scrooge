@@ -49,6 +49,7 @@ class SpotSweepVariant:
     age_l2_min_age_days: float
     age_l1_min_age_days: float
     capacity_cleanup_min_age_days: float
+    capacity_cleanup_required_reverse_level: int
     capacity_cleanup_enabled: bool
 
 
@@ -66,6 +67,7 @@ class SpotSweepConfig:
     replay_max_workers: int = 2
     resume: bool = True
     continue_on_error: bool = True
+    artifact_mode: str = "full"
 
 
 _SWEEP_WORKER_CONFIG: SpotSweepConfig | None = None
@@ -126,6 +128,10 @@ def load_spot_sweep_config(
     if not output_dir.is_absolute():
         output_dir = (config_path.parent / output_dir).resolve()
 
+    artifact_mode = str(payload.get("artifact_mode") or "full").strip().lower()
+    if artifact_mode not in {"full", "compact"}:
+        raise ValueError("spot_sweep.artifact_mode must be 'full' or 'compact'.")
+
     start = str(payload["start"]) if payload.get("start") is not None else None
     end = str(payload["end"]) if payload.get("end") is not None else None
     scenario = load_spot_backtest_scenario(
@@ -171,6 +177,7 @@ def load_spot_sweep_config(
             "age_l2_min_age_days",
             "age_l1_min_age_days",
             "capacity_cleanup_min_age_days",
+            "capacity_cleanup_required_reverse_level",
             "capacity_cleanup_enabled",
         }
         unknown = sorted(set(parameter_grid) - supported)
@@ -307,6 +314,10 @@ def load_spot_sweep_config(
         "capacity_cleanup_min_age_days",
         scenario.waiter_cleanup.capacity_cleanup_min_age_days,
     )
+    capacity_level_options = grid_values(
+        "capacity_cleanup_required_reverse_level",
+        scenario.waiter_cleanup.capacity_cleanup_required_reverse_level,
+    )
     capacity_cleanup_enabled_options = boolean_grid_values(
         "capacity_cleanup_enabled", scenario.waiter_cleanup.capacity_cleanup_enabled
     )
@@ -329,6 +340,7 @@ def load_spot_sweep_config(
         age_l2,
         age_l1,
         capacity_age,
+        capacity_level_raw,
         capacity_cleanup_enabled,
     ) in product(
         level_options,
@@ -347,6 +359,7 @@ def load_spot_sweep_config(
         age_l2_options,
         age_l1_options,
         capacity_age_options,
+        capacity_level_options,
         capacity_cleanup_enabled_options,
     ):
         if accumulate_asset_pct is not None and not 0 <= accumulate_asset_pct <= 100:
@@ -354,11 +367,14 @@ def load_spot_sweep_config(
         if minimum_holding_pct is not None and not 0 <= minimum_holding_pct <= 100:
             raise ValueError("minimum_holding_pct must be in the range [0, 100].")
         deep_loss_level = int(deep_loss_level_raw)
+        capacity_level = int(capacity_level_raw)
         max_open = None if max_open_raw is None else int(max_open_raw)
         if deep_loss_level != deep_loss_level_raw:
             raise ValueError("deep_loss_required_reverse_level must contain integers.")
         if max_open_raw is not None and max_open != max_open_raw:
             raise ValueError("max_open_bargains_per_asset must contain integers.")
+        if capacity_level != capacity_level_raw:
+            raise ValueError("capacity_cleanup_required_reverse_level must contain integers.")
         replace(scenario.progression, close_profit_pct=close_profit)
         replace(
             scenario.waiter_cleanup,
@@ -374,6 +390,7 @@ def load_spot_sweep_config(
                 AgingCleanupRule(min_age_days=age_l1, required_reverse_level=1),
             ),
             capacity_cleanup_min_age_days=capacity_age,
+            capacity_cleanup_required_reverse_level=capacity_level,
             capacity_cleanup_enabled=capacity_cleanup_enabled,
         )
         if not 0 <= retention <= 100:
@@ -395,6 +412,7 @@ def load_spot_sweep_config(
             age_l2,
             age_l1,
             capacity_age,
+            capacity_level,
             capacity_cleanup_enabled,
         )
         if key in seen:
@@ -418,6 +436,7 @@ def load_spot_sweep_config(
             ("age_l2_min_age_days", "l2age", age_l2),
             ("age_l1_min_age_days", "l1age", age_l1),
             ("capacity_cleanup_min_age_days", "capage", capacity_age),
+            ("capacity_cleanup_required_reverse_level", "caplevel", capacity_level),
             ("capacity_cleanup_enabled", "cap", int(capacity_cleanup_enabled)),
         )
         for key_name, label, value in optional_values:
@@ -457,6 +476,7 @@ def load_spot_sweep_config(
                 age_l2_min_age_days=age_l2,
                 age_l1_min_age_days=age_l1,
                 capacity_cleanup_min_age_days=capacity_age,
+                capacity_cleanup_required_reverse_level=capacity_level,
                 capacity_cleanup_enabled=capacity_cleanup_enabled,
             )
         )
@@ -477,6 +497,7 @@ def load_spot_sweep_config(
             "age_l2_min_age_days",
             "age_l1_min_age_days",
             "capacity_cleanup_min_age_days",
+            "capacity_cleanup_required_reverse_level",
         }
         named_variants: list[SpotSweepVariant] = []
         for index, raw_variant in enumerate(raw_named_variants):
@@ -502,12 +523,23 @@ def load_spot_sweep_config(
                     if parsed != value:
                         raise ValueError("max_open_bargains_per_asset must be an integer or null.")
                     overrides["max_open_bargains_per_asset"] = parsed
+            if "capacity_cleanup_required_reverse_level" in overrides:
+                value = overrides["capacity_cleanup_required_reverse_level"]
+                parsed = int(value)
+                if parsed != value:
+                    raise ValueError(
+                        "capacity_cleanup_required_reverse_level must be an integer."
+                    )
+                overrides["capacity_cleanup_required_reverse_level"] = parsed
             variant = replace(baseline, name=name, **overrides)
             replace(
                 scenario.waiter_cleanup,
                 deep_loss_enabled=variant.deep_loss_enabled,
                 aging_cleanup_enabled=variant.aging_cleanup_enabled,
                 capacity_cleanup_enabled=variant.capacity_cleanup_enabled,
+                capacity_cleanup_required_reverse_level=(
+                    variant.capacity_cleanup_required_reverse_level
+                ),
                 max_open_bargains_per_asset=variant.max_open_bargains_per_asset,
             )
             named_variants.append(variant)
@@ -563,6 +595,7 @@ def load_spot_sweep_config(
         replay_max_workers=max(1, replay_max_workers),
         resume=bool(payload.get("resume", True)),
         continue_on_error=bool(payload.get("continue_on_error", True)),
+        artifact_mode=artifact_mode,
     )
 
 
@@ -621,6 +654,9 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
             ),
         ),
         capacity_cleanup_min_age_days=variant.capacity_cleanup_min_age_days,
+        capacity_cleanup_required_reverse_level=(
+            variant.capacity_cleanup_required_reverse_level
+        ),
         capacity_cleanup_enabled=variant.capacity_cleanup_enabled,
     )
     metadata = {
@@ -655,6 +691,9 @@ def _scenario_for_variant(config: SpotSweepConfig, variant: SpotSweepVariant) ->
         },
         "sweep_capacity_cleanup_min_age_days": (
             variant.capacity_cleanup_min_age_days
+        ),
+        "sweep_capacity_cleanup_required_reverse_level": (
+            variant.capacity_cleanup_required_reverse_level
         ),
         "sweep_capacity_cleanup_enabled": variant.capacity_cleanup_enabled,
     }
@@ -741,6 +780,9 @@ def _summary_row(
         "age_l2_min_age_days": variant.age_l2_min_age_days,
         "age_l1_min_age_days": variant.age_l1_min_age_days,
         "capacity_cleanup_min_age_days": variant.capacity_cleanup_min_age_days,
+        "capacity_cleanup_required_reverse_level": (
+            variant.capacity_cleanup_required_reverse_level
+        ),
         "capacity_cleanup_enabled": variant.capacity_cleanup_enabled,
         "status": "ok",
         "resumed": resumed,
@@ -816,6 +858,9 @@ def _summary_row(
         ),
         "capacity_cleanup_closes": int(
             (cleanup.get("capacity") or {}).get("capacity_cleanup_actions") or 0
+        ),
+        "capacity_cleanup_marks": int(
+            (cleanup.get("capacity") or {}).get("capacity_cleanup_marks") or 0
         ),
         "open_bargains_30_plus": int(
             (cleanup.get("open_bargains") or {}).get("age_30_plus") or 0
@@ -992,7 +1037,11 @@ def _run_sweep_variant(
     )
     try:
         result = SpotPortfolioBacktester(scenario, dataset).run(progress=progress)
-        artifacts = write_spot_backtest_artifacts(result, scenario.output_dir)
+        artifacts = write_spot_backtest_artifacts(
+            result,
+            scenario.output_dir,
+            artifact_mode=config.artifact_mode,
+        )
         return _summary_row(
             variant=variant,
             scenario=scenario,

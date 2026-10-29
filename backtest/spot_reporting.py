@@ -878,6 +878,13 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
         if action.get("action_type") == "hold"
         and (action.get("reason") or {}).get("hold_reason") == "max_open_bargains_per_asset"
     ]
+    capacity_mark_actions = [
+        action
+        for action in result.actions
+        if action.get("action_type") == "hold"
+        and (action.get("reason") or {}).get("hold_reason")
+        == "capacity_cleanup_marked"
+    ]
     saturated_cleanup_actions = [
         action
         for action in result.actions
@@ -891,7 +898,7 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
         if action.get("action_type") == "close"
         if (action.get("reason") or {}).get("close_reason") == "capacity_cleanup"
     ]
-    capacity_blocked_actions = capacity_holds
+    capacity_blocked_actions = capacity_holds + capacity_mark_actions
 
     def blocked_cycle_identity(action: dict[str, Any]) -> tuple[Any, ...]:
         return (
@@ -1005,6 +1012,9 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
             "capacity_cleanup": {
                 "enabled": result.scenario.waiter_cleanup.capacity_cleanup_enabled,
                 "min_age_days": result.scenario.waiter_cleanup.capacity_cleanup_min_age_days,
+                "required_reverse_level": (
+                    result.scenario.waiter_cleanup.capacity_cleanup_required_reverse_level
+                ),
             },
         },
         "cleanup_closes_total": len(cleanup_swings),
@@ -1029,6 +1039,7 @@ def _waiter_cleanup_metrics(result: SpotBacktestResult) -> dict[str, Any]:
                 }
             ),
             "capacity_cleanup_actions": len(capacity_cleanup_actions),
+            "capacity_cleanup_marks": len(capacity_mark_actions),
             "cleanup_actions_while_capacity_saturated": len(saturated_cleanup_actions),
         },
         "open_bargains": {
@@ -1494,7 +1505,14 @@ def _git_revision() -> str | None:
         return None
 
 
-def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | Path | None = None) -> dict[str, Any]:
+def write_spot_backtest_artifacts(
+    result: SpotBacktestResult,
+    output_dir: str | Path | None = None,
+    *,
+    artifact_mode: str = "full",
+) -> dict[str, Any]:
+    if artifact_mode not in {"full", "compact"}:
+        raise ValueError("Spot artifact mode must be 'full' or 'compact'.")
     target = Path(output_dir or result.scenario.output_dir).expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
     report = build_spot_backtest_report(result)
@@ -1528,9 +1546,7 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
     write_scenario_snapshot(result.scenario, target / "scenario.resolved.yaml")
     _write_json(target / "per_asset_summary.json", report["per_asset"])
     _write_json(target / "waiter_cleanup.json", report["waiter_cleanup"])
-    _write_json(target / "swings.json", result.swings)
     _write_json(target / "treasury_accumulation.json", report["treasury_accumulation"])
-    _write_json(target / "sell_campaigns.json", report["sell_campaigns"])
     _write_json(target / "final_state.json", {
         "shared_usdt": result.final_usdt,
         "assets": {
@@ -1553,17 +1569,7 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
             for symbol, state in result.assets.items()
         },
     })
-    _write_csv(target / "equity.csv", result.equity)
     _write_csv(target / "monthly.csv", monthly)
-    _write_csv(target / "executions.csv", result.executions)
-    _write_csv(target / "treasury_accumulation.csv", result.accumulations)
-    _write_csv(target / "sell_campaigns.csv", report["sell_campaigns"]["campaigns"])
-    _write_csv(target / "signals.csv", result.signals)
-    _write_csv(target / "actions.csv", result.actions)
-    _write_csv(target / "target_history.csv", result.target_history)
-    _write_csv(target / "inventory.csv", result.inventory_history)
-    _write_csv(target / "rejections.csv", result.rejections)
-    _write_csv(target / "deferred_candidates.csv", result.deferred_candidates)
     _write_csv(
         target / "waiter_cleanup_reasons.csv",
         [
@@ -1576,6 +1582,21 @@ def write_spot_backtest_artifacts(result: SpotBacktestResult, output_dir: str | 
         render_spot_backtest_markdown(report),
         encoding="utf-8",
     )
+    if artifact_mode == "compact":
+        return {"output_dir": str(target), "report": report, "monthly": monthly}
+
+    _write_json(target / "swings.json", result.swings)
+    _write_json(target / "sell_campaigns.json", report["sell_campaigns"])
+    _write_csv(target / "equity.csv", result.equity)
+    _write_csv(target / "executions.csv", result.executions)
+    _write_csv(target / "treasury_accumulation.csv", result.accumulations)
+    _write_csv(target / "sell_campaigns.csv", report["sell_campaigns"]["campaigns"])
+    _write_csv(target / "signals.csv", result.signals)
+    _write_csv(target / "actions.csv", result.actions)
+    _write_csv(target / "target_history.csv", result.target_history)
+    _write_csv(target / "inventory.csv", result.inventory_history)
+    _write_csv(target / "rejections.csv", result.rejections)
+    _write_csv(target / "deferred_candidates.csv", result.deferred_candidates)
     write_spot_backtest_html(
         target / "report.html",
         report,

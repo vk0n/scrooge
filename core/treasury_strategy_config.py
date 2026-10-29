@@ -47,7 +47,8 @@ _CLEANUP_REQUIRED_KEYS = {
 }
 _DEEP_LOSS_KEYS = {"min_age_days", "unrealized_pnl_pct", "required_reverse_level"}
 _AGING_KEYS = {"min_age_days", "required_reverse_level"}
-_CAPACITY_CLEANUP_KEYS = {"enabled", "min_age_days"}
+_CAPACITY_CLEANUP_KEYS = {"enabled", "min_age_days", "required_reverse_level"}
+_CAPACITY_CLEANUP_REQUIRED_KEYS = {"enabled", "min_age_days"}
 
 
 def _mapping(value: Any, *, field: str) -> dict[str, Any]:
@@ -157,6 +158,9 @@ class TreasuryStrategyConfig:
                 "capacity_cleanup": {
                     "enabled": self.waiter_cleanup.capacity_cleanup_enabled,
                     "min_age_days": self.waiter_cleanup.capacity_cleanup_min_age_days,
+                    "required_reverse_level": (
+                        self.waiter_cleanup.capacity_cleanup_required_reverse_level
+                    ),
                 },
             },
         }
@@ -185,7 +189,11 @@ def treasury_strategy_config_from_mapping(payload: Any) -> TreasuryStrategyConfi
     _reject_unknown(deep_loss, _DEEP_LOSS_KEYS, field="treasury.waiter_cleanup.deep_loss")
     _reject_unknown(capacity, _CAPACITY_CLEANUP_KEYS, field="treasury.waiter_cleanup.capacity_cleanup")
     _require(deep_loss, _DEEP_LOSS_KEYS, field="treasury.waiter_cleanup.deep_loss")
-    _require(capacity, _CAPACITY_CLEANUP_KEYS, field="treasury.waiter_cleanup.capacity_cleanup")
+    _require(
+        capacity,
+        _CAPACITY_CLEANUP_REQUIRED_KEYS,
+        field="treasury.waiter_cleanup.capacity_cleanup",
+    )
     raw_aging = cleanup.get("aging")
     if not isinstance(raw_aging, list):
         raise ValueError("treasury.waiter_cleanup.aging must be a list.")
@@ -306,6 +314,10 @@ def treasury_strategy_config_from_mapping(payload: Any) -> TreasuryStrategyConfi
             capacity_cleanup_min_age_days=_number(
                 capacity["min_age_days"],
                 field="treasury.waiter_cleanup.capacity_cleanup.min_age_days",
+            ),
+            capacity_cleanup_required_reverse_level=_integer(
+                capacity.get("required_reverse_level", 1),
+                field="treasury.waiter_cleanup.capacity_cleanup.required_reverse_level",
             ),
         ),
     )

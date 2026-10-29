@@ -118,6 +118,23 @@ spot_sweep:
         self.assertEqual(config.scenario.start.isoformat(), "2025-12-01T00:00:00+00:00")
         self.assertEqual([item.name for item in config.variants], ["2-3-5-7", "3-5-8-11"])
         self.assertEqual(config.output_dir, root / "output")
+        self.assertEqual(config.artifact_mode, "full")
+
+    def test_loads_compact_artifact_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self.write_configs(root)
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "  replay_parallel: false\n",
+                    "  replay_parallel: false\n  artifact_mode: compact\n",
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_spot_sweep_config(path)
+
+        self.assertEqual(config.artifact_mode, "compact")
         self.assertFalse(config.replay_parallel)
         self.assertEqual(config.replay_max_workers, 2)
 
@@ -189,6 +206,7 @@ spot_sweep:
     age_l2_min_age_days: [50]
     age_l1_min_age_days: [75]
     capacity_cleanup_min_age_days: [20]
+    capacity_cleanup_required_reverse_level: [2]
 """,
                 encoding="utf-8",
             )
@@ -205,6 +223,10 @@ spot_sweep:
             [25, 50, 75],
         )
         self.assertEqual(resolved.waiter_cleanup.capacity_cleanup_min_age_days, 20)
+        self.assertEqual(
+            resolved.waiter_cleanup.capacity_cleanup_required_reverse_level,
+            2,
+        )
 
     def test_named_variants_control_cleanup_and_cap_independently(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -455,7 +477,8 @@ spot_sweep:
             ):
                 backtester.return_value.run.return_value = object()
 
-                def write_result(_result, output_dir):
+                def write_result(_result, output_dir, *, artifact_mode):
+                    self.assertEqual(artifact_mode, "full")
                     current = report(next(edges))
                     output = Path(output_dir)
                     output.mkdir(parents=True, exist_ok=True)

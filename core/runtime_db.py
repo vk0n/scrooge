@@ -4056,6 +4056,65 @@ def load_spot_swing(swing_id: str, path: Path | None = None) -> dict[str, Any] |
     return _spot_swing_from_row(row) if row is not None else None
 
 
+def ensure_spot_capacity_cleanup_mark(
+    swing_id: str,
+    mark: dict[str, Any],
+    *,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Persist at most one active capacity-cleanup mark per asset."""
+    normalized_id = str(swing_id or "").strip()
+    if not normalized_id:
+        raise ValueError("Capacity cleanup mark requires a Swing ID.")
+    if not isinstance(mark, dict) or not mark:
+        raise ValueError("Capacity cleanup mark must be a non-empty object.")
+    with _connection(path) as connection:
+        target = connection.execute(
+            "SELECT * FROM spot_swings WHERE swing_id = ?",
+            (normalized_id,),
+        ).fetchone()
+        if target is None:
+            raise ValueError("Capacity cleanup mark references a missing Swing.")
+        if str(target["status"]) not in {"open", "partially_closed"}:
+            raise ValueError("Only an active Swing can be marked for capacity cleanup.")
+        active_rows = connection.execute(
+            """
+            SELECT * FROM spot_swings
+            WHERE account_key = ? AND asset_symbol = ? AND quote_symbol = ?
+              AND status IN ('open', 'partially_closed')
+            ORDER BY opened_at_ms ASC, swing_id ASC
+            """,
+            (target["account_key"], target["asset_symbol"], target["quote_symbol"]),
+        ).fetchall()
+        for row in active_rows:
+            reference_state = json.loads(row["reference_state_json"] or "{}")
+            if isinstance(reference_state, dict) and isinstance(
+                reference_state.get("capacity_cleanup_mark"),
+                dict,
+            ):
+                return _spot_swing_from_row(row)
+        reference_state = json.loads(target["reference_state_json"] or "{}")
+        if not isinstance(reference_state, dict):
+            reference_state = {}
+        reference_state["capacity_cleanup_mark"] = dict(mark)
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        connection.execute(
+            """
+            UPDATE spot_swings
+            SET reference_state_json = ?, updated_at_ms = ?
+            WHERE swing_id = ?
+            """,
+            (_json_text(reference_state), now_ms, normalized_id),
+        )
+        updated = connection.execute(
+            "SELECT * FROM spot_swings WHERE swing_id = ?",
+            (normalized_id,),
+        ).fetchone()
+    if updated is None:
+        raise RuntimeDbError("Capacity cleanup mark was not persisted.")
+    return _spot_swing_from_row(updated)
+
+
 def list_spot_swings(
     *,
     account_key: str | None = None,

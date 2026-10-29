@@ -55,9 +55,10 @@ class TreasuryStrategyConfigTests(unittest.TestCase):
 
         self.assertEqual(config.waiter_cleanup.max_open_bargains_per_asset, 7)
         self.assertEqual(config.waiter_cleanup.capacity_cleanup_min_age_days, 30)
-        self.assertEqual(config.waiter_cleanup.deep_loss_min_age_days, 7)
+        self.assertEqual(config.waiter_cleanup.capacity_cleanup_required_reverse_level, 1)
+        self.assertEqual(config.waiter_cleanup.deep_loss_min_age_days, 9)
         self.assertEqual(config.waiter_cleanup.deep_loss_unrealized_pnl_pct, -45)
-        self.assertEqual(config.waiter_cleanup.deep_loss_required_reverse_level, 3)
+        self.assertEqual(config.waiter_cleanup.deep_loss_required_reverse_level, 4)
         self.assertEqual(
             tuple(
                 (rule.min_age_days, rule.required_reverse_level)

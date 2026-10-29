@@ -12,6 +12,7 @@ from core.runtime_db import (
     complete_spot_accumulation_ladder_level,
     complete_spot_strategy_campaign_level,
     create_spot_swing,
+    ensure_spot_capacity_cleanup_mark,
     ensure_spot_strategy_action,
     initialize_spot_strategy_campaign_capacity,
     list_spot_strategy_actions,
@@ -251,7 +252,33 @@ class ProgressiveSpotSwingExecutor:
                 cleanup_config=self.cleanup_config,
                 excluded_close_swing_ids=excluded_close_swing_ids,
             )
-            if decision is None or decision["action_type"] == "hold":
+            if decision is None:
+                return self._signal_batch_result(asset, completed_actions)
+            if decision["action_type"] == "hold":
+                reason = decision.get("reason") if isinstance(decision.get("reason"), dict) else {}
+                if (
+                    reason.get("hold_reason") == "capacity_cleanup_marked"
+                    and execution_phase in {None, "allocation"}
+                ):
+                    marked = ensure_spot_capacity_cleanup_mark(
+                        str(decision.get("swing_id") or ""),
+                        dict(reason.get("capacity_cleanup_mark") or {}),
+                        path=self.db_path,
+                    )
+                    result = {
+                        **decision,
+                        "status": "completed",
+                        "swing_id": marked["swing_id"],
+                    }
+                    completed_actions.append(result)
+                    self.logger.info(
+                        "spot_capacity_cleanup_marked asset=%s swing_id=%s pnl=%s",
+                        asset,
+                        marked["swing_id"],
+                        (marked.get("reference_state") or {})
+                        .get("capacity_cleanup_mark", {})
+                        .get("pnl_quote_after_estimated_fee"),
+                    )
                 return self._signal_batch_result(asset, completed_actions)
             if execution_phase is not None and spot_action_phase(decision) != execution_phase:
                 return self._signal_batch_result(asset, completed_actions)
