@@ -45,9 +45,9 @@ treasury:
     full_deploy_threshold_pct: 25
   waiter_cleanup:
     enabled: true
-    max_open_bargains_per_asset: 7
+    max_open_bargains_per_asset: 11
     deep_loss:
-      min_age_days: 9
+      min_age_days: 6
       unrealized_pnl_pct: -45
       required_reverse_level: 4
     aging:

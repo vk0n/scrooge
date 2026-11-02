@@ -12,6 +12,7 @@ from core.spot_waiter_cleanup import (
     remaining_unrealized_pnl_pct,
     required_cleanup_level,
     reverse_signal_satisfies,
+    waiter_cleanup_config_from_mapping,
 )
 
 
@@ -124,10 +125,29 @@ class WaiterCleanupDomainTests(unittest.TestCase):
         self.assertEqual(self.requirement(120)["required_reverse_level"], 1)
 
     def test_deep_loss_boundary_and_minimum_age(self):
-        eligible = self.requirement(9, -45)
+        eligible = self.requirement(6, -45)
         self.assertEqual(eligible["cleanup_reason"], "deep_loss_cleanup")
         self.assertEqual(eligible["required_reverse_level"], 4)
-        self.assertIsNone(self.requirement(9 - 1 / 24, -45))
+        self.assertIsNone(self.requirement(6 - 1 / 24, -45))
+        self.assertIsNone(self.requirement(6, -44.99))
+
+    def test_default_cleanup_policy_matches_current_baseline(self):
+        self.assertEqual(self.config.max_open_bargains_per_asset, 11)
+        self.assertEqual(self.config.deep_loss_min_age_days, 6)
+        self.assertEqual(self.config.deep_loss_unrealized_pnl_pct, -45)
+        self.assertEqual(self.config.deep_loss_required_reverse_level, 4)
+        self.assertEqual(self.config.capacity_cleanup_min_age_days, 30)
+        self.assertEqual(self.config.capacity_cleanup_required_reverse_level, 1)
+        for payload in (None, {}, {"deep_loss": {}, "capacity_cleanup": {}}):
+            with self.subTest(payload=payload):
+                self.assertEqual(waiter_cleanup_config_from_mapping(payload), self.config)
+
+    def test_explicit_old_baseline_overrides_new_defaults(self):
+        config = waiter_cleanup_config_from_mapping(
+            {"max_open_bargains_per_asset": 7, "deep_loss": {"min_age_days": 9}}
+        )
+        self.assertEqual(config.max_open_bargains_per_asset, 7)
+        self.assertEqual(config.deep_loss_min_age_days, 9)
 
     def test_deep_loss_and_aging_switches_are_independent(self):
         bargain = swing_state("switches", age_days=130)["swing"]

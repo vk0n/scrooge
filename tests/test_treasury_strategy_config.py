@@ -6,6 +6,7 @@ from unittest.mock import patch
 import yaml
 
 from api.services import config_service
+from core.spot_waiter_cleanup import waiter_cleanup_config_from_mapping
 from core.treasury_strategy_config import treasury_strategy_config_from_mapping
 
 
@@ -53,10 +54,10 @@ class TreasuryStrategyConfigTests(unittest.TestCase):
 
         config = treasury_strategy_config_from_mapping(live_rules)
 
-        self.assertEqual(config.waiter_cleanup.max_open_bargains_per_asset, 7)
+        self.assertEqual(config.waiter_cleanup.max_open_bargains_per_asset, 11)
         self.assertEqual(config.waiter_cleanup.capacity_cleanup_min_age_days, 30)
         self.assertEqual(config.waiter_cleanup.capacity_cleanup_required_reverse_level, 1)
-        self.assertEqual(config.waiter_cleanup.deep_loss_min_age_days, 9)
+        self.assertEqual(config.waiter_cleanup.deep_loss_min_age_days, 6)
         self.assertEqual(config.waiter_cleanup.deep_loss_unrealized_pnl_pct, -45)
         self.assertEqual(config.waiter_cleanup.deep_loss_required_reverse_level, 4)
         self.assertEqual(
@@ -65,6 +66,19 @@ class TreasuryStrategyConfigTests(unittest.TestCase):
                 for rule in config.waiter_cleanup.aging_rules
             ),
             ((45, 3), (60, 2), (120, 1)),
+        )
+
+    def test_backtest_template_cleanup_matches_live_baseline(self):
+        root = Path(__file__).resolve().parents[1]
+        live = yaml.safe_load((root / "config" / "live.yaml").read_text(encoding="utf-8"))
+        template = yaml.safe_load(
+            (root / "config" / "spot_backtest.template.yaml").read_text(encoding="utf-8")
+        )
+        backtest_rules = template["spot_backtest"]["strategy"]
+
+        self.assertEqual(
+            waiter_cleanup_config_from_mapping(backtest_rules["waiter_cleanup"]),
+            treasury_strategy_config_from_mapping(live["treasury"]).waiter_cleanup,
         )
 
     def test_parses_all_live_rules(self):

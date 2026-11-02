@@ -40,9 +40,9 @@ def _default_aging_rules() -> tuple[AgingCleanupRule, ...]:
 @dataclass(frozen=True)
 class WaiterCleanupConfig:
     enabled: bool = True
-    max_open_bargains_per_asset: int | None = 7
+    max_open_bargains_per_asset: int | None = 11
     deep_loss_enabled: bool = True
-    deep_loss_min_age_days: float = 9.0
+    deep_loss_min_age_days: float = 6.0
     deep_loss_unrealized_pnl_pct: float = -45.0
     deep_loss_required_reverse_level: int = 4
     aging_rules: tuple[AgingCleanupRule, ...] = field(default_factory=_default_aging_rules)
@@ -107,11 +107,11 @@ def waiter_cleanup_config_from_mapping(payload: dict[str, Any] | None) -> Waiter
         enabled=bool(data.get("enabled", True)),
         max_open_bargains_per_asset=(
             None
-            if data.get("max_open_bargains_per_asset", 7) is None
-            else int(data.get("max_open_bargains_per_asset", 7))
+            if data.get("max_open_bargains_per_asset", 11) is None
+            else int(data.get("max_open_bargains_per_asset", 11))
         ),
         deep_loss_enabled=bool(data.get("deep_loss_enabled", True)),
-        deep_loss_min_age_days=float(deep_loss.get("min_age_days", 9)),
+        deep_loss_min_age_days=float(deep_loss.get("min_age_days", 6)),
         deep_loss_unrealized_pnl_pct=float(deep_loss.get("unrealized_pnl_pct", -45)),
         deep_loss_required_reverse_level=int(deep_loss.get("required_reverse_level", 4)),
         aging_rules=aging_rules,
