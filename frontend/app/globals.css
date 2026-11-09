@@ -7016,7 +7016,8 @@ body.logs-page-active .logs-page-panel .log-box {
   }
 }
 
-@media (max-width: 960px) and (max-height: 560px) and (orientation: landscape) {
+/* Keep document scrolling available for native mobile pull-to-refresh. */
+@media (max-width: 960px) {
   body.logs-page-active {
     overflow: auto;
     padding-bottom: calc(5.35rem + env(safe-area-inset-bottom, 0px));
